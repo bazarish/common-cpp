@@ -86,5 +86,15 @@ int main()
     corruptedEnvelope[corruptedEnvelope.size() - 1] ^= 0x01;
     CHECK_THROWS(cms::unseal(corruptedEnvelope, sealing));
 
+    // Password-based envelope: round trips with the password and rejects the
+    // wrong one. Used by the encrypted state export.
+    const std::string password = "open sesame";
+    const Bytes secret = {'b', 'a', 'c', 'k', 'u', 'p'};
+    const Bytes passEnvelope = cms::sealWithPassword(secret, password);
+    CHECK(!passEnvelope.empty());
+    CHECK(cms::unsealWithPassword(passEnvelope, password) == secret);
+    CHECK_THROWS(cms::unsealWithPassword(passEnvelope, "guess"));
+    CHECK_THROWS(cms::sealWithPassword(secret, ""));
+
     return 0;
 }

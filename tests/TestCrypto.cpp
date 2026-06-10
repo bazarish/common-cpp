@@ -78,6 +78,25 @@ int main()
     // Mismatched key types are rejected.
     CHECK_THROWS(Identity(Key::generateSigningPq(), Key::generateSigning()));
 
+    // Passphrase-encrypted PEM: the encrypted form differs from the plain one,
+    // round-trips with the right passphrase, and refuses the wrong one.
+    const std::string passphrase = "correct horse battery staple";
+    const std::string encryptedPem = signing.privatePem(passphrase);
+    CHECK(encryptedPem != signing.privatePem());
+    CHECK(encryptedPem.find("ENCRYPTED") != std::string::npos);
+    const Key fromEncrypted = Key::fromPrivatePem(encryptedPem, passphrase);
+    CHECK(fromEncrypted.fingerprint() == fingerprint);
+    CHECK_THROWS(Key::fromPrivatePem(encryptedPem, "wrong"));
+    // An encrypted PEM read with no passphrase must not silently succeed.
+    CHECK_THROWS(Key::fromPrivatePem(encryptedPem));
+
+    // The hybrid identity encrypts both of its key blocks under one passphrase.
+    const std::string encryptedIdentityPem = identity.privatePem(passphrase);
+    const Identity fromEncryptedIdentity
+        = Identity::fromPrivatePem(encryptedIdentityPem, passphrase);
+    CHECK(fromEncryptedIdentity.fingerprint() == identity.fingerprint());
+    CHECK_THROWS(Identity::fromPrivatePem(encryptedIdentityPem, "wrong"));
+
     // SHA-256 against a known vector: sha256("abc").
     const Bytes abc = {'a', 'b', 'c'};
     CHECK(toHex(sha256(abc))

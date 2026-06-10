@@ -5,6 +5,7 @@
 #include <openssl/bio.h>
 #include <openssl/bn.h>
 #include <openssl/cms.h>
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 
@@ -276,6 +277,71 @@ Bytes unseal(const Bytes& der, const Key& recipientPrivateKey)
             CMS_BINARY)
         != 1) {
         throw std::runtime_error("CMS_decrypt failed");
+    }
+    return bioToBytes(output.get());
+}
+
+Bytes sealWithPassword(const Bytes& plaintext, const std::string& password)
+{
+    if (password.empty()) {
+        throw std::invalid_argument("password must not be empty");
+    }
+    const BioPtr input = makeInputBio(plaintext);
+    // CMS_PARTIAL leaves the structure open so a password recipient can be
+    // added before finalizing; the content is AES-256-CBC.
+    const CmsPtr cms(CMS_encrypt(nullptr, input.get(), EVP_aes_256_cbc(),
+        CMS_BINARY | CMS_PARTIAL));
+    if (cms == nullptr) {
+        throw std::runtime_error("CMS_encrypt failed");
+    }
+    // CMS_add0_recipient_password takes ownership of the password buffer and
+    // frees it with the structure, so it must be an OpenSSL allocation, not
+    // our std::string's storage. Default PBKDF2 iteration count and PWRI key
+    // wrap; the password key encryption key is AES-256.
+    unsigned char* const passCopy
+        = static_cast<unsigned char*>(OPENSSL_memdup(password.data(), password.size()));
+    if (passCopy == nullptr) {
+        throw std::runtime_error("OPENSSL_memdup failed");
+    }
+    if (CMS_add0_recipient_password(cms.get(), -1, NID_undef, NID_undef, passCopy,
+            static_cast<int>(password.size()), nullptr)
+        == nullptr) {
+        OPENSSL_free(passCopy);
+        throw std::runtime_error("CMS_add0_recipient_password failed");
+    }
+    if (CMS_final(cms.get(), input.get(), nullptr, CMS_BINARY) != 1) {
+        throw std::runtime_error("CMS_final failed");
+    }
+
+    const BioPtr output = makeMemoryBio();
+    if (i2d_CMS_bio(output.get(), cms.get()) != 1) {
+        throw std::runtime_error("i2d_CMS_bio failed");
+    }
+    return bioToBytes(output.get());
+}
+
+Bytes unsealWithPassword(const Bytes& der, const std::string& password)
+{
+    if (password.empty()) {
+        throw std::invalid_argument("password must not be empty");
+    }
+    const BioPtr input = makeInputBio(der);
+    const CmsPtr cms(d2i_CMS_bio(input.get(), nullptr));
+    if (cms == nullptr) {
+        throw std::runtime_error("d2i_CMS_bio failed");
+    }
+    if (CMS_decrypt_set1_password(cms.get(),
+            reinterpret_cast<unsigned char*>(const_cast<char*>(password.data())),
+            static_cast<int>(password.size()))
+        != 1) {
+        throw std::runtime_error("CMS_decrypt_set1_password failed");
+    }
+
+    const BioPtr output = makeMemoryBio();
+    // The recipient key arguments are null: the password set above is the key
+    // source. A wrong password surfaces here as a decrypt failure.
+    if (CMS_decrypt(cms.get(), nullptr, nullptr, nullptr, output.get(), CMS_BINARY) != 1) {
+        throw std::runtime_error("CMS_decrypt failed (wrong password?)");
     }
     return bioToBytes(output.get());
 }

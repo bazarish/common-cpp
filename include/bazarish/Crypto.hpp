@@ -36,10 +36,13 @@ public:
     // by design, even though the curve is the same.
     static Key generateSealing();
 
-    static Key fromPrivatePem(const std::string& pem);
+    // When passphrase is non-empty the PEM is expected to be (or is written)
+    // encrypted with AES-256-CBC; an empty passphrase keeps the historical
+    // unencrypted form.
+    static Key fromPrivatePem(const std::string& pem, const std::string& passphrase = {});
     static Key fromPublicDer(const Bytes& spkiDer);
 
-    std::string privatePem() const;
+    std::string privatePem(const std::string& passphrase = {}) const;
     // SubjectPublicKeyInfo DER — the canonical public form.
     Bytes publicDer() const;
     // base32(sha256(SubjectPublicKeyInfo DER)). Identifies a single key;
@@ -74,13 +77,15 @@ class Identity {
 public:
     static Identity generate();
     // Reads two PEM blocks: the classical key first, the ML-DSA key second.
-    static Identity fromPrivatePem(const std::string& pem);
+    // A non-empty passphrase decrypts both blocks (AES-256-CBC).
+    static Identity fromPrivatePem(const std::string& pem, const std::string& passphrase = {});
     Identity(Key classical, Key pq);
 
     const Key& classical() const;
     const Key& pq() const;
-    // Both private keys as two concatenated PEM blocks.
-    std::string privatePem() const;
+    // Both private keys as two concatenated PEM blocks, encrypted with the
+    // passphrase (AES-256-CBC) when it is non-empty.
+    std::string privatePem(const std::string& passphrase = {}) const;
     // The canonical identity fingerprint, covering both public keys.
     std::string fingerprint() const;
 

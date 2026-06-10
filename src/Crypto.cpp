@@ -82,13 +82,18 @@ Key Key::generateSealing()
     return Key(generateEcP256(), true);
 }
 
-Key Key::fromPrivatePem(const std::string& pem)
+Key Key::fromPrivatePem(const std::string& pem, const std::string& passphrase)
 {
     const BioPtr bio(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
     if (bio == nullptr) {
         throw std::runtime_error("BIO_new_mem_buf failed");
     }
-    EVP_PKEY* const key = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr);
+    // When the passphrase is empty OpenSSL receives a null userdata and reads
+    // an unencrypted PEM; otherwise the default callback uses it as the
+    // password for the encrypted block.
+    void* const password = passphrase.empty() ? nullptr
+                                               : const_cast<char*>(passphrase.c_str());
+    EVP_PKEY* const key = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, password);
     if (key == nullptr) {
         throw std::runtime_error("PEM_read_bio_PrivateKey failed");
     }
@@ -105,13 +110,20 @@ Key Key::fromPublicDer(const Bytes& spkiDer)
     return Key(KeyPtr(key), false);
 }
 
-std::string Key::privatePem() const
+std::string Key::privatePem(const std::string& passphrase) const
 {
     if (!hasPrivate_) {
         throw std::logic_error("key has no private part");
     }
     const BioPtr bio = makeMemoryBio();
-    if (PEM_write_bio_PrivateKey(bio.get(), key_.get(), nullptr, nullptr, 0, nullptr, nullptr)
+    // A non-empty passphrase selects AES-256-CBC encryption of the PEM block;
+    // an empty one keeps the unencrypted form.
+    const EVP_CIPHER* const cipher = passphrase.empty() ? nullptr : EVP_aes_256_cbc();
+    unsigned char* const pass = passphrase.empty()
+        ? nullptr
+        : reinterpret_cast<unsigned char*>(const_cast<char*>(passphrase.data()));
+    if (PEM_write_bio_PrivateKey(bio.get(), key_.get(), cipher, pass,
+            static_cast<int>(passphrase.size()), nullptr, nullptr)
         != 1) {
         throw std::runtime_error("PEM_write_bio_PrivateKey failed");
     }
@@ -222,18 +234,20 @@ Identity Identity::generate()
     return Identity(Key::generateSigning(), Key::generateSigningPq());
 }
 
-Identity Identity::fromPrivatePem(const std::string& pem)
+Identity Identity::fromPrivatePem(const std::string& pem, const std::string& passphrase)
 {
     const BioPtr bio(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
     if (bio == nullptr) {
         throw std::runtime_error("BIO_new_mem_buf failed");
     }
-    EVP_PKEY* const first = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr);
+    void* const password = passphrase.empty() ? nullptr
+                                               : const_cast<char*>(passphrase.c_str());
+    EVP_PKEY* const first = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, password);
     if (first == nullptr) {
         throw std::runtime_error("identity PEM: first key unreadable");
     }
     Key classical(KeyPtr(first), true);
-    EVP_PKEY* const second = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr);
+    EVP_PKEY* const second = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, password);
     if (second == nullptr) {
         throw std::runtime_error("identity PEM: second key unreadable");
     }
@@ -251,9 +265,9 @@ const Key& Identity::pq() const
     return pq_;
 }
 
-std::string Identity::privatePem() const
+std::string Identity::privatePem(const std::string& passphrase) const
 {
-    return classical_.privatePem() + pq_.privatePem();
+    return classical_.privatePem(passphrase) + pq_.privatePem(passphrase);
 }
 
 std::string Identity::fingerprint() const
