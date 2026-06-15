@@ -282,7 +282,7 @@ std::string SamClient::readLine()
 }
 
 SamSession::SamSession(const std::string& host, const std::uint16_t port,
-    const std::string& sessionId, const std::string& privateKeys)
+    const std::string& sessionId, const std::string& privateKeys, const int leaseSetType)
     : host_(host)
     , port_(port)
     , sessionId_(sessionId)
@@ -293,7 +293,8 @@ SamSession::SamSession(const std::string& host, const std::uint16_t port,
         handshakeFd(controlFd_);
         std::ostringstream create;
         create << "SESSION CREATE STYLE=STREAM ID=" << sessionId_ << " DESTINATION="
-               << privateKeys << " SIGNATURE_TYPE=" << kEd25519SignatureType << "\n";
+               << privateKeys << " SIGNATURE_TYPE=" << kEd25519SignatureType
+               << " i2cp.leaseSetType=" << leaseSetType << "\n";
         const std::map<std::string, std::string> created
             = commandFd(controlFd_, create.str(), "SESSION STATUS");
         const auto destination = created.find("DESTINATION");

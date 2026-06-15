@@ -7,6 +7,12 @@
 
 namespace bazarish {
 
+// I2P LeaseSet type for SESSION CREATE. Bazarish publishes ENCRYPTED LeaseSet2
+// for every destination (project-wide invariant) so floodfills cannot passively
+// enumerate destinations or their tunnels; the shareable address is the blinded
+// "b33". 5 = NETDB_STORE_TYPE_ENCRYPTED_LEASESET2.
+inline constexpr int kEncryptedLeaseSetType = 5;
+
 // A connected I2P stream taken over from a SAM connection. Owns its socket
 // and provides blocking byte I/O. Move-only.
 class SamStream {
@@ -83,9 +89,12 @@ class SamSession {
 public:
     // Creates a STREAM session with EdDSA keys. privateKeys is the SAM
     // private destination blob to reuse (a stable I2P address across
-    // restarts) or "TRANSIENT" for a fresh one.
+    // restarts) or "TRANSIENT" for a fresh one. leaseSetType defaults to an
+    // encrypted LeaseSet2 (the project-wide b33 invariant); pass a different
+    // type only for interop tests.
     SamSession(const std::string& host, std::uint16_t port, const std::string& sessionId,
-        const std::string& privateKeys = "TRANSIENT");
+        const std::string& privateKeys = "TRANSIENT",
+        int leaseSetType = kEncryptedLeaseSetType);
     ~SamSession();
 
     SamSession(const SamSession&) = delete;
