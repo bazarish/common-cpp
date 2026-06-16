@@ -281,8 +281,38 @@ std::string SamClient::readLine()
     return readLineFd(fd_);
 }
 
+std::string i2pPrivacyOptions(const I2pPrivacy privacy)
+{
+    switch (privacy) {
+    case I2pPrivacy::kMinimal:
+        return "inbound.length=1 outbound.length=1";
+    case I2pPrivacy::kMiddle:
+        return "inbound.length=1 outbound.length=1 "
+               "inbound.lengthVariance=1 outbound.lengthVariance=1";
+    case I2pPrivacy::kMax:
+        return "inbound.length=2 outbound.length=2 "
+               "inbound.lengthVariance=1 outbound.lengthVariance=1";
+    }
+    return "";
+}
+
+std::optional<I2pPrivacy> i2pPrivacyFromString(const std::string& text)
+{
+    if (text == "minimal") {
+        return I2pPrivacy::kMinimal;
+    }
+    if (text == "middle") {
+        return I2pPrivacy::kMiddle;
+    }
+    if (text == "max") {
+        return I2pPrivacy::kMax;
+    }
+    return std::nullopt;
+}
+
 SamSession::SamSession(const std::string& host, const std::uint16_t port,
-    const std::string& sessionId, const std::string& privateKeys, const int leaseSetType)
+    const std::string& sessionId, const std::string& privateKeys, const int leaseSetType,
+    const I2pPrivacy privacy)
     : host_(host)
     , port_(port)
     , sessionId_(sessionId)
@@ -294,7 +324,8 @@ SamSession::SamSession(const std::string& host, const std::uint16_t port,
         std::ostringstream create;
         create << "SESSION CREATE STYLE=STREAM ID=" << sessionId_ << " DESTINATION="
                << privateKeys << " SIGNATURE_TYPE=" << kEd25519SignatureType
-               << " i2cp.leaseSetType=" << leaseSetType << "\n";
+               << " i2cp.leaseSetType=" << leaseSetType << " " << i2pPrivacyOptions(privacy)
+               << "\n";
         const std::map<std::string, std::string> created
             = commandFd(controlFd_, create.str(), "SESSION STATUS");
         const auto destination = created.find("DESTINATION");

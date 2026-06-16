@@ -25,5 +25,16 @@ int main()
     const SamClient::Destination another = sam.generateDestination();
     CHECK(another.pub != destination.pub);
 
+    // Privacy profiles map to the documented SESSION CREATE tunnel options.
+    CHECK(i2pPrivacyOptions(I2pPrivacy::kMinimal) == "inbound.length=1 outbound.length=1");
+    CHECK(i2pPrivacyOptions(I2pPrivacy::kMiddle)
+        == "inbound.length=1 outbound.length=1 inbound.lengthVariance=1 outbound.lengthVariance=1");
+    CHECK(i2pPrivacyOptions(I2pPrivacy::kMax)
+        == "inbound.length=2 outbound.length=2 inbound.lengthVariance=1 outbound.lengthVariance=1");
+    CHECK(i2pPrivacyFromString("minimal") == I2pPrivacy::kMinimal);
+    CHECK(i2pPrivacyFromString("middle") == I2pPrivacy::kMiddle);
+    CHECK(i2pPrivacyFromString("max") == I2pPrivacy::kMax);
+    CHECK(!i2pPrivacyFromString("bogus").has_value());
+
     return 0;
 }

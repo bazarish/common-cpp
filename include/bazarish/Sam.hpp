@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 
 namespace bazarish {
@@ -12,6 +13,23 @@ namespace bazarish {
 // enumerate destinations or their tunnels; the shareable address is the blinded
 // "b33". 5 = NETDB_STORE_TYPE_ENCRYPTED_LEASESET2.
 inline constexpr int kEncryptedLeaseSetType = 5;
+
+// I2P tunnel privacy profile (applied to every Bazarish session via SESSION
+// CREATE). Higher = more hops / variance = more anonymity, more latency.
+//   kMinimal: 1-hop in/out tunnels
+//   kMiddle:  1-hop in/out + length variance 1
+//   kMax:     2-hop in/out + length variance 1
+enum class I2pPrivacy {
+    kMinimal,
+    kMiddle,
+    kMax,
+};
+
+// The space-separated SAM SESSION CREATE tunnel options for a profile.
+std::string i2pPrivacyOptions(I2pPrivacy privacy);
+
+// Parses "minimal" / "middle" / "max" (for CLI flags); nullopt otherwise.
+std::optional<I2pPrivacy> i2pPrivacyFromString(const std::string& text);
 
 // A connected I2P stream taken over from a SAM connection. Owns its socket
 // and provides blocking byte I/O. Move-only.
@@ -91,10 +109,10 @@ public:
     // private destination blob to reuse (a stable I2P address across
     // restarts) or "TRANSIENT" for a fresh one. leaseSetType defaults to an
     // encrypted LeaseSet2 (the project-wide b33 invariant); pass a different
-    // type only for interop tests.
+    // type only for interop tests. privacy selects the tunnel length/variance.
     SamSession(const std::string& host, std::uint16_t port, const std::string& sessionId,
-        const std::string& privateKeys = "TRANSIENT",
-        int leaseSetType = kEncryptedLeaseSetType);
+        const std::string& privateKeys = "TRANSIENT", int leaseSetType = kEncryptedLeaseSetType,
+        I2pPrivacy privacy = I2pPrivacy::kMax);
     ~SamSession();
 
     SamSession(const SamSession&) = delete;
