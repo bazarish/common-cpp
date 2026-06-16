@@ -26,17 +26,30 @@ const char* const kHeaderTimestamp = "X-Bazarish-Timestamp";
 const char* const kHeaderSignatureClassical = "X-Bazarish-Sig-Classical";
 const char* const kHeaderSignaturePq = "X-Bazarish-Sig-Pq";
 
+namespace {
+
+// The canonical string commits to the body only through its hex SHA-256, so
+// signing and verification can work from a precomputed digest without ever
+// touching the raw body bytes.
+std::string canonicalFromDigest(const std::int64_t timestamp, const std::string& method,
+    const std::string& path, const std::string& bodySha256Hex)
+{
+    return "v1\n" + std::to_string(timestamp) + "\n" + method + "\n" + path + "\n" + bodySha256Hex
+        + "\n";
+}
+
+}  // namespace
+
 std::string makeCanonicalString(const std::int64_t timestamp, const std::string& method,
     const std::string& path, const Bytes& body)
 {
-    return "v1\n" + std::to_string(timestamp) + "\n" + method + "\n" + path + "\n"
-        + toHex(sha256(body)) + "\n";
+    return canonicalFromDigest(timestamp, method, path, toHex(sha256(body)));
 }
 
-Headers signRequest(const Identity& identity, const std::int64_t timestamp,
-    const std::string& method, const std::string& path, const Bytes& body)
+Headers signRequestDigest(const Identity& identity, const std::int64_t timestamp,
+    const std::string& method, const std::string& path, const std::string& bodySha256Hex)
 {
-    const std::string canonical = makeCanonicalString(timestamp, method, path, body);
+    const std::string canonical = canonicalFromDigest(timestamp, method, path, bodySha256Hex);
     const Bytes canonicalBytes(canonical.begin(), canonical.end());
 
     const nlohmann::json keys = {
@@ -53,8 +66,14 @@ Headers signRequest(const Identity& identity, const std::int64_t timestamp,
     return headers;
 }
 
-std::string verifyRequest(const Headers& headers, const std::int64_t now,
+Headers signRequest(const Identity& identity, const std::int64_t timestamp,
     const std::string& method, const std::string& path, const Bytes& body)
+{
+    return signRequestDigest(identity, timestamp, method, path, toHex(sha256(body)));
+}
+
+std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
+    const std::string& method, const std::string& path, const std::string& bodySha256Hex)
 {
     const std::int64_t timestamp = std::strtoll(
         requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
@@ -79,7 +98,7 @@ std::string verifyRequest(const Headers& headers, const std::int64_t now,
         throw std::runtime_error("auth pq key is not ML-DSA-65");
     }
 
-    const std::string canonical = makeCanonicalString(timestamp, method, path, body);
+    const std::string canonical = canonicalFromDigest(timestamp, method, path, bodySha256Hex);
     const Bytes canonicalBytes(canonical.begin(), canonical.end());
     if (!verify(classical, canonicalBytes,
             fromBase64(requireHeader(headers, kHeaderSignatureClassical)))) {
@@ -90,6 +109,12 @@ std::string verifyRequest(const Headers& headers, const std::int64_t now,
     }
 
     return hybridFingerprint(classicalDer, pqDer);
+}
+
+std::string verifyRequest(const Headers& headers, const std::int64_t now,
+    const std::string& method, const std::string& path, const Bytes& body)
+{
+    return verifyRequestDigest(headers, now, method, path, toHex(sha256(body)));
 }
 
 }  // namespace bazarish::auth

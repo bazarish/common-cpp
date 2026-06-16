@@ -60,5 +60,25 @@ int main()
     CHECK(auth::verifyRequest(otherHeaders, kNow, "POST", "/v1/messaging/tokens", body)
         != identity.fingerprint());
 
+    // Digest-based signing/verification (used so a large streamed body is never
+    // held in memory) is interchangeable with the body-based path: the canonical
+    // string commits only to hex(sha256(body)).
+    {
+        const std::string bodyDigest = toHex(sha256(body));
+        // Digest-signed headers verify against the actual body...
+        const auth::Headers digestHeaders
+            = auth::signRequestDigest(identity, kNow, "PUT", "/v1/storage/blob", bodyDigest);
+        CHECK(auth::verifyRequest(digestHeaders, kNow, "PUT", "/v1/storage/blob", body)
+            == identity.fingerprint());
+        // ...and body-signed headers verify against the digest.
+        const auth::Headers bodyHeaders
+            = auth::signRequest(identity, kNow, "PUT", "/v1/storage/blob", body);
+        CHECK(auth::verifyRequestDigest(bodyHeaders, kNow, "PUT", "/v1/storage/blob", bodyDigest)
+            == identity.fingerprint());
+        // A digest that is not the one signed must fail.
+        CHECK_THROWS(auth::verifyRequestDigest(
+            bodyHeaders, kNow, "PUT", "/v1/storage/blob", toHex(sha256(Bytes{'x'}))));
+    }
+
     return 0;
 }

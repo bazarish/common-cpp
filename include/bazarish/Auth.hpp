@@ -42,9 +42,22 @@ std::string makeCanonicalString(std::int64_t timestamp, const std::string& metho
 Headers signRequest(const Identity& identity, std::int64_t timestamp,
     const std::string& method, const std::string& path, const Bytes& body);
 
+// As signRequest, but the body is identified by its precomputed hex SHA-256
+// (the canonical string covers only the digest, never the raw bytes). Lets a
+// large request body be signed and streamed without ever holding it in memory.
+Headers signRequestDigest(const Identity& identity, std::int64_t timestamp,
+    const std::string& method, const std::string& path, const std::string& bodySha256Hex);
+
 // Verifies both signatures, both key types and the freshness window;
 // returns the caller's identity fingerprint. Throws on any failure.
 std::string verifyRequest(const Headers& headers, std::int64_t now, const std::string& method,
     const std::string& path, const Bytes& body);
+
+// As verifyRequest, but against a precomputed hex SHA-256 of the body. The
+// caller must compute it over the bytes it actually received (e.g. while
+// streaming the body to disk) so the digest the signature commits to is the
+// digest of the stored bytes.
+std::string verifyRequestDigest(const Headers& headers, std::int64_t now,
+    const std::string& method, const std::string& path, const std::string& bodySha256Hex);
 
 }  // namespace bazarish::auth

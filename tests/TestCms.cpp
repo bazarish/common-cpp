@@ -129,5 +129,45 @@ int main()
         std::filesystem::remove(outPath);
     }
 
+    // Streaming password seal (the large-blob upload path): encrypt a plaintext
+    // file to a ciphertext file without holding it whole in memory, then decrypt
+    // it back (both file-to-file and via the in-memory path) and check it round
+    // trips over many blocks; an empty password fails.
+    {
+        Bytes bigPlain;
+        for (int i = 0; i < 100000; ++i) {
+            bigPlain.push_back(static_cast<unsigned char>(i * 11 + 5));
+        }
+        const std::filesystem::path plainPath
+            = std::filesystem::temp_directory_path() / "bz-test-seal.in";
+        const std::filesystem::path cipherPath
+            = std::filesystem::temp_directory_path() / "bz-test-seal.der";
+        const std::filesystem::path outPath
+            = std::filesystem::temp_directory_path() / "bz-test-seal.out";
+        {
+            std::ofstream out(plainPath, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(bigPlain.data()),
+                static_cast<std::streamsize>(bigPlain.size()));
+        }
+        cms::sealWithPasswordToFile(plainPath, cipherPath, password);
+
+        // Decrypts file-to-file...
+        cms::unsealWithPasswordToFile(cipherPath, outPath, password);
+        std::ifstream fromFile(outPath, std::ios::binary);
+        const Bytes recovered(
+            (std::istreambuf_iterator<char>(fromFile)), std::istreambuf_iterator<char>());
+        CHECK(recovered == bigPlain);
+        // ...and the streamed envelope is a valid CMS that the in-memory path reads too.
+        std::ifstream cipherIn(cipherPath, std::ios::binary);
+        const Bytes envelope(
+            (std::istreambuf_iterator<char>(cipherIn)), std::istreambuf_iterator<char>());
+        CHECK(cms::unsealWithPassword(envelope, password) == bigPlain);
+
+        CHECK_THROWS(cms::sealWithPasswordToFile(plainPath, cipherPath, ""));
+        std::filesystem::remove(plainPath);
+        std::filesystem::remove(cipherPath);
+        std::filesystem::remove(outPath);
+    }
+
     return 0;
 }

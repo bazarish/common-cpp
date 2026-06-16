@@ -361,6 +361,40 @@ Bytes sealWithPassword(const Bytes& plaintext, const std::string& password)
     return bioToBytes(output.get());
 }
 
+void sealWithPasswordToFile(const std::filesystem::path& inPath,
+    const std::filesystem::path& outPath, const std::string& password)
+{
+    if (password.empty()) {
+        throw std::invalid_argument("password must not be empty");
+    }
+    const BioPtr input = makeReadFileBio(inPath);
+    const BioPtr output = makeWriteFileBio(outPath);
+    // CMS_PARTIAL leaves the structure open for the password recipient; CMS_STREAM
+    // makes the content be pulled from `input` lazily during serialization, so the
+    // plaintext is never held whole in memory. AES-256-CBC content encryption.
+    const CmsPtr cms(CMS_encrypt(
+        nullptr, input.get(), EVP_aes_256_cbc(), CMS_BINARY | CMS_PARTIAL | CMS_STREAM));
+    if (cms == nullptr) {
+        throw std::runtime_error("CMS_encrypt failed");
+    }
+    unsigned char* const passCopy
+        = static_cast<unsigned char*>(OPENSSL_memdup(password.data(), password.size()));
+    if (passCopy == nullptr) {
+        throw std::runtime_error("OPENSSL_memdup failed");
+    }
+    if (CMS_add0_recipient_password(cms.get(), -1, NID_undef, NID_undef, passCopy,
+            static_cast<int>(password.size()), nullptr)
+        == nullptr) {
+        OPENSSL_free(passCopy);
+        throw std::runtime_error("CMS_add0_recipient_password failed");
+    }
+    // Streams the plaintext from `input`, writing indefinite-length BER ciphertext
+    // to `output` (replaces the in-memory path's CMS_final + i2d_CMS_bio).
+    if (i2d_CMS_bio_stream(output.get(), cms.get(), input.get(), CMS_BINARY | CMS_STREAM) != 1) {
+        throw std::runtime_error("i2d_CMS_bio_stream failed");
+    }
+}
+
 Bytes unsealWithPassword(const Bytes& der, const std::string& password)
 {
     if (password.empty()) {

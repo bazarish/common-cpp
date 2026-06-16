@@ -65,6 +65,15 @@ Bytes unseal(const Bytes& der, const Key& recipientPrivateKey);
 Bytes sealWithPassword(const Bytes& plaintext, const std::string& password);
 Bytes unsealWithPassword(const Bytes& der, const std::string& password);
 
+// Streaming variant of sealWithPassword for large blobs: reads the plaintext
+// from inPath and writes the PWRI envelope to outPath without holding either
+// whole in memory (CMS_STREAM emits indefinite-length BER and pulls the content
+// lazily during serialization). The output is a valid CMS envelope and decrypts
+// with unsealWithPassword / unsealWithPasswordToFile. Throws on a read/write or
+// encryption error.
+void sealWithPasswordToFile(const std::filesystem::path& inPath,
+    const std::filesystem::path& outPath, const std::string& password);
+
 // Streaming variant of unsealWithPassword for large blobs: reads the DER
 // envelope from derPath and writes the recovered plaintext to outPath, so the
 // cleartext is never held whole in memory. OpenSSL still materializes the
