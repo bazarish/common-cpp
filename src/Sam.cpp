@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "bazarish/Sam.hpp"
 
+#include "bazarish/I2pAddress.hpp"
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -316,6 +318,7 @@ SamSession::SamSession(const std::string& host, const std::uint16_t port,
     : host_(host)
     , port_(port)
     , sessionId_(sessionId)
+    , leaseSetType_(leaseSetType)
     , controlFd_(-1)
 {
     controlFd_ = openSamSocket(host, port);
@@ -358,6 +361,17 @@ SamSession::~SamSession()
 
 const std::string& SamSession::publicDestination() const
 {
+    return publicDestination_;
+}
+
+std::string SamSession::routingAddress() const
+{
+    // An encrypted LeaseSet2 publishes only the blinded leaseset, reachable
+    // via the b33 host; the raw destination is not connectable. A standard
+    // LeaseSet2 publishes a plain leaseset, so the raw destination connects.
+    if (leaseSetType_ == kEncryptedLeaseSetType) {
+        return encryptedLeaseSetHost(publicDestination_);
+    }
     return publicDestination_;
 }
 

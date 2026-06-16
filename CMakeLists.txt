@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(OpenSSL 3.0 REQUIRED)
+find_package(ZLIB REQUIRED)
 
 add_library(bazarish_common STATIC
     src/Auth.cpp
@@ -17,6 +18,7 @@ add_library(bazarish_common STATIC
     src/Tokens.cpp
     src/Errors.cpp
     src/Address.cpp
+    src/I2pAddress.cpp
     src/Sam.cpp
 )
 add_library(Bazarish::Common ALIAS bazarish_common)
@@ -27,7 +29,7 @@ target_include_directories(bazarish_common
 target_include_directories(bazarish_common SYSTEM
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
-target_link_libraries(bazarish_common PUBLIC OpenSSL::Crypto)
+target_link_libraries(bazarish_common PUBLIC OpenSSL::Crypto ZLIB::ZLIB)
 target_compile_options(bazarish_common PRIVATE -Wall -Wextra -Werror)
 
 enable_testing()
@@ -47,4 +49,5 @@ bazarish_add_test(TestCertificates)
 bazarish_add_test(TestTokens)
 bazarish_add_test(TestErrors)
 bazarish_add_test(TestAddress)
+bazarish_add_test(TestI2pAddress)
 bazarish_add_test(TestSam)

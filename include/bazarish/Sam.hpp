@@ -129,6 +129,12 @@ public:
 
     // Our own base64 destination (shareable; goes into the server card).
     const std::string& publicDestination() const;
+    // The address peers route to and connect to. For an encrypted LeaseSet2
+    // (the default, b33 invariant) this is the blinded "<b33>.b32.i2p" host —
+    // the raw destination is NOT connectable, only the b33 is. For a standard
+    // LeaseSet2 (e.g. an offline-key per-user destination, where b33 does not
+    // work) it is the raw base64 destination, which is directly connectable.
+    std::string routingAddress() const;
     // The private destination blob — persist it to keep a stable address.
     const std::string& privateDestination() const;
     const std::string& sessionId() const;
@@ -145,6 +151,7 @@ private:
     std::string sessionId_;
     std::string publicDestination_;
     std::string privateDestination_;
+    int leaseSetType_;
     int controlFd_;
 };
 
