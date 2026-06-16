@@ -14,6 +14,15 @@ namespace bazarish {
 // "b33". 5 = NETDB_STORE_TYPE_ENCRYPTED_LEASESET2.
 inline constexpr int kEncryptedLeaseSetType = 5;
 
+// Standard (non-encrypted) LeaseSet2. The b33 invariant is relaxed for exactly
+// one case: a paid per-user destination operated from a client-owned OFFLINE
+// key. i2pd cannot publish an encrypted LeaseSet2 for an offline-signature
+// destination (the blinding needs the master signing private key, which offline
+// delegation deliberately withholds from the server), so such a destination is
+// published as a standard LeaseSet2 reachable by its plain b32.
+// 3 = NETDB_STORE_TYPE_STANDARD_LEASESET2.
+inline constexpr int kStandardLeaseSetType = 3;
+
 // I2P tunnel privacy profile (applied to every Bazarish session via SESSION
 // CREATE). Higher = more hops / variance = more anonymity, more latency.
 //   kMinimal: 1-hop in/out tunnels
