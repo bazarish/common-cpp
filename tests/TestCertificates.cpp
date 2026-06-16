@@ -45,6 +45,25 @@ int main()
     const SubscriptionCertificate withPrekey = SubscriptionCertificate::verify(prekeyDer);
     CHECK(withPrekey.sealingPublicKeyDer == sealing.publicDer());
     CHECK(withPrekey.sealingKey().publicDer() == sealing.publicDer());
+    // The destination-routed fields default empty when not published.
+    CHECK(withPrekey.dest.empty());
+    CHECK(withPrekey.servingSealingKeyDer.empty());
+    CHECK_THROWS(withPrekey.servingSealingKey());
+
+    // Destination-routed subscription certificate (see api/InviteAnonymity.md):
+    // the user vouches for its serving destination and serving sealing key under
+    // the same single signature; both survive the round trip and are usable.
+    const Key servingSealing = Key::generateSealing();
+    const std::string dest = "exampledestination.b32.i2p";
+    const Bytes routedDer = SubscriptionCertificate::issue(user, serverRoot.fingerprint(), kNow,
+        kNow + kThreeDays, sealing.publicDer(), dest, servingSealing.publicDer());
+    const SubscriptionCertificate routed = SubscriptionCertificate::verify(routedDer);
+    CHECK(routed.dest == dest);
+    CHECK(routed.servingSealingKeyDer == servingSealing.publicDer());
+    CHECK(routed.servingSealingKey().publicDer() == servingSealing.publicDer());
+    // The prekey and the serving key are independent keys.
+    CHECK(routed.sealingKey().publicDer() == sealing.publicDer());
+    CHECK(routed.servingSealingKey().fingerprint() != routed.sealingKey().fingerprint());
 
     // Alias certificate round trip, with and without expiry.
     const Bytes aliasDer = AliasCertificate::issue(user, "alice", kNow, std::nullopt);

@@ -35,7 +35,8 @@ namespace bazarish {
 
 Bytes SubscriptionCertificate::issue(const Identity& userIdentity,
     const std::string& serverFingerprint, const std::int64_t issuedAt,
-    const std::int64_t notAfter, const Bytes& sealingPublicKeyDer)
+    const std::int64_t notAfter, const Bytes& sealingPublicKeyDer, const std::string& dest,
+    const Bytes& servingSealingKeyDer)
 {
     nlohmann::json body = {
         {"v", kCertificateFormatVersion},
@@ -46,6 +47,12 @@ Bytes SubscriptionCertificate::issue(const Identity& userIdentity,
     };
     if (!sealingPublicKeyDer.empty()) {
         body["sealingKey"] = toBase64(sealingPublicKeyDer);
+    }
+    if (!dest.empty()) {
+        body["dest"] = dest;
+    }
+    if (!servingSealingKeyDer.empty()) {
+        body["servingKey"] = toBase64(servingSealingKeyDer);
     }
     return cms::signJsonHybrid(body, userIdentity);
 }
@@ -63,6 +70,13 @@ SubscriptionCertificate SubscriptionCertificate::verify(const Bytes& der)
         cert.sealingPublicKeyDer
             = fromBase64(verified.body.at("sealingKey").get<std::string>());
     }
+    if (verified.body.contains("dest")) {
+        cert.dest = verified.body.at("dest").get<std::string>();
+    }
+    if (verified.body.contains("servingKey")) {
+        cert.servingSealingKeyDer
+            = fromBase64(verified.body.at("servingKey").get<std::string>());
+    }
     requireSigner(verified, cert.user);
     return cert;
 }
@@ -73,6 +87,14 @@ Key SubscriptionCertificate::sealingKey() const
         throw std::runtime_error("subscription certificate carries no sealing prekey");
     }
     return Key::fromPublicDer(sealingPublicKeyDer);
+}
+
+Key SubscriptionCertificate::servingSealingKey() const
+{
+    if (servingSealingKeyDer.empty()) {
+        throw std::runtime_error("subscription certificate carries no serving sealing key");
+    }
+    return Key::fromPublicDer(servingSealingKeyDer);
 }
 
 bool SubscriptionCertificate::isExpired(const std::int64_t now) const

@@ -30,14 +30,28 @@ struct SubscriptionCertificate {
     // signed by the user, that contacts use to E2E-encrypt the first
     // message before any token exchange. Empty when not published.
     Bytes sealingPublicKeyDer;
+    // Destination-routed contact fields (see api/InviteAnonymity.md). The user
+    // vouches for both under the same single signature; neither is a trust
+    // anchor (a wrong value only makes delivery fail). Empty when not published.
+    //   dest                  — the I2P destination a contact delivers to (dest_U)
+    //   servingSealingKeyDer  — SubjectPublicKeyInfo DER of the serving sealing
+    //                           key (sealingKey_U): the public key the delivery
+    //                           envelope's admission header (mailbox + token) is
+    //                           sealed to, whose private half the user's server
+    //                           holds. NOT a signature.
+    std::string dest;
+    Bytes servingSealingKeyDer;
 
     static Bytes issue(const Identity& userIdentity, const std::string& serverFingerprint,
-        std::int64_t issuedAt, std::int64_t notAfter, const Bytes& sealingPublicKeyDer = {});
+        std::int64_t issuedAt, std::int64_t notAfter, const Bytes& sealingPublicKeyDer = {},
+        const std::string& dest = {}, const Bytes& servingSealingKeyDer = {});
     // Verifies the CMS signature and that the signer is body.user.
     static SubscriptionCertificate verify(const Bytes& der);
 
     // The sealing prekey as a usable Key. Throws when none was published.
     Key sealingKey() const;
+    // The serving sealing key as a usable Key. Throws when none was published.
+    Key servingSealingKey() const;
 
     bool isExpired(std::int64_t now) const;
 };
