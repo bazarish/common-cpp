@@ -6,6 +6,10 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include <array>
+#include <filesystem>
+#include <fstream>
+#include <memory>
 #include <stdexcept>
 
 namespace {
@@ -213,6 +217,37 @@ Bytes sha256(const Bytes& data)
     if (EVP_Digest(data.data(), data.size(), digest.data(), &size, EVP_sha256(), nullptr) != 1
         || size != kFingerprintBytes) {
         throw std::runtime_error("EVP_Digest failed");
+    }
+    return digest;
+}
+
+Bytes sha256File(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("cannot open file for hashing: " + path.string());
+    }
+    const std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
+        EVP_MD_CTX_new(), &EVP_MD_CTX_free);
+    if (ctx == nullptr || EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1) {
+        throw std::runtime_error("EVP_DigestInit_ex failed");
+    }
+    std::array<char, 64 * 1024> buffer;
+    while (input) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize got = input.gcount();
+        if (got > 0
+            && EVP_DigestUpdate(ctx.get(), buffer.data(), static_cast<std::size_t>(got)) != 1) {
+            throw std::runtime_error("EVP_DigestUpdate failed");
+        }
+    }
+    if (input.bad()) {
+        throw std::runtime_error("read error while hashing: " + path.string());
+    }
+    Bytes digest(kFingerprintBytes);
+    unsigned int size = 0;
+    if (EVP_DigestFinal_ex(ctx.get(), digest.data(), &size) != 1 || size != kFingerprintBytes) {
+        throw std::runtime_error("EVP_DigestFinal_ex failed");
     }
     return digest;
 }

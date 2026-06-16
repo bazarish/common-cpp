@@ -3,6 +3,7 @@
 
 #include "bazarish/Bytes.hpp"
 
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -69,6 +70,11 @@ Bytes sign(const Key& key, const Bytes& data);
 bool verify(const Key& key, const Bytes& data, const Bytes& signature);
 
 Bytes sha256(const Bytes& data);
+
+// Streaming SHA-256 of a file's contents, read in bounded chunks so a
+// multi-gigabyte file is never held whole in memory. Throws if the file cannot
+// be read.
+Bytes sha256File(const std::filesystem::path& path);
 
 // A hybrid post-quantum signing identity: ECDSA P-256 plus ML-DSA-65.
 // Every identity-level statement carries both signatures and is valid only

@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <filesystem>
 #include <string>
 
 namespace bazarish::cms {
@@ -63,5 +64,14 @@ Bytes unseal(const Bytes& der, const Key& recipientPrivateKey);
 // only.
 Bytes sealWithPassword(const Bytes& plaintext, const std::string& password);
 Bytes unsealWithPassword(const Bytes& der, const std::string& password);
+
+// Streaming variant of unsealWithPassword for large blobs: reads the DER
+// envelope from derPath and writes the recovered plaintext to outPath, so the
+// cleartext is never held whole in memory. OpenSSL still materializes the
+// encrypted content once while parsing the envelope (inherent to the high-level
+// CMS decrypt API). Throws on a read/write error or a decryption failure (e.g. a
+// wrong password).
+void unsealWithPasswordToFile(const std::filesystem::path& derPath,
+    const std::filesystem::path& outPath, const std::string& password);
 
 }  // namespace bazarish::cms

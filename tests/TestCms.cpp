@@ -4,6 +4,9 @@
 #include "TestUtil.hpp"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 
@@ -95,6 +98,36 @@ int main()
     CHECK(cms::unsealWithPassword(passEnvelope, password) == secret);
     CHECK_THROWS(cms::unsealWithPassword(passEnvelope, "guess"));
     CHECK_THROWS(cms::sealWithPassword(secret, ""));
+
+    // Streaming password unseal (the large-blob recipient path): write the
+    // envelope to a file, decrypt it file-to-file and check the plaintext round
+    // trips over many cipher blocks; a wrong password fails. A larger payload
+    // exercises the streamed decrypt rather than a single-block one.
+    {
+        Bytes bigSecret;
+        for (int i = 0; i < 100000; ++i) {
+            bigSecret.push_back(static_cast<unsigned char>(i));
+        }
+        const Bytes bigEnvelope = cms::sealWithPassword(bigSecret, password);
+        const std::filesystem::path derPath
+            = std::filesystem::temp_directory_path() / "bz-test-pwri.der";
+        const std::filesystem::path outPath
+            = std::filesystem::temp_directory_path() / "bz-test-pwri.out";
+        {
+            std::ofstream out(derPath, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(bigEnvelope.data()),
+                static_cast<std::streamsize>(bigEnvelope.size()));
+        }
+        cms::unsealWithPasswordToFile(derPath, outPath, password);
+        std::ifstream in(outPath, std::ios::binary);
+        const Bytes recovered(
+            (std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        CHECK(recovered == bigSecret);
+        CHECK_THROWS(cms::unsealWithPasswordToFile(derPath, outPath, "guess"));
+        CHECK_THROWS(cms::unsealWithPasswordToFile(derPath, outPath, ""));
+        std::filesystem::remove(derPath);
+        std::filesystem::remove(outPath);
+    }
 
     return 0;
 }

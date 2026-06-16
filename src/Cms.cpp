@@ -9,6 +9,7 @@
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 
+#include <filesystem>
 #include <stdexcept>
 
 namespace {
@@ -111,6 +112,46 @@ X509Ptr makeCarrierCert(const Key& subjectKey, const Key& signerKey)
         throw std::runtime_error("carrier certificate creation failed");
     }
     return cert;
+}
+
+BioPtr makeReadFileBio(const std::filesystem::path& path)
+{
+    BioPtr bio(BIO_new_file(path.string().c_str(), "rb"));
+    if (bio == nullptr) {
+        throw std::runtime_error("BIO_new_file (read) failed: " + path.string());
+    }
+    return bio;
+}
+
+BioPtr makeWriteFileBio(const std::filesystem::path& path)
+{
+    BioPtr bio(BIO_new_file(path.string().c_str(), "wb"));
+    if (bio == nullptr) {
+        throw std::runtime_error("BIO_new_file (write) failed: " + path.string());
+    }
+    return bio;
+}
+
+// Password-based CMS decrypt from input to output BIO; shared by the in-memory
+// and the streamed-to-file variants. The recipient key arguments are null: the
+// password set here is the key source. A wrong password surfaces as a decrypt
+// failure. CMS_decrypt streams the recovered content to the output BIO, so with
+// a file output BIO the cleartext is never buffered whole in memory.
+void unsealWithPasswordBio(BIO* const input, BIO* const output, const std::string& password)
+{
+    const CmsPtr cms(d2i_CMS_bio(input, nullptr));
+    if (cms == nullptr) {
+        throw std::runtime_error("d2i_CMS_bio failed");
+    }
+    if (CMS_decrypt_set1_password(cms.get(),
+            reinterpret_cast<unsigned char*>(const_cast<char*>(password.data())),
+            static_cast<int>(password.size()))
+        != 1) {
+        throw std::runtime_error("CMS_decrypt_set1_password failed");
+    }
+    if (CMS_decrypt(cms.get(), nullptr, nullptr, nullptr, output, CMS_BINARY) != 1) {
+        throw std::runtime_error("CMS_decrypt failed (wrong password?)");
+    }
 }
 
 }  // namespace
@@ -326,24 +367,23 @@ Bytes unsealWithPassword(const Bytes& der, const std::string& password)
         throw std::invalid_argument("password must not be empty");
     }
     const BioPtr input = makeInputBio(der);
-    const CmsPtr cms(d2i_CMS_bio(input.get(), nullptr));
-    if (cms == nullptr) {
-        throw std::runtime_error("d2i_CMS_bio failed");
-    }
-    if (CMS_decrypt_set1_password(cms.get(),
-            reinterpret_cast<unsigned char*>(const_cast<char*>(password.data())),
-            static_cast<int>(password.size()))
-        != 1) {
-        throw std::runtime_error("CMS_decrypt_set1_password failed");
-    }
-
     const BioPtr output = makeMemoryBio();
-    // The recipient key arguments are null: the password set above is the key
-    // source. A wrong password surfaces here as a decrypt failure.
-    if (CMS_decrypt(cms.get(), nullptr, nullptr, nullptr, output.get(), CMS_BINARY) != 1) {
-        throw std::runtime_error("CMS_decrypt failed (wrong password?)");
-    }
+    unsealWithPasswordBio(input.get(), output.get(), password);
     return bioToBytes(output.get());
+}
+
+void unsealWithPasswordToFile(const std::filesystem::path& derPath,
+    const std::filesystem::path& outPath, const std::string& password)
+{
+    if (password.empty()) {
+        throw std::invalid_argument("password must not be empty");
+    }
+    const BioPtr input = makeReadFileBio(derPath);
+    const BioPtr output = makeWriteFileBio(outPath);
+    unsealWithPasswordBio(input.get(), output.get(), password);
+    if (BIO_flush(output.get()) != 1) {
+        throw std::runtime_error("BIO_flush failed");
+    }
 }
 
 }  // namespace bazarish::cms
