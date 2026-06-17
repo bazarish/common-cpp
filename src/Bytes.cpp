@@ -153,6 +153,38 @@ Bytes fromBase64(const std::string& text)
     return out;
 }
 
+std::string toBase64Url(const Bytes& data)
+{
+    std::string text = toBase64(data);
+    for (char& c : text) {
+        if (c == '+') {
+            c = '-';
+        } else if (c == '/') {
+            c = '_';
+        }
+    }
+    while (!text.empty() && text.back() == '=') {
+        text.pop_back();
+    }
+    return text;
+}
+
+Bytes fromBase64Url(const std::string& text)
+{
+    std::string standard = text;
+    for (char& c : standard) {
+        if (c == '-') {
+            c = '+';
+        } else if (c == '_') {
+            c = '/';
+        }
+    }
+    while (standard.size() % 4 != 0) {
+        standard.push_back('=');
+    }
+    return fromBase64(standard);
+}
+
 Bytes randomBytes(const std::size_t count)
 {
     Bytes out(count);

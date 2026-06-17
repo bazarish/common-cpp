@@ -91,4 +91,29 @@ struct ServerCard {
     Key sealingKey() const;
 };
 
+// Delegation certificate: signed by a root identity, authorizes a short-lived
+// delegated identity to sign on its behalf until notAfter. The central alias
+// resolver signs its resolve records with a delegated key and ships this cert;
+// clients verify the chain record -> delegated -> root against a hardcoded root
+// fingerprint (api/AliasResolver.md, api/FederatedResolve.md). The root key stays
+// offline; only the delegated key lives on the production box, so a prod
+// compromise is bounded to the delegation window.
+struct DelegationCertificate {
+    int v = kCertificateFormatVersion;
+    std::string root;                   // the signing root identity's fingerprint
+    Bytes delegatedClassicalPublicDer;  // the delegated identity's classical SPKI
+    Bytes delegatedPqPublicDer;         // the delegated identity's ML-DSA SPKI
+    std::int64_t issuedAt = 0;
+    std::int64_t notAfter = 0;
+
+    static Bytes issue(const Identity& rootIdentity, const Identity& delegatedIdentity,
+        std::int64_t issuedAt, std::int64_t notAfter);
+    // Verifies the CMS signature and that the signer is body.root.
+    static DelegationCertificate verify(const Bytes& der);
+
+    // The fingerprint of the delegated identity (covers both delegated keys); a
+    // record signed by the delegated identity must verify to this.
+    std::string delegatedFingerprint() const;
+};
+
 }  // namespace bazarish

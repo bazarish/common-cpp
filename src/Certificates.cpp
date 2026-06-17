@@ -164,4 +164,38 @@ Key ServerCard::sealingKey() const
     return Key::fromPublicDer(sealingPublicKeyDer);
 }
 
+Bytes DelegationCertificate::issue(const Identity& rootIdentity,
+    const Identity& delegatedIdentity, const std::int64_t issuedAt, const std::int64_t notAfter)
+{
+    const nlohmann::json body = {
+        {"v", kCertificateFormatVersion},
+        {"root", rootIdentity.fingerprint()},
+        {"delegatedClassical", toBase64(delegatedIdentity.classical().publicDer())},
+        {"delegatedPq", toBase64(delegatedIdentity.pq().publicDer())},
+        {"issuedAt", issuedAt},
+        {"notAfter", notAfter},
+    };
+    return cms::signJsonHybrid(body, rootIdentity);
+}
+
+DelegationCertificate DelegationCertificate::verify(const Bytes& der)
+{
+    const VerifiedHybridJson verified = verifyVersioned(der);
+    DelegationCertificate cert;
+    cert.v = verified.body.at("v").get<int>();
+    cert.root = verified.body.at("root").get<std::string>();
+    cert.delegatedClassicalPublicDer
+        = fromBase64(verified.body.at("delegatedClassical").get<std::string>());
+    cert.delegatedPqPublicDer = fromBase64(verified.body.at("delegatedPq").get<std::string>());
+    cert.issuedAt = verified.body.at("issuedAt").get<std::int64_t>();
+    cert.notAfter = verified.body.at("notAfter").get<std::int64_t>();
+    requireSigner(verified, cert.root);
+    return cert;
+}
+
+std::string DelegationCertificate::delegatedFingerprint() const
+{
+    return hybridFingerprint(delegatedClassicalPublicDer, delegatedPqPublicDer);
+}
+
 }  // namespace bazarish
