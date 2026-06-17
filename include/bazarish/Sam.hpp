@@ -29,9 +29,9 @@ inline constexpr int kStandardLeaseSetType = 3;
 //   kMiddle:  1-hop in/out + length variance 1
 //   kMax:     2-hop in/out + length variance 1
 enum class I2pPrivacy {
-    kMinimal,
-    kMiddle,
-    kMax,
+    eMinimal,
+    eMiddle,
+    eMax,
 };
 
 // The space-separated SAM SESSION CREATE tunnel options for a profile.
@@ -121,7 +121,7 @@ public:
     // type only for interop tests. privacy selects the tunnel length/variance.
     SamSession(const std::string& host, std::uint16_t port, const std::string& sessionId,
         const std::string& privateKeys = "TRANSIENT", int leaseSetType = kEncryptedLeaseSetType,
-        I2pPrivacy privacy = I2pPrivacy::kMax);
+        I2pPrivacy privacy = I2pPrivacy::eMax);
     ~SamSession();
 
     SamSession(const SamSession&) = delete;

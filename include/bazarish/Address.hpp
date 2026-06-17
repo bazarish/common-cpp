@@ -17,11 +17,11 @@ inline constexpr std::size_t kAliasMinLength = 1;
 //   <alias>                             — main-server alias (server empty)
 struct Address {
     enum class Kind {
-        kFingerprint,
-        kAlias,
+        eFingerprint,
+        eAlias,
     };
 
-    Kind kind = Kind::kAlias;
+    Kind kind = Kind::eAlias;
     // Fingerprint or alias, depending on kind.
     std::string local;
     // Server fingerprint; empty means the main server is implied.

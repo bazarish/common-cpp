@@ -26,14 +26,14 @@ int main()
     CHECK(another.pub != destination.pub);
 
     // Privacy profiles map to the documented SESSION CREATE tunnel options.
-    CHECK(i2pPrivacyOptions(I2pPrivacy::kMinimal) == "inbound.length=1 outbound.length=1");
-    CHECK(i2pPrivacyOptions(I2pPrivacy::kMiddle)
+    CHECK(i2pPrivacyOptions(I2pPrivacy::eMinimal) == "inbound.length=1 outbound.length=1");
+    CHECK(i2pPrivacyOptions(I2pPrivacy::eMiddle)
         == "inbound.length=1 outbound.length=1 inbound.lengthVariance=1 outbound.lengthVariance=1");
-    CHECK(i2pPrivacyOptions(I2pPrivacy::kMax)
+    CHECK(i2pPrivacyOptions(I2pPrivacy::eMax)
         == "inbound.length=2 outbound.length=2 inbound.lengthVariance=1 outbound.lengthVariance=1");
-    CHECK(i2pPrivacyFromString("minimal") == I2pPrivacy::kMinimal);
-    CHECK(i2pPrivacyFromString("middle") == I2pPrivacy::kMiddle);
-    CHECK(i2pPrivacyFromString("max") == I2pPrivacy::kMax);
+    CHECK(i2pPrivacyFromString("minimal") == I2pPrivacy::eMinimal);
+    CHECK(i2pPrivacyFromString("middle") == I2pPrivacy::eMiddle);
+    CHECK(i2pPrivacyFromString("max") == I2pPrivacy::eMax);
     CHECK(!i2pPrivacyFromString("bogus").has_value());
 
     return 0;

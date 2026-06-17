@@ -286,12 +286,12 @@ std::string SamClient::readLine()
 std::string i2pPrivacyOptions(const I2pPrivacy privacy)
 {
     switch (privacy) {
-    case I2pPrivacy::kMinimal:
+    case I2pPrivacy::eMinimal:
         return "inbound.length=1 outbound.length=1";
-    case I2pPrivacy::kMiddle:
+    case I2pPrivacy::eMiddle:
         return "inbound.length=1 outbound.length=1 "
                "inbound.lengthVariance=1 outbound.lengthVariance=1";
-    case I2pPrivacy::kMax:
+    case I2pPrivacy::eMax:
         return "inbound.length=2 outbound.length=2 "
                "inbound.lengthVariance=1 outbound.lengthVariance=1";
     }
@@ -301,13 +301,13 @@ std::string i2pPrivacyOptions(const I2pPrivacy privacy)
 std::optional<I2pPrivacy> i2pPrivacyFromString(const std::string& text)
 {
     if (text == "minimal") {
-        return I2pPrivacy::kMinimal;
+        return I2pPrivacy::eMinimal;
     }
     if (text == "middle") {
-        return I2pPrivacy::kMiddle;
+        return I2pPrivacy::eMiddle;
     }
     if (text == "max") {
-        return I2pPrivacy::kMax;
+        return I2pPrivacy::eMax;
     }
     return std::nullopt;
 }

@@ -12,19 +12,19 @@ namespace bazarish {
 // Typed error codes. Codes are append-only and never reused; the wire form
 // is the SCREAMING_SNAKE_CASE string, not the enum value.
 enum class ErrorCode {
-    kQuotaExceeded,
-    kStorageFull,
-    kSubscriptionExpired,
-    kSubscriptionTermTooLong,
-    kRecipientServerUnreachable,
-    kDeliveryTimeout,
-    kAttemptUnknown,
-    kDeliveryRejected,
-    kContactRequestTooLarge,
-    kAliasTaken,
-    kAliasUnknown,
-    kClientUnregistered,
-    kSamUnavailable,
+    eQuotaExceeded,
+    eStorageFull,
+    eSubscriptionExpired,
+    eSubscriptionTermTooLong,
+    eRecipientServerUnreachable,
+    eDeliveryTimeout,
+    eAttemptUnknown,
+    eDeliveryRejected,
+    eContactRequestTooLarge,
+    eAliasTaken,
+    eAliasUnknown,
+    eClientUnregistered,
+    eSamUnavailable,
 };
 
 std::string_view toString(ErrorCode code);

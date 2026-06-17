@@ -8,19 +8,19 @@
 namespace {
 
 constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErrorNames = {{
-    {bazarish::ErrorCode::kQuotaExceeded, "QUOTA_EXCEEDED"},
-    {bazarish::ErrorCode::kStorageFull, "STORAGE_FULL"},
-    {bazarish::ErrorCode::kSubscriptionExpired, "SUBSCRIPTION_EXPIRED"},
-    {bazarish::ErrorCode::kSubscriptionTermTooLong, "SUBSCRIPTION_TERM_TOO_LONG"},
-    {bazarish::ErrorCode::kRecipientServerUnreachable, "RECIPIENT_SERVER_UNREACHABLE"},
-    {bazarish::ErrorCode::kDeliveryTimeout, "DELIVERY_TIMEOUT"},
-    {bazarish::ErrorCode::kAttemptUnknown, "ATTEMPT_UNKNOWN"},
-    {bazarish::ErrorCode::kDeliveryRejected, "DELIVERY_REJECTED"},
-    {bazarish::ErrorCode::kContactRequestTooLarge, "CONTACT_REQUEST_TOO_LARGE"},
-    {bazarish::ErrorCode::kAliasTaken, "ALIAS_TAKEN"},
-    {bazarish::ErrorCode::kAliasUnknown, "ALIAS_UNKNOWN"},
-    {bazarish::ErrorCode::kClientUnregistered, "CLIENT_UNREGISTERED"},
-    {bazarish::ErrorCode::kSamUnavailable, "SAM_UNAVAILABLE"},
+    {bazarish::ErrorCode::eQuotaExceeded, "QUOTA_EXCEEDED"},
+    {bazarish::ErrorCode::eStorageFull, "STORAGE_FULL"},
+    {bazarish::ErrorCode::eSubscriptionExpired, "SUBSCRIPTION_EXPIRED"},
+    {bazarish::ErrorCode::eSubscriptionTermTooLong, "SUBSCRIPTION_TERM_TOO_LONG"},
+    {bazarish::ErrorCode::eRecipientServerUnreachable, "RECIPIENT_SERVER_UNREACHABLE"},
+    {bazarish::ErrorCode::eDeliveryTimeout, "DELIVERY_TIMEOUT"},
+    {bazarish::ErrorCode::eAttemptUnknown, "ATTEMPT_UNKNOWN"},
+    {bazarish::ErrorCode::eDeliveryRejected, "DELIVERY_REJECTED"},
+    {bazarish::ErrorCode::eContactRequestTooLarge, "CONTACT_REQUEST_TOO_LARGE"},
+    {bazarish::ErrorCode::eAliasTaken, "ALIAS_TAKEN"},
+    {bazarish::ErrorCode::eAliasUnknown, "ALIAS_UNKNOWN"},
+    {bazarish::ErrorCode::eClientUnregistered, "CLIENT_UNREGISTERED"},
+    {bazarish::ErrorCode::eSamUnavailable, "SAM_UNAVAILABLE"},
 }};
 
 }  // namespace

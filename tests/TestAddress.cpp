@@ -28,7 +28,7 @@ int main()
     // Fully qualified fingerprint address.
     const std::optional<Address> full = parseAddress(fingerprint + "@" + serverFingerprint);
     CHECK(full.has_value());
-    CHECK(full->kind == Address::Kind::kFingerprint);
+    CHECK(full->kind == Address::Kind::eFingerprint);
     CHECK(full->local == fingerprint);
     CHECK(full->server == serverFingerprint);
     CHECK(formatAddress(full.value()) == fingerprint + "@" + serverFingerprint);
@@ -36,13 +36,13 @@ int main()
     // Alias at a specific server.
     const std::optional<Address> aliasAt = parseAddress("alice@" + serverFingerprint);
     CHECK(aliasAt.has_value());
-    CHECK(aliasAt->kind == Address::Kind::kAlias);
+    CHECK(aliasAt->kind == Address::Kind::eAlias);
     CHECK(aliasAt->server == serverFingerprint);
 
     // Main-server alias: no @server part.
     const std::optional<Address> mainAlias = parseAddress("alice");
     CHECK(mainAlias.has_value());
-    CHECK(mainAlias->kind == Address::Kind::kAlias);
+    CHECK(mainAlias->kind == Address::Kind::eAlias);
     CHECK(mainAlias->server.empty());
     CHECK(formatAddress(mainAlias.value()) == "alice");
 

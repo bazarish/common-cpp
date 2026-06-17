@@ -76,11 +76,11 @@ std::optional<Address> parseAddress(const std::string& text)
         if (server.empty()) {
             return std::nullopt;
         }
-        address.kind = Address::Kind::kFingerprint;
+        address.kind = Address::Kind::eFingerprint;
         return address;
     }
     if (isAlias(local)) {
-        address.kind = Address::Kind::kAlias;
+        address.kind = Address::Kind::eAlias;
         return address;
     }
     return std::nullopt;
