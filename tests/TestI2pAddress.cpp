@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "bazarish/I2pAddress.hpp"
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -42,6 +43,48 @@ int main()
         threw = true;
     }
     CHECK(threw);
+
+    // Standard LeaseSet2 (offline-key) address: base32(sha256(destination)).
+    // Golden vector computed independently (python base64 + sha256 + base32).
+    const std::string expectedB32 = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+    CHECK(standardLeaseSetHost(destination) == expectedB32);
+
+    threw = false;
+    try {
+        (void)standardLeaseSetHost("AAAA");
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+
+    // .b32.i2p validation: both produced forms (b33 + standard b32) are valid;
+    // raw destinations, addressbook names and malformed labels are not.
+    CHECK(isB32I2pHost(expectedB33));   // 56-char blinded b33
+    CHECK(isB32I2pHost(expectedB32));   // 52-char standard b32
+    CHECK(!isB32I2pHost(destination));  // raw base64 destination
+    CHECK(!isB32I2pHost("stats.i2p"));  // short addressbook name (not .b32.i2p)
+    CHECK(isB32I2pHost("abc.b32.i2p"));  // length not constrained (b32 vs b33 differ)
+    CHECK(!isB32I2pHost(std::string(52, '1') + ".b32.i2p"));  // non-base32 chars
+    CHECK(!isB32I2pHost(".b32.i2p"));   // empty label
+    CHECK(!isB32I2pHost(""));
+
+    // An uppercased label (I2P b32 is lowercase) is rejected.
+    std::string upper = expectedB32;
+    for (std::size_t i = 0; i + 8 < upper.size(); ++i) {
+        if (upper[i] >= 'a' && upper[i] <= 'z') {
+            upper[i] = static_cast<char>(upper[i] - 'a' + 'A');
+        }
+    }
+    CHECK(!isB32I2pHost(upper));
+
+    threw = false;
+    try {
+        validateB32I2pHost("stats.i2p");
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+    validateB32I2pHost(expectedB32);  // does not throw
 
     std::printf("TestI2pAddress: all checks passed\n");
     return 0;

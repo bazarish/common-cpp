@@ -2,6 +2,7 @@
 #include "bazarish/I2pAddress.hpp"
 
 #include "bazarish/Bytes.hpp"
+#include "bazarish/Crypto.hpp"
 
 #include <zlib.h>
 
@@ -34,6 +35,9 @@ constexpr std::size_t kEd25519KeyLen = 32;
 constexpr std::uint8_t kCertTypeKey = 5;
 constexpr std::uint8_t kSigTypeEd25519 = 7;
 constexpr std::uint8_t kBlindedSigTypeEd25519 = 11;  // RedDSA-SHA512-Ed25519
+
+constexpr char kB32Suffix[] = ".b32.i2p";
+constexpr std::size_t kB32SuffixLen = sizeof(kB32Suffix) - 1;
 
 }  // namespace
 
@@ -76,6 +80,47 @@ std::string encryptedLeaseSetHost(const std::string& samBase64Destination)
     addr[2] ^= static_cast<std::uint8_t>(checksum >> 16);
 
     return toBase32(Bytes(addr.begin(), addr.end())) + ".b32.i2p";
+}
+
+std::string standardLeaseSetHost(const std::string& samBase64Destination)
+{
+    const Bytes destination = fromBase64(i2pToStandardBase64(samBase64Destination));
+
+    // The destination must at least hold the two key fields; the standard b32
+    // is the base32 of the SHA-256 over the whole destination (key fields plus
+    // certificate), regardless of signature type.
+    if (destination.size() < kCertOffset) {
+        throw std::runtime_error("i2p destination too short");
+    }
+    return toBase32(sha256(destination)) + ".b32.i2p";
+}
+
+bool isB32I2pHost(const std::string& host)
+{
+    if (host.size() <= kB32SuffixLen) {
+        return false;
+    }
+    if (host.compare(host.size() - kB32SuffixLen, kB32SuffixLen, kB32Suffix) != 0) {
+        return false;
+    }
+    // Length is not constrained: a standard b32 (52) and a blinded b33 (56, and
+    // other sizes for other signature types) legitimately differ in length.
+    const std::size_t labelLen = host.size() - kB32SuffixLen;
+    for (std::size_t i = 0; i < labelLen; ++i) {
+        const char c = host[i];
+        const bool isBase32Char = (c >= 'a' && c <= 'z') || (c >= '2' && c <= '7');
+        if (!isBase32Char) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void validateB32I2pHost(const std::string& host)
+{
+    if (!isB32I2pHost(host)) {
+        throw std::invalid_argument("invalid i2p address (must be a .b32.i2p host): " + host);
+    }
 }
 
 }  // namespace bazarish

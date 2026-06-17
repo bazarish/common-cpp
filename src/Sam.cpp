@@ -366,13 +366,14 @@ const std::string& SamSession::publicDestination() const
 
 std::string SamSession::routingAddress() const
 {
-    // An encrypted LeaseSet2 publishes only the blinded leaseset, reachable
-    // via the b33 host; the raw destination is not connectable. A standard
-    // LeaseSet2 publishes a plain leaseset, so the raw destination connects.
+    // Every routing target is a full .b32.i2p host (project-wide invariant): an
+    // encrypted LeaseSet2 is reached via its blinded b33, a standard LeaseSet2
+    // (e.g. an offline-key destination, which cannot publish a b33) via its
+    // standard b32. The raw destination is never used as an address.
     if (leaseSetType_ == kEncryptedLeaseSetType) {
         return encryptedLeaseSetHost(publicDestination_);
     }
-    return publicDestination_;
+    return standardLeaseSetHost(publicDestination_);
 }
 
 const std::string& SamSession::privateDestination() const
