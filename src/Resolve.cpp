@@ -71,6 +71,42 @@ CardFetchResponse cardFetchResponseFromJson(const nlohmann::json& body)
     return response;
 }
 
+nlohmann::json toJson(const ResolveQuery& query)
+{
+    return {
+        {"v", 1},
+        {"alias", query.alias},
+        {"responseKey", toBase64(query.responseKeyDer)},
+    };
+}
+
+ResolveQuery resolveQueryFromJson(const nlohmann::json& body)
+{
+    requireVersion(body, "resolve query");
+    ResolveQuery query;
+    query.alias = body.at("alias").get<std::string>();
+    query.responseKeyDer = fromBase64(body.at("responseKey").get<std::string>());
+    return query;
+}
+
+nlohmann::json toJson(const ResolveResponse& response)
+{
+    return {
+        {"v", 1},
+        {"record", toBase64(response.recordDer)},
+        {"delegation", toBase64(response.delegationDer)},
+    };
+}
+
+ResolveResponse resolveResponseFromJson(const nlohmann::json& body)
+{
+    requireVersion(body, "resolve response");
+    ResolveResponse response;
+    response.recordDer = fromBase64(body.at("record").get<std::string>());
+    response.delegationDer = fromBase64(body.at("delegation").get<std::string>());
+    return response;
+}
+
 nlohmann::json toJson(const ResolveRecord& record)
 {
     return {

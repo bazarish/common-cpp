@@ -36,6 +36,25 @@ CardFetchResponse cardFetchResponseFromJson(const nlohmann::json& body);
 
 // --- Alias resolution (alias -> descriptor) -----------------------------
 
+// Query to the central resolver, sealed to its serving sealing key (so the relay
+// on the proxy path cannot read which alias is looked up).
+struct ResolveQuery {
+    std::string alias;     // the name to resolve (normalized: a-z0-9, lowercase)
+    Bytes responseKeyDer;  // ephemeral SPKI the response is sealed to
+};
+
+// Response from the resolver, sealed to the query's responseKey. Carries the
+// signed record and the delegation certificate that anchors it to the root.
+struct ResolveResponse {
+    Bytes recordDer;      // signResolveRecord(...) output (hybrid-signed record)
+    Bytes delegationDer;  // the delegation certificate (delegated key <- root)
+};
+
+nlohmann::json toJson(const ResolveQuery& query);
+ResolveQuery resolveQueryFromJson(const nlohmann::json& body);
+nlohmann::json toJson(const ResolveResponse& response);
+ResolveResponse resolveResponseFromJson(const nlohmann::json& body);
+
 // The resolver's record body, signed by its delegated key (see the delegation
 // chain in api/AliasResolver.md). Self-verifying and cacheable up to notAfter.
 struct ResolveRecord {
