@@ -23,6 +23,15 @@ inline constexpr int kEncryptedLeaseSetType = 5;
 // 3 = NETDB_STORE_TYPE_STANDARD_LEASESET2.
 inline constexpr int kStandardLeaseSetType = 3;
 
+// Number of parallel tunnels per direction in a destination's pool
+// (i2cp.inbound.quantity / i2cp.outbound.quantity). This is throughput /
+// redundancy (load balancing across tunnels for ONE key/address), orthogonal to
+// the privacy hop length. The default suits an outbound client (a few one-shot
+// fetches); a busy public server destination raises it toward the ceiling.
+// I2P caps the per-pool quantity at 16.
+inline constexpr int kDefaultTunnelQuantity = 3;
+inline constexpr int kMaxTunnelQuantity = 16;
+
 // I2P tunnel privacy profile (applied to every Bazarish session via SESSION
 // CREATE). Higher = more hops / variance = more anonymity, more latency.
 //   kMinimal: 1-hop in/out tunnels
@@ -39,6 +48,10 @@ std::string i2pPrivacyOptions(I2pPrivacy privacy);
 
 // Parses "minimal" / "middle" / "max" (for CLI flags); nullopt otherwise.
 std::optional<I2pPrivacy> i2pPrivacyFromString(const std::string& text);
+
+// The SAM SESSION CREATE tunnel-quantity options (inbound/outbound) for a
+// destination. quantity is clamped to [1, kMaxTunnelQuantity].
+std::string i2pTunnelQuantityOptions(int quantity);
 
 // A connected I2P stream taken over from a SAM connection. Owns its socket
 // and provides blocking byte I/O. Move-only.
@@ -118,10 +131,13 @@ public:
     // private destination blob to reuse (a stable I2P address across
     // restarts) or "TRANSIENT" for a fresh one. leaseSetType defaults to an
     // encrypted LeaseSet2 (the project-wide b33 invariant); pass a different
-    // type only for interop tests. privacy selects the tunnel length/variance.
+    // type only for interop tests. privacy selects the tunnel length/variance;
+    // tunnelQuantity sets the per-direction tunnel count (throughput/redundancy
+    // for one address — public server destinations raise it, outbound clients
+    // keep the small default).
     SamSession(const std::string& host, std::uint16_t port, const std::string& sessionId,
         const std::string& privateKeys = "TRANSIENT", int leaseSetType = kEncryptedLeaseSetType,
-        I2pPrivacy privacy = I2pPrivacy::eMax);
+        I2pPrivacy privacy = I2pPrivacy::eMax, int tunnelQuantity = kDefaultTunnelQuantity);
     ~SamSession();
 
     SamSession(const SamSession&) = delete;

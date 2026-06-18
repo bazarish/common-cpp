@@ -36,5 +36,12 @@ int main()
     CHECK(i2pPrivacyFromString("max") == I2pPrivacy::eMax);
     CHECK(!i2pPrivacyFromString("bogus").has_value());
 
+    // Tunnel-quantity options (load balancing across tunnels for one address);
+    // the value is clamped to [1, 16].
+    CHECK(i2pTunnelQuantityOptions(3) == "inbound.quantity=3 outbound.quantity=3");
+    CHECK(i2pTunnelQuantityOptions(16) == "inbound.quantity=16 outbound.quantity=16");
+    CHECK(i2pTunnelQuantityOptions(99) == "inbound.quantity=16 outbound.quantity=16");
+    CHECK(i2pTunnelQuantityOptions(0) == "inbound.quantity=1 outbound.quantity=1");
+
     return 0;
 }

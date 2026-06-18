@@ -312,9 +312,21 @@ std::optional<I2pPrivacy> i2pPrivacyFromString(const std::string& text)
     return std::nullopt;
 }
 
+std::string i2pTunnelQuantityOptions(int quantity)
+{
+    if (quantity < 1) {
+        quantity = 1;
+    }
+    if (quantity > kMaxTunnelQuantity) {
+        quantity = kMaxTunnelQuantity;
+    }
+    const std::string n = std::to_string(quantity);
+    return "inbound.quantity=" + n + " outbound.quantity=" + n;
+}
+
 SamSession::SamSession(const std::string& host, const std::uint16_t port,
     const std::string& sessionId, const std::string& privateKeys, const int leaseSetType,
-    const I2pPrivacy privacy)
+    const I2pPrivacy privacy, const int tunnelQuantity)
     : host_(host)
     , port_(port)
     , sessionId_(sessionId)
@@ -328,7 +340,7 @@ SamSession::SamSession(const std::string& host, const std::uint16_t port,
         create << "SESSION CREATE STYLE=STREAM ID=" << sessionId_ << " DESTINATION="
                << privateKeys << " SIGNATURE_TYPE=" << kEd25519SignatureType
                << " i2cp.leaseSetType=" << leaseSetType << " " << i2pPrivacyOptions(privacy)
-               << "\n";
+               << " " << i2pTunnelQuantityOptions(tunnelQuantity) << "\n";
         const std::map<std::string, std::string> created
             = commandFd(controlFd_, create.str(), "SESSION STATUS");
         const auto destination = created.find("DESTINATION");
