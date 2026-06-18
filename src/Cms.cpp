@@ -45,6 +45,24 @@ struct CmsDeleter {
 };
 using CmsPtr = std::unique_ptr<CMS_ContentInfo, CmsDeleter>;
 
+struct BnDeleter {
+    void operator()(BIGNUM* bn) const
+    {
+        BN_free(bn);
+    }
+};
+using BnPtr = std::unique_ptr<BIGNUM, BnDeleter>;
+
+// Frees the stack container only (sk_X509_free), not its elements — matching
+// both the get0 borrow (CMS_get0_signers) and the push-of-an-owned-cert case.
+struct StackOfX509Deleter {
+    void operator()(STACK_OF(X509)* stack) const
+    {
+        sk_X509_free(stack);
+    }
+};
+using StackOfX509Ptr = std::unique_ptr<STACK_OF(X509), StackOfX509Deleter>;
+
 BioPtr makeMemoryBio()
 {
     BioPtr bio(BIO_new(BIO_s_mem()));
@@ -86,10 +104,9 @@ X509Ptr makeCarrierCert(const Key& subjectKey, const Key& signerKey)
 
     if (ok) {
         const Bytes serial = bazarish::randomBytes(8);
-        BIGNUM* const serialBn = BN_bin2bn(serial.data(), static_cast<int>(serial.size()), nullptr);
+        const BnPtr serialBn(BN_bin2bn(serial.data(), static_cast<int>(serial.size()), nullptr));
         ok = serialBn != nullptr
-            && BN_to_ASN1_INTEGER(serialBn, X509_get_serialNumber(cert.get())) != nullptr;
-        BN_free(serialBn);
+            && BN_to_ASN1_INTEGER(serialBn.get(), X509_get_serialNumber(cert.get())) != nullptr;
     }
 
     if (ok) {
@@ -198,13 +215,11 @@ VerifiedJson verifyJson(const Bytes& der)
         throw std::runtime_error("CMS_verify failed");
     }
 
-    STACK_OF(X509)* const signers = CMS_get0_signers(cms.get());
-    if (signers == nullptr || sk_X509_num(signers) != 1) {
-        sk_X509_free(signers);
+    const StackOfX509Ptr signers(CMS_get0_signers(cms.get()));
+    if (signers == nullptr || sk_X509_num(signers.get()) != 1) {
         throw std::runtime_error("CMS signer extraction failed");
     }
-    EVP_PKEY* const signerPubkey = X509_get0_pubkey(sk_X509_value(signers, 0));
-    sk_X509_free(signers);
+    EVP_PKEY* const signerPubkey = X509_get0_pubkey(sk_X509_value(signers.get(), 0));
     if (signerPubkey == nullptr) {
         throw std::runtime_error("CMS signer has no public key");
     }
@@ -281,16 +296,14 @@ Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey)
     const Key throwaway = Key::generateSigning();
     const X509Ptr carrier = makeCarrierCert(recipientPublicKey, throwaway);
 
-    STACK_OF(X509)* const recipients = sk_X509_new_null();
-    if (recipients == nullptr || sk_X509_push(recipients, carrier.get()) <= 0) {
-        sk_X509_free(recipients);
+    const StackOfX509Ptr recipients(sk_X509_new_null());
+    if (recipients == nullptr || sk_X509_push(recipients.get(), carrier.get()) <= 0) {
         throw std::runtime_error("recipient stack creation failed");
     }
 
     const BioPtr input = makeInputBio(plaintext);
     const CmsPtr cms(
-        CMS_encrypt(recipients, input.get(), EVP_aes_256_gcm(), CMS_BINARY));
-    sk_X509_free(recipients);
+        CMS_encrypt(recipients.get(), input.get(), EVP_aes_256_gcm(), CMS_BINARY));
     if (cms == nullptr) {
         throw std::runtime_error("CMS_encrypt failed");
     }

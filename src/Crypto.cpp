@@ -169,24 +169,24 @@ Bytes sign(const Key& key, const Bytes& data)
     if (!key.hasPrivate()) {
         throw std::logic_error("signing requires a private key");
     }
-    EVP_MD_CTX* const ctx = EVP_MD_CTX_new();
+    const std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
+        EVP_MD_CTX_new(), &EVP_MD_CTX_free);
     if (ctx == nullptr) {
         throw std::runtime_error("EVP_MD_CTX_new failed");
     }
     // EC signs a SHA-256 digest; ML-DSA signs the message directly.
     const EVP_MD* const digest = key.isA("EC") ? EVP_sha256() : nullptr;
     Bytes signature;
-    bool ok = EVP_DigestSignInit(ctx, nullptr, digest, nullptr, key.raw()) == 1;
+    bool ok = EVP_DigestSignInit(ctx.get(), nullptr, digest, nullptr, key.raw()) == 1;
     if (ok) {
         std::size_t size = 0;
-        ok = EVP_DigestSign(ctx, nullptr, &size, data.data(), data.size()) == 1;
+        ok = EVP_DigestSign(ctx.get(), nullptr, &size, data.data(), data.size()) == 1;
         if (ok) {
             signature.resize(size);
-            ok = EVP_DigestSign(ctx, signature.data(), &size, data.data(), data.size()) == 1;
+            ok = EVP_DigestSign(ctx.get(), signature.data(), &size, data.data(), data.size()) == 1;
             signature.resize(size);
         }
     }
-    EVP_MD_CTX_free(ctx);
     if (!ok) {
         throw std::runtime_error("EVP_DigestSign failed");
     }
@@ -195,18 +195,18 @@ Bytes sign(const Key& key, const Bytes& data)
 
 bool verify(const Key& key, const Bytes& data, const Bytes& signature)
 {
-    EVP_MD_CTX* const ctx = EVP_MD_CTX_new();
+    const std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
+        EVP_MD_CTX_new(), &EVP_MD_CTX_free);
     if (ctx == nullptr) {
         throw std::runtime_error("EVP_MD_CTX_new failed");
     }
     const EVP_MD* const digest = key.isA("EC") ? EVP_sha256() : nullptr;
-    bool ok = EVP_DigestVerifyInit(ctx, nullptr, digest, nullptr, key.raw()) == 1;
+    bool ok = EVP_DigestVerifyInit(ctx.get(), nullptr, digest, nullptr, key.raw()) == 1;
     if (ok) {
         ok = EVP_DigestVerify(
-                 ctx, signature.data(), signature.size(), data.data(), data.size())
+                 ctx.get(), signature.data(), signature.size(), data.data(), data.size())
             == 1;
     }
-    EVP_MD_CTX_free(ctx);
     return ok;
 }
 
