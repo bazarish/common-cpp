@@ -22,6 +22,7 @@ add_library(bazarish_common STATIC
     src/Descriptor.cpp
     src/Resolve.cpp
     src/Sam.cpp
+    src/SamHttp.cpp
     src/Log.cpp
 )
 add_library(Bazarish::Common ALIAS bazarish_common)
@@ -56,4 +57,5 @@ bazarish_add_test(TestI2pAddress)
 bazarish_add_test(TestDescriptor)
 bazarish_add_test(TestResolve)
 bazarish_add_test(TestSam)
+bazarish_add_test(TestSamHttp)
 bazarish_add_test(TestLog)
