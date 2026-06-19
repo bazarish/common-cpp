@@ -6,7 +6,7 @@
 namespace bazarish {
 
 // Derives the shareable .b32.i2p host for a destination published as an
-// ENCRYPTED LeaseSet2 — the blinded "b33" address (I2P proposals 123/149).
+// ENCRYPTED LeaseSet2 - the blinded "b33" address (I2P proposals 123/149).
 //
 // This is NOT base32(sha256(destination)) (the standard-LeaseSet form): it is
 // base32 of {flags, sigType, blindedSigType, signingPublicKey} with a CRC-32
@@ -21,7 +21,7 @@ namespace bazarish {
 std::string encryptedLeaseSetHost(const std::string& samBase64Destination);
 
 // Derives the shareable .b32.i2p host for a destination published as a STANDARD
-// LeaseSet2 — the ordinary base32(sha256(destination)) address (52 base32
+// LeaseSet2 - the ordinary base32(sha256(destination)) address (52 base32
 // chars). This is the form for an offline-key per-user destination (and any
 // standard-LeaseSet destination): it cannot publish a blinded b33, but it IS
 // reachable by this standard b32. The input is the SAM base64 destination
@@ -30,10 +30,10 @@ std::string standardLeaseSetHost(const std::string& samBase64Destination);
 
 // True iff host is a .b32.i2p address: it ends in ".b32.i2p" and the label is a
 // non-empty lowercase RFC-4648 base32 string. The label LENGTH is not constrained
-// — a standard b32 and a blinded b33 (and other signature types) legitimately
+// - a standard b32 and a blinded b33 (and other signature types) legitimately
 // differ in length. Short addressbook names (e.g. "name.i2p") and raw base64
 // destinations are NOT valid. Project-wide invariant: every routing/connection
-// target is a .b32.i2p host — no poisonable addressbook names, no raw destinations.
+// target is a .b32.i2p host - no poisonable addressbook names, no raw destinations.
 bool isB32I2pHost(const std::string& host);
 
 // Throws std::invalid_argument unless isB32I2pHost(host). Call at every point an

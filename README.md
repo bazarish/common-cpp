@@ -1,4 +1,4 @@
-# Bazarish — common
+# Bazarish - common
 
 Shared C++ library for the [Bazarish](https://github.com/bazarish/docs-main) messenger.
 Protocol types, OpenSSL wrappers and JSON helpers consumed by every other
@@ -6,15 +6,15 @@ component, so there is no duplicated crypto code.
 
 ## What it provides
 
-- **Identity** — post-quantum hybrid keys: ECDSA P-256 **+** ML-DSA-65 (FIPS 204).
+- **Identity** - post-quantum hybrid keys: ECDSA P-256 **+** ML-DSA-65 (FIPS 204).
   Every identity statement is dual-signed and valid only when both signatures
   verify. The fingerprint covers both public keys (base32 of SHA-256).
-- **Certificates** (CMS SignedData over JSON) — subscription certificate
+- **Certificates** (CMS SignedData over JSON) - subscription certificate
   (with an optional sealing **prekey**), alias certificate, server card.
-- **CMS sealing** — ECDH P-256 + AES-256-GCM envelopes for delivery metadata
+- **CMS sealing** - ECDH P-256 + AES-256-GCM envelopes for delivery metadata
   and E2E payloads.
-- **SAM client** — SAM v3 client for I2P routers (sessions and streams).
-- **Auth** — hybrid request signing/verification for the client API.
+- **SAM client** - SAM v3 client for I2P routers (sessions and streams).
+- **Auth** - hybrid request signing/verification for the client API.
 - **Addressing**, one-time **delivery tokens**, typed **errors**, base32/64
   and hex helpers.
 
@@ -23,7 +23,7 @@ Cryptography uses OpenSSL only, with standardized algorithms and containers
 
 ## Build
 
-Requires CMake ≥ 3.20, a C++20 compiler and OpenSSL ≥ 3.0.
+Requires CMake >= 3.20, a C++20 compiler and OpenSSL >= 3.0.
 
 ```bash
 cmake -S . -B build && cmake --build build -j

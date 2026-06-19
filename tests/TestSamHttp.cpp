@@ -15,7 +15,7 @@ using namespace bazarish;
 namespace {
 
 // Pushes `data` into one end of a socketpair, closes that end (so the reader
-// sees EOF), and wraps the other end in a SamStream — a real stream for the
+// sees EOF), and wraps the other end in a SamStream - a real stream for the
 // parser to read without needing a SAM bridge.
 SamStream streamFrom(const std::string& data)
 {

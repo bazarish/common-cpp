@@ -12,9 +12,9 @@ inline constexpr std::size_t kAliasMaxLength = 32;
 inline constexpr std::size_t kAliasMinLength = 1;
 
 // Address forms:
-//   <fingerprint>@<server-fingerprint>  — fully qualified
-//   <alias>@<server-fingerprint>        — alias at a specific server
-//   <alias>                             — main-server alias (server empty)
+//   <fingerprint>@<server-fingerprint>  - fully qualified
+//   <alias>@<server-fingerprint>        - alias at a specific server
+//   <alias>                             - main-server alias (server empty)
 struct Address {
     enum class Kind {
         eFingerprint,

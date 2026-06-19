@@ -24,7 +24,7 @@ using KeyPtr = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>;
 // A signing or sealing key. May hold only the public part.
 class Key {
 public:
-    // Classical signing keys: ECDSA P-256. Ed25519 is not usable here —
+    // Classical signing keys: ECDSA P-256. Ed25519 is not usable here -
     // OpenSSL CMS SignedData has no EdDSA support, and certificates are
     // CMS-signed by these keys.
     static Key generateSigning();
@@ -44,7 +44,7 @@ public:
     static Key fromPublicDer(const Bytes& spkiDer);
 
     std::string privatePem(const std::string& passphrase = {}) const;
-    // SubjectPublicKeyInfo DER — the canonical public form.
+    // SubjectPublicKeyInfo DER - the canonical public form.
     Bytes publicDer() const;
     // base32(sha256(SubjectPublicKeyInfo DER)). Identifies a single key;
     // identities are identified by Identity::fingerprint() instead.
@@ -78,7 +78,7 @@ Bytes sha256File(const std::filesystem::path& path);
 
 // A hybrid post-quantum signing identity: ECDSA P-256 plus ML-DSA-65.
 // Every identity-level statement carries both signatures and is valid only
-// when both verify — forging requires breaking both schemes.
+// when both verify - forging requires breaking both schemes.
 class Identity {
 public:
     static Identity generate();
@@ -100,7 +100,7 @@ private:
     Key pq_;
 };
 
-// base32(sha256(classical SPKI DER || ML-DSA SPKI DER)) — computable by
+// base32(sha256(classical SPKI DER || ML-DSA SPKI DER)) - computable by
 // verifiers holding only public material.
 std::string hybridFingerprint(const Bytes& classicalPublicDer, const Bytes& pqPublicDer);
 

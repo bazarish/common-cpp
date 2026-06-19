@@ -59,7 +59,7 @@ Bytes unseal(const Bytes& der, const Key& recipientPrivateKey);
 
 // Password-based CMS envelope (RFC 3211 PWRI): the content is encrypted with
 // AES-256-CBC under a key derived from the password (PBKDF2). Used for the
-// encrypted state export, where there is no recipient key — only a passphrase
+// encrypted state export, where there is no recipient key - only a passphrase
 // the user remembers. No custom key derivation or cipher: OpenSSL primitives
 // only.
 Bytes sealWithPassword(const Bytes& plaintext, const std::string& password);

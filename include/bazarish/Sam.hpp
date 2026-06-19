@@ -123,7 +123,7 @@ private:
 
 // A SAM v3 STREAM session: one control connection plus on-demand data
 // streams. Building the session triggers I2P tunnel construction, which can
-// take tens of seconds — construction blocks until SESSION STATUS returns.
+// take tens of seconds - construction blocks until SESSION STATUS returns.
 // Blocking I/O; the control socket must outlive the session.
 class SamSession {
 public:
@@ -133,7 +133,7 @@ public:
     // encrypted LeaseSet2 (the project-wide b33 invariant); pass a different
     // type only for interop tests. privacy selects the tunnel length/variance;
     // tunnelQuantity sets the per-direction tunnel count (throughput/redundancy
-    // for one address — public server destinations raise it, outbound clients
+    // for one address - public server destinations raise it, outbound clients
     // keep the small default).
     SamSession(const std::string& host, std::uint16_t port, const std::string& sessionId,
         const std::string& privateKeys = "TRANSIENT", int leaseSetType = kEncryptedLeaseSetType,
@@ -151,7 +151,7 @@ public:
     // where b33 does not work) it is the standard "<b32>.b32.i2p" host. The raw
     // destination is never a routing address (project-wide .b32.i2p invariant).
     std::string routingAddress() const;
-    // The private destination blob — persist it to keep a stable address.
+    // The private destination blob - persist it to keep a stable address.
     const std::string& privateDestination() const;
     const std::string& sessionId() const;
 

@@ -21,7 +21,7 @@ Bytes fromBase32(const std::string& text);
 std::string toBase64(const Bytes& data);
 Bytes fromBase64(const std::string& text);
 
-// Base64url (RFC 4648 §5): URL-safe alphabet ('+'->'-', '/'->'_'), no padding,
+// Base64url (RFC 4648 section 5): URL-safe alphabet ('+'->'-', '/'->'_'), no padding,
 // so the blob rides inside a URI with no percent-encoding.
 std::string toBase64Url(const Bytes& data);
 Bytes fromBase64Url(const std::string& text);

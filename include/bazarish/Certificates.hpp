@@ -19,7 +19,7 @@ inline constexpr int kCertificateFormatVersion = 1;
 // user U until T". The lifecycle anchor on the serving server and, pushed
 // to contacts over E2E, the serving statement that answers "where do I
 // deliver?". Expiry is policy, not validity: verify() does not reject
-// expired certificates — callers decide (routing-staleness rule).
+// expired certificates - callers decide (routing-staleness rule).
 struct SubscriptionCertificate {
     int v = kCertificateFormatVersion;
     std::string user;
@@ -33,8 +33,8 @@ struct SubscriptionCertificate {
     // Destination-routed contact fields (see api/InviteAnonymity.md). The user
     // vouches for both under the same single signature; neither is a trust
     // anchor (a wrong value only makes delivery fail). Empty when not published.
-    //   dest                  — the I2P destination a contact delivers to (dest_U)
-    //   servingSealingKeyDer  — SubjectPublicKeyInfo DER of the serving sealing
+    //   dest                  - the I2P destination a contact delivers to (dest_U)
+    //   servingSealingKeyDer  - SubjectPublicKeyInfo DER of the serving sealing
     //                           key (sealingKey_U): the public key the delivery
     //                           envelope's admission header (mailbox + token) is
     //                           sealed to, whose private half the user's server

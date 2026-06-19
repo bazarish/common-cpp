@@ -13,7 +13,7 @@
 namespace bazarish {
 
 // Wire bodies shared by the client, the serving server and the central resolver
-// (api/FederatedResolve.md). These are pure (de)serializers — sealing/signing and
+// (api/FederatedResolve.md). These are pure (de)serializers - sealing/signing and
 // destination validation are the callers' responsibility.
 
 // --- Card fetch (fingerprint known -> contact card) ---------------------
@@ -67,7 +67,7 @@ struct ResolveRecord {
 nlohmann::json toJson(const ResolveRecord& record);
 ResolveRecord resolveRecordFromJson(const nlohmann::json& body);
 
-// The descriptor as a JSON object { fp, srv, srv_key } — for embedding in a
+// The descriptor as a JSON object { fp, srv, srv_key } - for embedding in a
 // record, distinct from the bazarish://invite URI form (Descriptor.hpp). The key
 // is standard base64 (a JSON binary field), not base64url (a URI field).
 nlohmann::json descriptorToJson(const Descriptor& descriptor);

@@ -53,7 +53,7 @@ struct BnDeleter {
 };
 using BnPtr = std::unique_ptr<BIGNUM, BnDeleter>;
 
-// Frees the stack container only (sk_X509_free), not its elements — matching
+// Frees the stack container only (sk_X509_free), not its elements - matching
 // both the get0 borrow (CMS_get0_signers) and the push-of-an-owned-cert case.
 struct StackOfX509Deleter {
     void operator()(STACK_OF(X509)* stack) const

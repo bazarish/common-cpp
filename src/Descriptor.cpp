@@ -13,7 +13,7 @@ namespace {
 constexpr char kPrefix[] = "bazarish://invite?";
 constexpr std::size_t kPrefixLen = sizeof(kPrefix) - 1;
 
-// A fingerprint is base32(sha256(...)) — kFingerprintTextLength lowercase
+// A fingerprint is base32(sha256(...)) - kFingerprintTextLength lowercase
 // RFC-4648 base32 characters.
 bool isFingerprint(const std::string& fingerprint)
 {

@@ -42,7 +42,7 @@ void emit(Level level, std::string_view message);
 
 // Shortens an identifier (fingerprint, destination) for debug diagnostics:
 // keeps a short prefix and elides the rest. This is NOT a tool to make message
-// content safe to log — content must never be logged at all.
+// content safe to log - content must never be logged at all.
 std::string redact(std::string_view identifier);
 
 // Type-safe, level-gated entry points. std::format_string checks the format

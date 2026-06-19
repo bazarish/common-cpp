@@ -8,7 +8,7 @@
 namespace bazarish {
 
 // A contact descriptor: the small, single-QR pointer a contact shares out of
-// band (a QR or link). It does NOT carry the contact card — it points at one.
+// band (a QR or link). It does NOT carry the contact card - it points at one.
 // The recipient fetches and verifies the user-signed contact card for `fp` from
 // `srv`, sealing the fetch query to `srvKeyDer` (api/FederatedResolve.md).
 struct Descriptor {

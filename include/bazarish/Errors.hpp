@@ -42,7 +42,7 @@ struct ParsedError {
 };
 
 // Returns nullopt when the document is not an error envelope (including
-// envelopes with unknown codes — unknown codes from newer peers must not
+// envelopes with unknown codes - unknown codes from newer peers must not
 // be silently coerced into known ones).
 std::optional<ParsedError> parseErrorEnvelope(const nlohmann::json& document);
 
