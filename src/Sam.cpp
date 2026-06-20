@@ -5,13 +5,16 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -97,6 +100,33 @@ int openSamSocket(const std::string& host, const std::uint16_t port)
     timeout.tv_sec = kSamSocketTimeoutSeconds;
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    return fd;
+}
+
+// Binds a UDP socket to 127.0.0.1 on an ephemeral port; returns the fd and
+// fills boundPort with the kernel-assigned port. Used to receive SAM datagrams
+// forwarded by the router.
+int openLocalUdpSocket(std::uint16_t& boundPort)
+{
+    const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        throw std::runtime_error("UDP socket creation failed");
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = 0;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+        ::close(fd);
+        throw std::runtime_error("UDP bind failed");
+    }
+    sockaddr_in bound{};
+    socklen_t len = sizeof(bound);
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&bound), &len) != 0) {
+        ::close(fd);
+        throw std::runtime_error("UDP getsockname failed");
+    }
+    boundPort = ntohs(bound.sin_port);
     return fd;
 }
 
@@ -428,6 +458,131 @@ SamStream SamSession::accept(std::string& peerDestination)
         throw;
     }
     return SamStream(fd);
+}
+
+SamDatagramSession::SamDatagramSession(const std::string& host, const std::uint16_t controlPort,
+    const std::uint16_t samUdpPort, const std::string& sessionId, const std::string& privateKeys,
+    const int leaseSetType, const I2pPrivacy privacy, const int tunnelQuantity)
+    : host_(host)
+    , samUdpPort_(samUdpPort)
+    , sessionId_(sessionId)
+    , leaseSetType_(leaseSetType)
+    , controlFd_(-1)
+    , udpFd_(-1)
+{
+    std::uint16_t localUdpPort = 0;
+    udpFd_ = openLocalUdpSocket(localUdpPort);
+    try {
+        controlFd_ = openSamSocket(host, controlPort);
+    } catch (...) {
+        ::close(udpFd_);
+        udpFd_ = -1;
+        throw;
+    }
+    try {
+        handshakeFd(controlFd_);
+        // RAW style: the router forwards each incoming datagram, payload only, to
+        // our loopback UDP port (PORT/HOST). Keeping the source off the wire is
+        // what makes RAW small enough for per-frame audio.
+        std::ostringstream create;
+        create << "SESSION CREATE STYLE=RAW ID=" << sessionId_ << " DESTINATION=" << privateKeys
+               << " SIGNATURE_TYPE=" << kEd25519SignatureType
+               << " i2cp.leaseSetType=" << leaseSetType << " " << i2pPrivacyOptions(privacy) << " "
+               << i2pTunnelQuantityOptions(tunnelQuantity) << " PORT=" << localUdpPort
+               << " HOST=127.0.0.1\n";
+        const std::map<std::string, std::string> created
+            = commandFd(controlFd_, create.str(), "SESSION STATUS");
+        (void)created;
+        const std::map<std::string, std::string> naming
+            = commandFd(controlFd_, "NAMING LOOKUP NAME=ME\n", "NAMING REPLY");
+        const auto value = naming.find("VALUE");
+        if (value == naming.end()) {
+            throw std::runtime_error("SAM NAMING reply has no VALUE");
+        }
+        publicDestination_ = value->second;
+    } catch (...) {
+        ::close(controlFd_);
+        controlFd_ = -1;
+        ::close(udpFd_);
+        udpFd_ = -1;
+        throw;
+    }
+}
+
+SamDatagramSession::~SamDatagramSession()
+{
+    if (controlFd_ >= 0) {
+        ::close(controlFd_);
+    }
+    if (udpFd_ >= 0) {
+        ::close(udpFd_);
+    }
+}
+
+const std::string& SamDatagramSession::publicDestination() const
+{
+    return publicDestination_;
+}
+
+std::string SamDatagramSession::routingAddress() const
+{
+    if (leaseSetType_ == kEncryptedLeaseSetType) {
+        return encryptedLeaseSetHost(publicDestination_);
+    }
+    return standardLeaseSetHost(publicDestination_);
+}
+
+const std::string& SamDatagramSession::sessionId() const
+{
+    return sessionId_;
+}
+
+void SamDatagramSession::send(
+    const std::string& destination, const void* data, const std::size_t size)
+{
+    // SAM v3 datagram send: one UDP packet to the router's datagram port whose
+    // first line is "3.0 <sessionId> <destination>", a newline, then payload.
+    const std::string header = "3.0 " + sessionId_ + " " + destination + "\n";
+    std::vector<unsigned char> packet;
+    packet.reserve(header.size() + size);
+    packet.insert(packet.end(), header.begin(), header.end());
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    packet.insert(packet.end(), bytes, bytes + size);
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(samUdpPort_);
+    if (::inet_pton(AF_INET, host_.c_str(), &addr.sin_addr) != 1) {
+        throw std::invalid_argument("invalid SAM host address");
+    }
+    const ssize_t sent = ::sendto(udpFd_, packet.data(), packet.size(), 0,
+        reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+    if (sent < 0) {
+        throw std::runtime_error("SAM datagram send failed");
+    }
+}
+
+std::vector<std::uint8_t> SamDatagramSession::receive(const int timeoutMs)
+{
+    pollfd pfd{};
+    pfd.fd = udpFd_;
+    pfd.events = POLLIN;
+    const int ready = ::poll(&pfd, 1, timeoutMs);
+    if (ready <= 0) {
+        return {};  // timeout or interrupted: no datagram this round
+    }
+    std::vector<std::uint8_t> buffer(65536);
+    const ssize_t got = ::recv(udpFd_, buffer.data(), buffer.size(), 0);
+    if (got <= 0) {
+        return {};
+    }
+    buffer.resize(static_cast<std::size_t>(got));
+    return buffer;
+}
+
+int SamDatagramSession::udpFd() const
+{
+    return udpFd_;
 }
 
 }  // namespace bazarish

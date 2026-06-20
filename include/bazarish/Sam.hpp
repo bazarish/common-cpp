@@ -5,6 +5,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace bazarish {
 
@@ -169,6 +170,58 @@ private:
     std::string privateDestination_;
     int leaseSetType_;
     int controlFd_;
+};
+
+// The SAM v3 datagram UDP port (separate from the control TCP port). The router
+// forwards incoming datagrams to a client UDP socket and accepts outgoing
+// datagrams on this port. Default for i2pd / Java I2P.
+inline constexpr std::uint16_t kDefaultSamUdpPort = 7655;
+
+// A SAM v3 RAW datagram session for real-time media (calls): low-overhead,
+// connectionless UDP-like delivery over I2P. RAW carries no per-packet source
+// destination (so each packet stays small, unlike repliable DATAGRAM whose
+// ~516-byte source prefix would dwarf an audio frame) and no I2P-layer
+// authentication - the caller must authenticate the payload itself (the call
+// layer AEAD-seals every datagram with a per-call key). Building the session
+// triggers tunnel construction and blocks until SESSION STATUS returns.
+// Blocking control I/O; datagrams flow over a dedicated UDP socket.
+class SamDatagramSession {
+public:
+    SamDatagramSession(const std::string& host, std::uint16_t controlPort,
+        std::uint16_t samUdpPort, const std::string& sessionId,
+        const std::string& privateKeys = "TRANSIENT",
+        int leaseSetType = kEncryptedLeaseSetType, I2pPrivacy privacy = I2pPrivacy::eMax,
+        int tunnelQuantity = kDefaultTunnelQuantity);
+    ~SamDatagramSession();
+
+    SamDatagramSession(const SamDatagramSession&) = delete;
+    SamDatagramSession& operator=(const SamDatagramSession&) = delete;
+
+    // Our own base64 destination (shareable) and its .b32.i2p routing address.
+    const std::string& publicDestination() const;
+    std::string routingAddress() const;
+    const std::string& sessionId() const;
+
+    // Sends one datagram to a destination (a base64 destination or a .b32.i2p
+    // host). Best-effort like UDP; the router drops an oversize payload.
+    void send(const std::string& destination, const void* data, std::size_t size);
+
+    // Waits up to timeoutMs (negative = block indefinitely) for one incoming
+    // datagram and returns its payload, or an empty vector on timeout. RAW
+    // carries no source; authenticate the payload at a higher layer.
+    std::vector<std::uint8_t> receive(int timeoutMs);
+
+    // The local UDP socket fd, for external poll/select integration.
+    int udpFd() const;
+
+private:
+    std::string host_;
+    std::uint16_t samUdpPort_;
+    std::string sessionId_;
+    std::string publicDestination_;
+    int leaseSetType_;
+    int controlFd_;
+    int udpFd_;
 };
 
 }  // namespace bazarish

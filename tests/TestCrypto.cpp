@@ -124,5 +124,45 @@ int main()
         CHECK_THROWS(sha256File(std::filesystem::temp_directory_path() / "bz-no-such-file.bin"));
     }
 
+    // AES-256-GCM AEAD (per-call media datagram seal): round trip, then every
+    // form of corruption must fail to open rather than return wrong plaintext.
+    {
+        const Bytes key(kAeadKeyBytes, 0x11);
+        const Bytes nonce(kAeadNonceBytes, 0x22);
+        const Bytes plain = {'c', 'a', 'l', 'l', ' ', 'm', 'e', 'd', 'i', 'a'};
+        const Bytes sealed = aeadSeal(key, nonce, plain);
+        CHECK(sealed.size() == plain.size() + kAeadTagBytes);
+        CHECK(sealed != plain);  // actually encrypted, not just tagged plaintext
+        const std::optional<Bytes> opened = aeadOpen(key, nonce, sealed);
+        CHECK(opened.has_value());
+        CHECK(opened.value() == plain);
+
+        // Tampered ciphertext fails authentication.
+        Bytes tampered = sealed;
+        tampered[0] ^= 0x01;
+        CHECK(!aeadOpen(key, nonce, tampered).has_value());
+
+        // Wrong key / wrong nonce fail authentication.
+        Bytes otherKey = key;
+        otherKey[31] ^= 0x01;
+        CHECK(!aeadOpen(otherKey, nonce, sealed).has_value());
+        Bytes otherNonce = nonce;
+        otherNonce[0] ^= 0x01;
+        CHECK(!aeadOpen(key, otherNonce, sealed).has_value());
+
+        // Empty plaintext round-trips (sealed is just the tag).
+        const Bytes emptySealed = aeadSeal(key, nonce, Bytes{});
+        CHECK(emptySealed.size() == kAeadTagBytes);
+        const std::optional<Bytes> emptyOpened = aeadOpen(key, nonce, emptySealed);
+        CHECK(emptyOpened.has_value() && emptyOpened.value().empty());
+
+        // Truncated input (shorter than a tag) is malformed, not authentic.
+        CHECK(!aeadOpen(key, nonce, Bytes(kAeadTagBytes - 1, 0)).has_value());
+
+        // Wrong key/nonce sizes are a programming error.
+        CHECK_THROWS(aeadSeal(Bytes(31, 0), nonce, plain));
+        CHECK_THROWS(aeadSeal(key, Bytes(11, 0), plain));
+    }
+
     return 0;
 }

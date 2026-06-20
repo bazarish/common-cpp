@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 typedef struct evp_pkey_st EVP_PKEY;
@@ -70,6 +71,18 @@ Bytes sign(const Key& key, const Bytes& data);
 bool verify(const Key& key, const Bytes& data, const Bytes& signature);
 
 Bytes sha256(const Bytes& data);
+
+// AES-256-GCM authenticated encryption with a 32-byte key and a 12-byte nonce.
+// Used for per-call media datagrams: the call key is exchanged inside the E2E
+// invite and the nonce is role||sequence, never reused. The sealed output is
+// ciphertext || 16-byte tag; aeadOpen returns nullopt on any authentication
+// failure (wrong key, tampering, truncation). Standard primitive (OpenSSL EVP),
+// no custom construction.
+inline constexpr std::size_t kAeadKeyBytes = 32;
+inline constexpr std::size_t kAeadNonceBytes = 12;
+inline constexpr std::size_t kAeadTagBytes = 16;
+Bytes aeadSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext);
+std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed);
 
 // Streaming SHA-256 of a file's contents, read in bounded chunks so a
 // multi-gigabyte file is never held whole in memory. Throws if the file cannot

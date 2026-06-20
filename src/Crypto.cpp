@@ -33,6 +33,14 @@ struct BioDeleter {
 };
 using BioPtr = std::unique_ptr<BIO, BioDeleter>;
 
+struct CipherCtxDeleter {
+    void operator()(EVP_CIPHER_CTX* ctx) const
+    {
+        EVP_CIPHER_CTX_free(ctx);
+    }
+};
+using CipherCtxPtr = std::unique_ptr<EVP_CIPHER_CTX, CipherCtxDeleter>;
+
 BioPtr makeMemoryBio()
 {
     BioPtr bio(BIO_new(BIO_s_mem()));
@@ -219,6 +227,77 @@ Bytes sha256(const Bytes& data)
         throw std::runtime_error("EVP_Digest failed");
     }
     return digest;
+}
+
+Bytes aeadSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext)
+{
+    if (key.size() != kAeadKeyBytes || nonce.size() != kAeadNonceBytes) {
+        throw std::invalid_argument("aeadSeal: wrong key or nonce size");
+    }
+    const CipherCtxPtr ctx(EVP_CIPHER_CTX_new());
+    if (ctx == nullptr
+        || EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1
+        || EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN,
+               static_cast<int>(kAeadNonceBytes), nullptr)
+            != 1
+        || EVP_EncryptInit_ex(ctx.get(), nullptr, nullptr, key.data(), nonce.data()) != 1) {
+        throw std::runtime_error("aeadSeal: init failed");
+    }
+    Bytes out(plaintext.size() + kAeadTagBytes);
+    int len = 0;
+    if (EVP_EncryptUpdate(ctx.get(), out.data(), &len, plaintext.data(),
+            static_cast<int>(plaintext.size()))
+        != 1) {
+        throw std::runtime_error("aeadSeal: encrypt failed");
+    }
+    int finalLen = 0;
+    if (EVP_EncryptFinal_ex(ctx.get(), out.data() + len, &finalLen) != 1) {
+        throw std::runtime_error("aeadSeal: finalize failed");
+    }
+    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, static_cast<int>(kAeadTagBytes),
+            out.data() + plaintext.size())
+        != 1) {
+        throw std::runtime_error("aeadSeal: get tag failed");
+    }
+    return out;
+}
+
+std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed)
+{
+    if (key.size() != kAeadKeyBytes || nonce.size() != kAeadNonceBytes) {
+        throw std::invalid_argument("aeadOpen: wrong key or nonce size");
+    }
+    if (sealed.size() < kAeadTagBytes) {
+        return std::nullopt;  // too short to carry a tag: malformed, not authentic
+    }
+    const std::size_t cipherLen = sealed.size() - kAeadTagBytes;
+    const CipherCtxPtr ctx(EVP_CIPHER_CTX_new());
+    if (ctx == nullptr
+        || EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1
+        || EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN,
+               static_cast<int>(kAeadNonceBytes), nullptr)
+            != 1
+        || EVP_DecryptInit_ex(ctx.get(), nullptr, nullptr, key.data(), nonce.data()) != 1) {
+        throw std::runtime_error("aeadOpen: init failed");
+    }
+    Bytes out(cipherLen);
+    int len = 0;
+    if (EVP_DecryptUpdate(ctx.get(), out.data(), &len, sealed.data(),
+            static_cast<int>(cipherLen))
+        != 1) {
+        throw std::runtime_error("aeadOpen: decrypt failed");
+    }
+    // The trailing 16 bytes are the GCM tag; a mismatch fails DecryptFinal.
+    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, static_cast<int>(kAeadTagBytes),
+            const_cast<unsigned char*>(sealed.data() + cipherLen))
+        != 1) {
+        throw std::runtime_error("aeadOpen: set tag failed");
+    }
+    int finalLen = 0;
+    if (EVP_DecryptFinal_ex(ctx.get(), out.data() + len, &finalLen) != 1) {
+        return std::nullopt;  // authentication failed
+    }
+    return out;
 }
 
 Bytes sha256File(const std::filesystem::path& path)
