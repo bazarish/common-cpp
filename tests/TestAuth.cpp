@@ -80,5 +80,41 @@ int main()
             bodyHeaders, kNow, "PUT", "/v1/storage/blob", toHex(sha256(Bytes{'x'}))));
     }
 
+    // Replay cache: a verified request is accepted once; a verbatim replay
+    // (identical signature) is rejected, while genuinely distinct requests pass.
+    {
+        auth::ReplayCache cache;
+        const auth::Headers first
+            = auth::signRequest(identity, kNow, "POST", "/v1/messaging/ack", body);
+        CHECK(auth::verifyRequest(first, kNow, "POST", "/v1/messaging/ack", body, cache)
+            == identity.fingerprint());
+        // The same request bytes again is a replay.
+        CHECK_THROWS(auth::verifyRequest(first, kNow, "POST", "/v1/messaging/ack", body, cache));
+        // A different request (different path) is not a replay.
+        const auth::Headers other
+            = auth::signRequest(identity, kNow, "POST", "/v1/messaging/clients", body);
+        CHECK(auth::verifyRequest(other, kNow, "POST", "/v1/messaging/clients", body, cache)
+            == identity.fingerprint());
+        // Re-signing the identical request yields a different signature (ECDSA is
+        // randomized), so a legitimate resend is accepted, not mistaken for a
+        // replay.
+        const auth::Headers resigned
+            = auth::signRequest(identity, kNow, "POST", "/v1/messaging/ack", body);
+        CHECK(auth::verifyRequest(resigned, kNow, "POST", "/v1/messaging/ack", body, cache)
+            == identity.fingerprint());
+        // Once the timestamp ages out of the window the freshness check rejects
+        // the replay regardless of the cache (and the entry is evicted).
+        CHECK_THROWS(auth::verifyRequest(first, kNow + auth::kAuthFreshnessWindowSeconds + 1,
+            "POST", "/v1/messaging/ack", body, cache));
+        // The digest overload shares the same cache behaviour.
+        const std::string blobDigest = toHex(sha256(body));
+        const auth::Headers blob
+            = auth::signRequestDigest(identity, kNow, "PUT", "/v1/storage/blob", blobDigest);
+        CHECK(auth::verifyRequestDigest(blob, kNow, "PUT", "/v1/storage/blob", blobDigest, cache)
+            == identity.fingerprint());
+        CHECK_THROWS(
+            auth::verifyRequestDigest(blob, kNow, "PUT", "/v1/storage/blob", blobDigest, cache));
+    }
+
     return 0;
 }

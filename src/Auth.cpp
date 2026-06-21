@@ -117,4 +117,50 @@ std::string verifyRequest(const Headers& headers, const std::int64_t now,
     return verifyRequestDigest(headers, now, method, path, toHex(sha256(body)));
 }
 
+bool ReplayCache::checkAndRecord(
+    const Bytes& classicalSignature, const std::int64_t timestamp, const std::int64_t now)
+{
+    const std::string key = toHex(sha256(classicalSignature));
+    const std::lock_guard<std::mutex> lock(mutex_);
+
+    // Evict entries whose signed timestamp has aged out of the freshness window;
+    // a replay that old is already rejected by the freshness check. Sweeping at
+    // most once per second keeps eviction off the per-request hot path.
+    if (now > lastSweep_) {
+        const std::int64_t cutoff = now - kAuthFreshnessWindowSeconds;
+        for (auto it = seen_.begin(); it != seen_.end();) {
+            if (it->second < cutoff) {
+                it = seen_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        lastSweep_ = now;
+    }
+
+    return seen_.emplace(key, timestamp).second;
+}
+
+std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
+    const std::string& method, const std::string& path, const std::string& bodySha256Hex,
+    ReplayCache& replayCache)
+{
+    const std::string fingerprint
+        = verifyRequestDigest(headers, now, method, path, bodySha256Hex);
+    // The signatures verified; enforce exactly-once on the classical signature.
+    const std::int64_t timestamp
+        = std::strtoll(requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
+    const Bytes classicalSignature = fromBase64(requireHeader(headers, kHeaderSignatureClassical));
+    if (!replayCache.checkAndRecord(classicalSignature, timestamp, now)) {
+        throw std::runtime_error("auth request replay detected");
+    }
+    return fingerprint;
+}
+
+std::string verifyRequest(const Headers& headers, const std::int64_t now,
+    const std::string& method, const std::string& path, const Bytes& body, ReplayCache& replayCache)
+{
+    return verifyRequestDigest(headers, now, method, path, toHex(sha256(body)), replayCache);
+}
+
 }  // namespace bazarish::auth
