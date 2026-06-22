@@ -24,6 +24,7 @@ add_library(bazarish_common STATIC
     src/Sam.cpp
     src/SamHttp.cpp
     src/Log.cpp
+    src/Health.cpp
 )
 add_library(Bazarish::Common ALIAS bazarish_common)
 
@@ -59,3 +60,4 @@ bazarish_add_test(TestResolve)
 bazarish_add_test(TestSam)
 bazarish_add_test(TestSamHttp)
 bazarish_add_test(TestLog)
+bazarish_add_test(TestHealth)

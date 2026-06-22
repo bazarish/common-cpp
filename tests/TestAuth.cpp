@@ -116,5 +116,25 @@ int main()
             auth::verifyRequestDigest(blob, kNow, "PUT", "/v1/storage/blob", blobDigest, cache));
     }
 
+    // Authorize: a signed request from an authorized fingerprint passes; an
+    // unauthorized signer or an empty allow-list is rejected; a tampered
+    // signature is rejected (it delegates to verifyRequest).
+    {
+        const auth::Headers signedHeaders
+            = auth::signRequest(identity, kNow, "GET", "/healthz", Bytes{});
+        CHECK(auth::authorizeRequest(signedHeaders, kNow, "GET", "/healthz", Bytes{},
+                  {other.fingerprint(), identity.fingerprint()})
+            == identity.fingerprint());
+        CHECK_THROWS(auth::authorizeRequest(
+            signedHeaders, kNow, "GET", "/healthz", Bytes{}, {other.fingerprint()}));
+        CHECK_THROWS(
+            auth::authorizeRequest(signedHeaders, kNow, "GET", "/healthz", Bytes{}, {}));
+        auth::Headers tampered = signedHeaders;
+        std::string& sig = tampered[auth::kHeaderSignatureClassical];
+        sig[0] = sig[0] == 'A' ? 'B' : 'A';
+        CHECK_THROWS(auth::authorizeRequest(
+            tampered, kNow, "GET", "/healthz", Bytes{}, {identity.fingerprint()}));
+    }
+
     return 0;
 }

@@ -9,6 +9,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace bazarish::auth {
 
@@ -62,6 +63,17 @@ std::string verifyRequest(const Headers& headers, std::int64_t now, const std::s
 // digest of the stored bytes.
 std::string verifyRequestDigest(const Headers& headers, std::int64_t now,
     const std::string& method, const std::string& path, const std::string& bodySha256Hex);
+
+// Verifies the request signature like verifyRequest, then requires the recovered
+// caller fingerprint to be one of the authorized fingerprints. Returns the caller
+// fingerprint. Throws on a bad signature, a stale request, or an unauthorized
+// caller. An empty authorized list authorizes nobody. This is the gate for
+// operator-internal endpoints (no shared secret): the caller proves possession of
+// an authorized identity by signing the request, exactly like every other
+// identity statement in the system.
+std::string authorizeRequest(const Headers& headers, std::int64_t now,
+    const std::string& method, const std::string& path, const Bytes& body,
+    const std::vector<std::string>& authorizedFingerprints);
 
 // A bounded, thread-safe replay cache that narrows replay containment from
 // "anywhere inside the freshness window" to exactly-once. The classical

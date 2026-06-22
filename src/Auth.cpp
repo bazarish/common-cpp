@@ -117,6 +117,21 @@ std::string verifyRequest(const Headers& headers, const std::int64_t now,
     return verifyRequestDigest(headers, now, method, path, toHex(sha256(body)));
 }
 
+std::string authorizeRequest(const Headers& headers, const std::int64_t now,
+    const std::string& method, const std::string& path, const Bytes& body,
+    const std::vector<std::string>& authorizedFingerprints)
+{
+    const std::string caller = verifyRequest(headers, now, method, path, body);
+    for (const std::string& fingerprint : authorizedFingerprints) {
+        // Fingerprints are public, so a plain compare is fine; the security comes
+        // from the signature already verified above.
+        if (!fingerprint.empty() && fingerprint == caller) {
+            return caller;
+        }
+    }
+    throw std::runtime_error("auth caller is not an authorized operator");
+}
+
 bool ReplayCache::checkAndRecord(
     const Bytes& classicalSignature, const std::int64_t timestamp, const std::int64_t now)
 {
