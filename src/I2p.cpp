@@ -15,7 +15,10 @@
 #include "Identity.h"
 #include "Log.h"
 #include "NetDb.hpp"
+#include "NTCP2.h"
+#include "SSU2.h"
 #include "Streaming.h"
+#include "Transports.h"
 #include "Tunnel.h"
 #include "TunnelPool.h"
 #include "util.h"
@@ -166,6 +169,10 @@ std::size_t ioWorkerCount()
 
 // One embedded router per process (the i2pd engine is process-global).
 std::atomic<bool> g_routerLive{false};
+
+// libi2pd log output gate. OFF by default: the engine's logging is fully
+// suppressed (nothing reaches bazarish::log) until a caller turns it on.
+std::atomic<bool> g_i2pLogging{false};
 
 }  // namespace
 
@@ -595,11 +602,17 @@ Router::Router(RouterConfig config) : impl_(std::make_unique<Impl>())
 
     i2pd::api::InitI2P(static_cast<int>(argv.size()), argv.data(), "bazarish-i2p");
     i2pd::api::StartI2P();
-    // StartI2P always (re)points logging, so install our sink after it.
+    // StartI2P always (re)points logging, so install our sink after it. The sink
+    // drops everything unless logging was explicitly turned on, so by default the
+    // embedded router is silent.
     i2pd::log::Logger().SendTo([](LogLevel level, const std::string& text)
     {
+        if (!g_i2pLogging.load()) { return; }
         bazarish::log::emit(mapLevel(level), text);
     });
+    // Honor the current logging setting (default OFF) now that the logger exists,
+    // so the engine does not even format messages while logging is suppressed.
+    i2pd::log::Logger().SetLogLevel(g_i2pLogging.load() ? "warn" : "none");
     impl_->started = true;
     impl_->io = std::make_shared<IoService>(ioWorkerCount());
 }
@@ -625,7 +638,68 @@ bool Router::waitReady(std::chrono::seconds timeout)
 }
 
 int Router::knownRouters() const { return i2pd::data::netdb.GetNumRouters(); }
-int Router::transitTunnels() const { return i2pd::tunnel::tunnels.CountTransitTunnels(); }
+int Router::floodfills() const { return i2pd::data::netdb.GetNumFloodfills(); }
+int Router::transitTunnels() const
+{
+    return static_cast<int>(i2pd::tunnel::tunnels.CountTransitTunnels());
+}
+int Router::inboundTunnels() const
+{
+    return static_cast<int>(i2pd::tunnel::tunnels.CountInboundTunnels());
+}
+int Router::outboundTunnels() const
+{
+    return static_cast<int>(i2pd::tunnel::tunnels.CountOutboundTunnels());
+}
+
+std::vector<TransportPeer> Router::transportPeers() const
+{
+    std::vector<TransportPeer> peers;
+    // Copy each server's session map (the i2pd webconsole pattern) so iteration
+    // is over a snapshot rather than the live, concurrently-mutated container.
+    const auto collect = [&peers](const auto& sessions, const char* name) {
+        for (const auto& entry : sessions) {
+            const auto& session = entry.second;
+            if (!session || !session->IsEstablished()) { continue; }
+            const auto remote = session->GetRemoteIdentity();
+            if (!remote) { continue; }  // handshake not finished yet
+            TransportPeer peer;
+            peer.ident = remote->GetIdentHash().ToBase64().substr(0, 8);
+            peer.transport = name;
+            peer.outbound = session->IsOutgoing();
+            // Remote socket address; IPv6 is bracketed so the port stays readable.
+            const auto endpoint = session->GetRemoteEndpoint();
+            const auto address = endpoint.address();
+            const std::string host = address.to_string();
+            peer.endpoint = address.is_v6() ? ("[" + host + "]:" + std::to_string(endpoint.port()))
+                                            : (host + ":" + std::to_string(endpoint.port()));
+            peers.push_back(std::move(peer));
+        }
+    };
+    if (const auto* const ntcp2 = i2pd::transport::transports.GetNTCP2Server()) {
+        const auto sessions = ntcp2->GetNTCP2Sessions();
+        collect(sessions, "NTCP2");
+    }
+    if (const auto* const ssu2 = i2pd::transport::transports.GetSSU2Server()) {
+        const auto sessions = ssu2->GetSSU2Sessions();
+        collect(sessions, "SSU2");
+    }
+    return peers;
+}
+
+void setI2pLogging(bool enabled)
+{
+    g_i2pLogging.store(enabled);
+    // Also adjust the engine's own minimum level so it does not waste work
+    // formatting messages the sink would drop. The sink gate above is the
+    // authoritative on/off; this is just an optimization and is safe any time.
+    i2pd::log::Logger().SetLogLevel(enabled ? "warn" : "none");
+}
+
+bool i2pLogging()
+{
+    return g_i2pLogging.load();
+}
 
 std::shared_ptr<Endpoint> Router::createEndpoint(const EndpointConfig& config)
 {

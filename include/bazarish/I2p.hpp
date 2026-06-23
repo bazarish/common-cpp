@@ -195,6 +195,21 @@ struct RouterConfig {
     Role role = Role::eClient;
 };
 
+// One active transport-layer connection to another router - a direct TCP/UDP
+// session, for diagnostics.
+struct TransportPeer {
+    std::string ident;      // short base64 prefix of the remote router identity
+    std::string transport;  // "NTCP2" or "SSU2"
+    std::string endpoint;   // remote "ip:port" (v6 bracketed), empty if unknown
+    bool outbound = false;  // true when we initiated the connection
+};
+
+// Router log output. By default OFF: libi2pd's own logging is fully suppressed
+// (nothing reaches bazarish::log). Turn it on for debugging. Process-global and
+// safe to call at any time (before or after a router exists).
+void setI2pLogging(bool enabled);
+bool i2pLogging();
+
 // The embedded I2P router. One per process (it owns the process-global i2pd
 // engine); constructing a second throws. Starting it brings up tunnels and netDb;
 // i2pd's own logging is routed into the project log (bazarish::log).
@@ -210,8 +225,14 @@ public:
     bool waitReady(std::chrono::seconds timeout);
 
     // Diagnostics.
-    int knownRouters() const;    // netDb size
-    int transitTunnels() const;  // participating transit tunnels (server role)
+    int knownRouters() const;     // netDb size (routers known)
+    int floodfills() const;       // floodfill routers in the netDb
+    int transitTunnels() const;   // participating transit tunnels (server role)
+    int inboundTunnels() const;   // our destinations' inbound tunnels
+    int outboundTunnels() const;  // our destinations' outbound tunnels
+    // Active direct transport connections (NTCP2 / SSU2 sessions to other
+    // routers). A snapshot, safe to call from another thread.
+    std::vector<TransportPeer> transportPeers() const;
 
     // Create a destination on this router.
     std::shared_ptr<Endpoint> createEndpoint(const EndpointConfig& config);
