@@ -56,42 +56,4 @@ std::map<std::string, std::string> parseSamHttpHeaders(const std::string& headBl
     return headers;
 }
 
-SamHttpHead readSamHttpHead(SamStream& stream)
-{
-    std::string raw;
-    std::array<char, 65536> buffer{};
-    std::size_t headerEnd = std::string::npos;
-    while ((headerEnd = raw.find("\r\n\r\n")) == std::string::npos) {
-        const std::size_t got = stream.readSome(buffer.data(), buffer.size());
-        if (got == 0) {
-            throw std::runtime_error("malformed i2p http response");
-        }
-        raw.append(buffer.data(), got);
-    }
-    const std::string headBlock = raw.substr(0, headerEnd);
-    SamHttpHead head;
-    head.status = parseSamHttpStatus(headBlock.substr(0, headBlock.find("\r\n")));
-    head.headers = parseSamHttpHeaders(headBlock);
-    head.leftover = raw.substr(headerEnd + 4);
-    return head;
-}
-
-SamHttpResponse readSamHttpResponse(SamStream& stream)
-{
-    SamHttpHead head = readSamHttpHead(stream);
-    SamHttpResponse response;
-    response.status = head.status;
-    response.headers = std::move(head.headers);
-    response.body = std::move(head.leftover);
-    std::array<char, 65536> buffer{};
-    for (;;) {
-        const std::size_t got = stream.readSome(buffer.data(), buffer.size());
-        if (got == 0) {
-            break;
-        }
-        response.body.append(buffer.data(), got);
-    }
-    return response;
-}
-
 }  // namespace bazarish

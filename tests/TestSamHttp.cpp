@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "bazarish/SamHttp.hpp"
 
+#include "bazarish/Sam.hpp"  // SamStream, as a concrete stream to exercise the templated readers
+
 #include "TestUtil.hpp"
 
 #include <sys/socket.h>

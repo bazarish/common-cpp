@@ -1,10 +1,10 @@
 // Bazarish project (c) 2026
 #pragma once
 
-#include <bazarish/Sam.hpp>
-
+#include <array>
 #include <cstddef>
 #include <map>
+#include <stdexcept>
 #include <string>
 
 namespace bazarish {
@@ -42,11 +42,31 @@ struct SamHttpHead {
     std::string leftover;
 };
 
-// Reads from `stream` up to the CRLFCRLF head terminator and parses the status
+// Reads from `stream` (any type with readSome(void*, size_t) - a SAM stream or a
+// bazarish::i2p::Stream) up to the CRLFCRLF head terminator and parses the status
 // line and headers; any body bytes read past it are returned in `.leftover`.
 // Throws on a malformed response or premature EOF. The streaming download path
 // uses this and then keeps reading the body off the same stream.
-SamHttpHead readSamHttpHead(SamStream& stream);
+template <class Stream>
+SamHttpHead readSamHttpHead(Stream& stream)
+{
+    std::string raw;
+    std::array<char, 65536> buffer{};
+    std::size_t headerEnd = std::string::npos;
+    while ((headerEnd = raw.find("\r\n\r\n")) == std::string::npos) {
+        const std::size_t got = stream.readSome(buffer.data(), buffer.size());
+        if (got == 0) {
+            throw std::runtime_error("malformed i2p http response");
+        }
+        raw.append(buffer.data(), got);
+    }
+    const std::string headBlock = raw.substr(0, headerEnd);
+    SamHttpHead head;
+    head.status = parseSamHttpStatus(headBlock.substr(0, headBlock.find("\r\n")));
+    head.headers = parseSamHttpHeaders(headBlock);
+    head.leftover = raw.substr(headerEnd + 4);
+    return head;
+}
 
 // A whole HTTP response (head + body drained to EOF) for the non-streaming
 // callers. The body is raw bytes (binary-safe).
@@ -55,6 +75,23 @@ struct SamHttpResponse {
     std::map<std::string, std::string> headers;  // keys lowercased
     std::string body;
 };
-SamHttpResponse readSamHttpResponse(SamStream& stream);
+template <class Stream>
+SamHttpResponse readSamHttpResponse(Stream& stream)
+{
+    SamHttpHead head = readSamHttpHead(stream);
+    SamHttpResponse response;
+    response.status = head.status;
+    response.headers = std::move(head.headers);
+    response.body = std::move(head.leftover);
+    std::array<char, 65536> buffer{};
+    for (;;) {
+        const std::size_t got = stream.readSome(buffer.data(), buffer.size());
+        if (got == 0) {
+            break;
+        }
+        response.body.append(buffer.data(), got);
+    }
+    return response;
+}
 
 }  // namespace bazarish
