@@ -160,6 +160,14 @@ std::string routingHost(const std::string& publicBase64, LeaseSetKind kind)
         : standardLeaseSetHost(publicBase64);
 }
 
+std::optional<Privacy> privacyFromString(std::string_view text)
+{
+    if (text == "minimal") { return Privacy::eMinimal; }
+    if (text == "middle") { return Privacy::eMiddle; }
+    if (text == "max") { return Privacy::eMax; }
+    return std::nullopt;
+}
+
 // ---------------------------------------------------------------------------
 // Stream
 // ---------------------------------------------------------------------------

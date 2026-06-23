@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // The project's I2P transport. This is the ONLY surface the rest of bazarish uses
@@ -23,6 +25,14 @@ namespace bazarish::i2p {
 //   eMiddle:  1-hop in/out, variance 1
 //   eMax:     2-hop in/out, variance 1
 enum class Privacy { eMinimal, eMiddle, eMax };
+
+// Parses "minimal" | "middle" | "max" (for CLI flags); nullopt otherwise.
+std::optional<Privacy> privacyFromString(std::string_view text);
+
+// Parallel tunnels per direction in a destination's pool (throughput /
+// redundancy for one address). I2P caps the per-pool quantity at 16.
+inline constexpr int kDefaultTunnelQuantity = 3;
+inline constexpr int kMaxTunnelQuantity = 16;
 
 // Router participation role. Client does not relay (notransit); Server relays
 // transit traffic (helps the network and blends endpoint flows with relay).
