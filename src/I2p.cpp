@@ -556,6 +556,7 @@ std::vector<std::uint8_t> Endpoint::receiveRawDatagram(std::chrono::milliseconds
 
 struct Router::Impl {
     bool owns = false;
+    bool inited = false;
     bool started = false;
     std::shared_ptr<IoService> io;
 
@@ -567,6 +568,12 @@ struct Router::Impl {
         if (started)
         {
             i2pd::api::StopI2P();
+        }
+        // The engine is initialized once per process, so terminate it (crypto) only
+        // here, at the end of the object's life - never on stop(), so the network
+        // can be started again. A second InitI2P is unsupported.
+        if (inited)
+        {
             i2pd::api::TerminateI2P();
         }
         if (owns) { g_routerLive = false; }
@@ -601,10 +608,19 @@ Router::Router(RouterConfig config) : impl_(std::make_unique<Impl>())
     for (auto& arg : args) { argv.push_back(arg.data()); }
 
     i2pd::api::InitI2P(static_cast<int>(argv.size()), argv.data(), "bazarish-i2p");
+    impl_->inited = true;
+    start();
+}
+
+Router::~Router() = default;
+
+void Router::start()
+{
+    if (impl_->started) { return; }
     i2pd::api::StartI2P();
-    // StartI2P always (re)points logging, so install our sink after it. The sink
-    // drops everything unless logging was explicitly turned on, so by default the
-    // embedded router is silent.
+    // StartI2P always (re)points logging, so install our sink after it (on every
+    // start - it is reset each time). The sink drops everything unless logging was
+    // explicitly turned on, so by default the embedded router is silent.
     i2pd::log::Logger().SendTo([](LogLevel level, const std::string& text)
     {
         if (!g_i2pLogging.load()) { return; }
@@ -617,7 +633,17 @@ Router::Router(RouterConfig config) : impl_(std::make_unique<Impl>())
     impl_->io = std::make_shared<IoService>(ioWorkerCount());
 }
 
-Router::~Router() = default;
+void Router::stop()
+{
+    if (!impl_->started) { return; }
+    // Release the shared service before stopping the engine: workers must drain and
+    // join while the engine they post to is still up.
+    impl_->io.reset();
+    i2pd::api::StopI2P();
+    impl_->started = false;
+}
+
+bool Router::running() const { return impl_->started; }
 
 bool Router::ready() const
 {

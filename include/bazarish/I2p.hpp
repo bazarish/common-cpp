@@ -211,14 +211,25 @@ void setI2pLogging(bool enabled);
 bool i2pLogging();
 
 // The embedded I2P router. One per process (it owns the process-global i2pd
-// engine); constructing a second throws. Starting it brings up tunnels and netDb;
-// i2pd's own logging is routed into the project log (bazarish::log).
+// engine); constructing a second throws. The engine is initialized once for the
+// life of the object; start()/stop() bring the network up and down on it so I2P
+// can be honestly toggled at runtime. i2pd's own logging is routed into the
+// project log (bazarish::log).
 class Router {
 public:
     explicit Router(RouterConfig config);
     ~Router();
     Router(const Router&) = delete;
     Router& operator=(const Router&) = delete;
+
+    // Bring the network (tunnels, transports, netDb) up or down on the already
+    // initialized engine. Constructing the Router leaves it started; stop() tears
+    // the network down without de-initializing, so start() can bring it back. A
+    // second InitI2P is unsupported (it double-registers config options), which is
+    // why init/terminate happen once, in the constructor/destructor. Idempotent.
+    void start();
+    void stop();
+    bool running() const;
 
     // True once outbound tunnels exist and netDb is warm enough to operate.
     bool ready() const;
