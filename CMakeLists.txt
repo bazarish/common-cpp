@@ -9,6 +9,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(OpenSSL 3.0 REQUIRED)
 find_package(ZLIB REQUIRED)
 
+# Embedded I2P transport. ON by default: I2P is the transport, so every consumer
+# of common needs it. Requires the i2pd submodule (recursive init) and Boost
+# program_options. Turn OFF only for builds that never touch the network, e.g.
+# air-gapped offline key tools: -DBAZARISH_WITH_I2PD=OFF.
+option(BAZARISH_WITH_I2PD "Build the embedded libi2pd_bazarish target" ON)
+if(BAZARISH_WITH_I2PD)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/I2pdBazarish.cmake)
+endif()
+
 add_library(bazarish_common STATIC
     src/Auth.cpp
     src/Bytes.cpp
@@ -36,6 +45,18 @@ target_include_directories(bazarish_common SYSTEM
 )
 target_link_libraries(bazarish_common PUBLIC OpenSSL::Crypto ZLIB::ZLIB)
 target_compile_options(bazarish_common PRIVATE -Wall -Wextra -Werror)
+
+# The I2P transport wrapper compiles only against the embedded engine. Its i2pd
+# and Boost includes arrive (as SYSTEM) through Bazarish::I2pd, so they stay out
+# of our -Werror surface.
+if(BAZARISH_WITH_I2PD)
+    target_sources(bazarish_common PRIVATE src/I2p.cpp)
+    target_link_libraries(bazarish_common PUBLIC Bazarish::I2pd)
+    # Manual end-to-end smoke over live I2P (not a unit test - needs the network).
+    add_executable(i2p_smoke tests/I2pSmoke.cpp)
+    target_link_libraries(i2p_smoke PRIVATE bazarish_common)
+    target_compile_options(i2p_smoke PRIVATE -Wall -Wextra)
+endif()
 
 enable_testing()
 
