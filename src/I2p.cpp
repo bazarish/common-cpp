@@ -258,6 +258,10 @@ struct Endpoint::Impl {
     std::condition_variable dgCv;
     std::deque<Incoming> dgQueue;
 
+    std::mutex rawMutex;
+    std::condition_variable rawCv;
+    std::deque<std::vector<std::uint8_t>> rawQueue;
+
     ~Impl()
     {
         // Stop the destination first so no accept/datagram callback fires against
@@ -424,6 +428,54 @@ std::vector<std::uint8_t> Endpoint::receiveDatagram(std::string& peerBase64,
     return std::move(incoming.payload);
 }
 
+void Endpoint::sendRawDatagram(const std::string& host, const void* data, std::size_t size)
+{
+    if (!impl_->datagram) { return; }
+    const auto* payload = static_cast<const std::uint8_t*>(data);
+
+    if (isB32I2pHost(host))
+    {
+        const std::string label = host.substr(0, host.size() - kB32SuffixLen);
+        std::uint8_t rawHash[64];
+        const std::size_t n = i2pd::data::Base32ToByteStream(label, rawHash, sizeof rawHash);
+        if (n == 32)
+        {
+            impl_->datagram->SendRawDatagramTo(payload, size, i2pd::data::IdentHash(rawHash));
+        }
+        else
+        {
+            auto blinded = std::make_shared<i2pd::data::BlindedPublicKey>(std::string_view(label));
+            auto datagram = impl_->datagram;
+            std::vector<std::uint8_t> copy(payload, payload + size);
+            impl_->dest->RequestDestinationWithEncryptedLeaseSet(blinded,
+                [datagram, copy](std::shared_ptr<i2pd::data::LeaseSet> ls)
+                {
+                    if (ls) { datagram->SendRawDatagramTo(copy.data(), copy.size(), ls->GetIdentHash()); }
+                });
+        }
+    }
+    else
+    {
+        auto identity = std::make_shared<i2pd::data::IdentityEx>();
+        if (identity->FromBase64(host) > 0)
+        {
+            impl_->datagram->SendRawDatagramTo(payload, size, identity->GetIdentHash());
+        }
+    }
+}
+
+std::vector<std::uint8_t> Endpoint::receiveRawDatagram(std::chrono::milliseconds timeout)
+{
+    std::unique_lock<std::mutex> lock(impl_->rawMutex);
+    if (!impl_->rawCv.wait_for(lock, timeout, [this] { return !impl_->rawQueue.empty(); }))
+    {
+        return {};
+    }
+    auto payload = std::move(impl_->rawQueue.front());
+    impl_->rawQueue.pop_front();
+    return payload;
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -553,6 +605,15 @@ std::shared_ptr<Endpoint> Router::createEndpoint(const EndpointConfig& config)
             raw->dgQueue.push_back(std::move(incoming));
         }
         raw->dgCv.notify_one();
+    });
+    impl->datagram->SetRawReceiver([raw](std::uint16_t, std::uint16_t,
+        const std::uint8_t* buf, std::size_t len)
+    {
+        {
+            std::lock_guard<std::mutex> lock(raw->rawMutex);
+            raw->rawQueue.emplace_back(buf, buf + len);
+        }
+        raw->rawCv.notify_one();
     });
 
     std::shared_ptr<Endpoint> endpoint(new Endpoint());

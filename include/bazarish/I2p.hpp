@@ -171,6 +171,14 @@ public:
     std::vector<std::uint8_t> receiveDatagram(std::string& peerBase64,
         std::chrono::milliseconds timeout);
 
+    // Raw (non-repliable) datagrams: lowest overhead - no per-packet source
+    // identity and no I2P-layer authentication (authenticate the payload
+    // yourself). For real-time media (calls). Best-effort like UDP.
+    void sendRawDatagram(const std::string& host, const void* data, std::size_t size);
+    // Wait up to timeout for one raw datagram; returns its payload (no sender
+    // identity), or an empty vector on timeout.
+    std::vector<std::uint8_t> receiveRawDatagram(std::chrono::milliseconds timeout);
+
 private:
     Endpoint();
     struct Impl;
