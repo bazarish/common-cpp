@@ -15,18 +15,18 @@ namespace bazarish {
 // via this b33; a connect to its raw destination fails (no plain leaseset is
 // published), so this is what callers route to.
 //
-// The input is the SAM base64 destination (I2P-base64 alphabet). Only Ed25519
-// (signature type 7) destinations are supported. Throws on a malformed or
+// The input is the destination in I2P-base64 (the I2P-base64 alphabet). Only
+// Ed25519 (signature type 7) destinations are supported. Throws on a malformed or
 // unsupported destination.
-std::string encryptedLeaseSetHost(const std::string& samBase64Destination);
+std::string encryptedLeaseSetHost(const std::string& i2pBase64Destination);
 
 // Derives the shareable .b32.i2p host for a destination published as a STANDARD
 // LeaseSet2 - the ordinary base32(sha256(destination)) address (52 base32
 // chars). This is the form for an offline-key per-user destination (and any
 // standard-LeaseSet destination): it cannot publish a blinded b33, but it IS
-// reachable by this standard b32. The input is the SAM base64 destination
-// (I2P-base64 alphabet). Throws on a malformed destination.
-std::string standardLeaseSetHost(const std::string& samBase64Destination);
+// reachable by this standard b32. The input is the destination in I2P-base64
+// (the I2P-base64 alphabet). Throws on a malformed destination.
+std::string standardLeaseSetHost(const std::string& i2pBase64Destination);
 
 // True iff host is a .b32.i2p address: it ends in ".b32.i2p" and the label is a
 // non-empty lowercase RFC-4648 base32 string. The label LENGTH is not constrained

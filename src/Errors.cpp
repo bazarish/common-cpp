@@ -20,7 +20,7 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErro
     {bazarish::ErrorCode::eAliasTaken, "ALIAS_TAKEN"},
     {bazarish::ErrorCode::eAliasUnknown, "ALIAS_UNKNOWN"},
     {bazarish::ErrorCode::eClientUnregistered, "CLIENT_UNREGISTERED"},
-    {bazarish::ErrorCode::eSamUnavailable, "SAM_UNAVAILABLE"},
+    {bazarish::ErrorCode::eI2pUnavailable, "I2P_UNAVAILABLE"},
 }};
 
 }  // namespace

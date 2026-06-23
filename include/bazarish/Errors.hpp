@@ -24,7 +24,7 @@ enum class ErrorCode {
     eAliasTaken,
     eAliasUnknown,
     eClientUnregistered,
-    eSamUnavailable,
+    eI2pUnavailable,
 };
 
 std::string_view toString(ErrorCode code);

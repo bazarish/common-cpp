@@ -1,5 +1,5 @@
 // Bazarish project (c) 2026
-#include "bazarish/SamHttp.hpp"
+#include "bazarish/I2pHttp.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,7 +8,7 @@
 
 namespace bazarish {
 
-std::string buildSamHttpRequest(const std::string& method, const std::string& host,
+std::string buildI2pHttpRequest(const std::string& method, const std::string& host,
     const std::string& path, const std::map<std::string, std::string>& extraHeaders,
     const std::size_t bodySize)
 {
@@ -20,7 +20,7 @@ std::string buildSamHttpRequest(const std::string& method, const std::string& ho
     return request;
 }
 
-int parseSamHttpStatus(const std::string& statusLine)
+int parseI2pHttpStatus(const std::string& statusLine)
 {
     const std::size_t space = statusLine.find(' ');
     if (space == std::string::npos) {
@@ -29,7 +29,7 @@ int parseSamHttpStatus(const std::string& statusLine)
     return std::stoi(statusLine.substr(space + 1, 3));
 }
 
-std::map<std::string, std::string> parseSamHttpHeaders(const std::string& headBlock)
+std::map<std::string, std::string> parseI2pHttpHeaders(const std::string& headBlock)
 {
     std::map<std::string, std::string> headers;
     const std::size_t firstLineEnd = headBlock.find("\r\n");

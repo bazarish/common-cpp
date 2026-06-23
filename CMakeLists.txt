@@ -30,8 +30,7 @@ add_library(bazarish_common STATIC
     src/I2pAddress.cpp
     src/Descriptor.cpp
     src/Resolve.cpp
-    src/Sam.cpp
-    src/SamHttp.cpp
+    src/I2pHttp.cpp
     src/Log.cpp
     src/Health.cpp
 )
@@ -78,7 +77,6 @@ bazarish_add_test(TestAddress)
 bazarish_add_test(TestI2pAddress)
 bazarish_add_test(TestDescriptor)
 bazarish_add_test(TestResolve)
-bazarish_add_test(TestSam)
-bazarish_add_test(TestSamHttp)
+bazarish_add_test(TestI2pHttp)
 bazarish_add_test(TestLog)
 bazarish_add_test(TestHealth)

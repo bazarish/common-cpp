@@ -21,7 +21,7 @@ int main()
         ErrorCode::eAliasTaken,
         ErrorCode::eAliasUnknown,
         ErrorCode::eClientUnregistered,
-        ErrorCode::eSamUnavailable,
+        ErrorCode::eI2pUnavailable,
     };
     for (const ErrorCode code : codes) {
         const std::optional<ErrorCode> back = errorCodeFromString(toString(code));

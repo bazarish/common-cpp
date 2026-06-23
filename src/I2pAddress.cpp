@@ -43,9 +43,9 @@ constexpr std::size_t kB32SuffixLen = sizeof(kB32Suffix) - 1;
 
 namespace bazarish {
 
-std::string encryptedLeaseSetHost(const std::string& samBase64Destination)
+std::string encryptedLeaseSetHost(const std::string& i2pBase64Destination)
 {
-    const Bytes destination = fromBase64(i2pToStandardBase64(samBase64Destination));
+    const Bytes destination = fromBase64(i2pToStandardBase64(i2pBase64Destination));
 
     // Need the full key fields plus a 7-byte key certificate.
     if (destination.size() < kCertOffset + 7) {
@@ -82,9 +82,9 @@ std::string encryptedLeaseSetHost(const std::string& samBase64Destination)
     return toBase32(Bytes(addr.begin(), addr.end())) + ".b32.i2p";
 }
 
-std::string standardLeaseSetHost(const std::string& samBase64Destination)
+std::string standardLeaseSetHost(const std::string& i2pBase64Destination)
 {
-    const Bytes destination = fromBase64(i2pToStandardBase64(samBase64Destination));
+    const Bytes destination = fromBase64(i2pToStandardBase64(i2pBase64Destination));
 
     // The destination must at least hold the two key fields; the standard b32
     // is the base32 of the SHA-256 over the whole destination (key fields plus
