@@ -101,6 +101,69 @@ bool isClosedStatus(i2pd::stream::StreamStatus status)
         || status == i2pd::stream::eStreamStatusTerminated;
 }
 
+// One asio io_context shared by every destination on a router, driven by a small
+// worker pool. Each destination used to be a RunnableClientDestination - its own
+// io_context on its own dedicated thread - which capped a server at one OS thread
+// per destination. Routing every destination through this single service lets one
+// router host many hundreds of destinations on a fixed, small thread pool. Held
+// via shared_ptr by both the Router and every Endpoint it spawns, so the service
+// outlives the destinations regardless of teardown order.
+struct IoService {
+    boost::asio::io_context ctx;
+    boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work;
+    std::vector<std::thread> workers;
+    std::atomic<bool> running{true};
+
+    explicit IoService(std::size_t threads)
+        : work(boost::asio::make_work_guard(ctx))
+    {
+        for (std::size_t i = 0; i < threads; ++i)
+        {
+            workers.emplace_back([this]
+            {
+                // The work guard keeps run() blocked while idle; it returns only
+                // on shutdown (guard released + stop) or when a handler throws, in
+                // which case we log and resume so one bad packet cannot permanently
+                // kill a worker.
+                while (running)
+                {
+                    try
+                    {
+                        ctx.run();
+                    }
+                    catch (const std::exception& ex)
+                    {
+                        bazarish::log::emit(bazarish::log::Level::eError,
+                            std::string("bazarish::i2p: io_context handler exception: ") + ex.what());
+                    }
+                }
+            });
+        }
+    }
+
+    ~IoService()
+    {
+        running = false;
+        work.reset();
+        ctx.stop();
+        for (auto& worker : workers)
+        {
+            if (worker.joinable()) { worker.join(); }
+        }
+    }
+};
+
+// Worker threads for the shared service: half the hardware concurrency, clamped to
+// [2, 8]. The destination layer (streaming, datagrams, leaseset/garlic handling)
+// runs here alongside the i2pd engine's own transport and tunnel threads, so a
+// fraction of the cores is plenty and leaves headroom for the engine.
+std::size_t ioWorkerCount()
+{
+    const unsigned hw = std::thread::hardware_concurrency();
+    const std::size_t half = hw ? hw / 2 : 2;
+    return std::clamp<std::size_t>(half, 2, 8);
+}
+
 // One embedded router per process (the i2pd engine is process-global).
 std::atomic<bool> g_routerLive{false};
 
@@ -238,7 +301,11 @@ void Stream::close()
 // ---------------------------------------------------------------------------
 
 struct Endpoint::Impl {
-    std::shared_ptr<i2pd::client::RunnableClientDestination> dest;
+    // Keeps the router's shared service alive for as long as this endpoint (and its
+    // destination's reference to the io_context) exists. Declared first so it is
+    // destroyed last, after dest below.
+    std::shared_ptr<IoService> io;
+    std::shared_ptr<i2pd::client::ClientDestination> dest;
     std::shared_ptr<i2pd::datagram::DatagramDestination> datagram;
     LeaseSetKind leaseSet = LeaseSetKind::eEncrypted;
 
@@ -483,9 +550,13 @@ std::vector<std::uint8_t> Endpoint::receiveRawDatagram(std::chrono::milliseconds
 struct Router::Impl {
     bool owns = false;
     bool started = false;
+    std::shared_ptr<IoService> io;
 
     ~Impl()
     {
+        // Release the shared service before stopping the engine: workers must drain
+        // and join while the engine they post to is still up.
+        io.reset();
         if (started)
         {
             i2pd::api::StopI2P();
@@ -530,6 +601,7 @@ Router::Router(RouterConfig config) : impl_(std::make_unique<Impl>())
         bazarish::log::emit(mapLevel(level), text);
     });
     impl_->started = true;
+    impl_->io = std::make_shared<IoService>(ioWorkerCount());
 }
 
 Router::~Router() = default;
@@ -578,8 +650,11 @@ std::shared_ptr<Endpoint> Router::createEndpoint(const EndpointConfig& config)
     params.Insert(i2pd::client::I2CP_PARAM_INBOUND_TUNNELS_QUANTITY, std::to_string(quantity));
     params.Insert(i2pd::client::I2CP_PARAM_OUTBOUND_TUNNELS_QUANTITY, std::to_string(quantity));
 
-    impl->dest = std::make_shared<i2pd::client::RunnableClientDestination>(
-        config.keys.impl_->keys, config.published, &params);
+    // Run this destination on the router's shared service rather than a dedicated
+    // thread, so the router scales to many destinations on a fixed worker pool.
+    impl->io = impl_->io;
+    impl->dest = std::make_shared<i2pd::client::ClientDestination>(
+        impl->io->ctx, config.keys.impl_->keys, config.published, &params);
     impl->dest->Start();
 
     auto* raw = impl.get();
