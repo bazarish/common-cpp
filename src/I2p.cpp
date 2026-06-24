@@ -104,35 +104,47 @@ bool isClosedStatus(i2pd::stream::StreamStatus status)
         || status == i2pd::stream::eStreamStatusTerminated;
 }
 
-// One asio io_context shared by every destination on a router, driven by a small
-// worker pool. Each destination used to be a RunnableClientDestination - its own
-// io_context on its own dedicated thread - which capped a server at one OS thread
-// per destination. Routing every destination through this single service lets one
-// router host many hundreds of destinations on a fixed, small thread pool. Held
-// via shared_ptr by both the Router and every Endpoint it spawns, so the service
-// outlives the destinations regardless of teardown order.
-struct IoService {
-    boost::asio::io_context ctx;
-    boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work;
-    std::vector<std::thread> workers;
-    std::atomic<bool> running{true};
-
-    explicit IoService(std::size_t threads)
-        : work(boost::asio::make_work_guard(ctx))
+// A pool of single-threaded asio io_contexts ("lanes"). Each i2pd
+// ClientDestination is pinned to ONE lane for its lifetime, so every handler of a
+// given destination (garlic/leaseset/streaming/datagram) runs on that lane's one
+// thread and never two at once. This is required: an i2pd destination is not safe
+// under concurrent handler execution - its per-destination state (e.g. the
+// ECIES-X25519 tag map) has no internal locking and assumes a single service
+// thread, so running one destination across several threads corrupts it. New
+// destinations are handed out round-robin across the lanes, so a router still
+// hosts many destinations and uses several cores in parallel - it just never runs
+// two threads inside the same destination. Each destination used to be a
+// RunnableClientDestination (its own thread), which capped a server at one OS
+// thread per destination; the lane pool keeps that scaling without the per-dest
+// thread and without the cross-thread races a single shared multi-thread context
+// caused. Held via shared_ptr by both the Router and every Endpoint it spawns, so
+// the pool outlives the destinations regardless of teardown order.
+class IoService {
+public:
+    explicit IoService(std::size_t lanes)
     {
-        for (std::size_t i = 0; i < threads; ++i)
+        if (lanes < 1) { lanes = 1; }
+        lanes_.reserve(lanes);
+        for (std::size_t i = 0; i < lanes; ++i)
         {
-            workers.emplace_back([this]
+            lanes_.push_back(std::make_unique<Lane>());
+        }
+        // Start the threads only after all lanes exist, so the vector never
+        // reallocates under a running worker (the worker captures a stable Lane*).
+        for (auto& lane : lanes_)
+        {
+            Lane* const l = lane.get();
+            l->worker = std::thread([l]
             {
                 // The work guard keeps run() blocked while idle; it returns only
                 // on shutdown (guard released + stop) or when a handler throws, in
                 // which case we log and resume so one bad packet cannot permanently
-                // kill a worker.
-                while (running)
+                // kill the lane.
+                while (l->running)
                 {
                     try
                     {
-                        ctx.run();
+                        l->ctx.run();
                     }
                     catch (const std::exception& ex)
                     {
@@ -146,21 +158,45 @@ struct IoService {
 
     ~IoService()
     {
-        running = false;
-        work.reset();
-        ctx.stop();
-        for (auto& worker : workers)
+        for (auto& lane : lanes_)
         {
-            if (worker.joinable()) { worker.join(); }
+            lane->running = false;
+            lane->work.reset();
+            lane->ctx.stop();
+        }
+        for (auto& lane : lanes_)
+        {
+            if (lane->worker.joinable()) { lane->worker.join(); }
         }
     }
+
+    // The io_context a new destination should run on (round-robin across lanes).
+    // The chosen lane's single thread serializes all of that destination's
+    // handlers, while different destinations spread across lanes run in parallel.
+    boost::asio::io_context& next()
+    {
+        const std::size_t i = nextLane_.fetch_add(1, std::memory_order_relaxed) % lanes_.size();
+        return lanes_[i]->ctx;
+    }
+
+private:
+    struct Lane {
+        boost::asio::io_context ctx;
+        boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work
+            = boost::asio::make_work_guard(ctx);
+        std::atomic<bool> running{true};
+        std::thread worker;
+    };
+    std::vector<std::unique_ptr<Lane>> lanes_;
+    std::atomic<std::size_t> nextLane_{0};
 };
 
-// Worker threads for the shared service: half the hardware concurrency, clamped to
-// [2, 8]. The destination layer (streaming, datagrams, leaseset/garlic handling)
-// runs here alongside the i2pd engine's own transport and tunnel threads, so a
-// fraction of the cores is plenty and leaves headroom for the engine.
-std::size_t ioWorkerCount()
+// Number of lanes (single-threaded io_contexts) for the destination pool: half
+// the hardware concurrency, clamped to [2, 8]. The destination layer (streaming,
+// datagrams, leaseset/garlic handling) runs here alongside the i2pd engine's own
+// transport and tunnel threads, so a fraction of the cores is plenty and leaves
+// headroom for the engine.
+std::size_t ioContextCount()
 {
     const unsigned hw = std::thread::hardware_concurrency();
     const std::size_t half = hw ? hw / 2 : 2;
@@ -630,7 +666,7 @@ void Router::start()
     // so the engine does not even format messages while logging is suppressed.
     i2pd::log::Logger().SetLogLevel(g_i2pLogging.load() ? "warn" : "none");
     impl_->started = true;
-    impl_->io = std::make_shared<IoService>(ioWorkerCount());
+    impl_->io = std::make_shared<IoService>(ioContextCount());
 }
 
 void Router::stop()
@@ -750,11 +786,12 @@ std::shared_ptr<Endpoint> Router::createEndpoint(const EndpointConfig& config)
     params.Insert(i2pd::client::I2CP_PARAM_INBOUND_TUNNELS_QUANTITY, std::to_string(quantity));
     params.Insert(i2pd::client::I2CP_PARAM_OUTBOUND_TUNNELS_QUANTITY, std::to_string(quantity));
 
-    // Run this destination on the router's shared service rather than a dedicated
-    // thread, so the router scales to many destinations on a fixed worker pool.
+    // Pin this destination to one lane of the router's io_context pool rather than
+    // a dedicated thread, so the router scales to many destinations on a fixed pool
+    // while every handler of this destination stays on a single thread.
     impl->io = impl_->io;
     impl->dest = std::make_shared<i2pd::client::ClientDestination>(
-        impl->io->ctx, config.keys.impl_->keys, config.published, &params);
+        impl->io->next(), config.keys.impl_->keys, config.published, &params);
     impl->dest->Start();
 
     auto* raw = impl.get();
