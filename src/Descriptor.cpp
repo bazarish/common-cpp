@@ -29,14 +29,74 @@ bool isFingerprint(const std::string& fingerprint)
     return true;
 }
 
+// Percent-encodes a free-form value (the display name) so arbitrary text -
+// spaces, '&', '=', UTF-8 - survives the '&'/'=' split with no ambiguity. Only
+// the RFC-3986 unreserved set is left as-is.
+std::string percentEncode(const std::string& value)
+{
+    static const char kHex[] = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(value.size());
+    for (const unsigned char c : value) {
+        const bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+            || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+        if (unreserved) {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('%');
+            out.push_back(kHex[c >> 4]);
+            out.push_back(kHex[c & 0x0F]);
+        }
+    }
+    return out;
+}
+
+// Decodes a percent-encoded value. A malformed escape is left verbatim rather
+// than throwing: the name is cosmetic, never a trust anchor.
+std::string percentDecode(const std::string& value)
+{
+    const auto hexValue = [](const char c) -> int {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'A' && c <= 'F') {
+            return c - 'A' + 10;
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        return -1;
+    };
+    std::string out;
+    out.reserve(value.size());
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '%' && i + 2 < value.size()) {
+            const int hi = hexValue(value[i + 1]);
+            const int lo = hexValue(value[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back(value[i]);
+    }
+    return out;
+}
+
 }  // namespace
 
 namespace bazarish {
 
 std::string encodeDescriptor(const Descriptor& descriptor)
 {
-    return std::string(kPrefix) + "v=1&fp=" + descriptor.fingerprint + "&srv=" + descriptor.srv
-        + "&srv_key=" + toBase64Url(descriptor.srvKeyDer);
+    std::string uri = std::string(kPrefix) + "v=1&fp=" + descriptor.fingerprint
+        + "&srv=" + descriptor.srv + "&srv_key=" + toBase64Url(descriptor.srvKeyDer);
+    // The name is optional and percent-encoded; older invites simply omit it.
+    if (!descriptor.name.empty()) {
+        uri += "&name=" + percentEncode(descriptor.name);
+    }
+    return uri;
 }
 
 Descriptor parseDescriptor(const std::string& uri)
@@ -86,6 +146,11 @@ Descriptor parseDescriptor(const std::string& uri)
     descriptor.srvKeyDer = fromBase64Url(need("srv_key"));
     if (descriptor.srvKeyDer.empty()) {
         throw std::invalid_argument("descriptor srv_key is empty");
+    }
+    // The name is optional: a descriptor minted before names existed has none.
+    const auto nameParam = params.find("name");
+    if (nameParam != params.end()) {
+        descriptor.name = percentDecode(nameParam->second);
     }
     return descriptor;
 }

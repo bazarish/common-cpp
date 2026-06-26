@@ -34,6 +34,18 @@ int main()
     CHECK(parsed.fingerprint == fp);
     CHECK(parsed.srv == srv);
     CHECK(parsed.srvKeyDer == srvKey);
+    CHECK(parsed.name.empty());  // no name advertised
+
+    // The optional name round-trips through percent-encoding, including the
+    // characters that would otherwise break the '&'/'=' split, and UTF-8.
+    Descriptor named{fp, srv, srvKey};
+    named.name = "Ann & Bob = friends \xD0\x9C\xD0\xB0\xD1\x88\xD0\xB0";  // "Маша" in UTF-8
+    const std::string namedUri = encodeDescriptor(named);
+    const Descriptor namedParsed = parseDescriptor(namedUri);
+    CHECK(namedParsed.fingerprint == fp);
+    CHECK(namedParsed.srv == srv);
+    CHECK(namedParsed.srvKeyDer == srvKey);
+    CHECK(namedParsed.name == named.name);
 
     const auto rejects = [](const std::string& bad) {
         try {
