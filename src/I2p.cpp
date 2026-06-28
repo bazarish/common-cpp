@@ -22,6 +22,7 @@
 #include "Tunnel.h"
 #include "TunnelPool.h"
 #include "util.h"
+#include "version.h"
 
 #include <algorithm>
 #include <atomic>
@@ -264,6 +265,12 @@ std::string routingHost(const std::string& publicBase64, LeaseSetKind kind)
     return kind == LeaseSetKind::eEncrypted
         ? encryptedLeaseSetHost(publicBase64)
         : standardLeaseSetHost(publicBase64);
+}
+
+std::string routerVersion()
+{
+    // The upstream i2pd version baked into the embedded engine (e.g. "2.60.0").
+    return I2PD_VERSION;
 }
 
 std::optional<Privacy> privacyFromString(std::string_view text)

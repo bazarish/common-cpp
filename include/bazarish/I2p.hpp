@@ -94,6 +94,9 @@ private:
 // kind (b33 for encrypted, plain b32 for standard).
 std::string routingHost(const std::string& publicBase64, LeaseSetKind kind);
 
+// The version of the embedded upstream i2pd engine (e.g. "2.60.0"), for display.
+std::string routerVersion();
+
 // A connected I2P stream. Blocking byte I/O; move-only (held via unique_ptr).
 class Stream {
 public:
