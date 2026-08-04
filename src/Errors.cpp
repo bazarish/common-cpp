@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErrorNames = {{
+constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 14> kErrorNames = {{
     {bazarish::ErrorCode::eQuotaExceeded, "QUOTA_EXCEEDED"},
     {bazarish::ErrorCode::eStorageFull, "STORAGE_FULL"},
     {bazarish::ErrorCode::eSubscriptionExpired, "SUBSCRIPTION_EXPIRED"},
@@ -21,6 +21,7 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErro
     {bazarish::ErrorCode::eAliasUnknown, "ALIAS_UNKNOWN"},
     {bazarish::ErrorCode::eClientUnregistered, "CLIENT_UNREGISTERED"},
     {bazarish::ErrorCode::eI2pUnavailable, "I2P_UNAVAILABLE"},
+    {bazarish::ErrorCode::eAccountPendingApproval, "ACCOUNT_PENDING_APPROVAL"},
 }};
 
 }  // namespace

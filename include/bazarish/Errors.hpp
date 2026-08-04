@@ -25,6 +25,7 @@ enum class ErrorCode {
     eAliasUnknown,
     eClientUnregistered,
     eI2pUnavailable,
+    eAccountPendingApproval,
 };
 
 std::string_view toString(ErrorCode code);
