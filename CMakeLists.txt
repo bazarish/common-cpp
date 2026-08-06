@@ -34,6 +34,12 @@ add_library(bazarish_common STATIC
     src/I2pHttp.cpp
     src/Log.cpp
     src/Health.cpp
+    src/Hmac.cpp
+    src/Portal.cpp
+    src/PortalSession.cpp
+    src/LoginChallenge.cpp
+    src/Captcha.cpp
+    src/SelfHostedCaptcha.cpp
 )
 add_library(Bazarish::Common ALIAS bazarish_common)
 
@@ -82,3 +88,5 @@ bazarish_add_test(TestResolve)
 bazarish_add_test(TestI2pHttp)
 bazarish_add_test(TestLog)
 bazarish_add_test(TestHealth)
+bazarish_add_test(TestLoginChallenge)
+bazarish_add_test(TestCaptcha)
