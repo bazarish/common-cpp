@@ -97,6 +97,25 @@ std::string routingHost(const std::string& publicBase64, LeaseSetKind kind);
 // The version of the embedded upstream i2pd engine (e.g. "2.60.0"), for display.
 std::string routerVersion();
 
+// --- Private reseed ---
+//
+// A running router can hand a starting client a slice of its own netDb, so the
+// client never contacts a public reseed host - the most blocked and most telling
+// part of an I2P bootstrap. No new trust is introduced: every RouterInfo carries
+// its own router's signature and is verified on load, so the worst a hostile
+// server can do is choose WHICH routers you learn first. Sample large and
+// randomly, and leave the built-in reseeds as the fallback.
+
+// A random sample of serialized RouterInfos from this process's netDb. Returns
+// fewer than count when the netDb holds fewer. Requires a live Router.
+std::vector<Bytes> sampleRouterInfos(std::size_t count);
+
+// Writes RouterInfos into a router data directory's netDb, to be called BEFORE
+// constructing the Router that will use dataDir - the engine loads its netDb
+// once, at start. Malformed entries are skipped; returns how many were written.
+std::size_t seedRouterInfos(
+    const std::filesystem::path& dataDir, const std::vector<Bytes>& routers);
+
 // A connected I2P stream. Blocking byte I/O; move-only (held via unique_ptr).
 class Stream {
 public:

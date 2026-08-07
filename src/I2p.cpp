@@ -15,6 +15,7 @@
 #include "Identity.h"
 #include "Log.h"
 #include "NetDb.hpp"
+#include "RouterInfo.h"
 #include "NTCP2.h"
 #include "SSU2.h"
 #include "Streaming.h"
@@ -25,6 +26,8 @@
 #include "version.h"
 
 #include <algorithm>
+#include <fstream>
+#include <map>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -271,6 +274,59 @@ std::string routerVersion()
 {
     // The upstream i2pd version baked into the embedded engine (e.g. "2.60.0").
     return I2PD_VERSION;
+}
+
+std::vector<Bytes> sampleRouterInfos(const std::size_t count)
+{
+    // GetRandomRouter may repeat, so collect by identity until the netDb has
+    // nothing new left to give rather than looping forever on a small netDb.
+    std::map<std::string, Bytes> unique;
+    const std::size_t attempts = count * 8;
+    for (std::size_t i = 0; i < attempts && unique.size() < count; ++i)
+    {
+        const std::shared_ptr<const i2pd::data::RouterInfo> router
+            = i2pd::data::netdb.GetRandomRouter();
+        if (!router || router->GetBuffer() == nullptr || router->GetBufferLen() == 0)
+        {
+            continue;
+        }
+        unique.emplace(router->GetIdentHashBase64(),
+            Bytes(router->GetBuffer(), router->GetBuffer() + router->GetBufferLen()));
+    }
+    std::vector<Bytes> sample;
+    sample.reserve(unique.size());
+    for (auto& [ident, buffer] : unique) { sample.push_back(std::move(buffer)); }
+    return sample;
+}
+
+std::size_t seedRouterInfos(
+    const std::filesystem::path& dataDir, const std::vector<Bytes>& routers)
+{
+    ensureCryptoInit();
+    const std::filesystem::path netDb = dataDir / "netDb";
+    std::size_t written = 0;
+    for (const Bytes& buffer : routers)
+    {
+        if (buffer.empty()) { continue; }
+        // Parsing validates the RouterInfo (including its signature) and gives us
+        // the identity the on-disk layout is keyed by; a bad entry is skipped.
+        const i2pd::data::RouterInfo router(buffer.data(), buffer.size());
+        const std::string ident = router.GetIdentHashBase64();
+        if (ident.empty()) { continue; }
+        std::string safeIdent = ident;
+        std::replace(safeIdent.begin(), safeIdent.end(), '/', '-');
+        std::replace(safeIdent.begin(), safeIdent.end(), '\\', '-');
+        const std::filesystem::path dir = netDb / (std::string("r") + safeIdent[0]);
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        std::ofstream out(dir / ("routerInfo-" + safeIdent + ".dat"), std::ios::binary
+            | std::ios::trunc);
+        if (!out) { continue; }
+        out.write(reinterpret_cast<const char*>(buffer.data()),
+            static_cast<std::streamsize>(buffer.size()));
+        if (out) { ++written; }
+    }
+    return written;
 }
 
 std::optional<Privacy> privacyFromString(std::string_view text)
