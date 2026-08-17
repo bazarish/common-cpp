@@ -703,11 +703,11 @@ Router::Router(RouterConfig config) : impl_(std::make_unique<Impl>())
     args.push_back("--loglevel=warn");
     if (!config.allowPublicReseed)
     {
-        // With no reseed URLs the reseeder finds nothing to contact and gives up
-        // ("No reseed servers specified"), which is exactly the intent: this
-        // router bootstraps from the netDb its own server handed it.
-        args.push_back("--reseed.urls=");
-        args.push_back("--reseed.yggurls=");
+        // Point the reseeder at a local file that does not exist: it then tries
+        // that file, fails, and - by its own control flow - never falls through
+        // to the built-in reseed servers. Exactly the intent: this router
+        // bootstraps from the netDb its own server handed it, or not at all.
+        args.push_back("--reseed.file=" + (config.dataDir / "no-public-reseed.su3").string());
     }
 
     std::vector<char*> argv;
