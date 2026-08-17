@@ -701,6 +701,14 @@ Router::Router(RouterConfig config) : impl_(std::make_unique<Impl>())
         args.push_back("--share=100");
     }
     args.push_back("--loglevel=warn");
+    if (!config.allowPublicReseed)
+    {
+        // With no reseed URLs the reseeder finds nothing to contact and gives up
+        // ("No reseed servers specified"), which is exactly the intent: this
+        // router bootstraps from the netDb its own server handed it.
+        args.push_back("--reseed.urls=");
+        args.push_back("--reseed.yggurls=");
+    }
 
     std::vector<char*> argv;
     argv.reserve(args.size());

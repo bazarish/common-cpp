@@ -215,6 +215,12 @@ struct RouterConfig {
     std::filesystem::path dataDir;
     // Client (notransit) or Server (relays transit). Floodfill is never enabled.
     Role role = Role::eClient;
+    // Whether the router may bootstrap from i2pd's built-in reseed hosts. A
+    // server has nobody to ask, so it keeps them. A client does: it takes its
+    // netDb from its own server over the clearnet facade, and reaching a public
+    // reseed host would announce the bootstrap to a third party - so the client
+    // turns this off unless there is no clearnet facade to ask at all.
+    bool allowPublicReseed = true;
 };
 
 // One active transport-layer connection to another router - a direct TCP/UDP
