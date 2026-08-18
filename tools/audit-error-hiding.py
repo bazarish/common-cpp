@@ -22,6 +22,8 @@ kHandledMarkers = (
     "log::", "respondError", "throw", "emit ", "actionFailed", "op.fail", "printf",
     "std::cerr", "sendHtml", "ok = false", ".ok =", "outcome", "errorCode", "error =", "err =",
     "status =", "failed", "Failed", "= false", "reason",
+    # Carrying the exception's message somewhere is reporting it, wherever it lands.
+    ".what()",
 )
 kSourceSuffixes = (".cpp", ".hpp")
 # Tests are where an exception IS the expected result, so a catch that only
