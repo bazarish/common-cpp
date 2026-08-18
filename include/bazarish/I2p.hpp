@@ -155,6 +155,9 @@ struct EndpointConfig {
     // What this destination is for, in the operator's words ("server dialer",
     // "call media"). Shown in the router status view; never leaves the process.
     std::string label = {};
+    // Whose destination it is, when one router serves several profiles. Empty
+    // for destinations that belong to no profile (e.g. a shared warm pool).
+    std::string owner = {};
 };
 
 // One I2P destination on the router: a stable address that can accept and open
@@ -233,6 +236,7 @@ struct RouterConfig {
 // gone from the next call.
 struct LocalDestination {
     std::string label;  // EndpointConfig::label, empty when the caller set none
+    std::string owner;  // EndpointConfig::owner
     std::string host;   // the ".b32.i2p" routing host
     bool published = false;
     bool ready = false;
@@ -240,6 +244,11 @@ struct LocalDestination {
     // tunnels have no equally safe per-pool accessor in the engine, so only the
     // router-wide outbound count is reported.
     int inboundTunnels = 0;
+    // Remote LeaseSets this destination currently holds: who it has actually
+    // looked up and can talk to, which is what tells activity from an idle
+    // address with tunnels. Read from the engine's own status accessor, so it
+    // may be a moment stale.
+    int remoteLeaseSets = 0;
 };
 
 struct TransportPeer {

@@ -665,6 +665,7 @@ struct Router::Impl {
     struct DestEntry {
         std::weak_ptr<i2pd::client::ClientDestination> dest;
         std::string label;
+        std::string owner;
         std::string host;
         bool published = false;
     };
@@ -859,9 +860,11 @@ std::vector<LocalDestination> Router::localDestinations() const
         if (!dest) { continue; }
         LocalDestination info;
         info.label = entry.label;
+        info.owner = entry.owner;
         info.host = entry.host;
         info.published = entry.published;
         info.ready = dest->IsReady();
+        info.remoteLeaseSets = dest->GetNumRemoteLeaseSets();
         if (const auto pool = dest->GetTunnelPool()) {
             info.inboundTunnels = static_cast<int>(pool->GetInboundTunnels(kTunnelCountProbe).size());
         }
@@ -904,8 +907,8 @@ std::shared_ptr<Endpoint> Router::createEndpoint(const EndpointConfig& config)
         std::lock_guard<std::mutex> lock(impl_->destsMutex);
         std::erase_if(impl_->dests,
             [](const Impl::DestEntry& entry) { return entry.dest.expired(); });
-        impl_->dests.push_back(
-            Impl::DestEntry{impl->dest, config.label, impl->routingHost, config.published});
+        impl_->dests.push_back(Impl::DestEntry{
+            impl->dest, config.label, config.owner, impl->routingHost, config.published});
     }
 
     auto* raw = impl.get();
