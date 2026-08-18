@@ -304,6 +304,10 @@ public:
 
     // Create a destination on this router.
     std::shared_ptr<Endpoint> createEndpoint(const EndpointConfig& config);
+    // Re-file a destination under what it is being used for now. A pool spare is
+    // built before anyone owns it; the moment a caller takes it, the status view
+    // would otherwise still call it a spare belonging to nobody. Status only.
+    void retagEndpoint(const Endpoint& endpoint, std::string label, std::string owner);
 
 private:
     struct Impl;

@@ -847,6 +847,19 @@ bool i2pLogging()
     return g_i2pLogging.load();
 }
 
+void Router::retagEndpoint(const Endpoint& endpoint, std::string label, std::string owner)
+{
+    const std::shared_ptr<i2pd::client::ClientDestination> dest = endpoint.impl_->dest;
+    std::lock_guard<std::mutex> lock(impl_->destsMutex);
+    for (Impl::DestEntry& entry : impl_->dests) {
+        if (entry.dest.lock() == dest) {
+            entry.label = std::move(label);
+            entry.owner = std::move(owner);
+            return;
+        }
+    }
+}
+
 std::vector<LocalDestination> Router::localDestinations() const
 {
     // More than any pool can hold: the quantity is clamped to 16 per direction,
