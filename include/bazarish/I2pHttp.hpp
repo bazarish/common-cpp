@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdlib>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -82,13 +83,30 @@ I2pHttpResponse readI2pHttpResponse(Stream& stream)
     response.status = head.status;
     response.headers = std::move(head.headers);
     response.body = std::move(head.leftover);
+    // Content-Length decides where the body ends. Reading to EOF instead would
+    // mean waiting for the other side to close - and a relay that waits for US to
+    // close first (so the last write is not truncated) turns that into a stall
+    // that ends only at the read timeout, on every single request.
+    std::size_t expected = 0;
+    bool framed = false;
+    if (const auto it = response.headers.find("content-length"); it != response.headers.end()) {
+        try {
+            expected = static_cast<std::size_t>(std::stoull(it->second));
+            framed = true;
+        } catch (const std::exception&) {
+            framed = false;  // unparseable length: fall back to reading to EOF
+        }
+    }
     std::array<char, 65536> buffer{};
-    for (;;) {
+    while (!framed || response.body.size() < expected) {
         const std::size_t got = stream.readSome(buffer.data(), buffer.size());
         if (got == 0) {
-            break;
+            break;  // EOF: all there is, framed or not
         }
         response.body.append(buffer.data(), got);
+    }
+    if (framed && response.body.size() > expected) {
+        response.body.resize(expected);  // a keep-alive relay may hand over more
     }
     return response;
 }
