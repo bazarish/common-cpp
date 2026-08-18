@@ -152,6 +152,9 @@ struct EndpointConfig {
     // Whether to publish a LeaseSet. A pure outbound client may stay unpublished;
     // a server (or any side that must be reachable for replies) publishes.
     bool published = true;
+    // What this destination is for, in the operator's words ("server dialer",
+    // "call media"). Shown in the router status view; never leaves the process.
+    std::string label = {};
 };
 
 // One I2P destination on the router: a stable address that can accept and open
@@ -225,6 +228,20 @@ struct RouterConfig {
 
 // One active transport-layer connection to another router - a direct TCP/UDP
 // session, for diagnostics.
+// A destination this router currently operates, for the status view: how many
+// there are and what each one is for. A snapshot - a one-time destination is
+// gone from the next call.
+struct LocalDestination {
+    std::string label;  // EndpointConfig::label, empty when the caller set none
+    std::string host;   // the ".b32.i2p" routing host
+    bool published = false;
+    bool ready = false;
+    // Established inbound tunnels of this destination's own pool. Outbound
+    // tunnels have no equally safe per-pool accessor in the engine, so only the
+    // router-wide outbound count is reported.
+    int inboundTunnels = 0;
+};
+
 struct TransportPeer {
     std::string ident;      // short base64 prefix of the remote router identity
     std::string transport;  // "NTCP2" or "SSU2"
@@ -272,6 +289,9 @@ public:
     // Active direct transport connections (NTCP2 / SSU2 sessions to other
     // routers). A snapshot, safe to call from another thread.
     std::vector<TransportPeer> transportPeers() const;
+    // The destinations this router operates right now, in creation order. Those
+    // whose Endpoint the caller has already dropped are not reported.
+    std::vector<LocalDestination> localDestinations() const;
 
     // Create a destination on this router.
     std::shared_ptr<Endpoint> createEndpoint(const EndpointConfig& config);

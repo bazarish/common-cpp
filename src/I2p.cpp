@@ -659,6 +659,18 @@ struct Router::Impl {
     bool started = false;
     std::shared_ptr<IoService> io;
 
+    // Every destination created on this router, weakly held so an Endpoint the
+    // caller dropped (a one-time dest) disappears from the status view by
+    // itself. Only createEndpoint and localDestinations touch it.
+    struct DestEntry {
+        std::weak_ptr<i2pd::client::ClientDestination> dest;
+        std::string label;
+        std::string host;
+        bool published = false;
+    };
+    mutable std::mutex destsMutex;
+    std::vector<DestEntry> dests;
+
     ~Impl()
     {
         // Release the shared service before stopping the engine: workers must drain
@@ -834,6 +846,30 @@ bool i2pLogging()
     return g_i2pLogging.load();
 }
 
+std::vector<LocalDestination> Router::localDestinations() const
+{
+    // More than any pool can hold: the quantity is clamped to 16 per direction,
+    // so this asks for every established inbound tunnel there can be.
+    constexpr int kTunnelCountProbe = 64;
+    std::vector<LocalDestination> live;
+    std::lock_guard<std::mutex> lock(impl_->destsMutex);
+    std::erase_if(impl_->dests, [](const Impl::DestEntry& entry) { return entry.dest.expired(); });
+    for (const Impl::DestEntry& entry : impl_->dests) {
+        const std::shared_ptr<i2pd::client::ClientDestination> dest = entry.dest.lock();
+        if (!dest) { continue; }
+        LocalDestination info;
+        info.label = entry.label;
+        info.host = entry.host;
+        info.published = entry.published;
+        info.ready = dest->IsReady();
+        if (const auto pool = dest->GetTunnelPool()) {
+            info.inboundTunnels = static_cast<int>(pool->GetInboundTunnels(kTunnelCountProbe).size());
+        }
+        live.push_back(std::move(info));
+    }
+    return live;
+}
+
 std::shared_ptr<Endpoint> Router::createEndpoint(const EndpointConfig& config)
 {
     auto impl = std::make_unique<Endpoint::Impl>();
@@ -864,6 +900,13 @@ std::shared_ptr<Endpoint> Router::createEndpoint(const EndpointConfig& config)
     impl->dest = std::make_shared<i2pd::client::ClientDestination>(
         impl->io->next(), config.keys.impl_->keys, config.published, &params);
     impl->dest->Start();
+    {
+        std::lock_guard<std::mutex> lock(impl_->destsMutex);
+        std::erase_if(impl_->dests,
+            [](const Impl::DestEntry& entry) { return entry.dest.expired(); });
+        impl_->dests.push_back(
+            Impl::DestEntry{impl->dest, config.label, impl->routingHost, config.published});
+    }
 
     auto* raw = impl.get();
     impl->dest->AcceptStreams([raw](std::shared_ptr<i2pd::stream::Stream> stream)
