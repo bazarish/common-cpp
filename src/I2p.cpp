@@ -880,6 +880,14 @@ std::vector<LocalDestination> Router::localDestinations() const
         info.remoteLeaseSets = dest->GetNumRemoteLeaseSets();
         if (const auto pool = dest->GetTunnelPool()) {
             info.inboundTunnels = static_cast<int>(pool->GetInboundTunnels(kTunnelCountProbe).size());
+            // No locked accessor exists for the outbound set: copy it the way the
+            // engine's own status console does, then count what is established.
+            const auto outbound = pool->GetOutboundTunnels();
+            for (const auto& tunnel : outbound) {
+                if (tunnel && tunnel->IsEstablished()) {
+                    ++info.outboundTunnels;
+                }
+            }
         }
         live.push_back(std::move(info));
     }

@@ -240,10 +240,11 @@ struct LocalDestination {
     std::string host;   // the ".b32.i2p" routing host
     bool published = false;
     bool ready = false;
-    // Established inbound tunnels of this destination's own pool. Outbound
-    // tunnels have no equally safe per-pool accessor in the engine, so only the
-    // router-wide outbound count is reported.
+    // Established tunnels of this destination's own pool, per direction. The
+    // engine's only per-pool accessor for the outbound set is its unlocked status
+    // getter, so that half is a snapshot that can be a moment stale.
     int inboundTunnels = 0;
+    int outboundTunnels = 0;
     // Remote LeaseSets this destination currently holds: who it has actually
     // looked up and can talk to, which is what tells activity from an idle
     // address with tunnels. Read from the engine's own status accessor, so it
