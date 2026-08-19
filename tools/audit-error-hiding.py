@@ -8,8 +8,10 @@ into a value the caller is forced to look at. A block that does none of those is
 reported here, and the run fails.
 
 A site that genuinely needs none of the three - a parse whose failure IS the
-answer - goes in tools/error-hiding-allow.txt as "<path>:<line> reason", and the
-reason has to be written out.
+answer - carries a comment "error-hiding: allowed - <reason>" inside the block.
+The marker sits with the code, so an edit above it does not invalidate it;
+tools/error-hiding-allow.txt still works as "<path>:<line> reason" for sites the
+code cannot carry a comment in.
 
 Usage: audit-error-hiding.py [roots...]   (default: this repository's sources)
 """
@@ -98,6 +100,10 @@ def main(argv):
                     continue
                 site = f"{path.as_posix()}:{index + 1}"
                 if site in allow:
+                    continue
+                # A marker inside the block travels with the code, unlike a
+                # file:line entry, which every edit above it invalidates.
+                if "error-hiding: allowed" in "\n".join(inner):
                     continue
                 findings.append((site, code.replace("\n", " ")[:70] or "(discards it)"))
     for site, code in findings:
