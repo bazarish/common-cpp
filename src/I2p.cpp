@@ -97,7 +97,7 @@ void privacyToTunnel(Privacy privacy, int& length, int& variance)
     {
         case Privacy::eMinimal: length = 1; variance = 0; break;
         case Privacy::eMiddle:  length = 1; variance = 1; break;
-        case Privacy::eMax:     length = 2; variance = 1; break;
+        case Privacy::eMax:     length = 3; variance = 0; break;
     }
 }
 

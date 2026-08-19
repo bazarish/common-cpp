@@ -20,10 +20,11 @@
 namespace bazarish::i2p {
 
 // Tunnel privacy profile applied to a destination's pool (hop length / variance).
-// More hops/variance = more anonymity, more latency.
-//   eMinimal: 1-hop in/out, no variance
-//   eMiddle:  1-hop in/out, variance 1
-//   eMax:     2-hop in/out, variance 1
+// More hops = more anonymity, more latency. A positive variance only lengthens a
+// tunnel: I2P picks length + random(0..variance) hops for each one.
+//   eMinimal: 1 hop in/out, no variance
+//   eMiddle:  1 or 2 hops in/out (length 1, variance 1)
+//   eMax:     3 hops in/out, no variance (the I2P default depth)
 enum class Privacy { eMinimal, eMiddle, eMax };
 
 // Parses "minimal" | "middle" | "max" (for CLI flags); nullopt otherwise.
