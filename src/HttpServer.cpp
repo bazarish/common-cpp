@@ -156,25 +156,33 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
             }
             request.body = parsed.body();
 
-            const Route* route = nullptr;
+            // The lock covers the lookup and nothing else. Holding it across the
+            // await below would have parked the whole table for as long as one
+            // client waited - which is what a long poll does by design.
+            AsyncHandler handler;
             {
                 const std::lock_guard<std::mutex> lock(routesMutex);
-                route = match(request.method, request.path, request.captures);
-                if (route != nullptr) {
-                    // Copied: the table may change while this request is served.
-                    const AsyncHandler handler = route->handler;
+                if (const Route* const route
+                    = match(request.method, request.path, request.captures);
+                    route != nullptr) {
+                    handler = route->handler;
+                }
+            }
+            {
+                if (handler) {
                     // A handler that answers later resumes this coroutine through
                     // the timer below, which is what makes a long poll free.
-                    asio::steady_timer parked(co_await asio::this_coro::executor);
-                    parked.expires_at(std::chrono::steady_clock::time_point::max());
-                    std::shared_ptr<Response> answer = std::make_shared<Response>();
-                    std::shared_ptr<std::atomic<bool>> answered
-                        = std::make_shared<std::atomic<bool>>(false);
-                    auto executor = co_await asio::this_coro::executor;
-                    Responder respond = [&parked, answer, answered, executor](Response response) {
+                    // Shared, not captured by reference: a responder may be called
+                    // after this connection is gone (a gate that fires late), and a
+                    // dangling timer would be a crash rather than a lost answer.
+                    const auto executor = co_await asio::this_coro::executor;
+                    const std::shared_ptr<asio::steady_timer> parked
+                        = std::make_shared<asio::steady_timer>(executor);
+                    parked->expires_at(std::chrono::steady_clock::time_point::max());
+                    const std::shared_ptr<Response> answer = std::make_shared<Response>();
+                    Responder respond = [parked, answer, executor](Response response) {
                         *answer = std::move(response);
-                        answered->store(true);
-                        asio::post(executor, [&parked]() { parked.cancel(); });
+                        asio::post(executor, [parked]() { parked->cancel(); });
                     };
                     std::optional<Response> immediate;
                     try {
@@ -186,7 +194,7 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
                     }
                     if (!immediate.has_value()) {
                         boost::system::error_code ignored;
-                        co_await parked.async_wait(
+                        co_await parked->async_wait(
                             asio::redirect_error(asio::use_awaitable, ignored));
                         immediate = *answer;
                     }
