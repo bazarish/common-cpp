@@ -394,6 +394,14 @@ void Stream::writeAll(const void* data, std::size_t size)
     }
 }
 
+std::size_t Stream::pendingBytes() const
+{
+    if (!impl_->stream || impl_->closed) {
+        return 0;
+    }
+    return impl_->stream->GetSendBufferSize();
+}
+
 void Stream::close()
 {
     if (impl_->stream && !impl_->closed.exchange(true))
@@ -444,7 +452,21 @@ struct Endpoint::Impl {
 };
 
 Endpoint::Endpoint() = default;
-Endpoint::~Endpoint() = default;
+Endpoint::~Endpoint()
+{
+    if (!impl_ || !impl_->dest) {
+        return;
+    }
+    // Stop the destination on the lane that services it, holding it alive until
+    // that runs. Releasing it from this thread stops it while the lane may still
+    // be sending queued packets, and the streaming layer it tears down is read by
+    // that very handler - a use-after-free ASAN catches in
+    // Stream::SendPackets -> StreamingDestination::GetOwner().
+    const std::shared_ptr<i2pd::client::ClientDestination> dest = impl_->dest;
+    impl_->dest.reset();
+    impl_->datagram.reset();
+    boost::asio::post(dest->GetService(), [dest]() { dest->Stop(); });
+}
 
 bool Endpoint::ready() const { return impl_->dest->IsReady(); }
 
