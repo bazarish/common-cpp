@@ -75,12 +75,18 @@ Bytes deriveSessionKey(const Bytes& secret, const std::string& sessionId)
     return sha256(Bytes(material.begin(), material.end()));
 }
 
-Headers macRequest(const std::string& sessionId, const Bytes& sessionKey, const std::uint64_t seq,
+std::string sessionHandle(const Bytes& secret, const std::uint64_t seq)
+{
+    return bazarish::service::hmacSha256Hex(
+        std::string(secret.begin(), secret.end()), "handle|" + std::to_string(seq));
+}
+
+Headers macRequest(const std::string& handle, const Bytes& sessionKey, const std::uint64_t seq,
     const std::int64_t timestamp, const std::string& method, const std::string& path,
     const Bytes& body)
 {
     Headers headers;
-    headers[kHeaderSession] = sessionId;
+    headers[kHeaderSession] = handle;
     headers[kHeaderSeq] = std::to_string(seq);
     headers[kHeaderTimestamp] = std::to_string(timestamp);
     headers[kHeaderMac] = bazarish::service::hmacSha256Hex(

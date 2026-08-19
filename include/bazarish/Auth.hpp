@@ -49,13 +49,20 @@ using Headers = std::map<std::string, std::string>;
 // is not, because the server could have produced it itself.
 //
 // Session headers (in place of the four above):
-//   X-Bazarish-Session   session id, hex
+//   X-Bazarish-Session   the handle for this request, hex
 //   X-Bazarish-Seq       per-session request counter, strictly increasing
 //   X-Bazarish-Mac       base64 HMAC-SHA256 over "<canonical string>" + seq + "\n"
 //
-// The session secret is sealed to the server's hybrid sealing key when the
-// session is opened, so a recorded exchange stays closed to a quantum adversary;
-// HMAC-SHA256 itself needs no such care.
+// The handle is derived per request, not a fixed id: a facade sits in the middle
+// of every call, and a constant identifier would hand it a way to tie a user's
+// requests together for the life of the session. Each request carries a
+// different one, and only the server that holds the secret can tell they belong
+// together.
+//
+// The secret is sealed to a hybrid key on the way in, and the server's answer is
+// sealed to a one-time key the client puts inside that envelope - so the facade
+// sees an opaque blob in each direction and never learns the secret the handles
+// and the MAC key come from. HMAC-SHA256 itself needs no such care.
 extern const char* const kHeaderSession;
 extern const char* const kHeaderSeq;
 extern const char* const kHeaderMac;
@@ -70,9 +77,14 @@ inline constexpr std::int64_t kSessionMaxLifetimeSeconds = 7200;
 // the server assigned, so neither side alone fixes it.
 Bytes deriveSessionKey(const Bytes& secret, const std::string& sessionId);
 
+// The handle a given request carries. Unpredictable without the secret, so a
+// facade cannot link two requests of the same session, and the server can index
+// the handles it expects next.
+std::string sessionHandle(const Bytes& secret, std::uint64_t seq);
+
 // The three session headers for a request. `seq` must be higher than any seq
 // this session has used before.
-Headers macRequest(const std::string& sessionId, const Bytes& sessionKey, std::uint64_t seq,
+Headers macRequest(const std::string& handle, const Bytes& sessionKey, std::uint64_t seq,
     std::int64_t timestamp, const std::string& method, const std::string& path, const Bytes& body);
 
 // Verifies the MAC of a request against a session key, returning the sequence
