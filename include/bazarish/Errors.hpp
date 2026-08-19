@@ -24,6 +24,10 @@ enum class ErrorCode {
     eAliasTaken,
     eAliasUnknown,
     eClientUnregistered,
+    // The session a request authenticated with is gone, lapsed or out of step.
+    // Distinct from a rejected identity: the client answers it by opening a new
+    // session, and must never treat it as a reason to retry the same way.
+    eSessionInvalid,
     eI2pUnavailable,
     eAccountPendingApproval,
 };

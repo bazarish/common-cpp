@@ -1,6 +1,10 @@
 // Bazarish project (c) 2026
 #include "bazarish/Auth.hpp"
 
+#include <bazarish/Hmac.hpp>
+
+#include <openssl/crypto.h>
+
 #include <nlohmann/json.hpp>
 
 #include <cstdlib>
@@ -20,6 +24,10 @@ const std::string& requireHeader(const bazarish::auth::Headers& headers, const c
 }  // namespace
 
 namespace bazarish::auth {
+
+const char* const kHeaderSession = "X-Bazarish-Session";
+const char* const kHeaderSeq = "X-Bazarish-Seq";
+const char* const kHeaderMac = "X-Bazarish-Mac";
 
 const char* const kHeaderKeys = "X-Bazarish-Keys";
 const char* const kHeaderTimestamp = "X-Bazarish-Timestamp";
@@ -44,6 +52,70 @@ std::string makeCanonicalString(const std::int64_t timestamp, const std::string&
     const std::string& path, const Bytes& body)
 {
     return canonicalFromDigest(timestamp, method, path, toHex(sha256(body)));
+}
+
+namespace {
+
+// What the MAC covers: the same canonical string the signature covers, plus the
+// sequence number, so a replay with a different counter does not verify.
+std::string macCanonical(const std::int64_t timestamp, const std::string& method,
+    const std::string& path, const Bytes& body, const std::uint64_t seq)
+{
+    return makeCanonicalString(timestamp, method, path, body) + std::to_string(seq) + "\n";
+}
+
+}  // namespace
+
+Bytes deriveSessionKey(const Bytes& secret, const std::string& sessionId)
+{
+    // HKDF-like: one extraction over both halves. Neither side alone fixes the
+    // key - the client brings the secret, the server the id.
+    const std::string material
+        = toHex(secret) + "|" + sessionId + "|bazarish session v1";
+    return sha256(Bytes(material.begin(), material.end()));
+}
+
+Headers macRequest(const std::string& sessionId, const Bytes& sessionKey, const std::uint64_t seq,
+    const std::int64_t timestamp, const std::string& method, const std::string& path,
+    const Bytes& body)
+{
+    Headers headers;
+    headers[kHeaderSession] = sessionId;
+    headers[kHeaderSeq] = std::to_string(seq);
+    headers[kHeaderTimestamp] = std::to_string(timestamp);
+    headers[kHeaderMac] = bazarish::service::hmacSha256Hex(
+        std::string(sessionKey.begin(), sessionKey.end()),
+        macCanonical(timestamp, method, path, body, seq));
+    return headers;
+}
+
+bool hasSessionHeaders(const Headers& headers)
+{
+    return headers.find(kHeaderSession) != headers.end()
+        && headers.find(kHeaderMac) != headers.end();
+}
+
+std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, const std::int64_t now,
+    const std::string& method, const std::string& path, const Bytes& body)
+{
+    const std::int64_t timestamp = std::strtoll(
+        requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
+    if (std::llabs(now - timestamp) > kAuthFreshnessWindowSeconds) {
+        throw std::runtime_error("auth timestamp outside the freshness window");
+    }
+    const std::uint64_t seq
+        = std::strtoull(requireHeader(headers, kHeaderSeq).c_str(), nullptr, 10);
+    const std::string expected = bazarish::service::hmacSha256Hex(
+        std::string(sessionKey.begin(), sessionKey.end()),
+        macCanonical(timestamp, method, path, body, seq));
+    const std::string presented = requireHeader(headers, kHeaderMac);
+    // Constant time: a MAC comparison that returns early leaks how much of it was
+    // right, one byte at a time.
+    if (expected.size() != presented.size()
+        || CRYPTO_memcmp(expected.data(), presented.data(), expected.size()) != 0) {
+        throw std::runtime_error("session MAC verification failed");
+    }
+    return seq;
 }
 
 Headers signRequestDigest(const Identity& identity, const std::int64_t timestamp,

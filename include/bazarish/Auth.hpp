@@ -39,6 +39,54 @@ extern const char* const kHeaderSignaturePq;
 
 using Headers = std::map<std::string, std::string>;
 
+// --- Session authentication ---
+//
+// The hybrid signature above is ~8.3 KB and an ML-DSA verification per request,
+// which is a lot to spend on "this is still me". A client presents it once to
+// open a session, then authenticates each request with an HMAC over the same
+// canonical string. Beyond size, this is what the server ends up holding: a
+// signature is evidence to a third party that this user made this request; a MAC
+// is not, because the server could have produced it itself.
+//
+// Session headers (in place of the four above):
+//   X-Bazarish-Session   session id, hex
+//   X-Bazarish-Seq       per-session request counter, strictly increasing
+//   X-Bazarish-Mac       base64 HMAC-SHA256 over "<canonical string>" + seq + "\n"
+//
+// The session secret is sealed to the server's hybrid sealing key when the
+// session is opened, so a recorded exchange stays closed to a quantum adversary;
+// HMAC-SHA256 itself needs no such care.
+extern const char* const kHeaderSession;
+extern const char* const kHeaderSeq;
+extern const char* const kHeaderMac;
+
+// Session lifetime, chosen at random inside this window per session: a fixed
+// lifetime makes every client's renewal predictable and simultaneous, and the
+// point of a short-lived key is that a leaked one is worth little.
+inline constexpr std::int64_t kSessionMinLifetimeSeconds = 3600;
+inline constexpr std::int64_t kSessionMaxLifetimeSeconds = 7200;
+
+// Derives the per-session MAC key from the secret the client sealed and the id
+// the server assigned, so neither side alone fixes it.
+Bytes deriveSessionKey(const Bytes& secret, const std::string& sessionId);
+
+// The three session headers for a request. `seq` must be higher than any seq
+// this session has used before.
+Headers macRequest(const std::string& sessionId, const Bytes& sessionKey, std::uint64_t seq,
+    std::int64_t timestamp, const std::string& method, const std::string& path, const Bytes& body);
+
+// Verifies the MAC of a request against a session key, returning the sequence
+// number it carried. Throws when a header is missing, the MAC does not match, or
+// the timestamp is outside the freshness window - the caller checks the sequence
+// against what this session has already used.
+std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, std::int64_t now,
+    const std::string& method, const std::string& path, const Bytes& body);
+
+// True when a request presents session headers at all (so the verifier knows
+// which of the two schemes to apply).
+bool hasSessionHeaders(const Headers& headers);
+
+
 std::string makeCanonicalString(std::int64_t timestamp, const std::string& method,
     const std::string& path, const Bytes& body);
 
