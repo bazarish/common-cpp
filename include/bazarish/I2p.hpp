@@ -129,6 +129,10 @@ public:
     void readExact(void* buffer, std::size_t size);
     // Queues size bytes for delivery.
     void writeAll(const void* data, std::size_t size);
+    // Bytes handed to the router that have not left this device yet. A write
+    // returns as soon as the data is queued, so this is what separates "sent"
+    // from "still on its way" - and lets a bulk writer keep the queue bounded.
+    std::size_t pendingBytes() const;
     void close();
 
 private:
