@@ -399,7 +399,14 @@ std::size_t Stream::pendingBytes() const
     if (!impl_->stream || impl_->closed) {
         return 0;
     }
-    return impl_->stream->GetSendBufferSize();
+    // Two queues, not one: bytes still in the send buffer, and packets already
+    // sent that the far side has not acknowledged. Counting only the first made a
+    // sender's progress run far ahead of the receiver's, because the engine
+    // drains the buffer into its unacknowledged window immediately. The in-flight
+    // half is an upper bound (packet count times the streaming MTU), so progress
+    // errs behind rather than ahead.
+    return impl_->stream->GetSendBufferSize()
+        + impl_->stream->GetSendQueueSize() * i2pd::stream::STREAMING_MTU;
 }
 
 void Stream::close()
