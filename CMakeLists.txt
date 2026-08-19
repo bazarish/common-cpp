@@ -34,6 +34,8 @@ add_library(bazarish_common STATIC
     src/I2pHttp.cpp
     src/Log.cpp
     src/Health.cpp
+    src/HttpClient.cpp
+    src/HttpServer.cpp
     src/Hmac.cpp
     src/Portal.cpp
     src/PortalSession.cpp
