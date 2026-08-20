@@ -23,7 +23,7 @@ namespace bazarish {
 // written by the caller after this head.
 std::string buildI2pHttpRequest(const std::string& method, const std::string& host,
     const std::string& path, const std::map<std::string, std::string>& extraHeaders,
-    std::size_t bodySize);
+    std::size_t bodySize, bool keepAlive = false);
 
 // Parses the numeric status from a status line ("HTTP/1.1 404 Not Found").
 // Throws on a malformed line.

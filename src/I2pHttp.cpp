@@ -10,13 +10,14 @@ namespace bazarish {
 
 std::string buildI2pHttpRequest(const std::string& method, const std::string& host,
     const std::string& path, const std::map<std::string, std::string>& extraHeaders,
-    const std::size_t bodySize)
+    const std::size_t bodySize, const bool keepAlive)
 {
     std::string request = method + " " + path + " HTTP/1.1\r\nHost: " + host + "\r\n";
     for (const auto& [key, value] : extraHeaders) {
         request += key + ": " + value + "\r\n";
     }
-    request += "Content-Length: " + std::to_string(bodySize) + "\r\nConnection: close\r\n\r\n";
+    request += "Content-Length: " + std::to_string(bodySize) + "\r\nConnection: "
+        + (keepAlive ? "keep-alive" : "close") + "\r\n\r\n";
     return request;
 }
 
