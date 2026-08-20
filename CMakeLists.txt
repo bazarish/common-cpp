@@ -54,6 +54,14 @@ target_include_directories(bazarish_common SYSTEM
 target_link_libraries(bazarish_common PUBLIC OpenSSL::Crypto ZLIB::ZLIB)
 target_compile_options(bazarish_common PRIVATE -Wall -Wextra -Werror)
 
+# Asio allocates a coroutine's frame through its own allocator and frees it the
+# same way. Once GCC 14 inlines that frame (-O2 and up) it pairs the allocation
+# with the plain operator delete and calls the result a mismatch. The pairing is
+# the compiler's, not ours, so the false positive is silenced where the
+# coroutines live rather than across the library.
+set_source_files_properties(src/HttpServer.cpp PROPERTIES
+    COMPILE_OPTIONS -Wno-mismatched-new-delete)
+
 # The I2P transport wrapper compiles only against the embedded engine. Its i2pd
 # and Boost includes arrive (as SYSTEM) through Bazarish::I2pd, so they stay out
 # of our -Werror surface.
