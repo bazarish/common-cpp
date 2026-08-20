@@ -52,7 +52,7 @@ target_include_directories(bazarish_common
 target_include_directories(bazarish_common SYSTEM
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
-target_link_libraries(bazarish_common PUBLIC OpenSSL::Crypto ZLIB::ZLIB)
+target_link_libraries(bazarish_common PUBLIC OpenSSL::Crypto OpenSSL::SSL ZLIB::ZLIB)
 target_compile_options(bazarish_common PRIVATE -Wall -Wextra -Werror)
 
 # Asio allocates a coroutine's frame through its own allocator and frees it the
@@ -60,7 +60,7 @@ target_compile_options(bazarish_common PRIVATE -Wall -Wextra -Werror)
 # with the plain operator delete and calls the result a mismatch. The pairing is
 # the compiler's, not ours, so the false positive is silenced where the
 # coroutines live rather than across the library.
-set_source_files_properties(src/HttpServer.cpp PROPERTIES
+set_source_files_properties(src/HttpServer.cpp src/HttpClient.cpp PROPERTIES
     COMPILE_OPTIONS -Wno-mismatched-new-delete)
 
 # The I2P transport wrapper compiles only against the embedded engine. Its i2pd
@@ -99,5 +99,6 @@ bazarish_add_test(TestResolve)
 bazarish_add_test(TestI2pHttp)
 bazarish_add_test(TestLog)
 bazarish_add_test(TestHealth)
+bazarish_add_test(TestHttpClient)
 bazarish_add_test(TestLoginChallenge)
 bazarish_add_test(TestCaptcha)
