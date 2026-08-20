@@ -31,11 +31,59 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 using asio::ip::tcp;
 
+// The two hex digits of a "%XX" escape, and their base.
+constexpr std::size_t kEscapeDigits = 2;
+constexpr int kHexBase = 16;
+
 std::string lowered(std::string text)
 {
     std::transform(text.begin(), text.end(), text.begin(),
         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return text;
+}
+
+// Percent-decoding, with "+" for a space: the encoding both a query string and
+// an urlencoded form body use. A stray "%" that does not start a valid pair is
+// kept as itself rather than swallowed.
+std::string urlDecoded(const std::string& text)
+{
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '+') {
+            out.push_back(' ');
+            continue;
+        }
+        if (text[i] == '%' && i + kEscapeDigits < text.size()
+            && std::isxdigit(static_cast<unsigned char>(text[i + 1])) != 0
+            && std::isxdigit(static_cast<unsigned char>(text[i + 2])) != 0) {
+            out.push_back(static_cast<char>(
+                std::stoi(text.substr(i + 1, kEscapeDigits), nullptr, kHexBase)));
+            i += kEscapeDigits;
+            continue;
+        }
+        out.push_back(text[i]);
+    }
+    return out;
+}
+
+// One value out of an "a=1&b=2" run, decoded; empty when the key is absent.
+std::string valueFrom(const std::string& encoded, const std::string& key)
+{
+    std::string rest = encoded;
+    while (!rest.empty()) {
+        const std::size_t amp = rest.find('&');
+        const std::string pair = rest.substr(0, amp);
+        const std::size_t eq = pair.find('=');
+        if (eq != std::string::npos && pair.substr(0, eq) == key) {
+            return urlDecoded(pair.substr(eq + 1));
+        }
+        if (amp == std::string::npos) {
+            break;
+        }
+        rest = rest.substr(amp + 1);
+    }
+    return {};
 }
 
 struct Route {
@@ -62,23 +110,21 @@ bool Request::hasHeader(const std::string& name) const
 std::string Request::query(const std::string& key) const
 {
     const std::size_t mark = target.find('?');
-    if (mark == std::string::npos) {
+    return mark == std::string::npos ? std::string() : valueFrom(target.substr(mark + 1), key);
+}
+
+std::string Request::param(const std::string& key) const
+{
+    const std::string fromQuery = query(key);
+    if (!fromQuery.empty()) {
+        return fromQuery;
+    }
+    // An HTML form posts its fields as the body, in the same encoding as a query
+    // string; a handler reads either without caring which it was.
+    if (lowered(header("content-type")).rfind("application/x-www-form-urlencoded", 0) != 0) {
         return {};
     }
-    std::string rest = target.substr(mark + 1);
-    while (!rest.empty()) {
-        const std::size_t amp = rest.find('&');
-        const std::string pair = rest.substr(0, amp);
-        const std::size_t eq = pair.find('=');
-        if (eq != std::string::npos && pair.substr(0, eq) == key) {
-            return pair.substr(eq + 1);
-        }
-        if (amp == std::string::npos) {
-            break;
-        }
-        rest = rest.substr(amp + 1);
-    }
-    return {};
+    return valueFrom(body, key);
 }
 
 struct Server::Impl {

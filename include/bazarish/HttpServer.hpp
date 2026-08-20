@@ -27,7 +27,11 @@ struct Request {
     std::string body;
 
     std::string header(const std::string& name) const;
+    // A value from the query string, percent-decoded.
     std::string query(const std::string& key) const;
+    // The same, falling back to an urlencoded form body - what an HTML form
+    // posts. A handler that serves both a link and a form reads one thing.
+    std::string param(const std::string& key) const;
     bool hasHeader(const std::string& name) const;
 };
 

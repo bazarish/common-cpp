@@ -45,6 +45,13 @@ int main()
         answer.body = request.body;
         return answer;
     });
+    server.post("/form", [](const http::Request& request) {
+        http::Response answer;
+        answer.contentType = "text/plain";
+        // A form field and a query value read the same way, both decoded.
+        answer.body = request.param("blob") + "|" + request.param("who");
+        return answer;
+    });
     server.put("/sink", [](const http::Request& request) {
         http::Response answer;
         answer.contentType = "text/plain";
@@ -86,6 +93,17 @@ int main()
     CHECK(echoed.status == 200);
     CHECK(echoed.body == post.body);
     CHECK(echoed.contentType == "application/json");
+
+    // An HTML form posts its fields as an urlencoded body: they arrive decoded,
+    // "+" included, and a query value on the same request is read the same way.
+    http::ClientRequest form;
+    form.method = "POST";
+    form.target = "/form?who=a%2Fb";
+    form.contentType = "application/x-www-form-urlencoded";
+    form.body = "blob=aGVsbG8%2Bd29ybGQ%3D&other=1";
+    const http::ClientResponse posted = http::request("127.0.0.1", port, form, options);
+    CHECK(posted.status == 200);
+    CHECK(posted.body == "aGVsbG8+d29ybGQ=|a/b");
 
     // A streamed upload of a known length arrives whole, in as many chunks as it
     // takes.
