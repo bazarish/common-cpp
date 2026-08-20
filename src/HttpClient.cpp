@@ -195,6 +195,12 @@ asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const s
             boost::system::error_code ignored;
             stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
         }
+    } catch (const boost::system::system_error& error) {
+        // The code's own message ("Connection refused"), not what(): Beast puts
+        // the throwing source location in there, which is noise in a log line.
+        answer = ClientResponse{};
+        answer.error = error.code().message();
+        answer.readTimedOut = phase == Phase::eRead;
     } catch (const std::exception& error) {
         answer = ClientResponse{};
         answer.error = error.what();
