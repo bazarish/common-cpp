@@ -58,6 +58,27 @@ int main()
         answer.body = std::to_string(request.body.size());
         return answer;
     });
+    // A backend that wants HTTP Digest credentials: it 401s with a challenge and
+    // then checks the answer the client computes from it.
+    server.get("/vault", [](const http::Request& request) {
+        http::Response answer;
+        answer.contentType = "text/plain";
+        const std::string authorization = request.header("authorization");
+        if (authorization.rfind("Digest ", 0) != 0) {
+            answer.status = 401;
+            answer.headers["WWW-Authenticate"]
+                = R"(Digest realm="monero-wallet-rpc", nonce="abc123", qop="auth")";
+            answer.body = "who goes there";
+            return answer;
+        }
+        // The response is what proves the password without sending it; the rest
+        // of the header only says how it was computed.
+        const bool named = authorization.find(R"(username="walletuser")") != std::string::npos;
+        const bool answered = authorization.find(R"(response=")") != std::string::npos;
+        const bool counted = authorization.find("nc=00000001") != std::string::npos;
+        answer.body = named && answered && counted ? "welcome" : "no";
+        return answer;
+    });
     server.get("/slow", [](const http::Request&) {
         std::this_thread::sleep_for(std::chrono::seconds(kTimeoutSeconds));
         return http::Response{};
@@ -123,6 +144,23 @@ int main()
     CHECK(stored.status == 200);
     CHECK(stored.body == std::to_string(kUploadBytes));
     CHECK(produced == kUploadBytes);
+
+    // A digest challenge is answered on a second attempt, with the credentials
+    // computed from what the server asked for.
+    http::ClientOptions vaultOptions = options;
+    vaultOptions.digestUser = "walletuser";
+    vaultOptions.digestPassword = "walletpass";
+    http::ClientRequest vault;
+    vault.method = "GET";
+    vault.target = "/vault";
+    const http::ClientResponse authorized = http::request("127.0.0.1", port, vault, vaultOptions);
+    CHECK(authorized.status == 200);
+    CHECK(authorized.body == "welcome");
+
+    // Without credentials the challenge reaches the caller as it stands.
+    const http::ClientResponse challenged = http::request("127.0.0.1", port, vault, options);
+    CHECK(challenged.status == 401);
+    CHECK(challenged.headers.count("www-authenticate") == 1);
 
     // Nothing listening: a transport failure is status 0 with a reason, not an
     // exception, and it is not reported as a read timeout.

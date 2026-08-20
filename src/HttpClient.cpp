@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include <bazarish/HttpClient.hpp>
 
+#include <bazarish/Bytes.hpp>
 #include <bazarish/Log.hpp>
 
 #include <boost/asio/co_spawn.hpp>
@@ -13,12 +14,14 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
 
+#include <openssl/evp.h>
 #include <openssl/ssl.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <exception>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -35,6 +38,12 @@ using asio::ip::tcp;
 constexpr int kHttpVersion11 = 11;
 // Bytes handed to the body provider per write while streaming an upload.
 constexpr std::size_t kUploadChunkBytes = 64 * 1024;
+// The status a server answers with when it wants credentials.
+constexpr int kUnauthorizedStatus = 401;
+// A digest exchange is one request per set of credentials, so the nonce count
+// never advances past the first.
+constexpr const char* kFirstNonceCount = "00000001";
+constexpr std::size_t kClientNonceBytes = 8;
 
 std::string lowercased(std::string text)
 {
@@ -194,6 +203,80 @@ asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const s
     co_return answer;
 }
 
+// Hex MD5, the one digest RFC 7616 names for its default algorithm. Used only
+// to answer a server's authentication challenge, never to protect anything.
+std::string md5Hex(const std::string& text)
+{
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned int size = 0;
+    if (EVP_Digest(text.data(), text.size(), digest.data(), &size, EVP_md5(), nullptr) != 1) {
+        throw std::runtime_error("could not compute the digest challenge response");
+    }
+    return toHex(Bytes(digest.begin(), digest.begin() + size));
+}
+
+// The comma-separated "key=value" pairs of a WWW-Authenticate: Digest header.
+std::map<std::string, std::string> challengeFields(const std::string& header)
+{
+    std::map<std::string, std::string> fields;
+    const std::size_t scheme = header.find(' ');
+    if (scheme == std::string::npos) {
+        return fields;
+    }
+    std::string rest = header.substr(scheme + 1);
+    while (!rest.empty()) {
+        const std::size_t comma = rest.find(',');
+        std::string pair = rest.substr(0, comma);
+        const std::size_t eq = pair.find('=');
+        if (eq != std::string::npos) {
+            std::string key = pair.substr(0, eq);
+            std::string value = pair.substr(eq + 1);
+            key.erase(0, key.find_first_not_of(" \t"));
+            if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+                value = value.substr(1, value.size() - 2);
+            }
+            fields[key] = value;
+        }
+        if (comma == std::string::npos) {
+            break;
+        }
+        rest = rest.substr(comma + 1);
+    }
+    return fields;
+}
+
+// The Authorization header that answers a Digest challenge (RFC 7616 section
+// 3.4, MD5 with qop=auth). One exchange per credentials, so the nonce count is
+// always the first.
+std::string digestAuthorization(const ClientOptions& options, const std::string& method,
+    const std::string& target, const std::map<std::string, std::string>& fields)
+{
+    const auto value = [&fields](const std::string& key) {
+        const auto found = fields.find(key);
+        return found == fields.end() ? std::string() : found->second;
+    };
+    const std::string realm = value("realm");
+    const std::string nonce = value("nonce");
+    const std::string qop = value("qop");
+    const std::string opaque = value("opaque");
+    const std::string cnonce = toHex(randomBytes(kClientNonceBytes));
+    const std::string ha1 = md5Hex(options.digestUser + ":" + realm + ":" + options.digestPassword);
+    const std::string ha2 = md5Hex(method + ":" + target);
+    const std::string answer = qop.empty()
+        ? md5Hex(ha1 + ":" + nonce + ":" + ha2)
+        : md5Hex(ha1 + ":" + nonce + ":" + kFirstNonceCount + ":" + cnonce + ":auth:" + ha2);
+
+    std::string header = "Digest username=\"" + options.digestUser + "\", realm=\"" + realm
+        + "\", nonce=\"" + nonce + "\", uri=\"" + target + "\", response=\"" + answer + "\"";
+    if (!qop.empty()) {
+        header += ", qop=auth, nc=" + std::string(kFirstNonceCount) + ", cnonce=\"" + cnonce + "\"";
+    }
+    if (!opaque.empty()) {
+        header += ", opaque=\"" + opaque + "\"";
+    }
+    return header;
+}
+
 ClientResponse runOnce(const std::string& host, const int port, const ClientRequest& request,
     const ClientOptions& options, const std::uint64_t length, const BodyProvider* const provider)
 {
@@ -242,7 +325,20 @@ asio::awaitable<Response> fetch(asio::any_io_executor executor, const std::strin
 ClientResponse request(const std::string& host, const int port, const ClientRequest& request,
     const ClientOptions& options)
 {
-    return runOnce(host, port, request, options, 0, nullptr);
+    const ClientResponse first = runOnce(host, port, request, options, 0, nullptr);
+    if (first.status != kUnauthorizedStatus || options.digestUser.empty()) {
+        return first;
+    }
+    const auto challenge = first.headers.find("www-authenticate");
+    if (challenge == first.headers.end() || challenge->second.rfind("Digest", 0) != 0) {
+        return first;
+    }
+    // The challenge is what the credentials are computed against, so this second
+    // attempt is the first one that could carry them.
+    ClientRequest authorized = request;
+    authorized.headers["Authorization"] = digestAuthorization(options, request.method,
+        request.target, challengeFields(challenge->second));
+    return runOnce(host, port, authorized, options, 0, nullptr);
 }
 
 ClientResponse upload(const std::string& host, const int port, const ClientRequest& request,

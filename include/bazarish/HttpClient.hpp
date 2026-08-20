@@ -42,6 +42,11 @@ struct ClientOptions {
     std::chrono::seconds connectTimeout{15};
     std::chrono::seconds readTimeout{60};
     std::chrono::seconds writeTimeout{60};
+    // HTTP Digest credentials (RFC 7616), for a backend that asks for them -
+    // monero-wallet-rpc does. Empty user: the exchange sends no credentials and
+    // a 401 comes back to the caller as it stands.
+    std::string digestUser;
+    std::string digestPassword;
 };
 
 struct ClientResponse {
