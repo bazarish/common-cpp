@@ -20,13 +20,40 @@ std::string buildI2pHttpRequest(const std::string& method, const std::string& ho
     return request;
 }
 
+namespace {
+
+// How much of an unparseable first line is quoted back in the error. Enough to
+// tell an HTTP status line from a request line or a relay's plain-text refusal,
+// short enough that no body can ride along in a log.
+constexpr std::size_t kQuotedLineLimit = 64;
+// Status codes are three digits.
+constexpr std::size_t kStatusCodeDigits = 3;
+
+std::string quoteForError(const std::string& line)
+{
+    std::string quoted;
+    for (const char c : line.substr(0, kQuotedLineLimit)) {
+        quoted += (std::isprint(static_cast<unsigned char>(c)) != 0) ? c : '.';
+    }
+    return "\"" + quoted + "\"";
+}
+
+}  // namespace
+
 int parseI2pHttpStatus(const std::string& statusLine)
 {
+    // Quote the line itself: "not a status line" is the same message whether the
+    // other side sent a request, a relay's plain refusal, or another response's
+    // body, and those have very different causes.
     const std::size_t space = statusLine.find(' ');
     if (space == std::string::npos) {
-        throw std::runtime_error("malformed i2p http status line");
+        throw std::runtime_error("malformed i2p http status line: " + quoteForError(statusLine));
     }
-    return std::stoi(statusLine.substr(space + 1, 3));
+    try {
+        return std::stoi(statusLine.substr(space + 1, kStatusCodeDigits));
+    } catch (const std::exception&) {
+        throw std::runtime_error("i2p http reply is not a response: " + quoteForError(statusLine));
+    }
 }
 
 std::map<std::string, std::string> parseI2pHttpHeaders(const std::string& headBlock)
