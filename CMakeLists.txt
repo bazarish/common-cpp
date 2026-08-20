@@ -32,6 +32,7 @@ add_library(bazarish_common STATIC
     src/ServerDescriptor.cpp
     src/Resolve.cpp
     src/I2pHttp.cpp
+    src/Reactions.cpp
     src/Log.cpp
     src/Health.cpp
     src/HttpClient.cpp
