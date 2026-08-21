@@ -25,6 +25,7 @@ add_library(bazarish_common STATIC
     src/Cms.cpp
     src/Certificates.cpp
     src/Tokens.cpp
+    src/WebAssets.cpp
     src/Errors.cpp
     src/Address.cpp
     src/I2pAddress.cpp
