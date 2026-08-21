@@ -12,15 +12,18 @@
 namespace bazarish::service {
 
 // The built-in self-hosted captcha: a short code from a non-ambiguous alphabet,
-// rendered as a distorted SVG image (no JavaScript, no third party). The id is
+// drawn as a distorted SVG image (no JavaScript, no third party). The id is
 // a stateless HMAC token binding the expected (normalised) answer and a
 // timestamp, so verification needs no per-challenge storage beyond a small
 // single-use set. Parameters: secret (HMAC key, required), length (code length,
 // default 5), window (validity seconds, default 300).
 //
-// Baseline caveat: the code characters appear in the SVG markup, so this deters
-// image-OCR and casual bots but not a source-reading bot - deployments wanting
-// strong resistance should register a rasterised or proof-of-work captcha.
+// The image carries no text: every character is a set of stroked polylines,
+// randomised per challenge and cut and shuffled so that neither the characters
+// nor their order can be recovered from the markup. Reading it needs the same
+// work a human does - rasterise, segment, recognise - which is the whole point
+// of a captcha. It still does not stop an attacker willing to run an OCR model;
+// a deployment that needs more can register a different backend.
 class SelfHostedCaptcha : public Captcha {
 public:
     SelfHostedCaptcha(std::string secret, int length, std::int64_t windowSeconds);
