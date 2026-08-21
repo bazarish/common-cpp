@@ -148,13 +148,14 @@ constexpr double kStrokeWidthMin = 2.0;
 constexpr double kStrokeWidthMax = 2.8;
 
 // Strokes that belong to no character. They carry the same weight and the same
-// look as the glyphs, so a reader cannot sort signal from noise by style.
+// look as the glyphs, so a reader cannot sort signal from noise by style - but
+// they run long and straight, so a human does not mistake one for a character.
 constexpr std::size_t kNoiseStrokesMin = 2;
 constexpr std::size_t kNoiseStrokesMax = 3;
-constexpr std::size_t kNoiseSegmentsMin = 2;
-constexpr std::size_t kNoiseSegmentsMax = 4;
-constexpr double kNoiseStepMin = 6.0;
-constexpr double kNoiseStepMax = 22.0;
+constexpr std::size_t kNoiseSegmentsMin = 1;
+constexpr std::size_t kNoiseSegmentsMax = 2;
+constexpr double kNoiseStepMin = 18.0;
+constexpr double kNoiseStepMax = 48.0;
 constexpr std::size_t kWaveStrokes = 1;
 constexpr std::size_t kWavePoints = 26;
 constexpr double kWaveAmplitudeMin = 5.0;
