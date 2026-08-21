@@ -39,3 +39,10 @@ file here.
   (a `std::function` sink) so an embedder can route i2pd logging into its own log
   system with the severity preserved. Drop this patch if/when the feature is
   merged upstream.
+- `0002-libi2pd-optional-leaseset-key-persistence.patch` - adds the I2CP parameter
+  `i2cp.persistLeaseSetKeys` (default true, i.e. today's behaviour). With it set
+  to false a published destination keeps its leaseset encryption keys in memory
+  instead of writing them to `destinations/<b32>.<type>.dat`. Those files are
+  named after the destination, so on a router that serves one destination per
+  user they amount to a plain-text roster of the addresses this installation has
+  served. Drop this patch if/when the parameter is merged upstream.

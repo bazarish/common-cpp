@@ -1,0 +1,48 @@
+diff --git a/libi2pd/Destination.cpp b/libi2pd/Destination.cpp
+index f88688f9..40b4daa6 100644
+--- a/libi2pd/Destination.cpp
++++ b/libi2pd/Destination.cpp
+@@ -998,6 +998,9 @@ namespace client
+ 		if (keys.IsOfflineSignature () && GetLeaseSetType () == i2p::data::NETDB_STORE_TYPE_LEASESET)
+ 			SetLeaseSetType (i2p::data::NETDB_STORE_TYPE_STANDARD_LEASESET2); // offline keys can be published with LS2 only
+ 
++		if (params)
++			params->Get (I2CP_PARAM_LEASESET_PERSIST_KEYS, m_PersistLeaseSetKeys);
++
+ 		// extract encryption type params for LS2
+ 		std::set<i2p::data::CryptoKeyType> encryptionKeyTypes;
+ 		if (params)
+@@ -1048,7 +1051,7 @@ namespace client
+ 		for (auto& it: encryptionKeyTypes)
+ 		{
+ 			auto encryptionKey = std::make_shared<i2p::crypto::LocalEncryptionKey> (it);
+-			if (IsPublic ())
++			if (IsPublic () && m_PersistLeaseSetKeys)
+ 				PersistTemporaryKeys (encryptionKey);
+ 			else
+ 				encryptionKey->GenerateKeys ();
+diff --git a/libi2pd/Destination.h b/libi2pd/Destination.h
+index 82cda560..c765c37f 100644
+--- a/libi2pd/Destination.h
++++ b/libi2pd/Destination.h
+@@ -75,6 +75,12 @@ namespace client
+ 	const char I2CP_PARAM_OUTBOUND_NICKNAME[] = "outbound.nickname";
+ 	const char I2CP_PARAM_DONT_PUBLISH_LEASESET[] = "i2cp.dontPublishLeaseSet";
+ 	const char I2CP_PARAM_LEASESET_TYPE[] = "i2cp.leaseSetType";
++	// Whether a published destination's leaseset encryption keys are written to
++	// the destinations/ directory. Persisting them keeps the same key across
++	// restarts; not persisting leaves no record on disk of which destinations
++	// this router has served, at the price of a new key after every restart.
++	const char I2CP_PARAM_LEASESET_PERSIST_KEYS[] = "i2cp.persistLeaseSetKeys";
++	const bool DEFAULT_LEASESET_PERSIST_KEYS = true;
+ 	const int DEFAULT_LEASESET_TYPE = 3;
+ 	const char I2CP_PARAM_LEASESET_ENCRYPTION_TYPE[] = "i2cp.leaseSetEncType";
+ 	const char I2CP_PARAM_LEASESET_PRIV_KEY[] = "i2cp.leaseSetPrivKey"; // PSK decryption key, base64
+@@ -324,6 +330,7 @@ namespace client
+ 			i2p::data::PrivateKeys m_Keys;
+ 			std::map<i2p::data::CryptoKeyType, std::shared_ptr<i2p::crypto::LocalEncryptionKey> > m_EncryptionKeys; // last is most preferable
+ 			i2p::data::CryptoKeyType m_PreferredCryptoType;
++			bool m_PersistLeaseSetKeys = DEFAULT_LEASESET_PERSIST_KEYS;
+ 
+ 			int m_StreamingAckDelay,m_StreamingOutboundSpeed, m_StreamingInboundSpeed,
+                 m_StreamingMaxConcurrentStreams, m_StreamingMaxConnsPerMinute, m_StreamingMaxWindowSize,

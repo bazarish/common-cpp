@@ -743,6 +743,10 @@ Router::Router(RouterConfig config) : impl_(std::make_unique<Impl>())
         args.push_back("--share=100");
     }
     args.push_back("--loglevel=warn");
+    // Peer profiles are a plain-text record of which routers this installation
+    // has been talking to, and when. Keeping them buys a little tunnel-building
+    // quality; leaving them on disk costs a log of the user's activity.
+    args.push_back("--persist.profiles=false");
     if (!config.allowPublicReseed)
     {
         // Point the reseeder at a local file that does not exist: it then tries
@@ -935,6 +939,12 @@ std::shared_ptr<Endpoint> Router::createEndpoint(const EndpointConfig& config)
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_TYPE,
         config.leaseSet == LeaseSetKind::eEncrypted ? "5" : "3");
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_ENCRYPTION_TYPE, "4");
+    // Never write this destination's leaseset keys to the router directory: the
+    // files there are named by the destination, so persisting them would leave a
+    // list of every address this installation has served lying in the clear. The
+    // address itself is unaffected - only the leaseset's encryption key is new
+    // after a restart, and subscribers fetch the current leaseset anyway.
+    params.Insert(i2pd::client::I2CP_PARAM_LEASESET_PERSIST_KEYS, "false");
     int length = 0;
     int variance = 0;
     privacyToTunnel(config.privacy, length, variance);
