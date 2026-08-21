@@ -25,6 +25,7 @@ add_library(bazarish_common STATIC
     src/Cms.cpp
     src/Certificates.cpp
     src/Tokens.cpp
+    src/ConfigFile.cpp
     src/WebAssets.cpp
     src/Errors.cpp
     src/Address.cpp
@@ -103,3 +104,4 @@ bazarish_add_test(TestHealth)
 bazarish_add_test(TestHttpClient)
 bazarish_add_test(TestLoginChallenge)
 bazarish_add_test(TestCaptcha)
+bazarish_add_test(TestConfigFile)
