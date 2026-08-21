@@ -108,6 +108,50 @@ void testRefusesWhatItCannotPatch()
     CHECK(notAnObject);
 }
 
+// Reading a daemon's settings: what is there, what is missing, and what is of
+// the wrong shape.
+void testReadingSettings()
+{
+    const ConfigView view(nlohmann::json::parse(kConfig, nullptr, true, true));
+    CHECK(view.number("freeStorageBytes", 0) == 52428800);
+    CHECK(view.text("portal.message") == "Bazarish test stand.");
+    CHECK(!view.flag("registration.requireApproval", true));
+    CHECK(view.list("portal.facades").size() == 2);
+    CHECK(view.has("registration.ttlDays"));
+    CHECK(!view.has("registration.message"));
+
+    // A missing value is the caller's default, not an error.
+    CHECK(view.text("portal.nothing", "fallback") == "fallback");
+    CHECK(view.number("nothing.at.all", 7) == 7);
+    CHECK(view.list("nothing").empty());
+    CHECK(!view.endpoint("listen").has_value());
+
+    const ConfigView listening(nlohmann::json::parse(
+        R"({"listen": {"host": "127.0.0.1", "port": 8420}, "half": {"host": "x"}})"));
+    const std::optional<ConfigView::Endpoint> endpoint = listening.endpoint("listen");
+    CHECK(endpoint.has_value());
+    CHECK(endpoint->host == "127.0.0.1");
+    CHECK(endpoint->port == 8420);
+
+    // A value of the wrong shape is an error, not a default: a daemon that
+    // silently ran on the default would be a daemon nobody configured.
+    bool wrongShape = false;
+    try {
+        (void)view.number("portal.message", 0);
+    } catch (const std::exception&) {
+        wrongShape = true;
+    }
+    CHECK(wrongShape);
+
+    bool halfAnEndpoint = false;
+    try {
+        (void)listening.endpoint("half");
+    } catch (const std::exception&) {
+        halfAnEndpoint = true;
+    }
+    CHECK(halfAnEndpoint);
+}
+
 }  // namespace
 
 int main()
@@ -117,6 +161,7 @@ int main()
     testStringsAreEscaped();
     testWritesKeysTheFileDoesNotHave();
     testRefusesWhatItCannotPatch();
+    testReadingSettings();
     std::printf("TestConfigFile: all checks passed\n");
     return 0;
 }

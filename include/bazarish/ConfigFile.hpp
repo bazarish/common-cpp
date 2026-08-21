@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,44 @@ public:
 
 private:
     std::filesystem::path path_;
+};
+
+// A daemon's settings, read out of its config document.
+//
+// Every value a daemon runs on lives here rather than in its command line: two
+// places to say the same thing is two answers to the same question, and the
+// operator finds out which one won by reading a unit file. A daemon takes the
+// path to this document and nothing else.
+//
+// Paths are dotted: "portal.listen.port".
+class ConfigView {
+public:
+    explicit ConfigView(nlohmann::json document);
+
+    // The value at `path`, or `fallback` when the document does not have it.
+    // Throws when it has it as something else (a string where a number belongs).
+    std::string text(const std::string& path, const std::string& fallback = {}) const;
+    std::int64_t number(const std::string& path, std::int64_t fallback) const;
+    bool flag(const std::string& path, bool fallback) const;
+    std::vector<std::string> list(const std::string& path) const;
+
+    // Whether the document names this path at all, for a setting whose absence
+    // means something (a face that is simply not served).
+    bool has(const std::string& path) const;
+
+    // A host and a port, which this fleet asks for at nearly every turn.
+    struct Endpoint {
+        std::string host;
+        int port = 0;
+    };
+    std::optional<Endpoint> endpoint(const std::string& path) const;
+
+    const nlohmann::json& document() const { return document_; }
+
+private:
+    const nlohmann::json* find(const std::string& path) const;
+
+    nlohmann::json document_;
 };
 
 // The patch itself, on text rather than a file: exposed for testing, and for a

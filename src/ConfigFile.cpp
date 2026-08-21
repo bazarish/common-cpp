@@ -254,6 +254,108 @@ std::string configWithValue(
     return patched.substr(0, span->from) + value.dump() + patched.substr(span->to);
 }
 
+ConfigView::ConfigView(nlohmann::json document)
+    : document_(std::move(document))
+{
+    if (!document_.is_object()) {
+        throw std::runtime_error("config is not a JSON object");
+    }
+}
+
+const nlohmann::json* ConfigView::find(const std::string& path) const
+{
+    const nlohmann::json* at = &document_;
+    std::size_t from = 0;
+    while (from <= path.size()) {
+        const std::size_t dot = path.find('.', from);
+        const std::string key
+            = path.substr(from, dot == std::string::npos ? std::string::npos : dot - from);
+        if (!at->is_object() || !at->contains(key)) {
+            return nullptr;
+        }
+        at = &at->at(key);
+        if (dot == std::string::npos) {
+            return at;
+        }
+        from = dot + 1;
+    }
+    return nullptr;
+}
+
+bool ConfigView::has(const std::string& path) const
+{
+    return find(path) != nullptr;
+}
+
+std::string ConfigView::text(const std::string& path, const std::string& fallback) const
+{
+    const nlohmann::json* const value = find(path);
+    if (value == nullptr) {
+        return fallback;
+    }
+    if (!value->is_string()) {
+        throw std::runtime_error("config: " + path + " is not a string");
+    }
+    return value->get<std::string>();
+}
+
+std::int64_t ConfigView::number(const std::string& path, const std::int64_t fallback) const
+{
+    const nlohmann::json* const value = find(path);
+    if (value == nullptr) {
+        return fallback;
+    }
+    if (!value->is_number_integer()) {
+        throw std::runtime_error("config: " + path + " is not a whole number");
+    }
+    return value->get<std::int64_t>();
+}
+
+bool ConfigView::flag(const std::string& path, const bool fallback) const
+{
+    const nlohmann::json* const value = find(path);
+    if (value == nullptr) {
+        return fallback;
+    }
+    if (!value->is_boolean()) {
+        throw std::runtime_error("config: " + path + " is not true or false");
+    }
+    return value->get<bool>();
+}
+
+std::vector<std::string> ConfigView::list(const std::string& path) const
+{
+    const nlohmann::json* const value = find(path);
+    if (value == nullptr) {
+        return {};
+    }
+    if (!value->is_array()) {
+        throw std::runtime_error("config: " + path + " is not a list");
+    }
+    std::vector<std::string> entries;
+    for (const nlohmann::json& entry : *value) {
+        if (!entry.is_string()) {
+            throw std::runtime_error("config: " + path + " holds something other than text");
+        }
+        entries.push_back(entry.get<std::string>());
+    }
+    return entries;
+}
+
+std::optional<ConfigView::Endpoint> ConfigView::endpoint(const std::string& path) const
+{
+    if (!has(path)) {
+        return std::nullopt;
+    }
+    Endpoint endpoint;
+    endpoint.host = text(path + ".host");
+    endpoint.port = static_cast<int>(number(path + ".port", 0));
+    if (endpoint.host.empty() || endpoint.port == 0) {
+        throw std::runtime_error("config: " + path + " needs a host and a port");
+    }
+    return endpoint;
+}
+
 ConfigFile::ConfigFile(fs::path path)
     : path_(std::move(path))
 {
