@@ -33,23 +33,18 @@ void requireSigner(const VerifiedHybridJson& verified, const std::string& expect
 
 namespace bazarish {
 
-Bytes SubscriptionCertificate::issue(const Identity& userIdentity,
-    const std::string& serverFingerprint, const std::int64_t issuedAt,
-    const std::int64_t notAfter, const Bytes& sealingPublicKeyDer, const std::string& dest,
-    const Bytes& servingSealingKeyDer)
+Bytes ContactCard::issue(const Identity& userIdentity, const std::string& dest,
+    const Bytes& sealingPublicKeyDer, const Bytes& servingSealingKeyDer)
 {
     nlohmann::json body = {
         {"v", kCertificateFormatVersion},
         {"user", userIdentity.fingerprint()},
-        {"server", serverFingerprint},
-        {"issuedAt", issuedAt},
-        {"notAfter", notAfter},
     };
-    if (!sealingPublicKeyDer.empty()) {
-        body["sealingKey"] = toBase64(sealingPublicKeyDer);
-    }
     if (!dest.empty()) {
         body["dest"] = dest;
+    }
+    if (!sealingPublicKeyDer.empty()) {
+        body["sealingKey"] = toBase64(sealingPublicKeyDer);
     }
     if (!servingSealingKeyDer.empty()) {
         body["servingKey"] = toBase64(servingSealingKeyDer);
@@ -57,49 +52,40 @@ Bytes SubscriptionCertificate::issue(const Identity& userIdentity,
     return cms::signJsonHybrid(body, userIdentity);
 }
 
-SubscriptionCertificate SubscriptionCertificate::verify(const Bytes& der)
+ContactCard ContactCard::verify(const Bytes& der)
 {
     const VerifiedHybridJson verified = verifyVersioned(der);
-    SubscriptionCertificate cert;
-    cert.v = verified.body.at("v").get<int>();
-    cert.user = verified.body.at("user").get<std::string>();
-    cert.server = verified.body.at("server").get<std::string>();
-    cert.issuedAt = verified.body.at("issuedAt").get<std::int64_t>();
-    cert.notAfter = verified.body.at("notAfter").get<std::int64_t>();
-    if (verified.body.contains("sealingKey")) {
-        cert.sealingPublicKeyDer
-            = fromBase64(verified.body.at("sealingKey").get<std::string>());
-    }
+    ContactCard card;
+    card.v = verified.body.at("v").get<int>();
+    card.user = verified.body.at("user").get<std::string>();
     if (verified.body.contains("dest")) {
-        cert.dest = verified.body.at("dest").get<std::string>();
+        card.dest = verified.body.at("dest").get<std::string>();
+    }
+    if (verified.body.contains("sealingKey")) {
+        card.sealingPublicKeyDer = fromBase64(verified.body.at("sealingKey").get<std::string>());
     }
     if (verified.body.contains("servingKey")) {
-        cert.servingSealingKeyDer
+        card.servingSealingKeyDer
             = fromBase64(verified.body.at("servingKey").get<std::string>());
     }
-    requireSigner(verified, cert.user);
-    return cert;
+    requireSigner(verified, card.user);
+    return card;
 }
 
-Key SubscriptionCertificate::sealingKey() const
+Key ContactCard::sealingKey() const
 {
     if (sealingPublicKeyDer.empty()) {
-        throw std::runtime_error("subscription certificate carries no sealing prekey");
+        throw std::runtime_error("contact card carries no sealing prekey");
     }
     return Key::fromPublicDer(sealingPublicKeyDer);
 }
 
-Key SubscriptionCertificate::servingSealingKey() const
+Key ContactCard::servingSealingKey() const
 {
     if (servingSealingKeyDer.empty()) {
-        throw std::runtime_error("subscription certificate carries no serving sealing key");
+        throw std::runtime_error("contact card carries no serving sealing key");
     }
     return Key::fromPublicDer(servingSealingKeyDer);
-}
-
-bool SubscriptionCertificate::isExpired(const std::int64_t now) const
-{
-    return now > notAfter;
 }
 
 Bytes AliasCertificate::issue(const Identity& userIdentity, const std::string& alias,

@@ -21,12 +21,17 @@ namespace bazarish {
 // Query to a serving server, sealed to its serving sealing key.
 struct CardFetchQuery {
     std::string fingerprint;  // whose contact card is requested
+    // The `key` from the descriptor being redeemed: the per-user serving key the
+    // serving server itself generated. It is what shows the asker was given this
+    // descriptor. A wrong key and an unknown user get the same refusal, so
+    // nothing is learnt by asking.
+    Bytes keyDer;
     Bytes responseKeyDer;     // ephemeral SPKI the response is sealed to
 };
 
 // Response from the serving server, sealed to the query's responseKey.
 struct CardFetchResponse {
-    Bytes subscriptionCertDer;  // the user-signed contact card (subscription certificate)
+    Bytes cardDer;  // the user-signed contact card
 };
 
 nlohmann::json toJson(const CardFetchQuery& query);

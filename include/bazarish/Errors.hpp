@@ -14,8 +14,6 @@ namespace bazarish {
 enum class ErrorCode {
     eQuotaExceeded,
     eStorageFull,
-    eSubscriptionExpired,
-    eSubscriptionTermTooLong,
     eRecipientServerUnreachable,
     eDeliveryTimeout,
     eAttemptUnknown,

@@ -15,45 +15,40 @@ inline constexpr int kCertificateFormatVersion = 1;
 
 // All times are unix seconds, UTC.
 
-// Subscription certificate: signed by the user, asserts "server S serves
-// user U until T". The lifecycle anchor on the serving server and, pushed
-// to contacts over E2E, the serving statement that answers "where do I
-// deliver?". Expiry is policy, not validity: verify() does not reject
-// expired certificates - callers decide (routing-staleness rule).
-struct SubscriptionCertificate {
+// Contact card: signed by the user, saying "this is where you reach me". It is
+// what a contact fetches and what an invite points at, so it names nothing but
+// the user's own routing - never the server that operates the destination, which
+// would tell every contact who hosts them and let two cards be compared for
+// co-location.
+//
+// Nothing in it is a trust anchor except the signature: the fingerprint is the
+// anchor, and a wrong dest or key only makes delivery fail. It carries no
+// validity window either - routing that moved is repaired by the `routing` field
+// every message carries, which needs one message in any direction.
+struct ContactCard {
     int v = kCertificateFormatVersion;
     std::string user;
-    std::string server;
-    std::int64_t issuedAt = 0;
-    std::int64_t notAfter = 0;
-    // The user's sealing public key (SubjectPublicKeyInfo DER): a prekey,
-    // signed by the user, that contacts use to E2E-encrypt the first
-    // message before any token exchange. Empty when not published.
-    Bytes sealingPublicKeyDer;
-    // Destination-routed contact fields (see api/InviteAnonymity.md). The user
-    // vouches for both under the same single signature; neither is a trust
-    // anchor (a wrong value only makes delivery fail). Empty when not published.
-    //   dest                  - the I2P destination a contact delivers to (dest_U)
-    //   servingSealingKeyDer  - SubjectPublicKeyInfo DER of the serving sealing
-    //                           key (sealingKey_U): the public key the delivery
-    //                           envelope's admission header (mailbox + token) is
-    //                           sealed to, whose private half the user's server
-    //                           holds. NOT a signature.
+    // The I2P destination a contact delivers to (dest_U).
     std::string dest;
+    // The user's sealing public key (SubjectPublicKeyInfo DER): a prekey that
+    // contacts use to E2E-encrypt the first message before any token exchange.
+    // Empty when not published yet.
+    Bytes sealingPublicKeyDer;
+    // SubjectPublicKeyInfo DER of the serving sealing key (sealingKey_U): the
+    // public key the delivery envelope's admission header (mailbox + token) is
+    // sealed to, whose private half the user's server holds. NOT a signature.
+    // Empty when not published yet.
     Bytes servingSealingKeyDer;
 
-    static Bytes issue(const Identity& userIdentity, const std::string& serverFingerprint,
-        std::int64_t issuedAt, std::int64_t notAfter, const Bytes& sealingPublicKeyDer = {},
-        const std::string& dest = {}, const Bytes& servingSealingKeyDer = {});
+    static Bytes issue(const Identity& userIdentity, const std::string& dest = {},
+        const Bytes& sealingPublicKeyDer = {}, const Bytes& servingSealingKeyDer = {});
     // Verifies the CMS signature and that the signer is body.user.
-    static SubscriptionCertificate verify(const Bytes& der);
+    static ContactCard verify(const Bytes& der);
 
     // The sealing prekey as a usable Key. Throws when none was published.
     Key sealingKey() const;
     // The serving sealing key as a usable Key. Throws when none was published.
     Key servingSealingKey() const;
-
-    bool isExpired(std::int64_t now) const;
 };
 
 // Alias certificate: signed by the user, asserts "I am alias X".

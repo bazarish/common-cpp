@@ -11,8 +11,6 @@ int main()
     const ErrorCode codes[] = {
         ErrorCode::eQuotaExceeded,
         ErrorCode::eStorageFull,
-        ErrorCode::eSubscriptionExpired,
-        ErrorCode::eSubscriptionTermTooLong,
         ErrorCode::eRecipientServerUnreachable,
         ErrorCode::eDeliveryTimeout,
         ErrorCode::eAttemptUnknown,

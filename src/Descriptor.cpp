@@ -91,7 +91,7 @@ namespace bazarish {
 std::string encodeDescriptor(const Descriptor& descriptor)
 {
     std::string uri = std::string(kPrefix) + "v=1&fp=" + descriptor.fingerprint
-        + "&srv=" + descriptor.srv + "&srv_key=" + toBase64Url(descriptor.srvKeyDer);
+        + "&dest=" + descriptor.dest + "&key=" + toBase64Url(descriptor.keyDer);
     // The name is optional and percent-encoded; older invites simply omit it.
     if (!descriptor.name.empty()) {
         uri += "&name=" + percentEncode(descriptor.name);
@@ -141,11 +141,11 @@ Descriptor parseDescriptor(const std::string& uri)
     if (!isFingerprint(descriptor.fingerprint)) {
         throw std::invalid_argument("descriptor fp is not a 52-char base32 fingerprint");
     }
-    descriptor.srv = need("srv");
-    validateB32I2pHost(descriptor.srv);
-    descriptor.srvKeyDer = fromBase64Url(need("srv_key"));
-    if (descriptor.srvKeyDer.empty()) {
-        throw std::invalid_argument("descriptor srv_key is empty");
+    descriptor.dest = need("dest");
+    validateB32I2pHost(descriptor.dest);
+    descriptor.keyDer = fromBase64Url(need("key"));
+    if (descriptor.keyDer.empty()) {
+        throw std::invalid_argument("descriptor key is empty");
     }
     // The name is optional: a descriptor minted before names existed has none.
     const auto nameParam = params.find("name");

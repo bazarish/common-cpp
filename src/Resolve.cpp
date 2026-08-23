@@ -23,8 +23,8 @@ nlohmann::json descriptorToJson(const Descriptor& descriptor)
 {
     return {
         {"fp", descriptor.fingerprint},
-        {"srv", descriptor.srv},
-        {"srv_key", toBase64(descriptor.srvKeyDer)},
+        {"dest", descriptor.dest},
+        {"key", toBase64(descriptor.keyDer)},
     };
 }
 
@@ -32,8 +32,8 @@ Descriptor descriptorFromJson(const nlohmann::json& body)
 {
     Descriptor descriptor;
     descriptor.fingerprint = body.at("fp").get<std::string>();
-    descriptor.srv = body.at("srv").get<std::string>();
-    descriptor.srvKeyDer = fromBase64(body.at("srv_key").get<std::string>());
+    descriptor.dest = body.at("dest").get<std::string>();
+    descriptor.keyDer = fromBase64(body.at("key").get<std::string>());
     return descriptor;
 }
 
@@ -42,6 +42,7 @@ nlohmann::json toJson(const CardFetchQuery& query)
     return {
         {"v", 1},
         {"fp", query.fingerprint},
+        {"key", toBase64(query.keyDer)},
         {"responseKey", toBase64(query.responseKeyDer)},
     };
 }
@@ -51,6 +52,7 @@ CardFetchQuery cardFetchQueryFromJson(const nlohmann::json& body)
     requireVersion(body, "card-fetch query");
     CardFetchQuery query;
     query.fingerprint = body.at("fp").get<std::string>();
+    query.keyDer = fromBase64(body.at("key").get<std::string>());
     query.responseKeyDer = fromBase64(body.at("responseKey").get<std::string>());
     return query;
 }
@@ -59,7 +61,7 @@ nlohmann::json toJson(const CardFetchResponse& response)
 {
     return {
         {"v", 1},
-        {"subscriptionCert", toBase64(response.subscriptionCertDer)},
+        {"card", toBase64(response.cardDer)},
     };
 }
 
@@ -67,7 +69,7 @@ CardFetchResponse cardFetchResponseFromJson(const nlohmann::json& body)
 {
     requireVersion(body, "card-fetch response");
     CardFetchResponse response;
-    response.subscriptionCertDer = fromBase64(body.at("subscriptionCert").get<std::string>());
+    response.cardDer = fromBase64(body.at("card").get<std::string>());
     return response;
 }
 

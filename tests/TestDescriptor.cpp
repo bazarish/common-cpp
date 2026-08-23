@@ -32,8 +32,8 @@ int main()
 
     const Descriptor parsed = parseDescriptor(uri);
     CHECK(parsed.fingerprint == fp);
-    CHECK(parsed.srv == srv);
-    CHECK(parsed.srvKeyDer == srvKey);
+    CHECK(parsed.dest == srv);
+    CHECK(parsed.keyDer == srvKey);
     CHECK(parsed.name.empty());  // no name advertised
 
     // The optional name round-trips through percent-encoding, including the
@@ -43,8 +43,8 @@ int main()
     const std::string namedUri = encodeDescriptor(named);
     const Descriptor namedParsed = parseDescriptor(namedUri);
     CHECK(namedParsed.fingerprint == fp);
-    CHECK(namedParsed.srv == srv);
-    CHECK(namedParsed.srvKeyDer == srvKey);
+    CHECK(namedParsed.dest == srv);
+    CHECK(namedParsed.keyDer == srvKey);
     CHECK(namedParsed.name == named.name);
 
     const auto rejects = [](const std::string& bad) {
@@ -57,11 +57,11 @@ int main()
     };
 
     CHECK(rejects("https://example.com"));                                               // wrong scheme
-    CHECK(rejects("bazarish://invite?fp=" + fp + "&srv=" + srv));                         // missing v, srv_key
-    CHECK(rejects("bazarish://invite?v=2&fp=" + fp + "&srv=" + srv + "&srv_key=AAAA"));   // bad version
-    CHECK(rejects("bazarish://invite?v=1&fp=tooShort&srv=" + srv + "&srv_key=AAAA"));     // bad fingerprint
-    CHECK(rejects("bazarish://invite?v=1&fp=" + fp + "&srv=stats.i2p&srv_key=AAAA"));     // not .b32.i2p
-    CHECK(rejects("bazarish://invite?v=1&fp=" + fp + "&srv=" + srv + "&srv_key="));       // empty key
+    CHECK(rejects("bazarish://invite?fp=" + fp + "&dest=" + srv));                         // missing v, srv_key
+    CHECK(rejects("bazarish://invite?v=2&fp=" + fp + "&dest=" + srv + "&key=AAAA"));   // bad version
+    CHECK(rejects("bazarish://invite?v=1&fp=tooShort&dest=" + srv + "&key=AAAA"));     // bad fingerprint
+    CHECK(rejects("bazarish://invite?v=1&fp=" + fp + "&dest=stats.i2p&key=AAAA"));     // not .b32.i2p
+    CHECK(rejects("bazarish://invite?v=1&fp=" + fp + "&dest=" + srv + "&key="));       // empty key
 
     std::printf("TestDescriptor: all checks passed\n");
     return 0;
