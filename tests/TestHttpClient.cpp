@@ -52,6 +52,13 @@ int main()
         answer.body = request.param("blob") + "|" + request.param("who");
         return answer;
     });
+    // Reads back one cookie by name, so a test can see what the server got.
+    server.get("/cookie", [](const http::Request& request) {
+        http::Response answer;
+        answer.contentType = "text/plain";
+        answer.body = request.cookie(request.query("name"));
+        return answer;
+    });
     server.put("/sink", [](const http::Request& request) {
         http::Response answer;
         answer.contentType = "text/plain";
@@ -103,6 +110,27 @@ int main()
     CHECK(hello.body == "hello test");
     CHECK(hello.contentType == "text/plain");
     CHECK(hello.headers.at("x-echo-query") == "world");
+
+    // Cookies are matched by whole name. Two services on one host share a
+    // cookie jar, and "adminsession" used to answer for "session" - the portal
+    // then read the panel's token, found it invalid, and showed the sign-in
+    // page again with nothing wrong on it.
+    {
+        const auto cookieOf = [port, &options](const std::string& jar, const std::string& name) {
+            http::ClientRequest ask;
+            ask.method = "GET";
+            ask.target = "/cookie?name=" + name;
+            ask.headers["Cookie"] = jar;
+            return http::request("127.0.0.1", port, ask, options).body;
+        };
+        CHECK(cookieOf("session=portal", "session") == "portal");
+        CHECK(cookieOf("adminsession=panel; session=portal", "session") == "portal");
+        CHECK(cookieOf("adminsession=panel", "session").empty());
+        CHECK(cookieOf("adminsession=panel; session=portal", "adminsession") == "panel");
+        // Values keep whatever they are made of; only the name is parsed.
+        CHECK(cookieOf("session=a.b.c; other=1", "session") == "a.b.c");
+        CHECK(cookieOf("", "session").empty());
+    }
 
     // A body goes out with its content type and comes back unchanged.
     http::ClientRequest post;

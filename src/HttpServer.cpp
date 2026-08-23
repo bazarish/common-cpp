@@ -16,6 +16,7 @@
 #include <boost/beast/http.hpp>
 
 #include <algorithm>
+#include <string_view>
 #include <atomic>
 #include <cctype>
 #include <mutex>
@@ -100,6 +101,28 @@ std::string Request::header(const std::string& name) const
 {
     const auto found = headers.find(lowered(name));
     return found == headers.end() ? std::string() : found->second;
+}
+
+std::string Request::cookie(const std::string& name) const
+{
+    const std::string cookies = header("Cookie");
+    std::size_t at = 0;
+    while (at < cookies.size()) {
+        std::size_t end = cookies.find(';', at);
+        if (end == std::string::npos) {
+            end = cookies.size();
+        }
+        std::string_view pair(cookies.data() + at, end - at);
+        while (!pair.empty() && (pair.front() == ' ' || pair.front() == '\t')) {
+            pair.remove_prefix(1);
+        }
+        const std::size_t equals = pair.find('=');
+        if (equals != std::string_view::npos && pair.substr(0, equals) == name) {
+            return std::string(pair.substr(equals + 1));
+        }
+        at = end + 1;
+    }
+    return {};
 }
 
 bool Request::hasHeader(const std::string& name) const

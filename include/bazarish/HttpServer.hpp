@@ -27,6 +27,11 @@ struct Request {
     std::string body;
 
     std::string header(const std::string& name) const;
+    // One cookie by name, empty when the request carries no such cookie. The
+    // name is matched whole: a Cookie header holding "adminsession" does not
+    // answer for "session", which is how one service's sign-in silently
+    // answered for another's.
+    std::string cookie(const std::string& name) const;
     // A value from the query string, percent-decoded.
     std::string query(const std::string& key) const;
     // The same, falling back to an urlencoded form body - what an HTML form
