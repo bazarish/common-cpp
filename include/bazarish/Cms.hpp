@@ -52,8 +52,28 @@ struct VerifiedHybridJson {
 // slot is a downgrade and must fail). Throws on any failure.
 VerifiedHybridJson verifyJsonHybrid(const Bytes& der);
 
-// CMS envelope (encryption) to a sealing public key. Used for the sealed
-// part of delivery envelopes and for sealed federation queries.
+// Hybrid envelope (encryption) to a sealing key. Used for the sealed part of
+// delivery envelopes, for message bodies end to end, and for sealed federation
+// queries - so this is where the project's confidentiality lives.
+//
+// Two layers, and opening the result needs **both** private halves:
+//   * the payload is encrypted with AES-256-GCM under a key HKDF'd from an
+//     ML-KEM-768 encapsulation to the recipient's post-quantum half (the KEM
+//     ciphertext is the salt and the AEAD's associated data, so the two are
+//     bound);
+//   * that wrapper is then CMS-encrypted (EnvelopedData, ECDH P-256 recipient)
+//     to the classical half, exactly as before.
+//
+// The layering exists because OpenSSL CMS still has no KEMRecipientInfo (RFC
+// 9629): checked against 3.5, whose cms.h knows only TRANS/AGREE/KEK/PASS/OTHER
+// and whose `cms -encrypt` refuses an ML-KEM recipient. Every primitive here is
+// OpenSSL's; only the arrangement is ours, and the wrapper is versioned so the
+// KEM recipient can move into the CMS itself the day OpenSSL supports it,
+// without changing the container.
+//
+// Sealing to a key that carries no ML-KEM half throws: classical-only
+// confidentiality is harvest-now-decrypt-later, and there is no such sealing
+// key in this protocol.
 Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey);
 Bytes unseal(const Bytes& der, const Key& recipientPrivateKey);
 
