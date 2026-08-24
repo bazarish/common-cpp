@@ -2,6 +2,9 @@
 #include "bazarish/Crypto.hpp"
 
 #include <openssl/bio.h>
+#include <nlohmann/json.hpp>
+
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
@@ -15,6 +18,10 @@
 namespace {
 
 using bazarish::Bytes;
+
+// The post-quantum half of every sealing key (FIPS 203). ML-KEM-768 is the
+// category-3 parameter set, matching ML-DSA-65 on the signing side.
+constexpr const char* kKemAlgorithm = "ML-KEM-768";
 
 bazarish::KeyPtr generateEcP256()
 {
@@ -69,6 +76,13 @@ void EvpPkeyDeleter::operator()(EVP_PKEY* const key) const
     EVP_PKEY_free(key);
 }
 
+Key::Key(KeyPtr classical, KeyPtr kem, const bool hasPrivate)
+    : key_(std::move(classical))
+    , kem_(std::make_shared<Key>(Key(std::move(kem), hasPrivate)))
+    , hasPrivate_(hasPrivate)
+{
+}
+
 Key::Key(KeyPtr key, const bool hasPrivate)
     : key_(std::move(key))
     , hasPrivate_(hasPrivate)
@@ -91,7 +105,13 @@ Key Key::generateSigningPq()
 
 Key Key::generateSealing()
 {
-    return Key(generateEcP256(), true);
+    // Hybrid by construction: there is no way to make a sealing key that is
+    // only classical, so nothing downstream can accidentally seal with one.
+    EVP_PKEY* const kem = EVP_PKEY_Q_keygen(nullptr, nullptr, kKemAlgorithm);
+    if (kem == nullptr) {
+        throw std::runtime_error("ML-KEM-768 keygen failed");
+    }
+    return Key(generateEcP256(), KeyPtr(kem), true);
 }
 
 Key Key::fromPrivatePem(const std::string& pem, const std::string& passphrase)
@@ -109,11 +129,51 @@ Key Key::fromPrivatePem(const std::string& pem, const std::string& passphrase)
     if (key == nullptr) {
         throw std::runtime_error("PEM_read_bio_PrivateKey failed");
     }
-    return Key(KeyPtr(key), true);
+    // A sealing key is written as two blocks, classical first: read the second
+    // when it is there, so a key round-trips through PEM with both halves.
+    EVP_PKEY* const second = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, password);
+    if (second == nullptr) {
+        ERR_clear_error();  // one block: not an error, just a single key
+        return Key(KeyPtr(key), true);
+    }
+    return Key(KeyPtr(key), KeyPtr(second), true);
 }
+
+namespace {
+
+// A hybrid sealing key travels as this pair; a single key travels as its bare
+// SPKI. The tag is what tells them apart without guessing.
+constexpr const char* kSealingPairTag = "bzsk1";
+
+}  // namespace
 
 Key Key::fromPublicDer(const Bytes& spkiDer)
 {
+    // The pair form is CBOR; a bare SPKI is DER. Try the pair first - it is
+    // self-identifying, so a bare SPKI cannot be mistaken for one.
+    if (!spkiDer.empty()) {
+        try {
+            const nlohmann::json pair = nlohmann::json::from_cbor(spkiDer);
+            if (pair.is_object() && pair.value("t", std::string()) == kSealingPairTag) {
+                const nlohmann::json::binary_t& classical = pair.at("c").get_binary();
+                const nlohmann::json::binary_t& kem = pair.at("q").get_binary();
+                const unsigned char* classicalCursor = classical.data();
+                EVP_PKEY* const classicalKey = d2i_PUBKEY(
+                    nullptr, &classicalCursor, static_cast<long>(classical.size()));
+                const unsigned char* kemCursor = kem.data();
+                EVP_PKEY* const kemKey
+                    = d2i_PUBKEY(nullptr, &kemCursor, static_cast<long>(kem.size()));
+                if (classicalKey == nullptr || kemKey == nullptr) {
+                    EVP_PKEY_free(classicalKey);
+                    EVP_PKEY_free(kemKey);
+                    throw std::runtime_error("sealing key pair does not parse");
+                }
+                return Key(KeyPtr(classicalKey), KeyPtr(kemKey), false);
+            }
+        } catch (const nlohmann::json::exception&) {
+            // Not the pair form: a bare SPKI, read below.
+        }
+    }
     const unsigned char* cursor = spkiDer.data();
     EVP_PKEY* const key = d2i_PUBKEY(nullptr, &cursor, static_cast<long>(spkiDer.size()));
     if (key == nullptr) {
@@ -140,7 +200,9 @@ std::string Key::privatePem(const std::string& passphrase) const
         throw std::runtime_error("PEM_write_bio_PrivateKey failed");
     }
     const Bytes data = bioToBytes(bio.get());
-    return std::string(data.begin(), data.end());
+    // A sealing key is two keys, so it is two PEM blocks: the classical one
+    // first, the ML-KEM one second (the same order Identity uses).
+    return std::string(data.begin(), data.end()) + (kem_ ? kem_->privatePem(passphrase) : "");
 }
 
 Bytes Key::publicDer() const
@@ -149,7 +211,29 @@ Bytes Key::publicDer() const
     if (i2d_PUBKEY_bio(bio.get(), key_.get()) != 1) {
         throw std::runtime_error("i2d_PUBKEY_bio failed");
     }
-    return bioToBytes(bio.get());
+    const Bytes classical = bioToBytes(bio.get());
+    if (!kem_) {
+        return classical;
+    }
+    const nlohmann::json pair = {
+        {"t", kSealingPairTag},
+        {"c", nlohmann::json::binary(classical)},
+        {"q", nlohmann::json::binary(kem_->publicDer())},
+    };
+    return nlohmann::json::to_cbor(pair);
+}
+
+bool Key::hasKem() const
+{
+    return static_cast<bool>(kem_);
+}
+
+const Key& Key::kem() const
+{
+    if (!kem_) {
+        throw std::logic_error("key carries no ML-KEM half");
+    }
+    return *kem_;
 }
 
 std::string Key::fingerprint() const

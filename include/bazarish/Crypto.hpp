@@ -33,9 +33,15 @@ public:
     // CMS signer in OpenSSL, so the hybrid layering signs with it at the
     // EVP level (see Cms.hpp).
     static Key generateSigningPq();
-    // Sealing keys for CMS envelopes: ECDH P-256 (X25519 recipients are
-    // not supported by OpenSSL CMS). A distinct key from the identity key
-    // by design, even though the curve is the same.
+    // Sealing keys for envelopes: **hybrid** - ECDH P-256 plus ML-KEM-768
+    // (FIPS 203). A sealed blob can only be opened with both private halves, so
+    // breaking one scheme alone reveals nothing (see Cms.hpp for the layering
+    // and why OpenSSL CMS cannot carry the KEM half yet). A distinct key from
+    // the identity key by design.
+    //
+    // A sealing key is therefore the one shape of Key that holds two EVP keys.
+    // Its public form is not a bare SPKI but the pair, and its PEM is two
+    // blocks - fromPublicDer/fromPrivatePem read either shape.
     static Key generateSealing();
 
     // When passphrase is non-empty the PEM is expected to be (or is written)
@@ -45,7 +51,9 @@ public:
     static Key fromPublicDer(const Bytes& spkiDer);
 
     std::string privatePem(const std::string& passphrase = {}) const;
-    // SubjectPublicKeyInfo DER - the canonical public form.
+    // The canonical public form: a SubjectPublicKeyInfo DER for a single key,
+    // and for a hybrid sealing key the CBOR pair {c: classical SPKI, q: ML-KEM
+    // SPKI} - opaque bytes to everything that only carries it.
     Bytes publicDer() const;
     // base32(sha256(SubjectPublicKeyInfo DER)). Identifies a single key;
     // identities are identified by Identity::fingerprint() instead.
@@ -53,6 +61,12 @@ public:
     bool hasPrivate() const;
     // EVP algorithm match, e.g. isA("EC") or isA("ML-DSA-65").
     bool isA(const char* algorithmName) const;
+    // Whether this key carries the ML-KEM half - true for sealing keys, false
+    // for signing keys and for a bare SPKI read off the wire.
+    bool hasKem() const;
+    // The ML-KEM half. Throws when there is none: sealing must never silently
+    // fall back to the classical half alone.
+    const Key& kem() const;
 
     EVP_PKEY* raw() const;
 
@@ -60,8 +74,11 @@ private:
     friend class Identity;
 
     explicit Key(KeyPtr key, bool hasPrivate);
+    Key(KeyPtr classical, KeyPtr kem, bool hasPrivate);
 
     KeyPtr key_;
+    // The ML-KEM half of a sealing key; null for every other kind.
+    std::shared_ptr<Key> kem_;
     bool hasPrivate_;
 };
 

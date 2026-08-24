@@ -6,10 +6,14 @@
 #include <openssl/bn.h>
 #include <openssl/cms.h>
 #include <openssl/crypto.h>
+#include <openssl/core_names.h>
 #include <openssl/evp.h>
+#include <openssl/kdf.h>
+#include <openssl/params.h>
 #include <openssl/x509.h>
 
 #include <filesystem>
+#include <cstring>
 #include <stdexcept>
 
 namespace {
@@ -289,8 +293,170 @@ VerifiedHybridJson verifyJsonHybrid(const Bytes& der)
     };
 }
 
+namespace {
+
+// The shape of a hybrid sealed blob, inside the CMS EnvelopedData. It is
+// versioned so the post-quantum half can move into CMS itself the day OpenSSL
+// grows KEMRecipientInfo (RFC 9629) without changing the container or breaking
+// anything already written:
+//
+//   v=1  the KEM ciphertext travels here and the payload is encrypted under the
+//        secret it carries (today: OpenSSL CMS has no KEM recipient - checked
+//        against 3.5, whose cms.h knows only TRANS/AGREE/KEK/PASS/OTHER).
+//   v=2  reserved: the KEM recipient sits in the CMS, and this wrapper carries
+//        the payload alone. Readers dispatch on `v`, so v=1 keeps opening.
+constexpr int kHybridSealVersion = 1;
+constexpr const char* kSealInfo = "bazarish-hybrid-seal-v1";
+// AES-256-GCM as used everywhere else in the project.
+constexpr int kSealKeyBytes = 32;
+constexpr int kSealNonceBytes = 12;
+constexpr int kSealTagBytes = 16;
+
+// HKDF-SHA256 over the KEM shared secret. The KEM ciphertext is the salt, so
+// the key is bound to the exact encapsulation it came from.
+Bytes sealKeyFrom(const Bytes& sharedSecret, const Bytes& kemCiphertext)
+{
+    EVP_KDF* const kdf = EVP_KDF_fetch(nullptr, "HKDF", nullptr);
+    if (kdf == nullptr) {
+        throw std::runtime_error("HKDF unavailable");
+    }
+    EVP_KDF_CTX* const ctx = EVP_KDF_CTX_new(kdf);
+    EVP_KDF_free(kdf);
+    if (ctx == nullptr) {
+        throw std::runtime_error("EVP_KDF_CTX_new failed");
+    }
+    Bytes key(kSealKeyBytes);
+    const OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, const_cast<char*>("SHA256"), 0),
+        OSSL_PARAM_construct_octet_string(
+            OSSL_KDF_PARAM_KEY, const_cast<unsigned char*>(sharedSecret.data()),
+            sharedSecret.size()),
+        OSSL_PARAM_construct_octet_string(
+            OSSL_KDF_PARAM_SALT, const_cast<unsigned char*>(kemCiphertext.data()),
+            kemCiphertext.size()),
+        OSSL_PARAM_construct_octet_string(
+            OSSL_KDF_PARAM_INFO, const_cast<char*>(kSealInfo), std::strlen(kSealInfo)),
+        OSSL_PARAM_construct_end(),
+    };
+    const int ok = EVP_KDF_derive(ctx, key.data(), key.size(), params);
+    EVP_KDF_CTX_free(ctx);
+    if (ok != 1) {
+        throw std::runtime_error("HKDF derive failed");
+    }
+    return key;
+}
+
+Bytes aesGcm(const Bytes& key, const Bytes& nonce, const Bytes& aad, const Bytes& input,
+    const bool encrypting)
+{
+    EVP_CIPHER_CTX* const ctx = EVP_CIPHER_CTX_new();
+    if (ctx == nullptr) {
+        throw std::runtime_error("EVP_CIPHER_CTX_new failed");
+    }
+    const struct Guard {
+        EVP_CIPHER_CTX* ctx;
+        ~Guard() { EVP_CIPHER_CTX_free(ctx); }
+    } guard{ctx};
+
+    if (EVP_CipherInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr, encrypting ? 1 : 0)
+            != 1
+        || EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, kSealNonceBytes, nullptr) != 1
+        || EVP_CipherInit_ex(
+               ctx, nullptr, nullptr, key.data(), nonce.data(), encrypting ? 1 : 0)
+            != 1) {
+        throw std::runtime_error("AES-GCM init failed");
+    }
+    int length = 0;
+    if (!aad.empty()
+        && EVP_CipherUpdate(ctx, nullptr, &length, aad.data(), static_cast<int>(aad.size()))
+            != 1) {
+        throw std::runtime_error("AES-GCM aad failed");
+    }
+    if (encrypting) {
+        Bytes out(input.size() + kSealTagBytes);
+        if (EVP_CipherUpdate(ctx, out.data(), &length, input.data(),
+                static_cast<int>(input.size()))
+            != 1) {
+            throw std::runtime_error("AES-GCM encrypt failed");
+        }
+        int finalLength = 0;
+        if (EVP_CipherFinal_ex(ctx, out.data() + length, &finalLength) != 1) {
+            throw std::runtime_error("AES-GCM finalise failed");
+        }
+        if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, kSealTagBytes,
+                out.data() + input.size())
+            != 1) {
+            throw std::runtime_error("AES-GCM tag failed");
+        }
+        return out;
+    }
+    if (input.size() < static_cast<std::size_t>(kSealTagBytes)) {
+        throw std::runtime_error("sealed payload is too short to carry a tag");
+    }
+    const std::size_t bodyLength = input.size() - kSealTagBytes;
+    Bytes out(bodyLength);
+    if (EVP_CipherUpdate(ctx, out.data(), &length, input.data(), static_cast<int>(bodyLength))
+        != 1) {
+        throw std::runtime_error("AES-GCM decrypt failed");
+    }
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, kSealTagBytes,
+            const_cast<unsigned char*>(input.data() + bodyLength))
+        != 1) {
+        throw std::runtime_error("AES-GCM set tag failed");
+    }
+    int finalLength = 0;
+    if (EVP_CipherFinal_ex(ctx, out.data() + length, &finalLength) != 1) {
+        throw std::runtime_error("sealed payload does not authenticate");
+    }
+    return out;
+}
+
+}  // namespace
+
 Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey)
 {
+    if (!recipientPublicKey.hasKem()) {
+        // Sealing to a classical-only key would be confidentiality that a
+        // quantum adversary can harvest today and open later. There is no such
+        // sealing key in this protocol, so this is a programming error.
+        throw std::logic_error("sealing requires a hybrid (ML-KEM) recipient key");
+    }
+    // Post-quantum half: encapsulate to the recipient's ML-KEM key and encrypt
+    // the payload under the secret it yields. The classical CMS layer below
+    // then encrypts this whole wrapper, so opening it needs both private keys.
+    EVP_PKEY_CTX* const kemCtx = EVP_PKEY_CTX_new(recipientPublicKey.kem().raw(), nullptr);
+    if (kemCtx == nullptr || EVP_PKEY_encapsulate_init(kemCtx, nullptr) != 1) {
+        EVP_PKEY_CTX_free(kemCtx);
+        throw std::runtime_error("ML-KEM encapsulate init failed");
+    }
+    std::size_t ciphertextLength = 0;
+    std::size_t secretLength = 0;
+    if (EVP_PKEY_encapsulate(kemCtx, nullptr, &ciphertextLength, nullptr, &secretLength) != 1) {
+        EVP_PKEY_CTX_free(kemCtx);
+        throw std::runtime_error("ML-KEM encapsulate sizing failed");
+    }
+    Bytes kemCiphertext(ciphertextLength);
+    Bytes sharedSecret(secretLength);
+    const int encapsulated = EVP_PKEY_encapsulate(
+        kemCtx, kemCiphertext.data(), &ciphertextLength, sharedSecret.data(), &secretLength);
+    EVP_PKEY_CTX_free(kemCtx);
+    if (encapsulated != 1) {
+        throw std::runtime_error("ML-KEM encapsulate failed");
+    }
+    kemCiphertext.resize(ciphertextLength);
+    sharedSecret.resize(secretLength);
+
+    const Bytes nonce = randomBytes(kSealNonceBytes);
+    const Bytes inner = aesGcm(sealKeyFrom(sharedSecret, kemCiphertext), nonce, kemCiphertext,
+        plaintext, true);
+    const nlohmann::json wrapper = {
+        {"v", kHybridSealVersion},
+        {"kem", nlohmann::json::binary(kemCiphertext)},
+        {"n", nlohmann::json::binary(nonce)},
+        {"ct", nlohmann::json::binary(inner)},
+    };
+    const Bytes wrapped = nlohmann::json::to_cbor(wrapper);
+
     // The carrier certificate is signed by a throwaway signing key;
     // only the embedded recipient public key matters.
     const Key throwaway = Key::generateSigning();
@@ -301,7 +467,7 @@ Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey)
         throw std::runtime_error("recipient stack creation failed");
     }
 
-    const BioPtr input = makeInputBio(plaintext);
+    const BioPtr input = makeInputBio(wrapped);
     const CmsPtr cms(
         CMS_encrypt(recipients.get(), input.get(), EVP_aes_256_gcm(), CMS_BINARY));
     if (cms == nullptr) {
@@ -332,7 +498,48 @@ Bytes unseal(const Bytes& der, const Key& recipientPrivateKey)
         != 1) {
         throw std::runtime_error("CMS_decrypt failed");
     }
-    return bioToBytes(output.get());
+    const Bytes wrapped = bioToBytes(output.get());
+    if (!recipientPrivateKey.hasKem()) {
+        throw std::logic_error("unsealing requires a hybrid (ML-KEM) key");
+    }
+
+    const nlohmann::json wrapper = nlohmann::json::from_cbor(wrapped);
+    const int version = wrapper.at("v").get<int>();
+    if (version != kHybridSealVersion) {
+        // A blob written by a build that carries the KEM recipient in the CMS
+        // itself: this one cannot open it, and must not pretend otherwise.
+        throw std::runtime_error(
+            "sealed blob is version " + std::to_string(version) + ", this build reads version "
+                + std::to_string(kHybridSealVersion));
+    }
+    const nlohmann::json::binary_t& kemCiphertext = wrapper.at("kem").get_binary();
+    const nlohmann::json::binary_t& nonce = wrapper.at("n").get_binary();
+    const nlohmann::json::binary_t& inner = wrapper.at("ct").get_binary();
+
+    EVP_PKEY_CTX* const kemCtx = EVP_PKEY_CTX_new(recipientPrivateKey.kem().raw(), nullptr);
+    if (kemCtx == nullptr || EVP_PKEY_decapsulate_init(kemCtx, nullptr) != 1) {
+        EVP_PKEY_CTX_free(kemCtx);
+        throw std::runtime_error("ML-KEM decapsulate init failed");
+    }
+    std::size_t secretLength = 0;
+    if (EVP_PKEY_decapsulate(kemCtx, nullptr, &secretLength, kemCiphertext.data(),
+            kemCiphertext.size())
+        != 1) {
+        EVP_PKEY_CTX_free(kemCtx);
+        throw std::runtime_error("ML-KEM decapsulate sizing failed");
+    }
+    Bytes sharedSecret(secretLength);
+    const int decapsulated = EVP_PKEY_decapsulate(kemCtx, sharedSecret.data(), &secretLength,
+        kemCiphertext.data(), kemCiphertext.size());
+    EVP_PKEY_CTX_free(kemCtx);
+    if (decapsulated != 1) {
+        throw std::runtime_error("ML-KEM decapsulate failed");
+    }
+    sharedSecret.resize(secretLength);
+
+    return aesGcm(sealKeyFrom(sharedSecret, Bytes(kemCiphertext.begin(), kemCiphertext.end())),
+        Bytes(nonce.begin(), nonce.end()), Bytes(kemCiphertext.begin(), kemCiphertext.end()),
+        Bytes(inner.begin(), inner.end()), false);
 }
 
 Bytes sealWithPassword(const Bytes& plaintext, const std::string& password)
