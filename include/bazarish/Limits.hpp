@@ -32,4 +32,21 @@ constexpr std::size_t kMaxContactRequestBytes = 9216;
 // What a user may write into a contact request. A line of hello, not a channel.
 constexpr std::size_t kMaxContactGreetingBytes = 100;
 
+// Delivery classes, as the server sees them. The content type is end to end and
+// never visible here.
+//   content - from a contact, admitted by a one-time token
+//   contact - from a stranger, admitted by nothing (a contact request), and
+//             therefore the only path with a rate limit on the recipient
+//   device  - from the account itself to its own other devices, admitted by the
+//             signature on the request that carried it
+inline constexpr const char* kContentDeliveryClass = "content";
+inline constexpr const char* kContactDeliveryClass = "contact";
+inline constexpr const char* kDeviceDeliveryClass = "device";
+
+// How many tokenless contact requests a mailbox accepts per minute. Real ones
+// are a handful in an account's life; the cap is what stops a stranger who
+// rotates destinations from filling a mailbox with them. Counted per recipient,
+// because counting per caller is counting something the caller controls.
+inline constexpr std::size_t kContactRequestsPerMinute = 3;
+
 }  // namespace bazarish
