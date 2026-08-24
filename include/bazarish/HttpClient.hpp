@@ -3,6 +3,10 @@
 
 #include <bazarish/HttpServer.hpp>
 
+// Before Boost.Asio: awaitable.hpp (Boost 1.81, Debian 12) uses std::exchange
+// without including <utility>, which libstdc++ 12 does not pull in on its own.
+#include <utility>
+
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
 

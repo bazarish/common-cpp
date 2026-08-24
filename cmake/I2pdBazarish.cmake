@@ -89,7 +89,10 @@ endif()
 
 target_compile_features(i2pd_bazarish PUBLIC cxx_std_20)
 # Vendored upstream code: do not lint it (and never inherit our -Werror).
-target_compile_options(i2pd_bazarish PRIVATE -w)
+# The forced include is for Boost.Asio 1.81 (Debian 12), whose awaitable.hpp uses
+# std::exchange without including <utility>: with libstdc++ 12 that is a hard
+# error in a system header, and it is not ours to patch.
+target_compile_options(i2pd_bazarish PRIVATE -w -include utility)
 
 target_link_libraries(i2pd_bazarish PUBLIC
     OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB ${I2PD_BOOST_PO} Threads::Threads atomic)

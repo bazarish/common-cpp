@@ -4,6 +4,8 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Log.hpp>
 
+#include <utility>
+
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>

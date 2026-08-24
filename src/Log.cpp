@@ -44,6 +44,37 @@ std::string_view levelTag(const bazarish::log::Level level)
 
 namespace bazarish::log {
 
+#if !BAZARISH_STD_FORMAT
+namespace detail {
+
+std::string fillBraces(const std::string_view fmt, const std::vector<std::string>& args)
+{
+    std::string out;
+    out.reserve(fmt.size());
+    std::size_t next = 0;
+    for (std::size_t i = 0; i < fmt.size(); ++i) {
+        const char c = fmt[i];
+        const bool doubled = i + 1 < fmt.size() && fmt[i + 1] == c;
+        if ((c == '{' || c == '}') && doubled) {
+            out.push_back(c);  // "{{" and "}}" stand for one brace
+            ++i;
+            continue;
+        }
+        if (c == '{' && i + 1 < fmt.size() && fmt[i + 1] == '}') {
+            out += next < args.size() ? args[next] : std::string();
+            ++next;
+            ++i;
+            continue;
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+}  // namespace detail
+#endif
+
+
 void setComponent(const std::string_view component)
 {
     gComponent.assign(component);
@@ -84,8 +115,8 @@ bool enabled(const Level level)
 void emit(const Level level, const std::string_view message)
 {
     const std::string line = kUnderJournald
-        ? std::format("<{}>{}: {}\n", syslogPriority(level), gComponent, message)
-        : std::format("{} {}: {}\n", levelTag(level), gComponent, message);
+        ? formatLine("<{}>{}: {}\n", syslogPriority(level), gComponent, message)
+        : formatLine("{} {}: {}\n", levelTag(level), gComponent, message);
     // stderr is unbuffered, so a single fwrite is one write syscall; the mutex
     // serializes lines from concurrent threads so they never interleave.
     const std::lock_guard<std::mutex> guard(gWriteMutex);

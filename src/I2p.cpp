@@ -4,6 +4,8 @@
 #include "bazarish/I2pAddress.hpp"
 #include "bazarish/Log.hpp"
 
+#include <utility>
+
 #include <boost/asio.hpp>
 
 #include "api.h"

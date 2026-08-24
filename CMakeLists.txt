@@ -6,7 +6,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(OpenSSL 3.0 REQUIRED)
+# 3.5 is where ML-DSA and ML-KEM arrived, and every signature and every sealed
+# envelope in this protocol is hybrid: an older OpenSSL builds a server that
+# cannot verify or open anything, so it is refused here rather than at the first
+# request. Distributions that ship an older one (Debian 12 has 3.0) need one
+# built alongside: -DOPENSSL_ROOT_DIR=/path/to/openssl-3.5.
+find_package(OpenSSL 3.5 REQUIRED)
 find_package(ZLIB REQUIRED)
 
 # Embedded I2P transport. ON by default: I2P is the transport, so every consumer

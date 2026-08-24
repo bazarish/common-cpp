@@ -1,11 +1,24 @@
 // Bazarish project (c) 2026
 #pragma once
 
-#include <format>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
+
+// libstdc++ 13 is the first with <format>; Debian 12 ships 12, where the same
+// lines have to be assembled by hand. Everything this project logs uses plain
+// "{}" placeholders, so that is all the fallback fills in - and only the
+// compile-time checking of the format against its arguments is given up.
+#if __has_include(<format>)
+#    include <format>
+#    define BAZARISH_STD_FORMAT 1
+#else
+#    include <sstream>
+#    include <vector>
+#    define BAZARISH_STD_FORMAT 0
+#endif
 
 namespace bazarish::log {
 
@@ -45,38 +58,81 @@ void emit(Level level, std::string_view message);
 // content safe to log - content must never be logged at all.
 std::string redact(std::string_view identifier);
 
-// Type-safe, level-gated entry points. std::format_string checks the format
-// against its arguments at compile time; formatting is skipped entirely when
-// the level is suppressed.
+#if BAZARISH_STD_FORMAT
 template <typename... Args>
-void error(std::format_string<Args...> fmt, Args&&... args)
+using FormatString = std::format_string<Args...>;
+
+template <typename... Args>
+std::string formatLine(FormatString<Args...> fmt, Args&&... args)
+{
+    return std::format(fmt, std::forward<Args>(args)...);
+}
+#else
+template <typename... Args>
+using FormatString = std::string_view;
+
+namespace detail {
+
+// One argument as text, the way std::format would write it.
+template <typename T>
+std::string asText(const T& value)
+{
+    if constexpr (std::is_same_v<std::decay_t<T>, bool>) {
+        return value ? "true" : "false";
+    } else if constexpr (std::is_convertible_v<T, std::string_view>) {
+        return std::string(std::string_view(value));
+    } else {
+        std::ostringstream out;
+        out << value;
+        return out.str();
+    }
+}
+
+// Replaces each "{}" with the next argument. "{{" and "}}" are the escapes
+// std::format uses, and are honoured here for the same reason.
+std::string fillBraces(std::string_view fmt, const std::vector<std::string>& args);
+
+}  // namespace detail
+
+template <typename... Args>
+std::string formatLine(std::string_view fmt, Args&&... args)
+{
+    return detail::fillBraces(fmt, {detail::asText(args)...});
+}
+#endif
+
+// Type-safe, level-gated entry points. Where the standard library has it,
+// std::format_string checks the format against its arguments at compile time;
+// formatting is skipped entirely when the level is suppressed.
+template <typename... Args>
+void error(FormatString<Args...> fmt, Args&&... args)
 {
     if (enabled(Level::eError)) {
-        emit(Level::eError, std::format(fmt, std::forward<Args>(args)...));
+        emit(Level::eError, formatLine(fmt, std::forward<Args>(args)...));
     }
 }
 
 template <typename... Args>
-void warn(std::format_string<Args...> fmt, Args&&... args)
+void warn(FormatString<Args...> fmt, Args&&... args)
 {
     if (enabled(Level::eWarn)) {
-        emit(Level::eWarn, std::format(fmt, std::forward<Args>(args)...));
+        emit(Level::eWarn, formatLine(fmt, std::forward<Args>(args)...));
     }
 }
 
 template <typename... Args>
-void info(std::format_string<Args...> fmt, Args&&... args)
+void info(FormatString<Args...> fmt, Args&&... args)
 {
     if (enabled(Level::eInfo)) {
-        emit(Level::eInfo, std::format(fmt, std::forward<Args>(args)...));
+        emit(Level::eInfo, formatLine(fmt, std::forward<Args>(args)...));
     }
 }
 
 template <typename... Args>
-void debug(std::format_string<Args...> fmt, Args&&... args)
+void debug(FormatString<Args...> fmt, Args&&... args)
 {
     if (enabled(Level::eDebug)) {
-        emit(Level::eDebug, std::format(fmt, std::forward<Args>(args)...));
+        emit(Level::eDebug, formatLine(fmt, std::forward<Args>(args)...));
     }
 }
 

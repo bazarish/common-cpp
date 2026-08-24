@@ -3,6 +3,11 @@
 
 #include <bazarish/Log.hpp>
 
+// Before any Boost.Asio header: awaitable.hpp (Boost 1.81, Debian 12) uses
+// std::exchange without including <utility>, which libstdc++ 12 does not pull in
+// on its own.
+#include <utility>
+
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
