@@ -152,8 +152,11 @@ Key Key::fromPublicDer(const Bytes& spkiDer)
     // The pair form is CBOR; a bare SPKI is DER. Try the pair first - it is
     // self-identifying, so a bare SPKI cannot be mistaken for one.
     if (!spkiDer.empty()) {
-        try {
-            const nlohmann::json pair = nlohmann::json::from_cbor(spkiDer);
+        // Asked not to throw: "this is not CBOR" is the ordinary case here (a
+        // bare SPKI), not an error to report.
+        const nlohmann::json pair
+            = nlohmann::json::from_cbor(spkiDer, true, false, nlohmann::json::cbor_tag_handler_t::error);
+        {
             if (pair.is_object() && pair.value("t", std::string()) == kSealingPairTag) {
                 const nlohmann::json::binary_t& classical = pair.at("c").get_binary();
                 const nlohmann::json::binary_t& kem = pair.at("q").get_binary();
@@ -170,8 +173,6 @@ Key Key::fromPublicDer(const Bytes& spkiDer)
                 }
                 return Key(KeyPtr(classicalKey), KeyPtr(kemKey), false);
             }
-        } catch (const nlohmann::json::exception&) {
-            // Not the pair form: a bare SPKI, read below.
         }
     }
     const unsigned char* cursor = spkiDer.data();
