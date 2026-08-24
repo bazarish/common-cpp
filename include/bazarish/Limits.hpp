@@ -20,13 +20,15 @@ constexpr std::size_t kMaxMessagePayloadBytes = 512 * 1024;
 // every other server refuses, and lowering it would break contact requests that
 // are correct.
 //
-// Measured against a real request (CBOR body sealed to the peer's prekey): 3776
-// bytes with no greeting, 3910 with a 100-byte greeting and a 32-byte display
-// name. Nearly all of it is the 64-token reply batch (2816 bytes of base64) the
-// requester hands over so the peer can answer. The cap is that worst case
-// rounded up, so a greeting is a greeting - the client holds the user to
-// kMaxContactGreetingBytes - and nothing else fits.
-constexpr std::size_t kMaxContactRequestBytes = 4096;
+// Measured against a real request (CBOR body sealed to the peer's hybrid
+// prekey): 8177 bytes with no greeting, 8312 with a 100-byte greeting and a
+// 32-byte display name. It is made of the two hybrid sealing keys the bootstrap
+// carries (1315 bytes each, of which 1206 is the ML-KEM half), the 64-token
+// reply batch (2816 bytes of base64) the requester hands over so the peer can
+// answer, and the ML-KEM ciphertext of the seal itself (1088). The cap is that
+// worst case rounded up, so a greeting is a greeting - the client holds the
+// user to kMaxContactGreetingBytes - and nothing else fits.
+constexpr std::size_t kMaxContactRequestBytes = 9216;
 // What a user may write into a contact request. A line of hello, not a channel.
 constexpr std::size_t kMaxContactGreetingBytes = 100;
 
