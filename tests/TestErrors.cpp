@@ -16,6 +16,7 @@ int main()
         ErrorCode::eAttemptUnknown,
         ErrorCode::eDeliveryRejected,
         ErrorCode::eContactRequestTooLarge,
+        ErrorCode::eContactRateLimited,
         ErrorCode::eAliasTaken,
         ErrorCode::eAliasUnknown,
         ErrorCode::eClientUnregistered,

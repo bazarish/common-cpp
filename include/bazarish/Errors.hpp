@@ -19,6 +19,7 @@ enum class ErrorCode {
     eAttemptUnknown,
     eDeliveryRejected,
     eContactRequestTooLarge,
+    eContactRateLimited,
     eMessageTooLarge,
     eAliasTaken,
     eAliasUnknown,

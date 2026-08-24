@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 14> kErrorNames = {{
+constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 15> kErrorNames = {{
     {bazarish::ErrorCode::eQuotaExceeded, "QUOTA_EXCEEDED"},
     {bazarish::ErrorCode::eStorageFull, "STORAGE_FULL"},
     {bazarish::ErrorCode::eRecipientServerUnreachable, "RECIPIENT_SERVER_UNREACHABLE"},
@@ -15,6 +15,7 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 14> kErro
     {bazarish::ErrorCode::eAttemptUnknown, "ATTEMPT_UNKNOWN"},
     {bazarish::ErrorCode::eDeliveryRejected, "DELIVERY_REJECTED"},
     {bazarish::ErrorCode::eContactRequestTooLarge, "CONTACT_REQUEST_TOO_LARGE"},
+    {bazarish::ErrorCode::eContactRateLimited, "CONTACT_RATE_LIMITED"},
     {bazarish::ErrorCode::eMessageTooLarge, "MESSAGE_TOO_LARGE"},
     {bazarish::ErrorCode::eAliasTaken, "ALIAS_TAKEN"},
     {bazarish::ErrorCode::eAliasUnknown, "ALIAS_UNKNOWN"},

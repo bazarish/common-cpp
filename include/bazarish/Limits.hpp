@@ -44,10 +44,16 @@ inline constexpr const char* kContentDeliveryClass = "content";
 inline constexpr const char* kContactDeliveryClass = "contact";
 inline constexpr const char* kDeviceDeliveryClass = "device";
 
-// How many tokenless contact requests a mailbox accepts per minute. Real ones
-// are a handful in an account's life; the cap is what stops a stranger who
-// rotates destinations from filling a mailbox with them. Counted per recipient,
-// because counting per caller is counting something the caller controls.
+// How many tokenless contact requests a destination accepts per minute. Real
+// ones are a handful in an account's life; the cap is what stops a stranger who
+// rotates their own destination from filling a mailbox with them.
+//
+// Counted on the **destination**, not on the mailbox the envelope names - which
+// is what lets the refusal be explicit. A counter keyed by the named mailbox
+// would answer differently for a right and a wrong guess, and four messages
+// would then confirm that a destination belongs to a given fingerprint. Keyed by
+// the destination, under the cap both are "delivered" and over it both are
+// "later", so the sender learns their request needs repeating and nothing else.
 inline constexpr std::size_t kContactRequestsPerMinute = 3;
 
 // How long a user may delegate their destination to a server for. The ceiling is
@@ -62,5 +68,12 @@ inline constexpr std::int64_t kDefaultDelegationDays = 14;
 // The client re-issues at half the term, so a delegation is renewed well before
 // it lapses even if the client is only occasionally online.
 inline constexpr double kDelegationRenewAtFraction = 0.5;
+
+// How long a registered but unspent delivery-token hash is kept. A token is a
+// few dozen bytes and a contact may sit unused for years, so the horizon is
+// effectively "as long as the account lives" - it exists so an abandoned
+// mailbox's tokens do not accumulate forever. The account's own idle sweep is
+// what usually takes them first.
+inline constexpr std::int64_t kTokenHashRetentionDays = 10 * 365;
 
 }  // namespace bazarish
