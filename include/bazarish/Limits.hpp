@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace bazarish {
 
@@ -48,5 +49,18 @@ inline constexpr const char* kDeviceDeliveryClass = "device";
 // rotates destinations from filling a mailbox with them. Counted per recipient,
 // because counting per caller is counting something the caller controls.
 inline constexpr std::size_t kContactRequestsPerMinute = 3;
+
+// How long a user may delegate their destination to a server for. The ceiling is
+// the protocol's, not an operator's: the delegation is what a server needs to
+// operate someone's address, so a server that could demand a long one would hold
+// a departing user in place. Inside it the client chooses - a short term means
+// leaving takes effect sooner, a long one means a client that is away for weeks
+// stays reachable.
+inline constexpr std::int64_t kMinDelegationDays = 1;
+inline constexpr std::int64_t kMaxDelegationDays = 30;
+inline constexpr std::int64_t kDefaultDelegationDays = 14;
+// The client re-issues at half the term, so a delegation is renewed well before
+// it lapses even if the client is only occasionally online.
+inline constexpr double kDelegationRenewAtFraction = 0.5;
 
 }  // namespace bazarish
