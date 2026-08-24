@@ -21,15 +21,17 @@ namespace bazarish {
 // Query to a serving server, sealed to its serving sealing key.
 struct CardFetchQuery {
     std::string fingerprint;  // whose contact card is requested
-    // The `key` from the descriptor being redeemed: the per-user serving key the
-    // serving server itself generated. It is what shows the asker was given this
-    // descriptor. A wrong key and an unknown user get the same refusal, so
-    // nothing is learnt by asking.
-    Bytes keyDer;
-    Bytes responseKeyDer;     // ephemeral SPKI the response is sealed to
+    // The `view` from the descriptor being redeemed: the capability the serving
+    // server issued for reading this user's card. It is what shows the asker was
+    // given the descriptor; a wrong one and an unknown user get the same
+    // refusal, so nothing is learnt by asking.
+    std::string view;
 };
 
-// Response from the serving server, sealed to the query's responseKey.
+// Response from the serving server. Both directions travel in the clear: the
+// fetch is direct over I2P, whose stream is already encrypted and authenticated
+// to the destination, and no other path is allowed (relaying it through one's
+// own server would tell that server who is being added).
 struct CardFetchResponse {
     Bytes cardDer;  // the user-signed contact card
 };

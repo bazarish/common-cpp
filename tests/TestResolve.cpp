@@ -24,24 +24,22 @@ int main()
     const Descriptor descriptor{
         "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq",
         "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p",
-        Bytes{0x30, 0x59, 0x01, 0xAB, 0xCD, 0xEF, 0x00, 0x7F},
+        "0123456789abcdef0123456789abcdef",
     };
 
     // Descriptor <-> JSON (the embedded object form).
     const Descriptor d2 = descriptorFromJson(descriptorToJson(descriptor));
     CHECK(d2.fingerprint == descriptor.fingerprint);
     CHECK(d2.dest == descriptor.dest);
-    CHECK(d2.keyDer == descriptor.keyDer);
+    CHECK(d2.view == descriptor.view);
 
-    // Card-fetch query round-trip.
-    // The key from the descriptor rides along: it is what shows the asker holds
-    // one, and it must survive the round trip like the rest.
+    // Card-fetch query round-trip. The view capability from the descriptor rides
+    // along: it is what shows the asker holds one.
     const CardFetchQuery query{"dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq",
-        Bytes{0x0A, 0x0B, 0x0C}, Bytes{0x01, 0x02, 0x03, 0x04, 0x05}};
+        "0123456789abcdef0123456789abcdef"};
     const CardFetchQuery q2 = cardFetchQueryFromJson(toJson(query));
     CHECK(q2.fingerprint == query.fingerprint);
-    CHECK(q2.keyDer == query.keyDer);
-    CHECK(q2.responseKeyDer == query.responseKeyDer);
+    CHECK(q2.view == query.view);
 
     // Card-fetch response round-trip.
     const CardFetchResponse response{Bytes{0xDE, 0xAD, 0xBE, 0xEF, 0x42}};
@@ -66,7 +64,7 @@ int main()
     CHECK(rec2.alias == record.alias);
     CHECK(rec2.descriptor.fingerprint == descriptor.fingerprint);
     CHECK(rec2.descriptor.dest == descriptor.dest);
-    CHECK(rec2.descriptor.keyDer == descriptor.keyDer);
+    CHECK(rec2.descriptor.view == descriptor.view);
     CHECK(rec2.issuedAt == record.issuedAt);
     CHECK(rec2.notAfter == record.notAfter);
 
@@ -99,7 +97,7 @@ int main()
     const ResolveRecord okRec = verifyResolveRecord(recordDer, delegationDer, root.fingerprint(), now);
     CHECK(okRec.alias == "alice");
     CHECK(okRec.descriptor.fingerprint == descriptor.fingerprint);
-    CHECK(okRec.descriptor.keyDer == descriptor.keyDer);
+    CHECK(okRec.descriptor.view == descriptor.view);
 
     const auto chainRejects = [&](const Bytes& rDer, const Bytes& dDer, const std::string& rootFp,
                                   std::int64_t t) {

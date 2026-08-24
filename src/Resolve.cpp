@@ -24,7 +24,7 @@ nlohmann::json descriptorToJson(const Descriptor& descriptor)
     return {
         {"fp", descriptor.fingerprint},
         {"dest", descriptor.dest},
-        {"key", toBase64(descriptor.keyDer)},
+        {"view", descriptor.view},
     };
 }
 
@@ -33,7 +33,7 @@ Descriptor descriptorFromJson(const nlohmann::json& body)
     Descriptor descriptor;
     descriptor.fingerprint = body.at("fp").get<std::string>();
     descriptor.dest = body.at("dest").get<std::string>();
-    descriptor.keyDer = fromBase64(body.at("key").get<std::string>());
+    descriptor.view = body.at("view").get<std::string>();
     return descriptor;
 }
 
@@ -42,8 +42,7 @@ nlohmann::json toJson(const CardFetchQuery& query)
     return {
         {"v", 1},
         {"fp", query.fingerprint},
-        {"key", toBase64(query.keyDer)},
-        {"responseKey", toBase64(query.responseKeyDer)},
+        {"view", query.view},
     };
 }
 
@@ -52,8 +51,7 @@ CardFetchQuery cardFetchQueryFromJson(const nlohmann::json& body)
     requireVersion(body, "card-fetch query");
     CardFetchQuery query;
     query.fingerprint = body.at("fp").get<std::string>();
-    query.keyDer = fromBase64(body.at("key").get<std::string>());
-    query.responseKeyDer = fromBase64(body.at("responseKey").get<std::string>());
+    query.view = body.at("view").get<std::string>();
     return query;
 }
 

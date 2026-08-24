@@ -24,27 +24,27 @@ int main()
     // A 52-char base32 fingerprint and a valid .b32.i2p serving host.
     const std::string fp = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq";
     const std::string srv = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
-    const Bytes srvKey = Key::generateSealing().publicDer();  // a real SPKI
+    const std::string view = "0123456789abcdef0123456789abcdef";  // a card-read capability
 
-    const Descriptor original{fp, srv, srvKey};
+    const Descriptor original{fp, srv, view};
     const std::string uri = encodeDescriptor(original);
     CHECK(uri.rfind("bazarish://invite?v=1&", 0) == 0);
 
     const Descriptor parsed = parseDescriptor(uri);
     CHECK(parsed.fingerprint == fp);
     CHECK(parsed.dest == srv);
-    CHECK(parsed.keyDer == srvKey);
+    CHECK(parsed.view == view);
     CHECK(parsed.name.empty());  // no name advertised
 
     // The optional name round-trips through percent-encoding, including the
     // characters that would otherwise break the '&'/'=' split, and UTF-8.
-    Descriptor named{fp, srv, srvKey};
+    Descriptor named{fp, srv, view};
     named.name = "Ann & Bob = friends \xD0\x9C\xD0\xB0\xD1\x88\xD0\xB0";  // "Маша" in UTF-8
     const std::string namedUri = encodeDescriptor(named);
     const Descriptor namedParsed = parseDescriptor(namedUri);
     CHECK(namedParsed.fingerprint == fp);
     CHECK(namedParsed.dest == srv);
-    CHECK(namedParsed.keyDer == srvKey);
+    CHECK(namedParsed.view == view);
     CHECK(namedParsed.name == named.name);
 
     const auto rejects = [](const std::string& bad) {
