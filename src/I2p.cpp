@@ -432,6 +432,9 @@ struct Endpoint::Impl {
     std::shared_ptr<i2pd::datagram::DatagramDestination> datagram;
     LeaseSetKind leaseSet = LeaseSetKind::eEncrypted;
 
+    // What this destination is for, as the caller named it: only ever used to say
+    // which one a log line is about.
+    std::string label;
     std::string publicBase64;
     std::string routingHost;
     Bytes privateBlob;
@@ -472,6 +475,8 @@ Endpoint::~Endpoint()
     // that very handler - a use-after-free ASAN catches in
     // Stream::SendPackets -> StreamingDestination::GetOwner().
     const std::shared_ptr<i2pd::client::ClientDestination> dest = impl_->dest;
+    bazarish::log::info("i2p: closing destination {} ({})",
+        impl_->label.empty() ? std::string("unnamed") : impl_->label, impl_->routingHost);
     impl_->dest.reset();
     impl_->datagram.reset();
     boost::asio::post(dest->GetService(), [dest]() { dest->Stop(); });
@@ -913,7 +918,12 @@ std::vector<LocalDestination> Router::localDestinations() const
         info.published = entry.published;
         info.ready = dest->IsReady();
         info.remoteLeaseSets = dest->GetNumRemoteLeaseSets();
-        if (const auto pool = dest->GetTunnelPool()) {
+        // A stopped destination keeps its pool until the last handler holding it
+        // returns, and the pool stands down the moment it is stopped: that flag is
+        // the difference between an address coming up and one going away.
+        const auto tunnelPool = dest->GetTunnelPool();
+        info.closing = !tunnelPool || !tunnelPool->IsActive();
+        if (const auto pool = tunnelPool) {
             info.inboundTunnels = static_cast<int>(pool->GetInboundTunnels(kTunnelCountProbe).size());
             // No locked accessor exists for the outbound set: copy it the way the
             // engine's own status console does, then count what is established.
@@ -932,6 +942,7 @@ std::vector<LocalDestination> Router::localDestinations() const
 std::shared_ptr<Endpoint> Router::createEndpoint(const EndpointConfig& config)
 {
     auto impl = std::make_unique<Endpoint::Impl>();
+    impl->label = config.label;
     impl->leaseSet = config.leaseSet;
     impl->publicBase64 = config.keys.publicBase64();
     impl->routingHost = bazarish::i2p::routingHost(impl->publicBase64, config.leaseSet);

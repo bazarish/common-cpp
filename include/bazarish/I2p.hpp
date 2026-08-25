@@ -245,6 +245,10 @@ struct LocalDestination {
     std::string host;   // the ".b32.i2p" routing host
     bool published = false;
     bool ready = false;
+    // The destination has been stopped and is on its way out: its tunnel pool is
+    // no longer active. Told apart from a destination still coming up, which has
+    // no tunnels either and is otherwise indistinguishable.
+    bool closing = false;
     // Established tunnels of this destination's own pool, per direction. The
     // engine's only per-pool accessor for the outbound set is its unlocked status
     // getter, so that half is a snapshot that can be a moment stale.
