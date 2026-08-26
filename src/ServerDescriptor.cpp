@@ -30,11 +30,27 @@ bool isFingerprint(const std::string& fingerprint)
 
 namespace bazarish {
 
+bool isI2pFacadeUrl(const std::string& url)
+{
+    static const std::string kSuffix = ".b32.i2p";
+    // The host is what decides it: between the scheme and the first ':' or '/'.
+    const std::size_t schemeEnd = url.find("://");
+    const std::size_t hostStart = schemeEnd == std::string::npos ? 0 : schemeEnd + 3;
+    const std::size_t hostEnd = url.find_first_of(":/", hostStart);
+    const std::string host = url.substr(
+        hostStart, hostEnd == std::string::npos ? std::string::npos : hostEnd - hostStart);
+    return host.size() >= kSuffix.size()
+        && host.compare(host.size() - kSuffix.size(), kSuffix.size(), kSuffix) == 0;
+}
+
 std::string encodeServerDescriptor(const ServerDescriptor& descriptor)
 {
     std::string uri = std::string(kPrefix) + "v=1&fp=" + descriptor.fingerprint;
     for (const std::string& facade : descriptor.facades) {
         uri += "&facade=" + facade;
+    }
+    for (const std::string& reseed : descriptor.reseeds) {
+        uri += "&reseed=" + reseed;
     }
     return uri;
 }
@@ -71,7 +87,21 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
             haveFingerprint = true;
         } else if (key == "facade") {
             if (!value.empty()) {
+                if (!isI2pFacadeUrl(value)) {
+                    throw std::invalid_argument(
+                        "a facade must be an I2P address: the client talks to its server over"
+                        " nothing else (" + value + ")");
+                }
                 descriptor.facades.push_back(value);
+            }
+        } else if (key == "reseed") {
+            if (!value.empty()) {
+                if (isI2pFacadeUrl(value)) {
+                    throw std::invalid_argument(
+                        "a reseed must not be an I2P address: it is what a client without a"
+                        " router asks first (" + value + ")");
+                }
+                descriptor.reseeds.push_back(value);
             }
         }
         // Unknown keys are ignored for forward compatibility.
