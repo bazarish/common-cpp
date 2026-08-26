@@ -45,16 +45,19 @@ MemoryUsage processMemoryUsage()
 }
 
 std::string reportJson(const std::string& service, const std::string& version,
-    const std::int64_t startedAt, const std::int64_t now)
+    const std::int64_t startedAt, const std::int64_t now, const std::string& extrasJson)
 {
     const MemoryUsage memory = processMemoryUsage();
-    const nlohmann::json report = {
+    nlohmann::json report = {
         {"service", service},
         {"version", version},
         {"uptime", now - startedAt},
         {"ramBytes", memory.current},
         {"ramPeakBytes", memory.peak},
     };
+    if (!extrasJson.empty()) {
+        report.update(nlohmann::json::parse(extrasJson));
+    }
     return report.dump();
 }
 

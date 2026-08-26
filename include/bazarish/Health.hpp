@@ -21,8 +21,10 @@ MemoryUsage processMemoryUsage();
 //   {"service","version","uptime","ramBytes","ramPeakBytes"}
 // where uptime = now - startedAt (seconds) and the ram fields come from
 // processMemoryUsage(). Returned as a string so this header pulls in no JSON
-// dependency.
+// dependency - which is also why extras arrives as a JSON object already
+// serialised: a service adds what only it can report (a facade its load, the
+// server its warm pool) and it lands beside the shared fields.
 std::string reportJson(const std::string& service, const std::string& version,
-    std::int64_t startedAt, std::int64_t now);
+    std::int64_t startedAt, std::int64_t now, const std::string& extrasJson = {});
 
 }  // namespace bazarish::health
