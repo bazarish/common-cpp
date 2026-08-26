@@ -33,6 +33,7 @@ add_library(bazarish_common STATIC
     src/ConfigFile.cpp
     src/WebAssets.cpp
     src/Errors.cpp
+    src/FederationFrame.cpp
     src/Address.cpp
     src/I2pAddress.cpp
     src/Descriptor.cpp
@@ -98,6 +99,7 @@ bazarish_add_test(TestCms)
 bazarish_add_test(TestCertificates)
 bazarish_add_test(TestTokens)
 bazarish_add_test(TestErrors)
+bazarish_add_test(TestFederationFrame)
 bazarish_add_test(TestAddress)
 bazarish_add_test(TestI2pAddress)
 bazarish_add_test(TestDescriptor)

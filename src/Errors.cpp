@@ -11,8 +11,6 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 15> kErro
     {bazarish::ErrorCode::eQuotaExceeded, "QUOTA_EXCEEDED"},
     {bazarish::ErrorCode::eStorageFull, "STORAGE_FULL"},
     {bazarish::ErrorCode::eRecipientServerUnreachable, "RECIPIENT_SERVER_UNREACHABLE"},
-    {bazarish::ErrorCode::eDeliveryTimeout, "DELIVERY_TIMEOUT"},
-    {bazarish::ErrorCode::eAttemptUnknown, "ATTEMPT_UNKNOWN"},
     {bazarish::ErrorCode::eDeliveryRejected, "DELIVERY_REJECTED"},
     {bazarish::ErrorCode::eContactRequestTooLarge, "CONTACT_REQUEST_TOO_LARGE"},
     {bazarish::ErrorCode::eContactRateLimited, "CONTACT_RATE_LIMITED"},

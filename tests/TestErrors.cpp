@@ -12,8 +12,6 @@ int main()
         ErrorCode::eQuotaExceeded,
         ErrorCode::eStorageFull,
         ErrorCode::eRecipientServerUnreachable,
-        ErrorCode::eDeliveryTimeout,
-        ErrorCode::eAttemptUnknown,
         ErrorCode::eDeliveryRejected,
         ErrorCode::eContactRequestTooLarge,
         ErrorCode::eContactRateLimited,
@@ -41,11 +39,12 @@ int main()
     CHECK(parsed->details == details);
 
     // Envelope without details.
-    const nlohmann::json bare = makeErrorEnvelope(ErrorCode::eAttemptUnknown, "expired");
+    const nlohmann::json bare
+        = makeErrorEnvelope(ErrorCode::eClientUnregistered, "register this device first");
     CHECK(!bare.at("error").contains("details"));
     const std::optional<ParsedError> bareParsed = parseErrorEnvelope(bare);
     CHECK(bareParsed.has_value());
-    CHECK(bareParsed->code == ErrorCode::eAttemptUnknown);
+    CHECK(bareParsed->code == ErrorCode::eClientUnregistered);
 
     // Non-error documents and unknown codes are not coerced.
     CHECK(!parseErrorEnvelope(nlohmann::json{{"ok", true}}).has_value());

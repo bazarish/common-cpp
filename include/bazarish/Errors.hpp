@@ -15,8 +15,6 @@ enum class ErrorCode {
     eQuotaExceeded,
     eStorageFull,
     eRecipientServerUnreachable,
-    eDeliveryTimeout,
-    eAttemptUnknown,
     eDeliveryRejected,
     eContactRequestTooLarge,
     eContactRateLimited,
