@@ -30,6 +30,14 @@ struct ServerDescriptor {
 // list an address belongs in.
 bool isI2pFacadeUrl(const std::string& url);
 
+// Lets the two lists hold each other's kind: a clearnet facade, an I2P reseed.
+// Nonsense in a deployment and exactly what a stand on a LAN needs, which is why
+// it is one switch with one long name, set by the client's
+// --allow-facade-without-i2p-for-dev-purposes and by the node's config key of the
+// same name. Off by default.
+void setAllowFacadeWithoutI2pForDevPurposes(bool allow);
+bool allowFacadeWithoutI2pForDevPurposes();
+
 // Encodes the descriptor as a human-readable URI (no base64 - every field is
 // legible at a glance):
 //   bazarish://server?v=1&fp=<fingerprint>&facade=<url>[&facade=...][&reseed=<url>...]

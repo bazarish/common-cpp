@@ -3,6 +3,7 @@
 
 #include "bazarish/Crypto.hpp"
 
+#include <atomic>
 #include <stdexcept>
 
 namespace {
@@ -29,6 +30,20 @@ bool isFingerprint(const std::string& fingerprint)
 }  // namespace
 
 namespace bazarish {
+
+namespace {
+std::atomic<bool> g_allowFacadeWithoutI2p{false};
+}  // namespace
+
+void setAllowFacadeWithoutI2pForDevPurposes(const bool allow)
+{
+    g_allowFacadeWithoutI2p.store(allow);
+}
+
+bool allowFacadeWithoutI2pForDevPurposes()
+{
+    return g_allowFacadeWithoutI2p.load();
+}
 
 bool isI2pFacadeUrl(const std::string& url)
 {
@@ -87,7 +102,7 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
             haveFingerprint = true;
         } else if (key == "facade") {
             if (!value.empty()) {
-                if (!isI2pFacadeUrl(value)) {
+                if (!isI2pFacadeUrl(value) && !allowFacadeWithoutI2pForDevPurposes()) {
                     throw std::invalid_argument(
                         "a facade must be an I2P address: the client talks to its server over"
                         " nothing else (" + value + ")");
@@ -96,7 +111,7 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
             }
         } else if (key == "reseed") {
             if (!value.empty()) {
-                if (isI2pFacadeUrl(value)) {
+                if (isI2pFacadeUrl(value) && !allowFacadeWithoutI2pForDevPurposes()) {
                     throw std::invalid_argument(
                         "a reseed must not be an I2P address: it is what a client without a"
                         " router asks first (" + value + ")");
