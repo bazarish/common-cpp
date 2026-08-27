@@ -25,6 +25,12 @@ constexpr auto kDestinationReadyTimeout = std::chrono::seconds(180);
 // frame.
 constexpr auto kProbeInterval = std::chrono::seconds(5);
 
+// A destination that has just been published is not yet findable everywhere, so
+// a dial that comes back "LeaseSet not found" is re-issued until the caller's
+// deadline rather than reported as a failure. The embedded transport does the
+// same thing for the same reason.
+constexpr auto kDialRetryDelay = std::chrono::seconds(2);
+
 [[noreturn]] void notWithAnExternalRouter(const std::string& what)
 {
     throw std::runtime_error(
@@ -120,18 +126,31 @@ public:
     std::unique_ptr<backend::StreamBackend> connect(
         const std::string& host, const std::chrono::seconds timeout) override
     {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
         const std::shared_ptr<sam::Session> session = waitForStreams(timeout);
         if (session == nullptr) {
             return nullptr;
         }
-        try {
-            return std::make_unique<SamStream>(session->connect(host, timeout));
-        } catch (const sam::Error& error) {
-            // A dial that did not happen is a null stream, as it is on the
-            // embedded transport - but why it did not happen still gets said.
-            bazarish::log::warn("i2p: no stream to {}: {}", host, error.what());
-            return nullptr;
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
+                deadline - std::chrono::steady_clock::now());
+            try {
+                return std::make_unique<SamStream>(session->connect(host, remaining));
+            } catch (const sam::Error& error) {
+                if (error.result() != sam::Result::eCantReachPeer) {
+                    // A refusal that names the reason is an answer, not a miss:
+                    // trying again with the same input would get the same one.
+                    bazarish::log::warn("i2p: no stream to {}: {}", host, error.what());
+                    return nullptr;
+                }
+                bazarish::log::info("i2p: {} not found yet, trying again", host);
+            }
+            std::this_thread::sleep_for(kDialRetryDelay);
         }
+        // A dial that did not happen is a null stream, as it is on the embedded
+        // transport.
+        bazarish::log::warn("i2p: no route to {} inside the dial window", host);
+        return nullptr;
     }
 
     std::unique_ptr<backend::StreamBackend> accept(

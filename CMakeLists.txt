@@ -108,6 +108,12 @@ bazarish_add_test(TestAddress)
 bazarish_add_test(TestI2pAddress)
 bazarish_add_test(TestSam)
 bazarish_add_test(TestI2pKeyBlob)
+
+# Live end-to-end over an external router reached by SAM (not a unit test - it
+# needs a running i2pd and the network), the counterpart of i2p_smoke.
+add_executable(sam_smoke tests/SamSmoke.cpp)
+target_link_libraries(sam_smoke PRIVATE bazarish_common)
+target_compile_options(sam_smoke PRIVATE -Wall -Wextra -Werror)
 bazarish_add_test(TestDescriptor)
 bazarish_add_test(TestServerDescriptor)
 bazarish_add_test(TestResolve)
