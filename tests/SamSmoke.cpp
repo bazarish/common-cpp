@@ -12,11 +12,13 @@
 // running i2pd and the network). Two destinations of this process talk to each
 // other through I2P: one accepts, the other dials.
 //
-//   sam_smoke [host] [control port] [rebuild|b33]
+//   sam_smoke [host] [control port] [rebuild|b33|b33-cold]
 //
 // Datagrams are addressed by the peer's base64 destination, which every router
-// takes. Addressing one by its ".b32.i2p" host is a 2.61.0 addition, so it is
-// asked for by name ("b33") rather than run against whatever the machine has.
+// takes. Addressing one by its ".b32.i2p" host is asked for by name: "b33" after
+// the stream test, "b33-cold" instead of it. The two differ because opening a
+// stream to a host puts it in the router's addressbook, and a router that cannot
+// resolve a blinded address on its own will still find it there afterwards.
 
 using namespace bazarish;
 
@@ -88,41 +90,9 @@ int main(int argc, char** argv)
     const std::vector<i2p::LocalDestination> destinations = router.localDestinations();
     CHECK(destinations.size() == 2);
 
-    const std::string sent = "one frame over I2P";
-    std::string received;
-    std::string caller;
-    std::thread accepting([&]() {
-        const std::unique_ptr<i2p::Stream> stream = server->accept(caller, kAcceptWait);
-        if (stream == nullptr) {
-            return;
-        }
-        received.resize(sent.size());
-        stream->readExact(received.data(), received.size());
-        stream->writeAll(received.data(), received.size());
-    });
-
-    const std::unique_ptr<i2p::Stream> stream = client->connect(server->routingHost(), kDial);
-    CHECK(stream != nullptr);
-    stream->writeAll(sent.data(), sent.size());
-    std::string echoed(sent.size(), '\0');
-    stream->readExact(echoed.data(), echoed.size());
-    accepting.join();
-
-    CHECK(received == sent);
-    CHECK(echoed == sent);
-    CHECK(caller == client->publicBase64());
-    std::printf("stream: %zu bytes there and back, caller identified\n", sent.size());
-
-    const std::string frame = "one raw datagram";
-    client->sendRawDatagram(server->publicBase64(), frame.data(), frame.size());
-    const std::vector<std::uint8_t> arrived = server->receiveRawDatagram(kDatagramWait);
-    CHECK(std::string(arrived.begin(), arrived.end()) == frame);
-    std::printf("raw datagram: %zu bytes\n", arrived.size());
-
     // Addressing a datagram by the host peers actually know, rather than by a
-    // destination in full. The router has to look the address up, which is what
-    // 2.61.0 added; a repliable datagram also names its sender back.
-    if (argc > 3 && std::string(argv[3]) == "b33") {
+    // destination in full. A repliable one also names its sender back.
+    const auto datagramsByHost = [&]() {
         const std::string toHost = "one raw datagram, addressed by host";
         client->sendRawDatagram(server->routingHost(), toHost.data(), toHost.size());
         const std::vector<std::uint8_t> byHost = server->receiveRawDatagram(kDatagramWait);
@@ -137,12 +107,76 @@ int main(int argc, char** argv)
         CHECK(std::string(answered.begin(), answered.end()) == repliable);
         CHECK(sender == client->publicBase64());
         std::printf("repliable datagram: %zu bytes, sender identified\n", answered.size());
+    };
+
+    const std::string mode = argc > 3 ? argv[3] : std::string();
+    if (mode == "b33-cold") {
+        // Nothing has dialled this host, so the router has to resolve the
+        // blinded address itself.
+        datagramsByHost();
+        std::printf("SamSmoke ok\n");
+        return 0;
+    }
+
+    const std::string sent = "one frame over I2P";
+    std::string received;
+    std::string caller;
+    std::string acceptFailure;
+    std::thread accepting([&]() {
+        // Whatever goes wrong on this side is reported rather than thrown out of
+        // a thread, where it would only abort the process and say nothing.
+        try {
+            const std::unique_ptr<i2p::Stream> stream = server->accept(caller, kAcceptWait);
+            if (stream == nullptr) {
+                acceptFailure = "nothing arrived";
+                return;
+            }
+            received.resize(sent.size());
+            stream->readExact(received.data(), received.size());
+            stream->writeAll(received.data(), received.size());
+        } catch (const std::exception& error) {
+            acceptFailure = error.what();
+        }
+    });
+
+    std::string dialFailure;
+    try {
+        const std::unique_ptr<i2p::Stream> stream
+            = client->connect(server->routingHost(), kDial);
+        CHECK(stream != nullptr);
+        stream->writeAll(sent.data(), sent.size());
+        std::string echoed(sent.size(), '\0');
+        stream->readExact(echoed.data(), echoed.size());
+        CHECK(echoed == sent);
+    } catch (const std::exception& error) {
+        dialFailure = error.what();
+    }
+    accepting.join();
+    if (!acceptFailure.empty() || !dialFailure.empty()) {
+        std::printf("stream failed: accepting=[%s] dialling=[%s]\n", acceptFailure.c_str(),
+            dialFailure.c_str());
+    }
+    CHECK(acceptFailure.empty());
+    CHECK(dialFailure.empty());
+
+    CHECK(received == sent);
+    CHECK(caller == client->publicBase64());
+    std::printf("stream: %zu bytes there and back, caller identified\n", sent.size());
+
+    const std::string frame = "one raw datagram";
+    client->sendRawDatagram(server->publicBase64(), frame.data(), frame.size());
+    const std::vector<std::uint8_t> arrived = server->receiveRawDatagram(kDatagramWait);
+    CHECK(std::string(arrived.begin(), arrived.end()) == frame);
+    std::printf("raw datagram: %zu bytes\n", arrived.size());
+
+    if (mode == "b33") {
+        datagramsByHost();
     }
 
     // With "rebuild" as the third argument, the run pauses here so the router can
     // be restarted under it: the session is the router's, and losing it must cost
     // the destination its streams but not its address.
-    if (argc > 3 && std::string(argv[3]) == "rebuild") {
+    if (mode == "rebuild") {
         const std::string address = server->routingHost();
         std::printf("waiting for a router restart\n");
         std::fflush(stdout);
