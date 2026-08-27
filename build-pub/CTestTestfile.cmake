@@ -1,0 +1,36 @@
+# CMake generated Testfile for 
+# Source directory: /home/user/bazarish/client-qt6/common
+# Build directory: /home/user/bazarish/client-qt6/common/build-pub
+# 
+# This file includes the relevant testing commands required for 
+# testing this directory and lists subdirectories to be tested as well.
+add_test([=[TestAuth]=] "/home/user/bazarish/client-qt6/common/build-pub/TestAuth")
+set_tests_properties([=[TestAuth]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;70;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestBytes]=] "/home/user/bazarish/client-qt6/common/build-pub/TestBytes")
+set_tests_properties([=[TestBytes]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;71;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestCrypto]=] "/home/user/bazarish/client-qt6/common/build-pub/TestCrypto")
+set_tests_properties([=[TestCrypto]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;72;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestCms]=] "/home/user/bazarish/client-qt6/common/build-pub/TestCms")
+set_tests_properties([=[TestCms]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;73;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestCertificates]=] "/home/user/bazarish/client-qt6/common/build-pub/TestCertificates")
+set_tests_properties([=[TestCertificates]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;74;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestTokens]=] "/home/user/bazarish/client-qt6/common/build-pub/TestTokens")
+set_tests_properties([=[TestTokens]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;75;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestErrors]=] "/home/user/bazarish/client-qt6/common/build-pub/TestErrors")
+set_tests_properties([=[TestErrors]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;76;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestAddress]=] "/home/user/bazarish/client-qt6/common/build-pub/TestAddress")
+set_tests_properties([=[TestAddress]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;77;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestI2pAddress]=] "/home/user/bazarish/client-qt6/common/build-pub/TestI2pAddress")
+set_tests_properties([=[TestI2pAddress]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;78;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestDescriptor]=] "/home/user/bazarish/client-qt6/common/build-pub/TestDescriptor")
+set_tests_properties([=[TestDescriptor]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;79;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestServerDescriptor]=] "/home/user/bazarish/client-qt6/common/build-pub/TestServerDescriptor")
+set_tests_properties([=[TestServerDescriptor]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;80;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestResolve]=] "/home/user/bazarish/client-qt6/common/build-pub/TestResolve")
+set_tests_properties([=[TestResolve]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;81;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestI2pHttp]=] "/home/user/bazarish/client-qt6/common/build-pub/TestI2pHttp")
+set_tests_properties([=[TestI2pHttp]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;82;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestLog]=] "/home/user/bazarish/client-qt6/common/build-pub/TestLog")
+set_tests_properties([=[TestLog]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;83;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")
+add_test([=[TestHealth]=] "/home/user/bazarish/client-qt6/common/build-pub/TestHealth")
+set_tests_properties([=[TestHealth]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/user/bazarish/client-qt6/common/CMakeLists.txt;67;add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;84;bazarish_add_test;/home/user/bazarish/client-qt6/common/CMakeLists.txt;0;")

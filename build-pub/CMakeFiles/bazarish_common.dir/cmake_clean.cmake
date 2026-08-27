@@ -1,0 +1,41 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/bazarish_common.dir/src/Address.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/Address.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/Auth.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/Auth.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/Bytes.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/Bytes.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/Certificates.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/Certificates.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/Cms.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/Cms.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/Crypto.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/Crypto.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/Descriptor.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/Descriptor.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/Errors.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/Errors.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/Health.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/Health.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/I2p.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/I2p.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/I2pAddress.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/I2pAddress.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/I2pHttp.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/I2pHttp.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/Log.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/Log.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/Resolve.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/Resolve.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/ServerDescriptor.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/ServerDescriptor.cpp.o.d"
+  "CMakeFiles/bazarish_common.dir/src/Tokens.cpp.o"
+  "CMakeFiles/bazarish_common.dir/src/Tokens.cpp.o.d"
+  "libbazarish_common.a"
+  "libbazarish_common.pdb"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/bazarish_common.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()

@@ -266,13 +266,6 @@ Keys Keys::issueTransient(std::int64_t expiresUnix) const
 // routingHost
 // ---------------------------------------------------------------------------
 
-std::string routingHost(const std::string& publicBase64, LeaseSetKind kind)
-{
-    return kind == LeaseSetKind::eEncrypted
-        ? encryptedLeaseSetHost(publicBase64)
-        : standardLeaseSetHost(publicBase64);
-}
-
 std::string routerVersion()
 {
     // The upstream i2pd version baked into the embedded engine (e.g. "2.60.0").

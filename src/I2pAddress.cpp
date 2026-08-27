@@ -3,6 +3,7 @@
 
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
+#include "bazarish/I2p.hpp"
 
 #include <zlib.h>
 
@@ -42,6 +43,19 @@ constexpr std::size_t kB32SuffixLen = sizeof(kB32Suffix) - 1;
 }  // namespace
 
 namespace bazarish {
+
+namespace i2p {
+
+// The address form follows from how the destination publishes itself, and both
+// forms are computed here - so an address is available with no router of any
+// kind behind it.
+std::string routingHost(const std::string& publicBase64, const LeaseSetKind kind)
+{
+    return kind == LeaseSetKind::eEncrypted ? encryptedLeaseSetHost(publicBase64)
+                                            : standardLeaseSetHost(publicBase64);
+}
+
+}  // namespace i2p
 
 std::string encryptedLeaseSetHost(const std::string& i2pBase64Destination)
 {

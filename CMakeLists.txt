@@ -36,6 +36,7 @@ add_library(bazarish_common STATIC
     src/FederationFrame.cpp
     src/Address.cpp
     src/I2pAddress.cpp
+    src/Sam.cpp
     src/Descriptor.cpp
     src/ServerDescriptor.cpp
     src/Resolve.cpp
@@ -102,6 +103,7 @@ bazarish_add_test(TestErrors)
 bazarish_add_test(TestFederationFrame)
 bazarish_add_test(TestAddress)
 bazarish_add_test(TestI2pAddress)
+bazarish_add_test(TestSam)
 bazarish_add_test(TestDescriptor)
 bazarish_add_test(TestServerDescriptor)
 bazarish_add_test(TestResolve)
