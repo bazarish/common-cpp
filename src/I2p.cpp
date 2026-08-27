@@ -11,12 +11,14 @@
 #include "api.h"
 #include "Base.h"
 #include "Blinding.h"
+#include "Config.h"
 #include "Crypto.h"
 #include "Datagram.h"
 #include "Destination.h"
 #include "Identity.h"
 #include "Log.h"
 #include "NetDb.hpp"
+#include "RouterContext.h"
 #include "RouterInfo.h"
 #include "NTCP2.h"
 #include "SSU2.h"
@@ -769,6 +771,9 @@ Router::Router(RouterConfig config) : impl_(std::make_unique<Impl>())
 
     i2pd::api::InitI2P(static_cast<int>(argv.size()), argv.data(), "bazarish-i2p");
     impl_->inited = true;
+    // After the config is parsed and before the transports come up, which is when
+    // they read it.
+    setSocksProxy(config.socksProxyHost, config.socksProxyPort);
     start();
 }
 
@@ -791,6 +796,45 @@ void Router::start()
     i2pd::log::Logger().SetLogLevel(g_i2pLogging.load() ? "warn" : "none");
     impl_->started = true;
     impl_->io = std::make_shared<IoService>(ioContextCount());
+}
+
+void Router::setSocksProxy(const std::string& host, const int port)
+{
+    const bool wanted = !host.empty() && port > 0;
+    const std::string url
+        = wanted ? "socks://" + host + ":" + std::to_string(port) : std::string();
+    i2pd::config::SetOption("ntcp2.proxy", url);
+    i2pd::config::SetOption("reseed.proxy", url);
+    // SSU2 carries its datagrams through SOCKS5's UDP ASSOCIATE, and i2pd's
+    // implementation takes the proxy as a literal address (it parses one, and a
+    // name is refused). A refused proxy would leave SSU2 running straight out
+    // around it, so a named proxy switches SSU2 off instead: fewer transports,
+    // but nothing leaves unproxied.
+    bool ssu2CanBeProxied = wanted;
+    if (wanted)
+    {
+        boost::system::error_code parsed;
+        const auto address = boost::asio::ip::make_address(host, parsed);
+        ssu2CanBeProxied = !parsed && !address.is_unspecified();
+    }
+    i2pd::config::SetOption("ssu2.proxy", ssu2CanBeProxied ? url : std::string());
+    i2pd::config::SetOption("ssu2.enabled", !wanted || ssu2CanBeProxied);
+    if (wanted && !ssu2CanBeProxied)
+    {
+        bazarish::log::info(
+            "i2p: SSU2 is off - a proxy named by host cannot carry its datagrams");
+    }
+}
+
+ProxyState Router::proxyState() const
+{
+    ProxyState state;
+    i2pd::config::GetOption("ntcp2.proxy", state.ntcp2);
+    i2pd::config::GetOption("ssu2.proxy", state.ssu2);
+    i2pd::config::GetOption("reseed.proxy", state.reseed);
+    i2pd::config::GetOption("ssu2.enabled", state.ssu2Enabled);
+    state.routerReportsProxy = i2pd::context.GetStatus() == i2pd::eRouterStatusProxy;
+    return state;
 }
 
 void Router::stop()
