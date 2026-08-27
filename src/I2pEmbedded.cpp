@@ -352,7 +352,13 @@ void EmbeddedStream::close()
 {
     if (stream && !closed.exchange(true))
     {
-        stream->Close();
+        // Asynchronously, which is what the engine requires of every thread but
+        // the destination's own - and what makes "write, then close" mean it. A
+        // write is queued onto that same service; closing from this thread runs
+        // first, finds the send buffer still empty and puts the close packet on
+        // the wire ahead of the data, so the last thing written never leaves.
+        // That is a federation reply the far side is waiting for.
+        stream->AsyncClose();
     }
 }
 
