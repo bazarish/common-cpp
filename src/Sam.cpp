@@ -310,13 +310,15 @@ std::map<std::string, std::string> commandFd(
     return values;
 }
 
-void handshake(const int fd)
+std::string handshake(const int fd)
 {
     const std::map<std::string, std::string> reply
         = commandFd(fd, "HELLO VERSION MIN=3.1 MAX=3.3\n", "HELLO REPLY");
-    if (reply.find("VERSION") == reply.end()) {
+    const auto version = reply.find("VERSION");
+    if (version == reply.end()) {
         throw Error(Result::eUnknown, "SAM: the handshake named no version");
     }
+    return version->second;
 }
 
 std::string styleName(const Style style)
@@ -440,10 +442,16 @@ Result Error::result() const
     return result_;
 }
 
+std::string probe(const RouterAddress& router)
+{
+    const Fd control(openControlSocket(router.host, router.controlPort));
+    return handshake(control.get());
+}
+
 Destination generateDestination(const RouterAddress& router)
 {
     const Fd control(openControlSocket(router.host, router.controlPort));
-    handshake(control.get());
+    (void)handshake(control.get());
     const std::map<std::string, std::string> reply = commandFd(control.get(),
         "DEST GENERATE SIGNATURE_TYPE=" + std::to_string(kEd25519SignatureType) + "\n",
         "DEST REPLY");
@@ -553,7 +561,7 @@ struct Session::Impl {
     void create()
     {
         Fd control(openControlSocket(router.host, router.controlPort));
-        handshake(control.get());
+        (void)handshake(control.get());
         setSocketTimeouts(control.get(), static_cast<int>(readyTimeout.count()));
         const std::map<std::string, std::string> created = commandFd(control.get(),
             sessionCreateLine(id, config, datagramPort), "SESSION STATUS");
@@ -582,7 +590,7 @@ struct Session::Impl {
     void startForwarding()
     {
         Fd forwarder(openControlSocket(router.host, router.controlPort));
-        handshake(forwarder.get());
+        (void)handshake(forwarder.get());
         (void)commandFd(forwarder.get(),
             "STREAM FORWARD ID=" + id + " PORT=" + std::to_string(listenPort) + " HOST="
                 + kDefaultHost + " SILENT=false\n",
@@ -699,7 +707,7 @@ std::unique_ptr<Stream> Session::connect(
         throw Error(Result::eInvalidId, "SAM: the session is down");
     }
     Fd stream(openControlSocket(impl_->router.host, impl_->router.controlPort));
-    handshake(stream.get());
+    (void)handshake(stream.get());
     setSocketTimeouts(stream.get(), static_cast<int>(timeout.count()));
     (void)commandFd(stream.get(),
         "STREAM CONNECT ID=" + impl_->id + " DESTINATION=" + destination + " SILENT=false\n",

@@ -1,6 +1,9 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include <bazarish/Bytes.hpp>
+
+#include <cstddef>
 #include <string>
 
 namespace bazarish {
@@ -35,6 +38,17 @@ std::string standardLeaseSetHost(const std::string& i2pBase64Destination);
 // destinations are NOT valid. Project-wide invariant: every routing/connection
 // target is a .b32.i2p host - no poisonable addressbook names, no raw destinations.
 bool isB32I2pHost(const std::string& host);
+
+// I2P's base64 alphabet is the standard one with '+' as '-' and '/' as '~'.
+// Key material and destinations travel in it; everything else here does not.
+std::string i2pToStandardBase64(const std::string& text);
+std::string standardToI2pBase64(const std::string& text);
+
+// The length of the public identity (KeysAndCert) that begins a destination or
+// a private-keys blob: the two fixed key fields plus the certificate. Reading it
+// is what lets a destination be derived from its own key material with no I2P
+// engine present. Throws on a buffer too short to hold one.
+std::size_t i2pIdentityLength(const Bytes& buffer);
 
 // Throws std::invalid_argument unless isB32I2pHost(host). Call at every point an
 // I2P address enters from outside (contact card, delivery envelope, config).

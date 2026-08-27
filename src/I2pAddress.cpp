@@ -13,7 +13,24 @@
 
 namespace {
 
-// I2P-base64 is the standard alphabet with '+' -> '-' and '/' -> '~'.
+// KeysAndCert layout: 256-byte encryption-key field + 128-byte signing-key
+// field + certificate.
+constexpr std::size_t kEncryptionFieldLen = 256;
+constexpr std::size_t kSigningFieldLen = 128;
+constexpr std::size_t kCertOffset = kEncryptionFieldLen + kSigningFieldLen;  // 384
+constexpr std::size_t kEd25519KeyLen = 32;
+constexpr std::size_t kCertHeaderLen = 3;  // type(1) + length(2)
+constexpr std::uint8_t kCertTypeKey = 5;
+constexpr std::uint8_t kSigTypeEd25519 = 7;
+constexpr std::uint8_t kBlindedSigTypeEd25519 = 11;  // RedDSA-SHA512-Ed25519
+
+constexpr char kB32Suffix[] = ".b32.i2p";
+constexpr std::size_t kB32SuffixLen = sizeof(kB32Suffix) - 1;
+
+}  // namespace
+
+namespace bazarish {
+
 std::string i2pToStandardBase64(const std::string& text)
 {
     std::string out = text;
@@ -27,22 +44,32 @@ std::string i2pToStandardBase64(const std::string& text)
     return out;
 }
 
-// KeysAndCert layout: 256-byte encryption-key field + 128-byte signing-key
-// field + certificate.
-constexpr std::size_t kEncryptionFieldLen = 256;
-constexpr std::size_t kSigningFieldLen = 128;
-constexpr std::size_t kCertOffset = kEncryptionFieldLen + kSigningFieldLen;  // 384
-constexpr std::size_t kEd25519KeyLen = 32;
-constexpr std::uint8_t kCertTypeKey = 5;
-constexpr std::uint8_t kSigTypeEd25519 = 7;
-constexpr std::uint8_t kBlindedSigTypeEd25519 = 11;  // RedDSA-SHA512-Ed25519
+std::string standardToI2pBase64(const std::string& text)
+{
+    std::string out = text;
+    for (char& c : out) {
+        if (c == '+') {
+            c = '-';
+        } else if (c == '/') {
+            c = '~';
+        }
+    }
+    return out;
+}
 
-constexpr char kB32Suffix[] = ".b32.i2p";
-constexpr std::size_t kB32SuffixLen = sizeof(kB32Suffix) - 1;
-
-}  // namespace
-
-namespace bazarish {
+std::size_t i2pIdentityLength(const Bytes& buffer)
+{
+    if (buffer.size() < kCertOffset + kCertHeaderLen) {
+        throw std::runtime_error("i2p identity too short");
+    }
+    const std::size_t certLen
+        = (static_cast<std::size_t>(buffer[kCertOffset + 1]) << 8) | buffer[kCertOffset + 2];
+    const std::size_t length = kCertOffset + kCertHeaderLen + certLen;
+    if (buffer.size() < length) {
+        throw std::runtime_error("i2p identity truncated");
+    }
+    return length;
+}
 
 namespace i2p {
 

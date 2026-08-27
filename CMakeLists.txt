@@ -37,6 +37,8 @@ add_library(bazarish_common STATIC
     src/Address.cpp
     src/I2pAddress.cpp
     src/Sam.cpp
+    src/I2p.cpp
+    src/I2pSam.cpp
     src/Descriptor.cpp
     src/ServerDescriptor.cpp
     src/Resolve.cpp
@@ -76,7 +78,8 @@ set_source_files_properties(src/HttpServer.cpp src/HttpClient.cpp PROPERTIES
 # and Boost includes arrive (as SYSTEM) through Bazarish::I2pd, so they stay out
 # of our -Werror surface.
 if(BAZARISH_WITH_I2PD)
-    target_sources(bazarish_common PRIVATE src/I2p.cpp)
+    target_sources(bazarish_common PRIVATE src/I2pEmbedded.cpp)
+    target_compile_definitions(bazarish_common PUBLIC BAZARISH_WITH_I2PD)
     target_link_libraries(bazarish_common PUBLIC Bazarish::I2pd)
     # Manual end-to-end smoke over live I2P (not a unit test - needs the network).
     add_executable(i2p_smoke tests/I2pSmoke.cpp)
@@ -104,6 +107,7 @@ bazarish_add_test(TestFederationFrame)
 bazarish_add_test(TestAddress)
 bazarish_add_test(TestI2pAddress)
 bazarish_add_test(TestSam)
+bazarish_add_test(TestI2pKeyBlob)
 bazarish_add_test(TestDescriptor)
 bazarish_add_test(TestServerDescriptor)
 bazarish_add_test(TestResolve)

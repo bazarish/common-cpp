@@ -219,6 +219,36 @@ private:
     friend class Router;
 };
 
+// Which engine moves the traffic.
+//   eEmbedded: libi2pd inside this process. Its own netDb, its own tunnels, and
+//              settings this process controls - what a desktop wants.
+//   eSam:      an I2P router outside this process, over SAM v3. One router then
+//              serves any number of processes, which is what makes a host
+//              running many accounts affordable. The router is handed the
+//              private keys of every destination it operates, so it has to be
+//              on this machine and its address has to be loopback.
+enum class Backend { eEmbedded, eSam };
+
+// What this transport can answer. A router outside the process keeps its own
+// counsel about the network it is on, so a caller asks rather than reading
+// zeros as facts.
+struct Capabilities {
+    // Routers known, floodfills, tunnel counts, transport peers.
+    bool routerCounters = false;
+    // Per-destination tunnel and leaseset counts.
+    bool destinationCounters = false;
+    // A slice of the netDb, which is what a private reseed is made of.
+    bool netDbSample = false;
+    // The clearnet SOCKS proxy: setting it, and reading back what came of it.
+    bool proxy = false;
+    // Minting offline keys and swapping a live transient.
+    bool offlineKeys = false;
+};
+
+// The default SAM control port; the datagram port sits one below it unless the
+// router was configured otherwise.
+inline constexpr int kDefaultSamControlPort = 7656;
+
 struct RouterConfig {
     // All router state nests under this directory (netDb, peerProfiles,
     // destinations, keys, logs). No system i2pd locations are touched. Convention:
@@ -238,6 +268,12 @@ struct RouterConfig {
     // proxied, and unproxied is not an option here.
     std::string socksProxyHost{};
     int socksProxyPort = 0;
+    // Which engine to use, and where it is when it is not this process.
+    Backend backend = Backend::eEmbedded;
+    std::string samHost = "127.0.0.1";
+    int samControlPort = kDefaultSamControlPort;
+    // 0 selects the router's own default: one below the control port.
+    int samDatagramPort = 0;
 };
 
 // What the engine made of the proxy configuration, read back from it rather than
@@ -336,6 +372,16 @@ public:
     // starts the router.
     void setSocksProxy(const std::string& host, int port);
     ProxyState proxyState() const;
+
+    // What this transport can answer. Everything it cannot throws rather than
+    // returning an empty or zero answer that reads like a fact.
+    Capabilities capabilities() const;
+
+    // A fresh destination keypair. The embedded engine mints one locally; an
+    // external router mints its own, because a build without the engine has no
+    // way to make one. Either way the blob is the same format, so a profile
+    // moves between transports.
+    Keys generateKeys();
 
     // Create a destination on this router.
     std::shared_ptr<Endpoint> createEndpoint(const EndpointConfig& config);

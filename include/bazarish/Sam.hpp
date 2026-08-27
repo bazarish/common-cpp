@@ -100,6 +100,10 @@ struct Destination {
     std::string privateBase64;
 };
 
+// The handshake and nothing else, to learn whether a router is there at all.
+// Returns the negotiated SAM version; throws when the router does not answer.
+std::string probe(const RouterAddress& router);
+
 // DEST GENERATE on a connection of its own. Ed25519 always: the router's own
 // default is DSA-SHA1, and an unreadable signature type degrades to it silently.
 Destination generateDestination(const RouterAddress& router);
