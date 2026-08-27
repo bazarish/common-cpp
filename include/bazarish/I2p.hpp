@@ -232,11 +232,10 @@ struct RouterConfig {
     // reseed host would announce the bootstrap to a third party - so the client
     // turns this off unless there is no clearnet facade to ask at all.
     bool allowPublicReseed = true;
-    // A SOCKS5 proxy for everything this router does on the clearnet: NTCP2, the
-    // SSU2 datagrams and the built-in reseeds. Empty host = straight out, which
-    // is the default. Only SOCKS is offered because it is the one scheme all
-    // three take (i2pd's HTTP-proxy path covers NTCP2 and the reseed, never SSU2),
-    // and no credentials because i2pd's SOCKS client authenticates with none.
+    // A SOCKS5 proxy for what this router does on the clearnet: its connections to
+    // other routers and the built-in reseeds. Empty host = straight out, which is
+    // the default. SSU2 is switched off while one is set - its datagrams are not
+    // proxied, and unproxied is not an option here.
     std::string socksProxyHost{};
     int socksProxyPort = 0;
 };
@@ -244,15 +243,12 @@ struct RouterConfig {
 // What the engine made of the proxy configuration, read back from it rather than
 // from what was asked for - the two differ when a proxy cannot serve a transport.
 struct ProxyState {
-    // i2pd's own router status says it is running through a proxy.
-    bool routerReportsProxy = false;
     // The options as the engine holds them ("socks://host:port", or empty).
     std::string ntcp2;
     std::string ssu2;
     std::string reseed;
-    // False when SSU2 was switched off because the proxy cannot carry it - a
-    // named proxy host, which i2pd's SSU2 refuses. Its datagrams would otherwise
-    // go out around the proxy.
+    // False while a proxy is set: SSU2's datagrams are not proxied at all, and
+    // running them around the proxy is the one thing this must not do.
     bool ssu2Enabled = true;
 };
 

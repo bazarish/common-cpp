@@ -18,7 +18,6 @@
 #include "Identity.h"
 #include "Log.h"
 #include "NetDb.hpp"
-#include "RouterContext.h"
 #include "RouterInfo.h"
 #include "NTCP2.h"
 #include "SSU2.h"
@@ -805,24 +804,16 @@ void Router::setSocksProxy(const std::string& host, const int port)
         = wanted ? "socks://" + host + ":" + std::to_string(port) : std::string();
     i2pd::config::SetOption("ntcp2.proxy", url);
     i2pd::config::SetOption("reseed.proxy", url);
-    // SSU2 carries its datagrams through SOCKS5's UDP ASSOCIATE, and i2pd's
-    // implementation takes the proxy as a literal address (it parses one, and a
-    // name is refused). A refused proxy would leave SSU2 running straight out
-    // around it, so a named proxy switches SSU2 off instead: fewer transports,
-    // but nothing leaves unproxied.
-    bool ssu2CanBeProxied = wanted;
+    // SSU2 goes off whenever a proxy is set, without exception. Its datagrams can
+    // only ride SOCKS5's UDP ASSOCIATE, which most proxies do not offer and which
+    // i2pd attempts against a literal address alone - and whatever the proxy does
+    // not carry, SSU2 sends straight out around it. NTCP2 carries the router on
+    // its own; nothing leaves unproxied.
+    i2pd::config::SetOption("ssu2.proxy", std::string());
+    i2pd::config::SetOption("ssu2.enabled", !wanted);
     if (wanted)
     {
-        boost::system::error_code parsed;
-        const auto address = boost::asio::ip::make_address(host, parsed);
-        ssu2CanBeProxied = !parsed && !address.is_unspecified();
-    }
-    i2pd::config::SetOption("ssu2.proxy", ssu2CanBeProxied ? url : std::string());
-    i2pd::config::SetOption("ssu2.enabled", !wanted || ssu2CanBeProxied);
-    if (wanted && !ssu2CanBeProxied)
-    {
-        bazarish::log::info(
-            "i2p: SSU2 is off - a proxy named by host cannot carry its datagrams");
+        bazarish::log::info("i2p: clearnet side through {}, SSU2 off", url);
     }
 }
 
@@ -833,7 +824,6 @@ ProxyState Router::proxyState() const
     i2pd::config::GetOption("ssu2.proxy", state.ssu2);
     i2pd::config::GetOption("reseed.proxy", state.reseed);
     i2pd::config::GetOption("ssu2.enabled", state.ssu2Enabled);
-    state.routerReportsProxy = i2pd::context.GetStatus() == i2pd::eRouterStatusProxy;
     return state;
 }
 
