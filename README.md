@@ -13,7 +13,9 @@ component, so there is no duplicated crypto code.
   (with an optional sealing **prekey**), alias certificate, server card.
 - **CMS sealing** - ECDH P-256 + AES-256-GCM envelopes for delivery metadata
   and E2E payloads.
-- **SAM client** - SAM v3 client for I2P routers (sessions and streams).
+- **I2P transport** - one facade (`bazarish::i2p`) over two engines: libi2pd
+  inside the process, or a router outside it over **SAM v3** (`bazarish::sam`,
+  loopback only). The second is what lets one router serve many processes.
 - **Auth** - hybrid request signing/verification for the client API.
 - **Addressing**, one-time **delivery tokens**, typed **errors**, base32/64
   and hex helpers.
