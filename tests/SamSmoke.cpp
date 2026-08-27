@@ -12,11 +12,11 @@
 // running i2pd and the network). Two destinations of this process talk to each
 // other through I2P: one accepts, the other dials.
 //
-//   sam_smoke [host] [control port]
+//   sam_smoke [host] [control port] [rebuild|b33]
 //
-// Datagrams are addressed by the peer's base64 destination rather than its
-// ".b32.i2p" host: taking a b32 or b33 there is a 2.61.0 addition, and this is
-// meant to run against whatever router the machine has.
+// Datagrams are addressed by the peer's base64 destination, which every router
+// takes. Addressing one by its ".b32.i2p" host is a 2.61.0 addition, so it is
+// asked for by name ("b33") rather than run against whatever the machine has.
 
 using namespace bazarish;
 
@@ -118,6 +118,26 @@ int main(int argc, char** argv)
     const std::vector<std::uint8_t> arrived = server->receiveRawDatagram(kDatagramWait);
     CHECK(std::string(arrived.begin(), arrived.end()) == frame);
     std::printf("raw datagram: %zu bytes\n", arrived.size());
+
+    // Addressing a datagram by the host peers actually know, rather than by a
+    // destination in full. The router has to look the address up, which is what
+    // 2.61.0 added; a repliable datagram also names its sender back.
+    if (argc > 3 && std::string(argv[3]) == "b33") {
+        const std::string toHost = "one raw datagram, addressed by host";
+        client->sendRawDatagram(server->routingHost(), toHost.data(), toHost.size());
+        const std::vector<std::uint8_t> byHost = server->receiveRawDatagram(kDatagramWait);
+        CHECK(std::string(byHost.begin(), byHost.end()) == toHost);
+        std::printf("raw datagram to %s: %zu bytes\n", server->routingHost().c_str(),
+            byHost.size());
+
+        const std::string repliable = "one repliable datagram";
+        client->sendDatagram(server->routingHost(), repliable.data(), repliable.size());
+        std::string sender;
+        const std::vector<std::uint8_t> answered = server->receiveDatagram(sender, kDatagramWait);
+        CHECK(std::string(answered.begin(), answered.end()) == repliable);
+        CHECK(sender == client->publicBase64());
+        std::printf("repliable datagram: %zu bytes, sender identified\n", answered.size());
+    }
 
     // With "rebuild" as the third argument, the run pauses here so the router can
     // be restarted under it: the session is the router's, and losing it must cost
