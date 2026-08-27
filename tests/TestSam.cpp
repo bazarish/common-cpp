@@ -353,6 +353,25 @@ constexpr std::chrono::seconds kReady{30};
 constexpr std::chrono::seconds kDial{5};
 constexpr std::chrono::milliseconds kAcceptWait{5000};
 
+void testProbe()
+{
+    FakeRouter router;
+    // The handshake alone, which is how a client learns whether a router is there
+    // at all without asking it for anything.
+    CHECK(sam::probe(router.address()) == "3.3");
+    CHECK(contains(router.waitForCommand("HELLO VERSION"), "MAX=3.3"));
+
+    sam::RouterAddress nobody = router.address();
+    nobody.controlPort = 1;  // nothing listens here
+    bool refused = false;
+    try {
+        (void)sam::probe(nobody);
+    } catch (const sam::Error&) {
+        refused = true;
+    }
+    CHECK(refused);
+}
+
 void testGenerateDestination()
 {
     FakeRouter router;
@@ -589,6 +608,7 @@ void testRefusesAnEndlessReply()
 
 int main()
 {
+    testProbe();
     testGenerateDestination();
     testSessionCreate();
     testConnectAndEcho();
