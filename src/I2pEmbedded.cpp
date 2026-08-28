@@ -297,6 +297,11 @@ public:
     void close() override;
 
     std::shared_ptr<i2pd::stream::Stream> stream;
+    // The destination this stream belongs to, held for as long as the stream is.
+    // Closing is posted to that destination's service, so letting the
+    // destination go first would leave the close to run against a torn-down
+    // streaming layer.
+    std::shared_ptr<i2pd::client::ClientDestination> owner;
     std::atomic<bool> closed{false};
 };
 
@@ -366,7 +371,8 @@ void EmbeddedStream::close()
 // Endpoint
 // ---------------------------------------------------------------------------
 
-class EmbeddedEndpoint final : public backend::EndpointBackend {
+class EmbeddedEndpoint final : public backend::EndpointBackend,
+                               public std::enable_shared_from_this<EmbeddedEndpoint> {
 public:
     ~EmbeddedEndpoint() override;
 
@@ -505,6 +511,7 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::connect(
             {
                 auto wrapped = std::make_unique<EmbeddedStream>();
                 wrapped->stream = std::move(stream);
+                wrapped->owner = destination;
                 return wrapped;
             }
             std::this_thread::sleep_for(std::chrono::seconds(2));  // failed round; re-request
@@ -533,6 +540,7 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::accept(
     if (stream->GetRemoteIdentity()) { peerBase64 = stream->GetRemoteIdentity()->ToBase64(); }
     auto wrapped = std::make_unique<EmbeddedStream>();
     wrapped->stream = std::move(stream);
+    wrapped->owner = dest;
     return wrapped;
 }
 
@@ -967,38 +975,47 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
             impl->dest, config.label, config.owner, impl->hostAddress, config.published});
     }
 
-    auto* raw = impl.get();
-    impl->dest->AcceptStreams([raw](std::shared_ptr<i2pd::stream::Stream> stream)
+    // Weakly, and never by raw pointer: these callbacks live on the engine's own
+    // threads and can fire while this endpoint is being torn down. A weak
+    // reference that no longer locks is the difference between doing nothing and
+    // writing into freed memory.
+    const std::weak_ptr<EmbeddedEndpoint> weak = impl;
+    impl->dest->AcceptStreams([weak](std::shared_ptr<i2pd::stream::Stream> stream)
     {
-        if (!stream) { return; }
+        const std::shared_ptr<EmbeddedEndpoint> held = weak.lock();
+        if (!held || !stream) { return; }
         {
-            std::lock_guard<std::mutex> lock(raw->acceptMutex);
-            raw->acceptQueue.push_back(std::move(stream));
+            std::lock_guard<std::mutex> lock(held->acceptMutex);
+            held->acceptQueue.push_back(std::move(stream));
         }
-        raw->acceptCv.notify_one();
+        held->acceptCv.notify_one();
     });
 
     impl->datagram = impl->dest->CreateDatagramDestination();
-    impl->datagram->SetReceiver([raw](const i2pd::data::IdentityEx& from, std::uint16_t, std::uint16_t,
-        const std::uint8_t* buf, std::size_t len, const i2pd::util::Mapping*)
+    impl->datagram->SetReceiver([weak](const i2pd::data::IdentityEx& from, std::uint16_t,
+        std::uint16_t, const std::uint8_t* buf, std::size_t len, const i2pd::util::Mapping*)
     {
+        const std::shared_ptr<EmbeddedEndpoint> held = weak.lock();
+        if (!held) { return; }
         EmbeddedEndpoint::Incoming incoming;
         incoming.from = from.ToBase64();
         incoming.payload.assign(buf, buf + len);
         {
-            std::lock_guard<std::mutex> lock(raw->dgMutex);
-            raw->dgQueue.push_back(std::move(incoming));
+            std::lock_guard<std::mutex> lock(held->dgMutex);
+            held->dgQueue.push_back(std::move(incoming));
         }
-        raw->dgCv.notify_one();
+        held->dgCv.notify_one();
     });
-    impl->datagram->SetRawReceiver([raw](std::uint16_t, std::uint16_t,
+    impl->datagram->SetRawReceiver([weak](std::uint16_t, std::uint16_t,
         const std::uint8_t* buf, std::size_t len)
     {
+        const std::shared_ptr<EmbeddedEndpoint> held = weak.lock();
+        if (!held) { return; }
         {
-            std::lock_guard<std::mutex> lock(raw->rawMutex);
-            raw->rawQueue.emplace_back(buf, buf + len);
+            std::lock_guard<std::mutex> lock(held->rawMutex);
+            held->rawQueue.emplace_back(buf, buf + len);
         }
-        raw->rawCv.notify_one();
+        held->rawCv.notify_one();
     });
 
     return impl;
