@@ -13,6 +13,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # built alongside: -DOPENSSL_ROOT_DIR=/path/to/openssl-3.5.
 find_package(OpenSSL 3.5 REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(Threads REQUIRED)
 
 # Embedded I2P transport. ON by default: I2P is the transport, so every consumer
 # of common needs it. Requires the i2pd submodule (recursive init) and Boost
@@ -22,6 +23,13 @@ option(BAZARISH_WITH_I2PD "Build the embedded libi2pd_bazarish target" ON)
 if(BAZARISH_WITH_I2PD)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/I2pdBazarish.cmake)
 endif()
+
+# The client core: everything a Bazarish client is, with no user interface in it
+# - accounts and their encrypted store, the session, the courier, invites, calls
+# and the bot framework. It lives here because it has two consumers, the desktop
+# application and the daemon, and neither owns it. Servers do not need it, so
+# they build with -DBAZARISH_WITH_CLIENT=OFF and pay for none of it.
+option(BAZARISH_WITH_CLIENT "Build the client core library" ON)
 
 add_library(bazarish_common STATIC
     src/Auth.cpp
@@ -136,4 +144,75 @@ if(NOT WIN32)
     bazarish_add_test(TestFederationFrame)
     bazarish_add_test(TestSam)
     bazarish_add_test(TestI2pHttp)
+endif()
+
+# The client core and its tests. Its own dependencies are looked for only when
+# it is wanted: a server build asks for none of them.
+if(BAZARISH_WITH_CLIENT)
+    # The account store is SQLCipher (an encrypted SQLite): one file per account,
+    # unreadable without its key. It is a fork of SQLite exporting the same
+    # symbols, so nothing in this project may link plain libsqlite3 next to it.
+    find_library(SQLCIPHER_LIBRARY NAMES sqlcipher REQUIRED)
+    find_path(SQLCIPHER_INCLUDE_DIR NAMES sqlcipher/sqlite3.h REQUIRED)
+    # libqrencode renders contact invites as QR codes (multi-symbol structured
+    # append for the full self-verifying chain).
+    find_library(QRENCODE_LIBRARY NAMES qrencode REQUIRED)
+    find_path(QRENCODE_INCLUDE_DIR NAMES qrencode.h REQUIRED)
+    # libopus encodes call audio (48 kHz mono, 20 ms frames). The media rides I2P
+    # datagrams; this is only the codec, so it stays private to the library.
+    find_library(OPUS_LIBRARY NAMES opus REQUIRED)
+    find_path(OPUS_INCLUDE_DIR NAMES opus/opus.h REQUIRED)
+
+    add_library(bazarish_client STATIC
+        client/AccountDb.cpp
+        client/AccountKey.cpp
+        client/AccountManager.cpp
+        client/ApiClient.cpp
+        client/AudioCodec.cpp
+        client/AudioIo.cpp
+        client/Bot.cpp
+        client/CallMedia.cpp
+        client/Client.cpp
+        client/FederationFetch.cpp
+        client/FileTransfer.cpp
+        client/I2pKeys.cpp
+        client/I2pRouter.cpp
+        client/Invite.cpp
+        client/OutboundCourier.cpp
+        client/OutboundLeases.cpp
+        client/Qr.cpp
+        client/Session.cpp
+        client/WarmDestPool.cpp
+    )
+    add_library(Bazarish::Client ALIAS bazarish_client)
+    # The headers sit beside their sources and are included by name, which is how
+    # both front-ends already spell them.
+    target_include_directories(bazarish_client PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/client)
+    target_include_directories(bazarish_client PRIVATE
+        ${QRENCODE_INCLUDE_DIR} ${OPUS_INCLUDE_DIR})
+    target_link_libraries(bazarish_client PUBLIC bazarish_common Threads::Threads
+        ${SQLCIPHER_LIBRARY})
+    target_link_libraries(bazarish_client PRIVATE ${QRENCODE_LIBRARY} ${OPUS_LIBRARY})
+    target_compile_options(bazarish_client PRIVATE -Wall -Wextra -Werror)
+
+    function(bazarish_client_add_test name)
+        add_executable(${name} client/tests/${name}.cpp)
+        target_link_libraries(${name} PRIVATE bazarish_client)
+        target_compile_options(${name} PRIVATE -Wall -Wextra -Werror)
+        add_test(NAME ${name} COMMAND ${name})
+    endfunction()
+
+    bazarish_client_add_test(TestAccount)
+    bazarish_client_add_test(TestApiClient)
+    bazarish_client_add_test(TestBot)
+    bazarish_client_add_test(TestCallMedia)
+    bazarish_client_add_test(TestClient)
+    bazarish_client_add_test(TestFacade)
+    bazarish_client_add_test(TestFileTransfer)
+    bazarish_client_add_test(TestI2pKeys)
+    bazarish_client_add_test(TestI2pProxy)
+    bazarish_client_add_test(TestInvite)
+    bazarish_client_add_test(TestLogin)
+    bazarish_client_add_test(TestOutboundCourier)
+    bazarish_client_add_test(TestTokenRefill)
 endif()
