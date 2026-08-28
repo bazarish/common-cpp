@@ -5,12 +5,17 @@
 #include "bazarish/I2pAddress.hpp"
 #include "bazarish/Log.hpp"
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -61,44 +66,169 @@ constexpr const char* kTransientDestination = "TRANSIENT";
 // Half of the first byte of a loopback address in host order.
 constexpr std::uint32_t kLoopbackFirstOctet = 127;
 
-class Fd {
-public:
-    explicit Fd(const int fd = -1)
-        : fd_(fd)
-    {
-    }
-    ~Fd() { reset(); }
-    Fd(const Fd&) = delete;
-    Fd& operator=(const Fd&) = delete;
+// The platform's sockets, behind the few calls this layer makes of them. Only
+// the differences are here; nothing below this block knows which system it is
+// being built for.
+#ifdef _WIN32
 
-    int get() const { return fd_; }
-    bool valid() const { return fd_ >= 0; }
-    int release()
-    {
-        const int fd = fd_;
-        fd_ = -1;
-        return fd;
-    }
-    void reset(const int fd = -1)
-    {
-        if (fd_ >= 0) {
-            ::close(fd_);
+// Winsock answers nothing until it has been started, and once per process is
+// the whole of that requirement.
+void ensureSockets()
+{
+    struct Winsock {
+        Winsock()
+        {
+            WSADATA data{};
+            if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+                throw Error(Result::eI2pError, "SAM: no socket library");
+            }
         }
-        fd_ = fd;
+        ~Winsock() { WSACleanup(); }
+    };
+    static const Winsock started;
+}
+
+constexpr Socket kInvalidSocket = static_cast<Socket>(INVALID_SOCKET);
+
+// What the platform's own calls take, for the few made directly below.
+using NativeSocket = SOCKET;
+
+void closeSocket(const Socket socket) { ::closesocket(static_cast<SOCKET>(socket)); }
+
+std::ptrdiff_t socketRead(const Socket socket, void* const buffer, const std::size_t size)
+{
+    return ::recv(static_cast<SOCKET>(socket), static_cast<char*>(buffer),
+        static_cast<int>(size), 0);
+}
+
+std::ptrdiff_t socketWrite(const Socket socket, const void* const data, const std::size_t size)
+{
+    return ::send(static_cast<SOCKET>(socket), static_cast<const char*>(data),
+        static_cast<int>(size), 0);
+}
+
+void setTimeoutOption(const Socket socket, const int option, const int seconds)
+{
+    // Milliseconds in a DWORD here, a timeval everywhere else.
+    const DWORD milliseconds = static_cast<DWORD>(seconds) * 1000;
+    if (::setsockopt(static_cast<SOCKET>(socket), SOL_SOCKET, option,
+            reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds)
+        != 0) {
+        throw Error(Result::eI2pError, "SAM: could not set socket timeouts");
     }
+}
 
-private:
-    int fd_;
-};
+bool socketReadable(const Socket socket, const int timeoutMs)
+{
+    WSAPOLLFD watched{};
+    watched.fd = static_cast<SOCKET>(socket);
+    watched.events = POLLRDNORM;
+    return ::WSAPoll(&watched, 1, timeoutMs) > 0;
+}
 
-void setSocketTimeouts(const int fd, const int seconds)
+std::size_t socketSendQueue(Socket)
+{
+    // Windows has no equivalent of TIOCOUTQ, so the honest answer is that this
+    // layer does not know.
+    return 0;
+}
+
+#else
+
+void ensureSockets() {}
+
+constexpr Socket kInvalidSocket = -1;
+
+using NativeSocket = int;
+
+void closeSocket(const Socket socket) { ::close(static_cast<int>(socket)); }
+
+std::ptrdiff_t socketRead(const Socket socket, void* const buffer, const std::size_t size)
+{
+    return ::recv(static_cast<int>(socket), buffer, size, 0);
+}
+
+std::ptrdiff_t socketWrite(const Socket socket, const void* const data, const std::size_t size)
+{
+    return ::send(static_cast<int>(socket), data, size, 0);
+}
+
+void setTimeoutOption(const Socket socket, const int option, const int seconds)
 {
     timeval timeout{};
     timeout.tv_sec = seconds;
-    if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0
-        || ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0) {
+    if (::setsockopt(static_cast<int>(socket), SOL_SOCKET, option, &timeout, sizeof(timeout))
+        != 0) {
         throw Error(Result::eI2pError, "SAM: could not set socket timeouts");
     }
+}
+
+bool socketReadable(const Socket socket, const int timeoutMs)
+{
+    pollfd watched{};
+    watched.fd = static_cast<int>(socket);
+    watched.events = POLLIN;
+    return ::poll(&watched, 1, timeoutMs) > 0;
+}
+
+std::size_t socketSendQueue(const Socket socket)
+{
+    int queued = 0;
+    if (::ioctl(static_cast<int>(socket), TIOCOUTQ, &queued) != 0 || queued < 0) {
+        return 0;
+    }
+    return static_cast<std::size_t>(queued);
+}
+
+#endif
+
+NativeSocket native(const Socket socket)
+{
+    return static_cast<NativeSocket>(socket);
+}
+
+// One byte, looked at without taking it: what the watch uses to tell a closed
+// connection from a quiet one.
+std::ptrdiff_t peekByte(const Socket socket)
+{
+    char probe = 0;
+    return ::recv(native(socket), &probe, 1, MSG_PEEK);
+}
+
+class Held {
+public:
+    explicit Held(const Socket socket = kInvalidSocket)
+        : socket_(socket)
+    {
+    }
+    ~Held() { reset(); }
+    Held(const Held&) = delete;
+    Held& operator=(const Held&) = delete;
+
+    Socket get() const { return socket_; }
+    bool valid() const { return socket_ != kInvalidSocket; }
+    Socket release()
+    {
+        const Socket socket = socket_;
+        socket_ = kInvalidSocket;
+        return socket;
+    }
+    void reset(const Socket socket = kInvalidSocket)
+    {
+        if (socket_ != kInvalidSocket) {
+            closeSocket(socket_);
+        }
+        socket_ = socket;
+    }
+
+private:
+    Socket socket_;
+};
+
+void setSocketTimeouts(const Socket socket, const int seconds)
+{
+    setTimeoutOption(socket, SO_RCVTIMEO, seconds);
+    setTimeoutOption(socket, SO_SNDTIMEO, seconds);
 }
 
 sockaddr_in loopbackAddress(const std::string& host, const std::uint16_t port)
@@ -117,14 +247,15 @@ sockaddr_in loopbackAddress(const std::string& host, const std::uint16_t port)
     return addr;
 }
 
-int openControlSocket(const std::string& host, const std::uint16_t port)
+Socket openControlSocket(const std::string& host, const std::uint16_t port)
 {
     const sockaddr_in addr = loopbackAddress(host, port);
-    Fd fd(::socket(AF_INET, SOCK_STREAM, 0));
+    ensureSockets();
+    Held fd(::socket(AF_INET, SOCK_STREAM, 0));
     if (!fd.valid()) {
         throw Error(Result::eI2pError, "SAM: no socket");
     }
-    if (::connect(fd.get(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+    if (::connect(native(fd.get()), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
         throw Error(Result::eI2pError,
             "SAM: no router at " + host + ":" + std::to_string(port));
     }
@@ -132,55 +263,57 @@ int openControlSocket(const std::string& host, const std::uint16_t port)
     return fd.release();
 }
 
-int openLocalUdpSocket(std::uint16_t& boundPort)
+Socket openLocalUdpSocket(std::uint16_t& boundPort)
 {
-    Fd fd(::socket(AF_INET, SOCK_DGRAM, 0));
+    ensureSockets();
+    Held fd(::socket(AF_INET, SOCK_DGRAM, 0));
     if (!fd.valid()) {
         throw Error(Result::eI2pError, "SAM: no datagram socket");
     }
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (::bind(fd.get(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+    if (::bind(native(fd.get()), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
         throw Error(Result::eI2pError, "SAM: could not bind a datagram socket");
     }
     sockaddr_in bound{};
     socklen_t length = sizeof(bound);
-    if (::getsockname(fd.get(), reinterpret_cast<sockaddr*>(&bound), &length) != 0) {
+    if (::getsockname(native(fd.get()), reinterpret_cast<sockaddr*>(&bound), &length) != 0) {
         throw Error(Result::eI2pError, "SAM: could not read the datagram port");
     }
     boundPort = ntohs(bound.sin_port);
     return fd.release();
 }
 
-int openLocalListener(std::uint16_t& boundPort)
+Socket openLocalListener(std::uint16_t& boundPort)
 {
-    Fd fd(::socket(AF_INET, SOCK_STREAM, 0));
+    ensureSockets();
+    Held fd(::socket(AF_INET, SOCK_STREAM, 0));
     if (!fd.valid()) {
         throw Error(Result::eI2pError, "SAM: no listening socket");
     }
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (::bind(fd.get(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0
-        || ::listen(fd.get(), kListenBacklog) != 0) {
+    if (::bind(native(fd.get()), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0
+        || ::listen(native(fd.get()), kListenBacklog) != 0) {
         throw Error(Result::eI2pError, "SAM: could not listen for forwarded streams");
     }
     sockaddr_in bound{};
     socklen_t length = sizeof(bound);
-    if (::getsockname(fd.get(), reinterpret_cast<sockaddr*>(&bound), &length) != 0) {
+    if (::getsockname(native(fd.get()), reinterpret_cast<sockaddr*>(&bound), &length) != 0) {
         throw Error(Result::eI2pError, "SAM: could not read the listening port");
     }
     boundPort = ntohs(bound.sin_port);
     return fd.release();
 }
 
-void writeAllFd(const int fd, const void* data, const std::size_t size)
+void writeAllSocket(const Socket socket, const void* data, const std::size_t size)
 {
     const auto* cursor = static_cast<const unsigned char*>(data);
     std::size_t sent = 0;
     while (sent < size) {
-        const ssize_t written = ::write(fd, cursor + sent, size - sent);
+        const std::ptrdiff_t written = socketWrite(socket, cursor + sent, size - sent);
         if (written <= 0) {
             throw Error(Result::eI2pError, "SAM: the connection went away while writing");
         }
@@ -190,12 +323,12 @@ void writeAllFd(const int fd, const void* data, const std::size_t size)
 
 // One line, a byte at a time: the socket carries stream payload right after the
 // reply, and a read that overshoots would swallow it.
-std::string readLineFd(const int fd)
+std::string readLineSocket(const Socket socket)
 {
     std::string line;
     while (true) {
         char c = 0;
-        const ssize_t got = ::read(fd, &c, 1);
+        const std::ptrdiff_t got = socketRead(socket, &c, 1);
         if (got <= 0) {
             throw Error(Result::eI2pError, "SAM: the connection went away while reading");
         }
@@ -288,11 +421,11 @@ bool hasReplyPrefix(const std::string& line, const std::string& prefix)
     return line.size() >= prefix.size() && line.compare(0, prefix.size(), prefix) == 0;
 }
 
-std::map<std::string, std::string> commandFd(
-    const int fd, const std::string& line, const std::string& expectedPrefix)
+std::map<std::string, std::string> commandSocket(
+    const Socket socket, const std::string& line, const std::string& expectedPrefix)
 {
-    writeAllFd(fd, line.data(), line.size());
-    const std::string reply = readLineFd(fd);
+    writeAllSocket(socket, line.data(), line.size());
+    const std::string reply = readLineSocket(socket);
     if (!hasReplyPrefix(reply, expectedPrefix)) {
         throw Error(Result::eUnknown, "SAM: unexpected reply: " + reply);
     }
@@ -310,10 +443,10 @@ std::map<std::string, std::string> commandFd(
     return values;
 }
 
-std::string handshake(const int fd)
+std::string handshake(const Socket socket)
 {
     const std::map<std::string, std::string> reply
-        = commandFd(fd, "HELLO VERSION MIN=3.1 MAX=3.3\n", "HELLO REPLY");
+        = commandSocket(socket, "HELLO VERSION MIN=3.1 MAX=3.3\n", "HELLO REPLY");
     const auto version = reply.find("VERSION");
     if (version == reply.end()) {
         throw Error(Result::eUnknown, "SAM: the handshake named no version");
@@ -393,13 +526,9 @@ std::string sessionCreateLine(const std::string& id, const SessionConfig& config
 }
 
 // Waits for one of the socket's events; false on timeout.
-bool waitReadable(const int fd, const int timeoutMs)
+bool waitReadable(const Socket socket, const int timeoutMs)
 {
-    pollfd watched{};
-    watched.fd = fd;
-    watched.events = POLLIN;
-    const int ready = ::poll(&watched, 1, timeoutMs);
-    return ready > 0;
+    return socketReadable(socket, timeoutMs);
 }
 
 }  // namespace
@@ -444,15 +573,15 @@ Result Error::result() const
 
 std::string probe(const RouterAddress& router)
 {
-    const Fd control(openControlSocket(router.host, router.controlPort));
+    const Held control(openControlSocket(router.host, router.controlPort));
     return handshake(control.get());
 }
 
 Destination generateDestination(const RouterAddress& router)
 {
-    const Fd control(openControlSocket(router.host, router.controlPort));
+    const Held control(openControlSocket(router.host, router.controlPort));
     (void)handshake(control.get());
-    const std::map<std::string, std::string> reply = commandFd(control.get(),
+    const std::map<std::string, std::string> reply = commandSocket(control.get(),
         "DEST GENERATE SIGNATURE_TYPE=" + std::to_string(kEd25519SignatureType) + "\n",
         "DEST REPLY");
     const auto pub = reply.find("PUB");
@@ -467,8 +596,8 @@ Destination generateDestination(const RouterAddress& router)
 // Stream
 // ---------------------------------------------------------------------------
 
-Stream::Stream(const int fd)
-    : fd_(fd)
+Stream::Stream(const Socket socket)
+    : socket_(socket)
 {
 }
 
@@ -479,10 +608,10 @@ Stream::~Stream()
 
 std::size_t Stream::readSome(void* buffer, const std::size_t size)
 {
-    if (fd_ < 0) {
+    if (socket_ == kInvalidSocket) {
         return 0;
     }
-    const ssize_t got = ::read(fd_, buffer, size);
+    const std::ptrdiff_t got = socketRead(socket_, buffer, size);
     if (got < 0) {
         throw Error(Result::eI2pError, "SAM: stream read failed");
     }
@@ -504,29 +633,25 @@ void Stream::readExact(void* buffer, const std::size_t size)
 
 void Stream::writeAll(const void* data, const std::size_t size)
 {
-    if (fd_ < 0) {
+    if (socket_ == kInvalidSocket) {
         throw Error(Result::eI2pError, "SAM: write to a closed stream");
     }
-    writeAllFd(fd_, data, size);
+    writeAllSocket(socket_, data, size);
 }
 
 std::size_t Stream::pendingBytes() const
 {
-    if (fd_ < 0) {
+    if (socket_ == kInvalidSocket) {
         return 0;
     }
-    int queued = 0;
-    if (::ioctl(fd_, TIOCOUTQ, &queued) != 0 || queued < 0) {
-        return 0;
-    }
-    return static_cast<std::size_t>(queued);
+    return socketSendQueue(socket_);
 }
 
 void Stream::close()
 {
-    if (fd_ >= 0) {
-        ::close(fd_);
-        fd_ = -1;
+    if (socket_ != kInvalidSocket) {
+        closeSocket(socket_);
+        socket_ = kInvalidSocket;
     }
 }
 
@@ -543,10 +668,10 @@ struct Session::Impl {
     std::string privateKeys;
 
     mutable std::mutex mutex;
-    Fd control;
-    Fd forward;
-    Fd listener;
-    Fd datagrams;
+    Held control;
+    Held forward;
+    Held listener;
+    Held datagrams;
     std::uint16_t listenPort = 0;
     std::uint16_t datagramPort = 0;
     std::atomic<bool> listening{false};
@@ -560,10 +685,10 @@ struct Session::Impl {
     // for readiness.
     void create()
     {
-        Fd control(openControlSocket(router.host, router.controlPort));
+        Held control(openControlSocket(router.host, router.controlPort));
         (void)handshake(control.get());
         setSocketTimeouts(control.get(), static_cast<int>(readyTimeout.count()));
-        const std::map<std::string, std::string> created = commandFd(control.get(),
+        const std::map<std::string, std::string> created = commandSocket(control.get(),
             sessionCreateLine(id, config, datagramPort), "SESSION STATUS");
         setSocketTimeouts(control.get(), kControlIoTimeoutSeconds);
         const auto keys = created.find("DESTINATION");
@@ -573,7 +698,7 @@ struct Session::Impl {
         // What comes back is the private blob. The shareable half has to be
         // asked for separately.
         const std::map<std::string, std::string> naming
-            = commandFd(control.get(), "NAMING LOOKUP NAME=ME\n", "NAMING REPLY");
+            = commandSocket(control.get(), "NAMING LOOKUP NAME=ME\n", "NAMING REPLY");
         const auto value = naming.find("VALUE");
         if (value == naming.end()) {
             throw Error(Result::eUnknown, "SAM: NAMING REPLY carried no destination");
@@ -589,9 +714,9 @@ struct Session::Impl {
     // it arrives on, and the session's own connection must stay a session.
     void startForwarding()
     {
-        Fd forwarder(openControlSocket(router.host, router.controlPort));
+        Held forwarder(openControlSocket(router.host, router.controlPort));
         (void)handshake(forwarder.get());
-        (void)commandFd(forwarder.get(),
+        (void)commandSocket(forwarder.get(),
             "STREAM FORWARD ID=" + id + " PORT=" + std::to_string(listenPort) + " HOST="
                 + kDefaultHost + " SILENT=false\n",
             "STREAM STATUS");
@@ -604,7 +729,7 @@ struct Session::Impl {
     void watchLoop()
     {
         while (!stopping) {
-            int fd = -1;
+            Socket fd = kInvalidSocket;
             {
                 const std::lock_guard<std::mutex> lock(mutex);
                 fd = control.get();
@@ -615,8 +740,7 @@ struct Session::Impl {
             if (!waitReadable(fd, kWatchPollMs)) {
                 continue;
             }
-            char probe = 0;
-            const ssize_t got = ::recv(fd, &probe, 1, MSG_PEEK);
+            const std::ptrdiff_t got = peekByte(fd);
             if (got > 0) {
                 continue;  // an unsolicited line; nothing this session asked for
             }
@@ -706,10 +830,10 @@ std::unique_ptr<Stream> Session::connect(
     if (!impl_->alive) {
         throw Error(Result::eInvalidId, "SAM: the session is down");
     }
-    Fd stream(openControlSocket(impl_->router.host, impl_->router.controlPort));
+    Held stream(openControlSocket(impl_->router.host, impl_->router.controlPort));
     (void)handshake(stream.get());
     setSocketTimeouts(stream.get(), static_cast<int>(timeout.count()));
-    (void)commandFd(stream.get(),
+    (void)commandSocket(stream.get(),
         "STREAM CONNECT ID=" + impl_->id + " DESTINATION=" + destination + " SILENT=false\n",
         "STREAM STATUS");
     // From here the socket is the stream itself, and a read blocks for as long
@@ -737,13 +861,13 @@ std::unique_ptr<Stream> Session::accept(
     if (!waitReadable(impl_->listener.get(), static_cast<int>(timeout.count()))) {
         return nullptr;
     }
-    Fd incoming(::accept(impl_->listener.get(), nullptr, nullptr));
+    Held incoming(::accept(native(impl_->listener.get()), nullptr, nullptr));
     if (!incoming.valid()) {
         throw Error(Result::eI2pError, "SAM: could not take a forwarded stream");
     }
     setSocketTimeouts(incoming.get(), kControlIoTimeoutSeconds);
     // The router names the caller on the first line and then gets out of the way.
-    const std::string peerLine = readLineFd(incoming.get());
+    const std::string peerLine = readLineSocket(incoming.get());
     peerDestination = peerLine.substr(0, peerLine.find(' '));
     setSocketTimeouts(incoming.get(), 0);
     return std::make_unique<Stream>(incoming.release());
@@ -769,7 +893,7 @@ void Session::sendDatagram(
 
     const sockaddr_in addr
         = loopbackAddress(impl_->router.host, impl_->router.resolvedDatagramPort());
-    const ssize_t sent = ::sendto(impl_->datagrams.get(), packet.data(), packet.size(), 0,
+    const ssize_t sent = ::sendto(native(impl_->datagrams.get()), packet.data(), packet.size(), 0,
         reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
     if (sent < 0) {
         throw Error(Result::eI2pError, "SAM: could not hand the datagram to the router");
@@ -786,7 +910,7 @@ std::vector<std::uint8_t> Session::receiveDatagram(
         return {};
     }
     std::vector<std::uint8_t> buffer(kMaxDatagramBytes);
-    const ssize_t got = ::recv(impl_->datagrams.get(), buffer.data(), buffer.size(), 0);
+    const ssize_t got = ::recv(native(impl_->datagrams.get()), buffer.data(), buffer.size(), 0);
     if (got <= 0) {
         return {};
     }

@@ -64,6 +64,11 @@ target_include_directories(bazarish_common SYSTEM
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 target_link_libraries(bazarish_common PUBLIC OpenSSL::Crypto OpenSSL::SSL ZLIB::ZLIB)
+# The SAM client speaks to the router over a socket of its own, and on Windows
+# that is a library rather than the C runtime.
+if(WIN32)
+    target_link_libraries(bazarish_common PUBLIC ws2_32)
+endif()
 target_compile_options(bazarish_common PRIVATE -Wall -Wextra -Werror)
 
 # Asio allocates a coroutine's frame through its own allocator and frees it the

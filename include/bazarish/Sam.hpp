@@ -108,11 +108,16 @@ std::string probe(const RouterAddress& router);
 // default is DSA-SHA1, and an unreadable signature type degrades to it silently.
 Destination generateDestination(const RouterAddress& router);
 
+// A socket, as this layer holds one. An int everywhere but Windows, where a
+// socket is a handle; intptr_t takes both without dragging the platform's
+// headers into this one.
+using Socket = std::intptr_t;
+
 // One I2P stream, taken over from the SAM connection that opened it. Blocking
 // byte I/O over the socket the router forwards.
 class Stream {
 public:
-    explicit Stream(int fd);
+    explicit Stream(Socket socket);
     ~Stream();
 
     Stream(const Stream&) = delete;
@@ -126,12 +131,12 @@ public:
     // Bytes still queued in the local socket to the router. It says nothing
     // about what the router has yet to put on the network - over SAM that queue
     // is not observable - so it is a floor under what is outstanding, never the
-    // whole of it.
+    // whole of it. Windows offers no way to ask at all, and answers zero.
     std::size_t pendingBytes() const;
     void close();
 
 private:
-    int fd_;
+    Socket socket_;
 };
 
 // A SAM session: one control connection, and the destination it operates for as

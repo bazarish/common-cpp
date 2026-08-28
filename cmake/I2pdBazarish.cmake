@@ -95,4 +95,11 @@ target_compile_features(i2pd_bazarish PUBLIC cxx_std_20)
 target_compile_options(i2pd_bazarish PRIVATE -w -include utility)
 
 target_link_libraries(i2pd_bazarish PUBLIC
-    OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB ${I2PD_BOOST_PO} Threads::Threads atomic)
+    OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB ${I2PD_BOOST_PO} Threads::Threads)
+# libatomic is a GNU runtime detail and is not a library everywhere; Windows
+# instead needs the sockets and adapter interfaces the engine calls.
+if(WIN32)
+    target_link_libraries(i2pd_bazarish PUBLIC ws2_32 wsock32 iphlpapi)
+else()
+    target_link_libraries(i2pd_bazarish PUBLIC atomic)
+endif()
