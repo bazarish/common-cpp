@@ -38,6 +38,13 @@ bool isI2pFacadeUrl(const std::string& url);
 void setAllowFacadeWithoutI2pForDevPurposes(bool allow);
 bool allowFacadeWithoutI2pForDevPurposes();
 
+// A daemon that is its own server serves its facade in its own process, on a
+// loopback address: nothing leaves the machine, so the I2P-only rule above has
+// nothing to protect there. Off by default, and it opens loopback alone - an
+// address that is not loopback is still refused with the switch on.
+void setSelfHostedFacadeOnLoopback(bool own);
+bool selfHostedFacadeOnLoopback();
+
 // Encodes the descriptor as a human-readable URI (no base64 - every field is
 // legible at a glance):
 //   bazarish://server?v=1&fp=<fingerprint>&facade=<url>[&facade=...][&reseed=<url>...]

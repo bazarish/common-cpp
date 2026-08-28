@@ -190,6 +190,8 @@ private:
     // True if a facade's host ends in ".b32.i2p" (reached over the embedded I2P
     // transport rather than clearnet).
     static bool facadeIsI2p(const Facade& facade);
+    // Whether this facade is one this process serves itself, on loopback.
+    static bool facadeIsOwnLoopback(const Facade& facade);
     // The order facades are tried in: I2P facades first (preferred), then
     // clearnet, preserving each group's configured order.
     std::vector<std::size_t> facadeOrder() const;

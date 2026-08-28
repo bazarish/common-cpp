@@ -181,6 +181,17 @@ bool ApiClient::facadeIsI2p(const Facade& facade)
         && host.compare(host.size() - kSuffix.size(), kSuffix.size(), kSuffix) == 0;
 }
 
+// A facade this process serves itself, reached without touching the network.
+// The address is compared literally: a name that resolves to loopback today is
+// a name that resolves elsewhere tomorrow.
+bool ApiClient::facadeIsOwnLoopback(const Facade& facade)
+{
+    if (!bazarish::selfHostedFacadeOnLoopback()) {
+        return false;
+    }
+    return facade.host == "127.0.0.1" || facade.host == "::1";
+}
+
 std::vector<std::size_t> ApiClient::facadeOrder() const
 {
     // The API is spoken over I2P and nothing else, so a facade that is not an I2P
@@ -192,7 +203,8 @@ std::vector<std::size_t> ApiClient::facadeOrder() const
     std::vector<std::size_t> order;
     order.reserve(endpoint_.facades.size());
     for (std::size_t i = 0; i < endpoint_.facades.size(); ++i) {
-        if (anything || facadeIsI2p(endpoint_.facades[i])) {
+        if (anything || facadeIsI2p(endpoint_.facades[i])
+            || facadeIsOwnLoopback(endpoint_.facades[i])) {
             order.push_back(i);
         }
     }
@@ -694,7 +706,8 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
         // Only two things reach a clearnet address: the reseed, which carries no
         // identity and is what makes I2P possible at all, and everything at all
         // when a stand is being talked to without I2P on purpose.
-        if (!clearnetOnly && !bazarish::allowFacadeWithoutI2pForDevPurposes()) {
+        if (!clearnetOnly && !bazarish::allowFacadeWithoutI2pForDevPurposes()
+            && !facadeIsOwnLoopback(facade)) {
             lastError = "this client speaks to its server over I2P only: " + facade.host;
             continue;
         }
@@ -832,7 +845,7 @@ ApiResponse ApiClient::putFile(const std::string& path, const std::filesystem::p
             return *response;
         }
 
-        if (!bazarish::allowFacadeWithoutI2pForDevPurposes()) {
+        if (!bazarish::allowFacadeWithoutI2pForDevPurposes() && !facadeIsOwnLoopback(facade)) {
             lastError = "this client speaks to its server over I2P only: " + facade.host;
             continue;
         }

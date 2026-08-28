@@ -32,6 +32,7 @@ bool isFingerprint(const std::string& fingerprint)
 namespace bazarish {
 
 namespace {
+std::atomic<bool> g_selfHostedFacadeOnLoopback{false};
 std::atomic<bool> g_allowFacadeWithoutI2p{false};
 }  // namespace
 
@@ -39,6 +40,16 @@ void setAllowFacadeWithoutI2pForDevPurposes(const bool allow)
 {
     g_allowFacadeWithoutI2p.store(allow);
 }
+void setSelfHostedFacadeOnLoopback(const bool own)
+{
+    g_selfHostedFacadeOnLoopback.store(own);
+}
+
+bool selfHostedFacadeOnLoopback()
+{
+    return g_selfHostedFacadeOnLoopback.load();
+}
+
 
 bool allowFacadeWithoutI2pForDevPurposes()
 {
