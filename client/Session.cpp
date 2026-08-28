@@ -760,6 +760,25 @@ void Session::registerAccount()
     }
 }
 
+void Session::registerSelfHosted()
+{
+    // The same first step as any registration: the card is what turns a
+    // registration into an account. What follows it there - minting a master and
+    // delegating it - has no meaning when the server is this process.
+    PublishResult result;
+    try {
+        result = client_->publishCard(sealingKey_.publicDer(), {});
+    } catch (const ApiError& error) {
+        if (error.code != ErrorCode::eDeliveryRejected) {
+            throw;
+        }
+        client_->registerHere();
+        result = client_->publishCard(sealingKey_.publicDer(), {});
+    }
+    storeCard(result);
+    client_->registerThisClient();
+}
+
 void Session::publishRouting()
 {
     if (!hasI2pDestination()) {

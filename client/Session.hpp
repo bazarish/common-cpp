@@ -316,6 +316,12 @@ public:
     // term: it lives while the destination stays delegated.
     void registerAccount();
 
+    // Registers with a server this same process serves. The destination is the
+    // server's to raise and it already holds the key, so there is nothing to
+    // delegate and no transient to issue - which is also what lets such a daemon
+    // run over a transport that cannot issue one at all.
+    void registerSelfHosted();
+
     // Hands the serving server a fresh transient for this account's destination
     // and re-issues the contact card with the routing folded in, inside the term
     // already held (so it grants nothing and consumes no registration grant).
