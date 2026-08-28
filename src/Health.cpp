@@ -3,6 +3,11 @@
 
 #include <nlohmann/json.hpp>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>
+#endif
+
 #include <fstream>
 #include <limits>
 #include <string>
@@ -10,6 +15,8 @@
 namespace bazarish::health {
 
 namespace {
+
+#ifndef _WIN32
 
 // Reads a "VmRSS:"/"VmHWM:"-style kB value from /proc/self/status and returns it
 // in bytes; 0 if the field is absent.
@@ -34,13 +41,25 @@ std::uint64_t statusFieldBytes(const std::string& field)
     return 0;
 }
 
+#endif
+
 }  // namespace
 
 MemoryUsage processMemoryUsage()
 {
     MemoryUsage usage;
+#ifdef _WIN32
+    // The working set is what this process holds resident, and the same counters
+    // carry its peak.
+    PROCESS_MEMORY_COUNTERS counters{};
+    if (::GetProcessMemoryInfo(::GetCurrentProcess(), &counters, sizeof counters) != 0) {
+        usage.current = counters.WorkingSetSize;
+        usage.peak = counters.PeakWorkingSetSize;
+    }
+#else
     usage.current = statusFieldBytes("VmRSS:");
     usage.peak = statusFieldBytes("VmHWM:");
+#endif
     return usage;
 }
 

@@ -23,7 +23,9 @@ using bazarish::Key;
 
 // Carrier certificates exist only to transport a public key through CMS
 // structures; validity is set wide so clock skew can never interfere.
-constexpr long kCarrierCertValiditySeconds = 60L * 60 * 24 * 365 * 100;
+// Counted in days: a century of seconds does not fit the long that the
+// seconds-taking call has for it where long is 32 bits.
+constexpr int kCarrierCertValidityDays = 365 * 100;
 
 struct BioDeleter {
     void operator()(BIO* bio) const
@@ -124,7 +126,9 @@ X509Ptr makeCarrierCert(const Key& subjectKey, const Key& signerKey)
     }
 
     ok = ok && X509_gmtime_adj(X509_getm_notBefore(cert.get()), -3600) != nullptr
-        && X509_gmtime_adj(X509_getm_notAfter(cert.get()), kCarrierCertValiditySeconds) != nullptr
+        && X509_time_adj_ex(X509_getm_notAfter(cert.get()), kCarrierCertValidityDays, 0,
+               nullptr)
+            != nullptr
         && X509_set_pubkey(cert.get(), subjectKey.raw()) == 1;
 
     ok = ok && X509_sign(cert.get(), signerKey.raw(), EVP_sha256()) > 0;

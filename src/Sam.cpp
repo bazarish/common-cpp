@@ -57,6 +57,8 @@ constexpr int kRebuildDelaySeconds = 5;
 
 constexpr int kListenBacklog = 16;
 
+constexpr int kMillisecondsPerSecond = 1000;
+
 // The version line of the datagram header. The router skips this token without
 // reading it, but the field is part of the format.
 constexpr const char* kDatagramHeaderVersion = "3.0";
@@ -110,12 +112,19 @@ std::ptrdiff_t socketWrite(const Socket socket, const void* const data, const st
 void setTimeoutOption(const Socket socket, const int option, const int seconds)
 {
     // Milliseconds in a DWORD here, a timeval everywhere else.
-    const DWORD milliseconds = static_cast<DWORD>(seconds) * 1000;
+    const DWORD milliseconds = static_cast<DWORD>(seconds * kMillisecondsPerSecond);
     if (::setsockopt(static_cast<SOCKET>(socket), SOL_SOCKET, option,
             reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds)
         != 0) {
         throw Error(Result::eI2pError, "SAM: could not set socket timeouts");
     }
+}
+
+std::ptrdiff_t socketSendTo(const Socket socket, const void* const data,
+    const std::size_t size, const sockaddr_in& address)
+{
+    return ::sendto(static_cast<SOCKET>(socket), static_cast<const char*>(data),
+        static_cast<int>(size), 0, reinterpret_cast<const sockaddr*>(&address), sizeof address);
 }
 
 bool socketReadable(const Socket socket, const int timeoutMs)
@@ -161,6 +170,13 @@ void setTimeoutOption(const Socket socket, const int option, const int seconds)
         != 0) {
         throw Error(Result::eI2pError, "SAM: could not set socket timeouts");
     }
+}
+
+std::ptrdiff_t socketSendTo(const Socket socket, const void* const data,
+    const std::size_t size, const sockaddr_in& address)
+{
+    return ::sendto(static_cast<int>(socket), data, size, 0,
+        reinterpret_cast<const sockaddr*>(&address), sizeof address);
 }
 
 bool socketReadable(const Socket socket, const int timeoutMs)
@@ -893,8 +909,8 @@ void Session::sendDatagram(
 
     const sockaddr_in addr
         = loopbackAddress(impl_->router.host, impl_->router.resolvedDatagramPort());
-    const ssize_t sent = ::sendto(native(impl_->datagrams.get()), packet.data(), packet.size(), 0,
-        reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+    const std::ptrdiff_t sent
+        = socketSendTo(impl_->datagrams.get(), packet.data(), packet.size(), addr);
     if (sent < 0) {
         throw Error(Result::eI2pError, "SAM: could not hand the datagram to the router");
     }
@@ -910,7 +926,8 @@ std::vector<std::uint8_t> Session::receiveDatagram(
         return {};
     }
     std::vector<std::uint8_t> buffer(kMaxDatagramBytes);
-    const ssize_t got = ::recv(native(impl_->datagrams.get()), buffer.data(), buffer.size(), 0);
+    const std::ptrdiff_t got
+        = socketRead(impl_->datagrams.get(), buffer.data(), buffer.size());
     if (got <= 0) {
         return {};
     }

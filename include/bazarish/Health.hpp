@@ -8,8 +8,9 @@ namespace bazarish::health {
 
 // Resident memory of the current process, in bytes. `current` is the live
 // resident set; `peak` is the high-water mark over the process lifetime. On Linux
-// these come from /proc/self/status (VmRSS / VmHWM); if that is unavailable both
-// are reported as 0 rather than failing a liveness probe.
+// these come from /proc/self/status (VmRSS / VmHWM), on Windows from the process
+// working set; if neither answers both are reported as 0 rather than failing a
+// liveness probe.
 struct MemoryUsage {
     std::uint64_t current = 0;
     std::uint64_t peak = 0;

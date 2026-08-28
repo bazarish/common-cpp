@@ -119,9 +119,14 @@ int main()
                 static_cast<std::streamsize>(bigEnvelope.size()));
         }
         cms::unsealWithPasswordToFile(derPath, outPath, password);
-        std::ifstream in(outPath, std::ios::binary);
-        const Bytes recovered(
-            (std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        Bytes recovered;
+        {
+            // Closed before the file is removed: an open file is not one every
+            // platform lets go of.
+            std::ifstream in(outPath, std::ios::binary);
+            recovered.assign(
+                (std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        }
         CHECK(recovered == bigSecret);
         CHECK_THROWS(cms::unsealWithPasswordToFile(derPath, outPath, "guess"));
         CHECK_THROWS(cms::unsealWithPasswordToFile(derPath, outPath, ""));
@@ -153,14 +158,19 @@ int main()
 
         // Decrypts file-to-file...
         cms::unsealWithPasswordToFile(cipherPath, outPath, password);
-        std::ifstream fromFile(outPath, std::ios::binary);
-        const Bytes recovered(
-            (std::istreambuf_iterator<char>(fromFile)), std::istreambuf_iterator<char>());
+        Bytes recovered;
+        Bytes envelope;
+        {
+            // Closed before the files are removed, as above.
+            std::ifstream fromFile(outPath, std::ios::binary);
+            recovered.assign(
+                (std::istreambuf_iterator<char>(fromFile)), std::istreambuf_iterator<char>());
+            std::ifstream cipherIn(cipherPath, std::ios::binary);
+            envelope.assign(
+                (std::istreambuf_iterator<char>(cipherIn)), std::istreambuf_iterator<char>());
+        }
         CHECK(recovered == bigPlain);
         // ...and the streamed envelope is a valid CMS that the in-memory path reads too.
-        std::ifstream cipherIn(cipherPath, std::ios::binary);
-        const Bytes envelope(
-            (std::istreambuf_iterator<char>(cipherIn)), std::istreambuf_iterator<char>());
         CHECK(cms::unsealWithPassword(envelope, password) == bigPlain);
 
         CHECK_THROWS(cms::sealWithPasswordToFile(plainPath, cipherPath, ""));

@@ -10,6 +10,7 @@
 #include <openssl/x509.h>
 
 #include <array>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -22,6 +23,21 @@ using bazarish::Bytes;
 // The post-quantum half of every sealing key (FIPS 203). ML-KEM-768 is the
 // category-3 parameter set, matching ML-DSA-65 on the signing side.
 constexpr const char* kKemAlgorithm = "ML-KEM-768";
+
+// OpenSSL's own callback prompts on the terminal when it has nothing to give,
+// which is not a thing a library may do: without a controlling terminal it fails
+// after a detour, with one it waits forever. The reader gets exactly what the
+// caller passed, and an encrypted block with no passphrase is simply an error.
+int passphraseCallback(char* const buffer, const int size, int, void* const userdata)
+{
+    const auto* const passphrase = static_cast<const std::string*>(userdata);
+    if (passphrase == nullptr || passphrase->empty() || buffer == nullptr
+        || passphrase->size() > static_cast<std::size_t>(size)) {
+        return -1;
+    }
+    std::memcpy(buffer, passphrase->data(), passphrase->size());
+    return static_cast<int>(passphrase->size());
+}
 
 bazarish::KeyPtr generateEcP256()
 {
@@ -120,18 +136,14 @@ Key Key::fromPrivatePem(const std::string& pem, const std::string& passphrase)
     if (bio == nullptr) {
         throw std::runtime_error("BIO_new_mem_buf failed");
     }
-    // When the passphrase is empty OpenSSL receives a null userdata and reads
-    // an unencrypted PEM; otherwise the default callback uses it as the
-    // password for the encrypted block.
-    void* const password = passphrase.empty() ? nullptr
-                                               : const_cast<char*>(passphrase.c_str());
-    EVP_PKEY* const key = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, password);
+    void* const password = const_cast<std::string*>(&passphrase);
+    EVP_PKEY* const key = PEM_read_bio_PrivateKey(bio.get(), nullptr, passphraseCallback, password);
     if (key == nullptr) {
         throw std::runtime_error("PEM_read_bio_PrivateKey failed");
     }
     // A sealing key is written as two blocks, classical first: read the second
     // when it is there, so a key round-trips through PEM with both halves.
-    EVP_PKEY* const second = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, password);
+    EVP_PKEY* const second = PEM_read_bio_PrivateKey(bio.get(), nullptr, passphraseCallback, password);
     if (second == nullptr) {
         ERR_clear_error();  // one block: not an error, just a single key
         return Key(KeyPtr(key), true);
@@ -439,14 +451,13 @@ Identity Identity::fromPrivatePem(const std::string& pem, const std::string& pas
     if (bio == nullptr) {
         throw std::runtime_error("BIO_new_mem_buf failed");
     }
-    void* const password = passphrase.empty() ? nullptr
-                                               : const_cast<char*>(passphrase.c_str());
-    EVP_PKEY* const first = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, password);
+    void* const password = const_cast<std::string*>(&passphrase);
+    EVP_PKEY* const first = PEM_read_bio_PrivateKey(bio.get(), nullptr, passphraseCallback, password);
     if (first == nullptr) {
         throw std::runtime_error("identity PEM: first key unreadable");
     }
     Key classical(KeyPtr(first), true);
-    EVP_PKEY* const second = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, password);
+    EVP_PKEY* const second = PEM_read_bio_PrivateKey(bio.get(), nullptr, passphraseCallback, password);
     if (second == nullptr) {
         throw std::runtime_error("identity PEM: second key unreadable");
     }

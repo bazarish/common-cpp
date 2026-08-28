@@ -35,6 +35,13 @@ constexpr std::int64_t kOutsideWindow = 100000;
 // Short enough for the test to walk the whole code space; deployments use the
 // longer default.
 constexpr int kSolvableLength = 2;
+// A two-character code repeats often, and the single-use ledger is keyed by the
+// tag - which is the code and the second it was drawn at. Cases after the first
+// therefore issue at a second of their own, or one of them would be refused as
+// already spent.
+constexpr std::int64_t kSecondIssue = kNow + 1;
+constexpr std::int64_t kThirdIssue = kNow + 2;
+constexpr std::int64_t kFourthIssue = kNow + 3;
 constexpr int kDeployedLength = 5;
 
 // Recovers a challenge's code by re-deriving the tag its id carries. Only a
@@ -131,19 +138,20 @@ void testFlow()
     CHECK(!captcha.verify(challenge.id, code, kNow));  // single use
 
     // A wrong answer costs the challenge nothing; the right one still lands.
-    const CaptchaChallenge second = captcha.issue(kNow);
-    CHECK(!captcha.verify(second.id, "ZZZZZ", kNow));
-    CHECK(captcha.verify(second.id, solve(kSecret, second.id, kSolvableLength), kNow));
+    const CaptchaChallenge second = captcha.issue(kSecondIssue);
+    CHECK(!captcha.verify(second.id, "ZZZZZ", kSecondIssue));
+    CHECK(captcha.verify(second.id, solve(kSecret, second.id, kSolvableLength), kSecondIssue));
 
     // Case-insensitive.
-    const CaptchaChallenge third = captcha.issue(kNow);
-    CHECK(captcha.verify(third.id, lowered(solve(kSecret, third.id, kSolvableLength)), kNow));
+    const CaptchaChallenge third = captcha.issue(kThirdIssue);
+    CHECK(captcha.verify(
+        third.id, lowered(solve(kSecret, third.id, kSolvableLength)), kThirdIssue));
 
     // Outside the window it is dead, inside it still answers.
-    const CaptchaChallenge fourth = captcha.issue(kNow);
+    const CaptchaChallenge fourth = captcha.issue(kFourthIssue);
     const std::string fourthCode = solve(kSecret, fourth.id, kSolvableLength);
-    CHECK(!captcha.verify(fourth.id, fourthCode, kNow + kOutsideWindow));
-    CHECK(captcha.verify(fourth.id, fourthCode, kNow));
+    CHECK(!captcha.verify(fourth.id, fourthCode, kFourthIssue + kOutsideWindow));
+    CHECK(captcha.verify(fourth.id, fourthCode, kFourthIssue));
 
     CHECK(!captcha.verify("not-a-valid-id", "AAAAA", kNow));  // malformed id
 }

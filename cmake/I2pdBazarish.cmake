@@ -99,7 +99,16 @@ target_link_libraries(i2pd_bazarish PUBLIC
 # libatomic is a GNU runtime detail and is not a library everywhere; Windows
 # instead needs the sockets and adapter interfaces the engine calls.
 if(WIN32)
-    target_link_libraries(i2pd_bazarish PUBLIC ws2_32 wsock32 iphlpapi)
+    # On MinGW the engine takes paths through Boost.Filesystem, not the standard
+    # one, because it does not trust that compiler's path conversions.
+    find_package(Boost REQUIRED CONFIG COMPONENTS filesystem)
+    target_link_libraries(i2pd_bazarish PUBLIC
+        ws2_32 wsock32 iphlpapi crypt32 Boost::filesystem)
+    # What the engine's own MinGW build defines. The API level stays private:
+    # Qt sets a higher one of its own, and two on a command line is a warning
+    # about which of them wins.
+    target_compile_definitions(i2pd_bazarish PUBLIC WIN32_LEAN_AND_MEAN)
+    target_compile_definitions(i2pd_bazarish PRIVATE WINVER=0x0602 _WIN32_WINNT=0x0602)
 else()
     target_link_libraries(i2pd_bazarish PUBLIC atomic)
 endif()

@@ -4,6 +4,7 @@
 #include "TestUtil.hpp"
 
 #include <cstdio>
+#include <filesystem>
 #include <string>
 
 using namespace bazarish::log;
@@ -33,10 +34,11 @@ int main()
     // Both the journald ("<N>...") and bare ("LEVEL ...") forms end with the
     // identical "component: message" tail, so the assertions key off that tail
     // and stay deterministic regardless of where the test runs.
-    const char* const kPath = "/tmp/bazarish-testlog.txt";
+    const std::string path
+        = (std::filesystem::temp_directory_path() / "bazarish-testlog.txt").string();
     setComponent("unit");
     setLevel(Level::eDebug);
-    const FILE* const redirected = std::freopen(kPath, "w", stderr);
+    const FILE* const redirected = std::freopen(path.c_str(), "w", stderr);
     if (redirected == nullptr) {
         std::printf("FAIL: could not redirect stderr\n");
         return 1;
@@ -49,7 +51,7 @@ int main()
     std::fflush(stderr);
 
     std::string captured;
-    FILE* const in = std::fopen(kPath, "r");
+    FILE* const in = std::fopen(path.c_str(), "r");
     if (in == nullptr) {
         std::printf("FAIL: could not reopen capture file\n");
         return 1;

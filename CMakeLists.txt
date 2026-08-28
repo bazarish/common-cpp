@@ -67,7 +67,8 @@ target_link_libraries(bazarish_common PUBLIC OpenSSL::Crypto OpenSSL::SSL ZLIB::
 # The SAM client speaks to the router over a socket of its own, and on Windows
 # that is a library rather than the C runtime.
 if(WIN32)
-    target_link_libraries(bazarish_common PUBLIC ws2_32)
+    # Sockets, and the process counters the health report reads.
+    target_link_libraries(bazarish_common PUBLIC ws2_32 psapi)
 endif()
 target_compile_options(bazarish_common PRIVATE -Wall -Wextra -Werror)
 
@@ -108,10 +109,8 @@ bazarish_add_test(TestCms)
 bazarish_add_test(TestCertificates)
 bazarish_add_test(TestTokens)
 bazarish_add_test(TestErrors)
-bazarish_add_test(TestFederationFrame)
 bazarish_add_test(TestAddress)
 bazarish_add_test(TestI2pAddress)
-bazarish_add_test(TestSam)
 bazarish_add_test(TestI2pKeyBlob)
 
 # Live end-to-end over an external router reached by SAM (not a unit test - it
@@ -122,10 +121,19 @@ target_compile_options(sam_smoke PRIVATE -Wall -Wextra -Werror)
 bazarish_add_test(TestDescriptor)
 bazarish_add_test(TestServerDescriptor)
 bazarish_add_test(TestResolve)
-bazarish_add_test(TestI2pHttp)
 bazarish_add_test(TestLog)
 bazarish_add_test(TestHealth)
 bazarish_add_test(TestHttpClient)
 bazarish_add_test(TestLoginChallenge)
 bazarish_add_test(TestCaptcha)
 bazarish_add_test(TestConfigFile)
+
+# These three play the far end over POSIX sockets of their own - socketpair,
+# read and write on a descriptor. What they cover is portable; the harness is
+# not, and Windows is a client-only target where they run on the primary
+# platform instead.
+if(NOT WIN32)
+    bazarish_add_test(TestFederationFrame)
+    bazarish_add_test(TestSam)
+    bazarish_add_test(TestI2pHttp)
+endif()
