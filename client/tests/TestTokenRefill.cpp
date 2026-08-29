@@ -465,6 +465,33 @@ int main()
         CHECK(alice.hasContact(bob.fingerprint()));
         CHECK(bob.hasContact(alice.fingerprint()));
 
+        // An interactive message: the buttons a bot attaches ride on an ordinary
+        // text message, and the far side has to be handed them as their wire form.
+        // Checked here because a keyboard that goes missing between the two shows
+        // up as a bot whose buttons simply are not there.
+        {
+            const InlineKeyboard keyboard{
+                {{"Ping", "ping", {}}, {"Time", "time", {}}},
+                {{"Help", {}, "help"}},
+            };
+            alice.sendInteractive(bob.fingerprint(), "pick one", keyboard);
+            std::string received;
+            for (int round = 0; round < 3 && received.empty(); ++round) {
+                for (const IncomingMessage& item : bob.sync()) {
+                    if (item.contentType == "text" && item.text == "pick one") {
+                        received = item.keyboardJson;
+                    }
+                }
+            }
+            CHECK(!received.empty());
+            const nlohmann::json rows = nlohmann::json::parse(received);
+            CHECK(rows.is_array() && rows.size() == 2);
+            CHECK(rows.at(0).size() == 2);
+            CHECK(rows.at(0).at(0).at("text") == "Ping");
+            CHECK(rows.at(0).at(0).at("data") == "ping");
+            CHECK(rows.at(1).at(0).at("command") == "help");
+        }
+
         const auto rejects = [](const auto& fn) {
             try {
                 fn();
