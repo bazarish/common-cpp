@@ -154,7 +154,16 @@ void OutboundLeases::sweeperLoop()
         if (cv_.wait_for(lock, kSweepInterval, [this]() { return !running_.load(); })) {
             return;
         }
-        dropExpired(std::chrono::steady_clock::now());
+        // Retiring a lease tears a destination down, and the engine under it can
+        // fail at that - a router that has gone away, most of all. On this thread
+        // that is a sweep that did not happen, said out loud and tried again next
+        // time; without the catch it is the whole process going down because a
+        // lease could not be closed.
+        try {
+            dropExpired(std::chrono::steady_clock::now());
+        } catch (const std::exception& error) {
+            bazarish::log::warn("outbound leases: sweep failed: {}", error.what());
+        }
     }
 }
 
