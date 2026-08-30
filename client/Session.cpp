@@ -2081,6 +2081,23 @@ void Session::sendChatClear(const std::string& peerFingerprint)
     sendContent(peerFingerprint, std::move(inner));
 }
 
+void Session::requestTokens(const std::string& peerFingerprint)
+{
+    // The fields the low-stash flag rides on are read before a type is looked at,
+    // so this needs no more than a type the far side consumes without showing.
+    nlohmann::json inner = {
+        {"v", kMessageFormatVersion},
+        {"type", "token.request"},
+        {"id", toHex(randomBytes(8))},
+        {"from", fingerprint()},
+        {"sentAt", nowMillis()},
+        {"lowStash", true},
+        {"device", client_->clientId()},
+        {"refillToken", issueOneToken()},
+    };
+    sendContent(peerFingerprint, std::move(inner));
+}
+
 void Session::setTransferHandler(TransferEventFn handler)
 {
     const std::lock_guard<std::mutex> lock(transfers_->mutex);
@@ -2742,6 +2759,12 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                 refillPeers.insert({message.fromFingerprint, body.value("device", std::string())});
             } else if (type == "token-refill") {
                 // The fresh tokens already arrived via the bootstrap block.
+                message.contentType = type;
+            } else if (type == "token.request") {
+                // A contact asking to be topped up. Everything it carries - the
+                // ask, the device to answer, the token that prepays the answer -
+                // was taken above; there is nothing to show and nothing else to
+                // do here.
                 message.contentType = type;
             } else if (type == "device.delegation-term") {
                 // Another device changed the account's delegation term. Adopt it

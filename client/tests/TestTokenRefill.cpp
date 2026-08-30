@@ -492,6 +492,24 @@ int main()
             CHECK(rows.at(1).at(0).at("command") == "help");
         }
 
+        // Asking to be topped up without a message to carry the ask: what a
+        // service that posts notices does while the other side is about. The ask
+        // is consumed silently and answered with a batch.
+        {
+            const std::size_t before = alice.sendCapacity(bob.fingerprint());
+            alice.requestTokens(bob.fingerprint());
+            for (int round = 0; round < 3; ++round) {
+                for (const IncomingMessage& item : bob.sync()) {
+                    // Nothing about it is shown: it is not a line of anything.
+                    CHECK(item.contentType != "unsupported");
+                }
+                alice.sync();
+            }
+            const std::size_t after = alice.sendCapacity(bob.fingerprint());
+            // One token went on the ask, a batch came back.
+            CHECK(after > before);
+        }
+
         const auto rejects = [](const auto& fn) {
             try {
                 fn();

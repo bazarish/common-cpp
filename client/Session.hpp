@@ -715,6 +715,15 @@ public:
 
     void sendChatClear(const std::string& peerFingerprint);
 
+    // Asks a contact for a fresh batch of their one-time tokens, without waiting
+    // for a message to carry the ask. A conversation refills itself on its own
+    // traffic; something that sends far more than it receives - a service posting
+    // notices - runs its stash down between the other side's visits, and this is
+    // how it builds one up while they are about. Costs one token and prepays the
+    // answer with another, so it pays for itself twice over in what it brings
+    // back. The peer's client consumes it silently: nothing is shown to anyone.
+    void requestTokens(const std::string& peerFingerprint);
+
     // What this account names one envelope to a mailbox: keyed with its own seed
     // and bound to the mailbox, so the same message keeps its name on a resend and
     // the copies in two different mailboxes cannot be matched to each other. Pure:
