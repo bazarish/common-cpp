@@ -6,6 +6,7 @@
 #include <bazarish/Cms.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/ServerDescriptor.hpp>
+#include <bazarish/Tokens.hpp>
 #include <bazarish/Errors.hpp>
 #include <bazarish/Resolve.hpp>
 
@@ -206,7 +207,15 @@ int main()
     server.post("/v1/messaging/tokens",
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
-            CHECK(nlohmann::json::parse(request.body).at("hashes").size() == 2);
+            CHECK(nlohmann::json::parse(request.body).at("tokens").size() == 2);
+            respondJson(response, {{"ok", true}});
+        }));
+
+    server.post("/v1/messaging/tokens/revoke",
+        stub([&](const http::Request& request, http::Response& response) {
+            (void)requireCaller(request);
+            CHECK(fromBase64(nlohmann::json::parse(request.body).at("mask")
+                                 .get<std::string>()).size() == kDeliveryTokenSize);
             respondJson(response, {{"ok", true}});
         }));
 
@@ -298,7 +307,8 @@ int main()
     // Client registry and token registration.
     {
         client.registerThisClient();
-        client.registerTokenHashes({Bytes(32, 0x11), Bytes(32, 0x22)});
+        client.registerTokens({Bytes(32, 0x11), Bytes(32, 0x22)});
+        client.revokeTokens(Bytes(32, 0x33));
     }
 
     // Pending list, blob fetch and ack.

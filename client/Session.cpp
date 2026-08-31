@@ -384,9 +384,16 @@ Session Session::create(
     // Names every envelope this account will ever send; see deliveryIdFor. Drawn
     // here and never redrawn - it is carried through backup and restore.
     const std::string deliveryIdSeed = toHex(randomBytes(kDeliveryIdSeedBytes));
+    // Every delivery token this account issues is minted under a mask drawn from
+    // this and the correspondent's fingerprint, which is what lets the account
+    // revoke a correspondent's tokens later. Drawn once, carried through backup
+    // and restore, and never sent anywhere but the account's own server, as a
+    // mask, when tokens are being revoked.
+    const std::string deliverySecret = toHex(randomBytes(kDeliverySecretSize));
     const nlohmann::json meta = {
         {"clientId", clientId},
         {"deliveryIdSeed", deliveryIdSeed},
+        {"deliverySecret", deliverySecret},
         {"name", name},
         {"fingerprint", fingerprint},
         {"endpoint",
@@ -407,6 +414,7 @@ Session Session::create(
     session.passphrase_ = passphrase;
     session.name_ = name;
     session.deliveryIdSeed_ = deliveryIdSeed;
+    session.deliverySecret_ = fromHex(deliverySecret);
     session.client_->setDestinationOwner(session.destinationOwner());
     return session;
 }
@@ -501,7 +509,16 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
             contact.sharingRefused = entry.value("sharingRefused", false);
             contact.requesterDevice = entry.value("requesterDevice", std::string());
             contact.needsOwnBatch = entry.value("needsOwnBatch", false);
+            contact.notifications = entry.value("notifications", true);
+            contact.allowCalls = entry.value("allowCalls", true);
             contacts.emplace(fingerprint, std::move(contact));
+        }
+    }
+
+    std::set<std::string> blocked;
+    if (db->has("blocked")) {
+        for (const nlohmann::json& entry : nlohmann::json::parse(db->text("blocked"))) {
+            blocked.insert(entry.get<std::string>());
         }
     }
 
@@ -509,6 +526,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
         std::move(identity), clientId, endpoint, i2pDirFor(accountFile));
     Session session(accountFile, std::move(client), std::move(sealing), std::move(contacts));
     session.db_ = std::move(db);
+    session.blocked_ = std::move(blocked);
     session.acceptCalls_ = meta.value("acceptCalls", true);
     session.cardB64_ = meta.value("card", std::string{});
     session.view_ = meta.value("view", std::string{});
@@ -524,6 +542,20 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
         throw std::runtime_error(
             "this account was written before delivery ids were seeded and cannot be read;"
             " create it again");
+    }
+    // The delivery secret is different from the seed above: an account written
+    // before tokens were revocable can still be opened, and is given one here.
+    // What it issued before this moment was minted at random, so it carries no
+    // mark and cannot be revoked - said out loud, because "remove contact" would
+    // otherwise quietly leave those tokens working.
+    const std::string deliverySecret = meta.value("deliverySecret", std::string());
+    if (deliverySecret.empty()) {
+        session.deliverySecret_ = randomBytes(kDeliverySecretSize);
+        session.persistMeta();
+        bazarish::log::warn("this account predates revocable delivery tokens: the ones it"
+            " issued before now cannot be revoked, only the ones it issues from here");
+    } else {
+        session.deliverySecret_ = fromHex(deliverySecret);
     }
     // Our own routing (dest + serving sealing key) lives in the card we signed;
     // recover it for invites and contact bootstraps.
@@ -667,6 +699,7 @@ void Session::persistMeta() const
             }},
         {"card", cardB64_},
         {"deliveryIdSeed", deliveryIdSeed_},
+        {"deliverySecret", toHex(deliverySecret_)},
         {"view", view_},
         {"sharingAllowed", sharingAllowed_},
         {"delegationDays", delegationDays_},
@@ -696,6 +729,8 @@ nlohmann::json Session::contactsToJson() const
             {"view", contact.view},
             {"sharingRefused", contact.sharingRefused},
             {"requesterDevice", contact.requesterDevice},
+            {"notifications", contact.notifications},
+            {"allowCalls", contact.allowCalls},
         };
     }
     return stored;
@@ -1013,6 +1048,39 @@ void Session::syncContactNameToSelf(const std::string& peerFingerprint, const st
     client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing));
 }
 
+std::string safeContactName(const std::string& proposed)
+{
+    std::string folded;
+    folded.reserve(proposed.size());
+    for (const char c : proposed) {
+        folded.push_back(static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c))));
+    }
+    const std::size_t first = folded.find_first_not_of(" \t\r\n");
+    const std::size_t last = folded.find_last_not_of(" \t\r\n");
+    const std::string trimmed
+        = first == std::string::npos ? std::string() : folded.substr(first, last - first + 1);
+    std::string reserved = kSavedChatName;
+    for (char& c : reserved) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return trimmed == reserved ? kContactNamePrefix + proposed : proposed;
+}
+
+void Session::sendSelf(nlohmann::json inner)
+{
+    inner["v"] = kMessageFormatVersion;
+    inner["id"] = toHex(randomBytes(16));
+    inner["from"] = fingerprint();
+    inner["sentAt"] = nowMillis();
+    // Which of our devices sent it: the one that did already has the change, and
+    // skips its own echo.
+    inner["device"] = client_->clientId();
+    const Bytes innerBytes = encodedBody(inner);
+    const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
+    client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing));
+}
+
 void Session::syncChatPinToSelf(const std::string& peerFingerprint, bool pinned)
 {
     if (myDest_.empty() || myServingKeyB64_.empty()) {
@@ -1020,18 +1088,125 @@ void Session::syncChatPinToSelf(const std::string& peerFingerprint, bool pinned)
     }
     // Mirror a pin/unpin to our own other devices (a purely local list ordering, so
     // it rides the same self-addressed device-sync channel as a contact rename).
-    const nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
+    sendSelf({
         {"type", "device.chat-pin"},
-        {"id", toHex(randomBytes(16))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
         {"peer", peerFingerprint},
         {"pinned", pinned},
-    };
-    const Bytes innerBytes = encodedBody(inner);
-    const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
-    client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing));
+    });
+}
+
+bool Session::isSavedChat(const std::string& peerFingerprint) const
+{
+    return !peerFingerprint.empty() && peerFingerprint == fingerprint();
+}
+
+bool Session::saveToSelf(nlohmann::json message)
+{
+    sendSelf({
+        {"type", "device.saved"},
+        {"message", std::move(message)},
+    });
+    return true;
+}
+
+void Session::clearSaved()
+{
+    sendSelf({{"type", "device.saved-clear"}});
+}
+
+bool Session::isBlocked(const std::string& peerFingerprint) const
+{
+    return blocked_.find(peerFingerprint) != blocked_.end();
+}
+
+std::vector<std::string> Session::blockedPeers() const
+{
+    return {blocked_.begin(), blocked_.end()};
+}
+
+void Session::persistBlocked()
+{
+    db_->putText("blocked", nlohmann::json(blocked_).dump());
+}
+
+void Session::setBlocked(const std::string& peerFingerprint, const bool blocked)
+{
+    if (peerFingerprint.empty() || isSavedChat(peerFingerprint)) {
+        return;  // there is nobody to block
+    }
+    if (blocked == isBlocked(peerFingerprint)) {
+        return;
+    }
+    if (blocked) {
+        blocked_.insert(peerFingerprint);
+        // Blocking is not only a local filter: what they hold stops working, so
+        // their mail stops arriving at all rather than being read and dropped.
+        revokeTokensFor(peerFingerprint);
+    } else {
+        blocked_.erase(peerFingerprint);
+    }
+    persistBlocked();
+    try {
+        sendSelf({
+            {"type", "device.contact-block"},
+            {"peer", peerFingerprint},
+            {"blocked", blocked},
+        });
+    } catch (const std::exception& error) {
+        bazarish::log::warn("contact-block self-sync failed: {}", error.what());
+    }
+}
+
+bool Session::contactNotifications(const std::string& peerFingerprint) const
+{
+    const auto found = contacts_.find(peerFingerprint);
+    return found == contacts_.end() || found->second.notifications;
+}
+
+bool Session::contactCalls(const std::string& peerFingerprint) const
+{
+    const auto found = contacts_.find(peerFingerprint);
+    return found == contacts_.end() || found->second.allowCalls;
+}
+
+void Session::setContactNotifications(const std::string& peerFingerprint, const bool on)
+{
+    const auto found = contacts_.find(peerFingerprint);
+    if (found == contacts_.end() || found->second.notifications == on) {
+        return;
+    }
+    found->second.notifications = on;
+    persistContacts();
+    try {
+        sendSelf({
+            {"type", "device.contact-prefs"},
+            {"peer", peerFingerprint},
+            {"notifications", on},
+            {"allowCalls", found->second.allowCalls},
+        });
+    } catch (const std::exception& error) {
+        bazarish::log::warn("contact-prefs self-sync failed: {}", error.what());
+    }
+}
+
+void Session::setContactCalls(const std::string& peerFingerprint, const bool allowed)
+{
+    const auto found = contacts_.find(peerFingerprint);
+    if (found == contacts_.end() || found->second.allowCalls == allowed) {
+        return;
+    }
+    found->second.allowCalls = allowed;
+    persistContacts();
+    try {
+        sendSelf({
+            {"type", "device.contact-prefs"},
+            {"peer", peerFingerprint},
+            {"notifications", found->second.notifications},
+            {"allowCalls", allowed},
+        });
+    } catch (const std::exception& error) {
+        bazarish::log::warn("contact-prefs self-sync failed: {}", error.what());
+    }
 }
 
 void Session::maybeSendAvatarToContact(const std::string& peerFingerprint, const bool removal)
@@ -1111,7 +1286,7 @@ void Session::renameContact(const std::string& peerFingerprint, const std::strin
     if (found == contacts_.end()) {
         return;
     }
-    found->second.displayName = name;
+    found->second.displayName = safeContactName(name);
     persistContacts();
     // The rename is local; mirror it to the account's other devices only.
     try {
@@ -1119,6 +1294,27 @@ void Session::renameContact(const std::string& peerFingerprint, const std::strin
     } catch (const std::exception& error) {
         bazarish::log::warn("contact-name self-sync failed: {}", error.what());
     }
+}
+
+void Session::removeContactEverywhere(const std::string& peerFingerprint)
+{
+    if (contacts_.find(peerFingerprint) == contacts_.end()) {
+        return;
+    }
+    // What they hold stops working first: after this the removal is local
+    // wherever it is applied, and nothing new can arrive from them.
+    revokeTokensFor(peerFingerprint);
+    try {
+        sendSelf({
+            {"type", "device.contact-remove"},
+            {"peer", peerFingerprint},
+        });
+    } catch (const std::exception& error) {
+        // The other devices keep the contact until they hear it; say so rather
+        // than let them look like they disagreed.
+        bazarish::log::warn("contact-remove self-sync failed: {}", error.what());
+    }
+    removeContact(peerFingerprint);
 }
 
 void Session::removeContact(const std::string& peerFingerprint)
@@ -1241,26 +1437,45 @@ std::string verifyLoginBlob(
         headers, now, kLoginMethod, kLoginPath, Bytes(challenge.begin(), challenge.end()));
 }
 
-std::vector<std::string> Session::issueTokenBatch()
+Bytes Session::deliveryMaskFor(const std::string& peerFingerprint) const
 {
+    return deliveryTokenMask(deliverySecret_, peerFingerprint);
+}
+
+std::vector<std::string> Session::issueTokenBatch(const std::string& peerFingerprint)
+{
+    const Bytes mask = deliveryMaskFor(peerFingerprint);
     std::vector<std::string> tokens;
-    std::vector<Bytes> hashes;
+    std::vector<Bytes> minted;
     tokens.reserve(kTokenBatchSize);
-    hashes.reserve(kTokenBatchSize);
+    minted.reserve(kTokenBatchSize);
     for (int i = 0; i < kTokenBatchSize; ++i) {
-        const Bytes token = generateDeliveryToken();
+        const Bytes token = generateDeliveryToken(mask);
         tokens.push_back(toBase64(token));
-        hashes.push_back(deliveryTokenHash(token));
+        minted.push_back(token);
     }
-    client_->registerTokenHashes(hashes);
+    client_->registerTokens(minted);
     return tokens;
 }
 
-std::string Session::issueOneToken()
+std::string Session::issueOneToken(const std::string& peerFingerprint)
 {
-    const Bytes token = generateDeliveryToken();
-    client_->registerTokenHashes({deliveryTokenHash(token)});
+    const Bytes token = generateDeliveryToken(deliveryMaskFor(peerFingerprint));
+    client_->registerTokens({token});
     return toBase64(token);
+}
+
+void Session::revokeTokensFor(const std::string& peerFingerprint)
+{
+    // The mask is all the server needs and all it is given: it drops what was
+    // minted under it and learns nothing about whose it was. Best effort - a
+    // server we cannot reach right now must not stop the removal, which is local
+    // and already done.
+    try {
+        client_->revokeTokens(deliveryMaskFor(peerFingerprint));
+    } catch (const std::exception& error) {
+        bazarish::log::warn("tokens for a removed contact were not revoked: {}", error.what());
+    }
 }
 
 std::string Session::deliveryIdFor(
@@ -1478,13 +1693,15 @@ Session::ContactCardResolved Session::resolveContactCard(
             out.info = fetchClient.fetchCard(descriptor, transport);
             out.fingerprint = descriptor.fingerprint;
             out.view = descriptor.view;
-            out.displayName = request.uriOrAlias;  // the alias typed becomes the label
+            // The alias typed becomes the label - unless it claims the saved
+            // chat's name, which no contact may carry.
+            out.displayName = safeContactName(request.uriOrAlias);
         } else {
             const Descriptor descriptor = parseDescriptor(request.uriOrAlias);
             out.info = fetchClient.fetchCard(descriptor, transport);
             out.fingerprint = descriptor.fingerprint;
             out.view = descriptor.view;
-            out.displayName = descriptor.name;
+            out.displayName = safeContactName(descriptor.name);
         }
         out.ok = true;
         bazarish::log::info("contact-add: card resolved off-thread in {} ms", elapsedMs());
@@ -1627,7 +1844,7 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
 
     // Mint a batch the peer will use to write back to us and hand it over, with
     // our prekey and our routing (dest + serving sealing key), in the bootstrap.
-    const std::vector<std::string> replyTokens = issueTokenBatch();
+    const std::vector<std::string> replyTokens = issueTokenBatch(peerFingerprint);
 
     const nlohmann::json payload = {
         {"v", kMessageFormatVersion},
@@ -1675,7 +1892,7 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     // The name (from an invite or the alias used) is a one-time local label set
     // at add time; it is never re-fetched or transmitted afterwards.
     if (!displayName.empty()) {
-        contact.displayName = displayName;
+        contact.displayName = safeContactName(displayName);
     }
     persistContacts();
 }
@@ -1744,6 +1961,14 @@ bool Session::sendMessage(const std::string& peerFingerprint, const std::string&
 bool Session::sendFile(const std::string& peerFingerprint, const fs::path& path,
     const std::string& e2eId, const DeliveryWatch& watch, const std::string& replyTo)
 {
+    // A file is an offer, not bytes in a message: the two sides fetch it from
+    // each other. There is nobody to fetch it from on another device of ours, so
+    // saving one would keep a name that opens nothing.
+    if (isSavedChat(peerFingerprint)) {
+        throw std::runtime_error("a file cannot be kept in Saved messages: its bytes travel"
+            " between the two devices in a conversation, so there would be nothing to open"
+            " on another device");
+    }
     return announceTransfer(
         kTypeFile, peerFingerprint, path, e2eId, watch, replyTo);
 }
@@ -2093,7 +2318,7 @@ void Session::requestTokens(const std::string& peerFingerprint)
         {"sentAt", nowMillis()},
         {"lowStash", true},
         {"device", client_->clientId()},
-        {"refillToken", issueOneToken()},
+        {"refillToken", issueOneToken(peerFingerprint)},
     };
     sendContent(peerFingerprint, std::move(inner));
 }
@@ -2354,6 +2579,15 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     const DeliveryWatch& watch, bool waitForOutcome, bool establishOnFirstReply,
     const std::string& overrideToken)
 {
+    // Addressed to ourselves: this is the saved chat, and it is kept rather than
+    // delivered. Nothing is dialled, no token is spent, and every device of this
+    // account gets it - which is the whole of what saving means here.
+    if (isSavedChat(peerFingerprint)) {
+        return saveToSelf(std::move(inner));
+    }
+    if (isBlocked(peerFingerprint)) {
+        throw std::runtime_error("this contact is blocked; unblock them to write to them");
+    }
     const auto found = contacts_.find(peerFingerprint);
     if (found == contacts_.end()) {
         throw std::runtime_error("unknown contact: " + peerFingerprint);
@@ -2405,7 +2639,7 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
             {"dest", myDest_},
             {"servingKey", myServingKeyB64_},
             {"view", sharedView()},
-            {"replyTokens", issueTokenBatch()},
+            {"replyTokens", issueTokenBatch(peerFingerprint)},
         };
         // Addressed when we know which device asked: their other devices then
         // leave this batch alone and ask for their own rather than spending the
@@ -2423,7 +2657,7 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     if (!useOverrideToken && contact.sendTokens.size() - 1 <= kRefillThreshold) {
         inner["lowStash"] = true;
         inner["device"] = client_->clientId();  // the batch comes back to this device
-        inner["refillToken"] = issueOneToken();
+        inner["refillToken"] = issueOneToken(peerFingerprint);
     }
 
     // Where to answer us. A destination is not for life: regenerate the key and
@@ -2538,6 +2772,18 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                 body["from"] = peer;  // the conversation this belongs to
                 message.sentByUs = true;
             }
+            // A message another device of ours kept: the saved chat is the same
+            // chat on every device, so it arrives as one of our own lines in it.
+            if (body.value("type", std::string()) == "device.saved"
+                && body.value("from", std::string()) == fingerprint()) {
+                if (body.value("device", std::string()) == client_->clientId()) {
+                    client_->ack(entry.id);
+                    continue;  // the device that saved it already has it
+                }
+                body = body.at("message");
+                body["from"] = fingerprint();  // the saved chat is ours
+                message.sentByUs = true;
+            }
             message.fromFingerprint = body.at("from").get<std::string>();
             message.e2eId = body.value("id", std::string());
             message.sentAt = body.value("sentAt", static_cast<std::int64_t>(0));
@@ -2545,6 +2791,19 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
             // it names nobody and is not evidence of anything.
             message.forwarded = body.value("forwarded", false);
             std::string type = body.value("type", std::string("text"));
+
+            // Who may be heard at all. Our own devices always; a contact always;
+            // a stranger only to ask to become one. Anything else is consumed
+            // where it stands - before a contact entry can be created for them,
+            // before their routing is adopted, and before the user is told.
+            const bool fromOurselves = message.fromFingerprint == fingerprint();
+            const bool known = contacts_.find(message.fromFingerprint) != contacts_.end();
+            const bool asking = type == "contact.request";
+            if (!fromOurselves
+                && (isBlocked(message.fromFingerprint) || (!known && !asking))) {
+                client_->ack(entry.id);
+                continue;
+            }
 
             // Their routing rides on every message: adopt it the moment it moves.
             // This is the whole address-change repair - it needs one message from
@@ -2602,7 +2861,8 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                 const std::string dn = body.value("dn", std::string());
                 Contact& peer = contacts_[message.fromFingerprint];
                 if (!dn.empty() && peer.displayName.empty()) {
-                    peer.displayName = dn;
+                    // Their own choice of name, and the one name it may not be.
+                    peer.displayName = safeContactName(dn);
                 }
                 if (type == "contact.request") {
                     // Whoever asked gets our batch by name.
@@ -2862,7 +3122,8 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                 if (message.fromFingerprint == fingerprint()) {
                     const auto named = contacts_.find(body.value("peer", std::string()));
                     if (named != contacts_.end()) {
-                        named->second.displayName = body.value("name", std::string());
+                        named->second.displayName
+                            = safeContactName(body.value("name", std::string()));
                     }
                 }
             } else if (type == "device.chat-pin") {
@@ -2874,6 +3135,49 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                     message.refId = body.value("peer", std::string());
                     message.text
                         = body.value("pinned", false) ? std::string("1") : std::string("0");
+                }
+            } else if (type == "device.saved-clear") {
+                // Another device of ours emptied the saved chat; the GUI wipes its
+                // transcript for that chat on receipt. Honoured only from us.
+                if (message.fromFingerprint == fingerprint()) {
+                    message.contentType = type;
+                }
+            } else if (type == "device.contact-remove") {
+                // Another device of ours removed a contact. The removal is the
+                // same here as it was there, and the GUI wipes the transcript.
+                if (message.fromFingerprint == fingerprint()) {
+                    message.contentType = type;
+                    message.refId = body.value("peer", std::string());
+                    removeContact(message.refId);
+                }
+            } else if (type == "device.contact-block") {
+                // Another device of ours blocked or unblocked somebody. The tokens
+                // were revoked by the device that did it - one request is enough.
+                if (message.fromFingerprint == fingerprint()) {
+                    message.contentType = type;
+                    message.refId = body.value("peer", std::string());
+                    const bool blocked = body.value("blocked", false);
+                    message.text = blocked ? std::string("1") : std::string("0");
+                    if (!message.refId.empty()) {
+                        if (blocked) {
+                            blocked_.insert(message.refId);
+                        } else {
+                            blocked_.erase(message.refId);
+                        }
+                        persistBlocked();
+                    }
+                }
+            } else if (type == "device.contact-prefs") {
+                // Another device of ours changed what a contact may do here.
+                if (message.fromFingerprint == fingerprint()) {
+                    message.contentType = type;
+                    message.refId = body.value("peer", std::string());
+                    const auto known = contacts_.find(message.refId);
+                    if (known != contacts_.end()) {
+                        known->second.notifications = body.value("notifications", true);
+                        known->second.allowCalls = body.value("allowCalls", true);
+                        persistContacts();
+                    }
                 }
             } else if (type == "chat.clear") {
                 // The peer asked to clear our whole conversation with them; the GUI
@@ -2995,7 +3299,7 @@ void Session::sendTokenRefill(const std::string& peerFingerprint, const std::str
         {"id", toHex(randomBytes(8))},
         {"from", fingerprint()},
         {"sentAt", nowMillis()},
-        {"bootstrap", {{"replyTokens", issueTokenBatch()}, {"forDevice", forDevice}}},
+        {"bootstrap", {{"replyTokens", issueTokenBatch(peerFingerprint)}, {"forDevice", forDevice}}},
         {"routing",
             {{"dest", myDest_}, {"servingKey", myServingKeyB64_}, {"view", sharedView()}}},
     };
@@ -3457,18 +3761,20 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
             bazarish::log::info("duplicate call invite ignored");
             return;
         }
-        if (!acceptCalls_) {
-            // This account does not take calls right now. Answer at once so the
-            // caller sees a refusal instead of ringing into nothing; the setting
-            // can be turned back on any time, which is why the caller's call
-            // button stays where it is.
+        if (!acceptCalls_ || !contactCalls(from)) {
+            // Either this account takes no calls right now, or it takes none from
+            // them. Answer at once so the caller sees a refusal instead of ringing
+            // into nothing; either setting can be turned back on any time, which is
+            // why the caller's call button stays where it is. The call is written
+            // into the conversation like any other - a refused call is still a
+            // call that came.
             try {
                 sendCallSignal(
                     from, "call.decline", {{"callId", message.callId}, {"reason", "refused"}});
             } catch (const std::exception& error) {
                 bazarish::log::warn("refusal not delivered: {}", error.what());
             }
-            pendingCallLog_.push_back({from, true, CallOutcome::eMissed, 0});
+            pendingCallLog_.push_back({from, true, CallOutcome::eRefusedHere, 0});
             message.text = "refused";
             return;
         }
@@ -3751,6 +4057,9 @@ void Session::exportAccount(const fs::path& outFile, const std::string& password
         {"sealingPem", sealingKey_.privatePem()},
         {"meta", meta},
         {"contacts", contacts},
+        // Who this account has cut off travels with it: a restored account that
+        // forgot its block list would let them all back in.
+        {"blocked", nlohmann::json(blocked_)},
     };
     const std::string text = bundle.dump();
     const Bytes sealed = cms::sealWithPassword(Bytes(text.begin(), text.end()), password);
@@ -3788,6 +4097,9 @@ void Session::importAccount(const fs::path& bundleFile, const fs::path& accountF
 
     db.putText("meta", meta.dump(2));
     db.putText("contacts", bundle.at("contacts").dump());
+    if (bundle.contains("blocked")) {
+        db.putText("blocked", bundle.at("blocked").dump());
+    }
 }
 
 }  // namespace bazarish::client

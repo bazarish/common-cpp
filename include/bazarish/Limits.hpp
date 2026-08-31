@@ -69,11 +69,11 @@ inline constexpr std::int64_t kDefaultDelegationDays = 14;
 // it lapses even if the client is only occasionally online.
 inline constexpr double kDelegationRenewAtFraction = 0.5;
 
-// How long a registered but unspent delivery-token hash is kept. A token is a
+// How long a registered but unspent delivery token is kept. A token is a
 // few dozen bytes and a contact may sit unused for years, so the horizon is
 // effectively "as long as the account lives" - it exists so an abandoned
 // mailbox's tokens do not accumulate forever. The account's own idle sweep is
 // what usually takes them first.
-inline constexpr std::int64_t kTokenHashRetentionDays = 10 * 365;
+inline constexpr std::int64_t kTokenRetentionDays = 10 * 365;
 
 }  // namespace bazarish

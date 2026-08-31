@@ -293,13 +293,21 @@ void Client::retireClient(const std::string& clientId)
     api_.del("/v1/messaging/clients/" + clientId);
 }
 
-void Client::registerTokenHashes(const std::vector<Bytes>& hashes)
+void Client::registerTokens(const std::vector<Bytes>& tokens)
 {
     nlohmann::json encoded = nlohmann::json::array();
-    for (const Bytes& hash : hashes) {
-        encoded.push_back(toBase64(hash));
+    for (const Bytes& token : tokens) {
+        encoded.push_back(toBase64(token));
     }
-    api_.postJson("/v1/messaging/tokens", {{"hashes", encoded}});
+    api_.postJson("/v1/messaging/tokens", {{"tokens", encoded}});
+}
+
+void Client::revokeTokens(const Bytes& mask)
+{
+    // The server takes the mask and answers at once; the sweep it schedules runs
+    // on the node's own time, so a correspondent's tokens go away shortly rather
+    // than instantly.
+    api_.postJson("/v1/messaging/tokens/revoke", {{"mask", toBase64(mask)}});
 }
 
 

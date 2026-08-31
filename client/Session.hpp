@@ -54,6 +54,16 @@ using InlineKeyboard = std::vector<std::vector<InlineButton>>;
 std::string inlineKeyboardJson(const InlineKeyboard& keyboard);
 
 // A known contact's routing and token state, persisted by the session.
+// What the saved-messages chat is called, and therefore the one name a contact
+// may not have: a contact whose name would be this is shown with a mark in front
+// of it, so nothing in the chat list can pretend to be that chat.
+inline constexpr char kSavedChatName[] = "Saved messages";
+inline constexpr char kContactNamePrefix[] = "(Contact) ";
+
+// Returns the name a contact may actually carry: `proposed` untouched, unless it
+// claims the saved chat's name, in which case it is marked as a contact's.
+std::string safeContactName(const std::string& proposed);
+
 struct Contact {
     // The peer's user sealing public key (SubjectPublicKeyInfo DER, base64),
     // used to E2E-encrypt message payloads to this contact.
@@ -97,6 +107,11 @@ struct Contact {
     // once on establishing the dialog (not on every sync). Reset when our avatar
     // changes, so the new one is re-broadcast.
     bool avatarSentToPeer = false;
+    // Whether a message from this contact may announce itself outside the window,
+    // and whether they may call. The account's own choice per contact; the global
+    // settings still apply on top of both.
+    bool notifications = true;
+    bool allowCalls = true;
 };
 
 // A decrypted item pulled from the mailbox during sync.
@@ -302,6 +317,33 @@ public:
     // avatar blob, and persists. Local only and irreversible - the peer is not
     // told. No-op for an unknown contact. The caller wipes the local transcript.
     void removeContact(const std::string& peerFingerprint);
+    // The same, and the rest of what removing means: the tokens this account
+    // issued to them are revoked at our server, so what they still hold stops
+    // working, and the account's other devices are told to drop them too.
+    void removeContactEverywhere(const std::string& peerFingerprint);
+
+    // --- Saved messages ---
+    //
+    // A chat with ourselves, on every device of this account. Its peer is our own
+    // fingerprint, which no contact can ever hold, so nothing can impersonate it.
+    bool isSavedChat(const std::string& peerFingerprint) const;
+    // Empties it here and on every other device.
+    void clearSaved();
+
+    // --- Blocking ---
+    //
+    // A blocked correspondent's mail and contact requests are dropped as they are
+    // read, their tokens are revoked, and the block reaches the account's other
+    // devices. The conversation is left alone: deleting it is its own action.
+    bool isBlocked(const std::string& peerFingerprint) const;
+    std::vector<std::string> blockedPeers() const;
+    void setBlocked(const std::string& peerFingerprint, bool blocked);
+
+    // --- Per-contact switches ---
+    bool contactNotifications(const std::string& peerFingerprint) const;
+    bool contactCalls(const std::string& peerFingerprint) const;
+    void setContactNotifications(const std::string& peerFingerprint, bool on);
+    void setContactCalls(const std::string& peerFingerprint, bool allowed);
 
     // Whether this account takes incoming calls at all. Off, an invitation is
     // answered with a refusal the moment it arrives - the caller learns it now
@@ -781,6 +823,7 @@ public:
         eCancelled,  // outgoing: we hung up before the peer answered
         eBusy,       // outgoing: the peer was already in another call
         eRefused,    // outgoing: the peer does not take calls at all right now
+    eRefusedHere,  // incoming: this account does not take calls, or not theirs
     };
 
     // A finished call awaiting a chat-history entry. Drained by takeCallLog().
@@ -900,11 +943,26 @@ private:
 
     // Generates a token batch for ourselves: registers the hashes with our
     // server and returns the raw tokens (base64) to hand to the peer.
-    std::vector<std::string> issueTokenBatch();
+    // A batch of one-time tokens for one correspondent, minted under their mask
+    // and registered with our server, so they can write to us.
+    // Seals one device-to-device notice to ourselves and submits it. What every
+    // device.* self-message is built on: no token is spent, no destination is
+    // dialled, and only our own devices can read it.
+    void sendSelf(nlohmann::json inner);
+    // Keeps a message in the saved chat on the account's other devices. The
+    // device that saved it already has it.
+    bool saveToSelf(nlohmann::json message);
+    void persistBlocked();
+    std::vector<std::string> issueTokenBatch(const std::string& peerFingerprint);
     // Mints ONE fresh delivery token (registers its hash with our server) and
     // returns it (base64). Used to prepay a specific reply - a low-stash request
     // embeds one so the peer's token-refill reply is always deliverable.
-    std::string issueOneToken();
+    std::string issueOneToken(const std::string& peerFingerprint);
+    // The mask every token issued to one correspondent is minted under.
+    Bytes deliveryMaskFor(const std::string& peerFingerprint) const;
+    // Asks our own server to drop every token minted under that mask. What makes
+    // removing a contact take their write access with it.
+    void revokeTokensFor(const std::string& peerFingerprint);
 
     // Sends a contact request to a peer whose verified routing info is
     // already known (from a lookup or an invite). Mints a reply token batch
@@ -1182,7 +1240,14 @@ private:
     // through backup and restore, and never changed - every envelope the account
     // has sent is named under it. Never leaves the account.
     std::string deliveryIdSeed_;
+    // Secret behind every delivery mask: drawn once when the account is created,
+    // carried through backup and restore, and never sent - only masks derived
+    // from it are, and only to this account's own server.
+    Bytes deliverySecret_;
     std::map<std::string, Contact> contacts_;
+    // Correspondents whose mail is dropped as it is read. Kept apart from the
+    // contacts so a block outlives the contact it was made on.
+    std::set<std::string> blocked_;
     // Our own serving destination + serving sealing key (SPKI DER, base64),
     // learned on subscribe (GET /v1/messaging/destination) and forwarded to
     // contacts in the E2E bootstrap so they route and seal replies to us.

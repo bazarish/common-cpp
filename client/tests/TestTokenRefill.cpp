@@ -194,11 +194,10 @@ private:
             if (cls == "content" && fresh) {
                 // Consume the presented token: it must be one the mailbox owner
                 // registered (else a real server would reject the delivery).
-                const std::string hashB64
-                    = toBase64(deliveryTokenHash(fromBase64(inner.at("token").get<std::string>())));
-                CHECK(mock_.registered[mailbox].erase(hashB64) == 1);
+                const std::string tokenB64 = inner.at("token").get<std::string>();
+                CHECK(mock_.registered[mailbox].erase(tokenB64) == 1);
                 if (mailbox == mock_.watchMailbox
-                    && mock_.singletons[mailbox].count(hashB64) != 0) {
+                    && mock_.singletons[mailbox].count(tokenB64) != 0) {
                     mock_.refillUsedPrepaid = true;
                 }
             }
@@ -321,15 +320,15 @@ int main()
     server.post("/v1/messaging/tokens",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
-            const nlohmann::json hashes = nlohmann::json::parse(request.body).at("hashes");
+            const nlohmann::json tokens = nlohmann::json::parse(request.body).at("tokens");
             std::lock_guard<std::mutex> lock(m.mu);
-            for (const nlohmann::json& hash : hashes) {
-                m.registered[caller].insert(hash.get<std::string>());
+            for (const nlohmann::json& token : tokens) {
+                m.registered[caller].insert(token.get<std::string>());
             }
-            // A one-hash registration is the prepaid token a low-stash request embeds
-            // (issueOneToken); a full batch is 64 hashes.
-            if (hashes.size() == 1) {
-                m.singletons[caller].insert(hashes.at(0).get<std::string>());
+            // A one-token registration is the prepaid token a low-stash request
+            // embeds (issueOneToken); a full batch is 64 of them.
+            if (tokens.size() == 1) {
+                m.singletons[caller].insert(tokens.at(0).get<std::string>());
             }
             respondJson(response, {{"ok", true}});
         }));
@@ -573,6 +572,166 @@ int main()
             CHECK(alice.avatar().empty());
             bob.sync();
             CHECK(bob.contactAvatar(alice.fingerprint()).empty());
+        }
+
+        // --- The saved chat ---
+        //
+        // Addressed to herself, a message is kept rather than delivered: no token
+        // is spent, nothing is dialled, and it goes to her own mailbox for her
+        // other devices to pick up.
+        {
+            const std::size_t before = alice.sendCapacity(bob.fingerprint());
+            alice.sendMessage(alice.fingerprint(), "note to self");
+            CHECK(alice.sendCapacity(bob.fingerprint()) == before);
+
+            // It went into her own mailbox as a device notice, for her other
+            // devices to pick up.
+            std::size_t deviceItems = 0;
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                for (const Mock::Item& item : m.mailbox[alice.fingerprint()]) {
+                    deviceItems += item.cls == "device" ? 1 : 0;
+                }
+            }
+            CHECK(deviceItems >= 1);
+
+            // And what another device does with one: the same line, in the same
+            // chat, as one of her own. Built here as the wire carries it, under
+            // another device id - the device that saved it skips its own echo.
+            const nlohmann::json saved = {
+                {"v", 1},
+                {"type", "device.saved"},
+                {"id", "saved-1"},
+                {"from", alice.fingerprint()},
+                {"sentAt", 1},
+                {"device", "someotherdevice"},
+                {"message",
+                    {
+                        {"v", 1},
+                        {"type", "text"},
+                        {"id", "kept-1"},
+                        {"from", alice.fingerprint()},
+                        {"sentAt", 1},
+                        {"text", "note to self"},
+                    }},
+            };
+            {
+                // The wire carries CBOR, which is what the reader expects.
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[alice.fingerprint()].push_back({"saved-echo", "device",
+                    cms::seal(nlohmann::json::to_cbor(saved),
+                        Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
+            }
+            bool sawSaved = false;
+            for (const IncomingMessage& item : alice.sync()) {
+                if (item.fromFingerprint == alice.fingerprint() && item.text == "note to self") {
+                    sawSaved = true;
+                    CHECK(item.sentByUs);
+                }
+            }
+            CHECK(sawSaved);
+
+            // A file has no bytes to fetch on another device, so it is refused.
+            bool refused = false;
+            try {
+                alice.sendFile(alice.fingerprint(), aDir / "meta", "", {}, "");
+            } catch (const std::exception&) {
+                refused = true;
+            }
+            CHECK(refused);
+        }
+
+        // --- The one name a contact may not have ---
+        {
+            alice.renameContact(bob.fingerprint(), "Saved messages");
+            CHECK(alice.contactDisplayName(bob.fingerprint()) == "(Contact) Saved messages");
+            alice.renameContact(bob.fingerprint(), "  saved MESSAGES  ");
+            CHECK(alice.contactDisplayName(bob.fingerprint()) == "(Contact)   saved MESSAGES  ");
+            alice.renameContact(bob.fingerprint(), "Bob");
+            CHECK(alice.contactDisplayName(bob.fingerprint()) == "Bob");
+        }
+
+        // --- Per-contact switches ---
+        {
+            CHECK(alice.contactCalls(bob.fingerprint()));
+            CHECK(alice.contactNotifications(bob.fingerprint()));
+            alice.setContactCalls(bob.fingerprint(), false);
+            alice.setContactNotifications(bob.fingerprint(), false);
+            CHECK(!alice.contactCalls(bob.fingerprint()));
+            CHECK(!alice.contactNotifications(bob.fingerprint()));
+            alice.setContactCalls(bob.fingerprint(), true);
+            alice.setContactNotifications(bob.fingerprint(), true);
+        }
+
+        // --- Blocking ---
+        //
+        // What a block means where the message is read: Bob still holds tokens and
+        // still delivers, and none of it reaches her.
+        {
+            bob.sendMessage(alice.fingerprint(), "before the block");
+            alice.setBlocked(bob.fingerprint(), true);
+            CHECK(alice.isBlocked(bob.fingerprint()));
+            CHECK(alice.blockedPeers().size() == 1);
+
+            bob.sendMessage(alice.fingerprint(), "after the block");
+            bool heardBlocked = false;
+            for (const IncomingMessage& item : alice.sync()) {
+                if (item.text == "after the block") {
+                    heardBlocked = true;
+                }
+            }
+            CHECK(!heardBlocked);
+            // Her own mailbox is not left holding it either: it was acked away.
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                CHECK(m.mailbox[alice.fingerprint()].empty());
+            }
+
+            // And she cannot write to them while the block stands.
+            bool sendRefused = false;
+            try {
+                alice.sendMessage(bob.fingerprint(), "still there?");
+            } catch (const std::exception&) {
+                sendRefused = true;
+            }
+            CHECK(sendRefused);
+
+            alice.setBlocked(bob.fingerprint(), false);
+            CHECK(!alice.isBlocked(bob.fingerprint()));
+            bob.sendMessage(alice.fingerprint(), "after the unblock");
+            bool heardAgain = false;
+            for (const IncomingMessage& item : alice.sync()) {
+                if (item.text == "after the unblock") {
+                    heardAgain = true;
+                }
+            }
+            CHECK(heardAgain);
+        }
+
+        // --- A stranger writing content ---
+        //
+        // Nobody without a contact row may put a message in front of the user; the
+        // item is consumed where it is read, and no contact is created for them.
+        {
+            const std::string stranger = std::string(52, 'z');
+            const nlohmann::json inner = {
+                {"v", 1},
+                {"type", "text"},
+                {"id", "stranger-1"},
+                {"from", stranger},
+                {"sentAt", 1},
+                {"text", "let me in"},
+            };
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[alice.fingerprint()].push_back({"stranger-blob", "content",
+                    cms::seal(nlohmann::json::to_cbor(inner),
+                        Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
+            }
+            for (const IncomingMessage& item : alice.sync()) {
+                CHECK(item.fromFingerprint != stranger);
+            }
+            CHECK(!alice.hasContact(stranger));
         }
     }
 

@@ -246,7 +246,12 @@ public:
     };
     std::vector<DeviceEntry> listClients();
     void retireClient(const std::string& clientId);
-    void registerTokenHashes(const std::vector<Bytes>& hashes);
+    // Hands our server the one-time tokens we have just issued to a
+    // correspondent, so a delivery presenting one is admitted into our mailbox.
+    void registerTokens(const std::vector<Bytes>& tokens);
+    // Asks our server to drop every token minted under this mask - one
+    // correspondent's, all of them. The server answers before the sweep runs.
+    void revokeTokens(const Bytes& mask);
     std::vector<PendingEntry> listPending();
     // Asks the server to hold the request until something arrives for this client
     // (or waitSeconds passes), and returns what is pending then. Throws with a 404
