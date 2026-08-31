@@ -64,7 +64,7 @@ LoginConsumer readLoginConsumer(const std::string& challenge)
         const Bytes raw = fromBase64(challenge);
         const nlohmann::json envelope = nlohmann::json::parse(raw.begin(), raw.end());
         if (!envelope.contains("v") || envelope.at("v").get<int>() != kLoginChallengeVersion) {
-            throw std::runtime_error("it is not a challenge of a version this client knows");
+            throw std::runtime_error("it is of a version this client does not know");
         }
         if (!envelope.contains("consumer")) {
             throw std::runtime_error("it does not say who consumes the signature");
