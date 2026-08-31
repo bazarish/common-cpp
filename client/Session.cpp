@@ -15,6 +15,7 @@
 #include <bazarish/Hmac.hpp>
 #include <bazarish/Limits.hpp>
 #include <bazarish/Log.hpp>
+#include <bazarish/Portal.hpp>
 #include <bazarish/Reactions.hpp>
 #include <bazarish/I2pAddress.hpp>
 #include <bazarish/Tokens.hpp>
@@ -1460,30 +1461,14 @@ bool Session::refreshI2pTransientIfDue(const std::int64_t now, const std::int64_
 
 std::string Session::signLogin(const std::string& challenge) const
 {
-    const auth::Headers headers = auth::signRequest(client_->identity(), nowSeconds(), kLoginMethod,
-        kLoginPath, Bytes(challenge.begin(), challenge.end()));
-    const nlohmann::json blob = {
-        {"k", headers.at(auth::kHeaderKeys)},
-        {"t", headers.at(auth::kHeaderTimestamp)},
-        {"c", headers.at(auth::kHeaderSignatureClassical)},
-        {"p", headers.at(auth::kHeaderSignaturePq)},
-    };
-    const std::string text = blob.dump();
-    return toBase64(Bytes(text.begin(), text.end()));
-}
-
-std::string verifyLoginBlob(
-    const std::string& blob, const std::int64_t now, const std::string& challenge)
-{
-    const Bytes raw = fromBase64(blob);
-    const nlohmann::json parsed = nlohmann::json::parse(raw.begin(), raw.end());
-    auth::Headers headers;
-    headers[auth::kHeaderKeys] = parsed.at("k").get<std::string>();
-    headers[auth::kHeaderTimestamp] = parsed.at("t").get<std::string>();
-    headers[auth::kHeaderSignatureClassical] = parsed.at("c").get<std::string>();
-    headers[auth::kHeaderSignaturePq] = parsed.at("p").get<std::string>();
-    return auth::verifyRequest(
-        headers, now, kLoginMethod, kLoginPath, Bytes(challenge.begin(), challenge.end()));
+    // Fail closed. A challenge that will not say who consumes the signature is
+    // not signed at all: the user would have nothing on screen to compare with
+    // the site they think they are signing in to, which is exactly how a
+    // handshake is stolen.
+    const service::LoginConsumer consumer = service::readLoginConsumer(challenge);
+    log::info("signing a login for \"{}\" at {} as {}", consumer.name, consumer.place,
+        consumer.role);
+    return service::signLoginBlob(client_->identity(), nowSeconds(), challenge);
 }
 
 Bytes Session::deliveryMaskFor(const std::string& peerFingerprint) const

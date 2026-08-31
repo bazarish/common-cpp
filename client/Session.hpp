@@ -1316,18 +1316,4 @@ private:
     void persistI2pBlob(const std::string& filename, const Bytes& blob) const;
 };
 
-// The sign-in-with-key wire contract, shared with the service node's portal
-// verifier: the challenge is signed as the body of a canonical request under
-// this fixed method/path (so a login blob can never be replayed as a real API
-// call), and the four hybrid-auth headers are packed into base64(JSON).
-inline constexpr const char* kLoginMethod = "BZ-LOGIN";
-inline constexpr const char* kLoginPath = "/portal/login";
-
-// Verifies a login blob against the challenge it was issued for (freshness
-// window enforced by the underlying request auth) and returns the signer's
-// fingerprint. Throws on any failure. The verifier of record is the service
-// node; this mirror lets the client round-trip and test its own blobs.
-std::string verifyLoginBlob(
-    const std::string& blob, std::int64_t now, const std::string& challenge);
-
 }  // namespace bazarish::client

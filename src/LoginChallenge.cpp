@@ -17,17 +17,18 @@ namespace bazarish::service {
 namespace {
 
 std::string tagFor(const std::string& secret, const std::string& nonce, const std::int64_t ts,
-    const std::string& audience)
+    const std::string& canonicalConsumer)
 {
-    return hmacSha256Hex(secret, nonce + "\n" + std::to_string(ts) + "\n" + audience);
+    return hmacSha256Hex(secret, nonce + "\n" + std::to_string(ts) + "\n" + canonicalConsumer);
 }
 
 }  // namespace
 
 LoginChallenge::LoginChallenge(
-    std::string secret, std::string audience, const std::int64_t windowSeconds)
+    std::string secret, LoginConsumer consumer, const std::int64_t windowSeconds)
     : secret_(std::move(secret))
-    , audience_(std::move(audience))
+    , consumer_(std::move(consumer))
+    , canonicalConsumer_(canonicalConsumer(consumer_))
     , windowSeconds_(windowSeconds)
 {
 }
@@ -36,10 +37,11 @@ std::string LoginChallenge::issue(const std::int64_t now)
 {
     const std::string nonce = toHex(randomBytes(16));
     const nlohmann::json challenge = {
+        {"v", kLoginChallengeVersion},
         {"nonce", nonce},
         {"ts", now},
-        {"aud", audience_},
-        {"tag", tagFor(secret_, nonce, now, audience_)},
+        {"consumer", nlohmann::json::parse(canonicalConsumer_)},
+        {"tag", tagFor(secret_, nonce, now, canonicalConsumer_)},
     };
     const std::string text = challenge.dump();
     return toBase64(Bytes(text.begin(), text.end()));
@@ -59,21 +61,22 @@ void LoginChallenge::pruneExpired(const std::int64_t now)
 std::string LoginChallenge::verify(
     const std::string& challenge, const std::string& loginBlob, const std::int64_t now)
 {
-    // 1. Decode and validate the challenge envelope.
+    // 1. Decode and validate the challenge envelope. The consumer is read the
+    // same way the client reads it, so what is checked here is what the user was
+    // shown before signing.
+    if (canonicalConsumer(readLoginConsumer(challenge)) != canonicalConsumer_) {
+        throw std::runtime_error("login challenge: it names another consumer");
+    }
     const Bytes raw = fromBase64(challenge);
     const nlohmann::json parsed = nlohmann::json::parse(raw.begin(), raw.end());
     const std::string nonce = parsed.at("nonce").get<std::string>();
     const std::int64_t ts = parsed.at("ts").get<std::int64_t>();
-    const std::string audience = parsed.at("aud").get<std::string>();
     const std::string tag = parsed.at("tag").get<std::string>();
 
-    if (audience != audience_) {
-        throw std::runtime_error("login challenge: wrong audience");
-    }
     if (ts < now - windowSeconds_ || ts > now + windowSeconds_) {
         throw std::runtime_error("login challenge: expired");
     }
-    if (!constantTimeEqual(tag, tagFor(secret_, nonce, ts, audience))) {
+    if (!constantTimeEqual(tag, tagFor(secret_, nonce, ts, canonicalConsumer_))) {
         throw std::runtime_error("login challenge: bad tag (not issued here)");
     }
 
