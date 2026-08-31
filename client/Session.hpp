@@ -107,6 +107,10 @@ struct Contact {
     // once on establishing the dialog (not on every sync). Reset when our avatar
     // changes, so the new one is re-broadcast.
     bool avatarSentToPeer = false;
+    // Set when a block on this contact is lifted: what they held was revoked, so
+    // the next thing written to them carries a fresh batch and they can answer.
+    // Cleared once that batch has gone.
+    bool reissueTokens = false;
     // Whether a message from this contact may announce itself outside the window,
     // and whether they may call. The account's own choice per contact; the global
     // settings still apply on top of both.

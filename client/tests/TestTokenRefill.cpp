@@ -696,8 +696,34 @@ int main()
             }
             CHECK(sendRefused);
 
+            // Lifting the block gives back what it took away: blocking revoked the
+            // tokens Bob held, so the first thing Alice writes to him carries a
+            // fresh batch and he can answer at once.
+            // What a batch looks like from outside the core: many tokens at once,
+            // as against the one a low-stash signal prepays.
+            constexpr std::size_t kBatchAtLeast = 16;
+            const std::size_t bobHeld = bob.sendCapacity(alice.fingerprint());
+            const auto minted = [&]() {
+                std::lock_guard<std::mutex> lock(m.mu);
+                return m.registered[alice.fingerprint()].size();
+            };
+            const std::size_t before = minted();
             alice.setBlocked(bob.fingerprint(), false);
             CHECK(!alice.isBlocked(bob.fingerprint()));
+            alice.sendMessage(bob.fingerprint(), "you can write to me again");
+            // A whole batch was minted and registered for him, and it rode on that
+            // one message rather than on an errand of its own.
+            CHECK(minted() - before >= kBatchAtLeast);
+
+            // The next message is an ordinary one: the batch is not handed out again.
+            const std::size_t afterBatch = minted();
+            alice.sendMessage(bob.fingerprint(), "and this one is just a message");
+            CHECK(minted() - afterBatch < kBatchAtLeast);
+
+            // And what he already held was not thrown away by it.
+            bob.sync();
+            CHECK(bob.sendCapacity(alice.fingerprint()) >= bobHeld);
+
             bob.sendMessage(alice.fingerprint(), "after the unblock");
             bool heardAgain = false;
             for (const IncomingMessage& item : alice.sync()) {

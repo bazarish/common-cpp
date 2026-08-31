@@ -187,8 +187,15 @@ void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap,
         // all of it would leave several devices holding the same one-time tokens
         // and racing to spend them. Take exactly one, at random so two devices
         // rarely pick the same, and spend it on a batch addressed to this device.
+        // Kept alongside what this device already holds rather than replacing it:
+        // at a first bootstrap there is nothing to replace, and later - when a
+        // contact hands out a fresh batch after lifting a block - throwing the
+        // stash away would take the ability to write with it.
         const std::size_t pick = static_cast<std::size_t>(randomBytes(1).front()) % offered.size();
-        contact.sendTokens.assign(1, offered[pick]);
+        if (std::find(contact.sendTokens.begin(), contact.sendTokens.end(), offered[pick])
+            == contact.sendTokens.end()) {
+            contact.sendTokens.push_back(offered[pick]);
+        }
         contact.needsOwnBatch = true;
         return;
     }
@@ -522,6 +529,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
             contact.needsOwnBatch = entry.value("needsOwnBatch", false);
             contact.notifications = entry.value("notifications", true);
             contact.allowCalls = entry.value("allowCalls", true);
+            contact.reissueTokens = entry.value("reissueTokens", false);
             contacts.emplace(fingerprint, std::move(contact));
         }
     }
@@ -753,6 +761,7 @@ nlohmann::json Session::contactsToJson() const
             {"requesterDevice", contact.requesterDevice},
             {"notifications", contact.notifications},
             {"allowCalls", contact.allowCalls},
+            {"reissueTokens", contact.reissueTokens},
         };
     }
     return stored;
@@ -1176,6 +1185,14 @@ void Session::setBlocked(const std::string& peerFingerprint, const bool blocked)
         revokeTokensFor(peerFingerprint);
     } else {
         blocked_.erase(peerFingerprint);
+        // Blocking took away what they held; unblocking has to give it back, or
+        // they are a contact who cannot answer. The batch rides on the next thing
+        // written to them - one delivery, not an errand of its own.
+        const auto known = contacts_.find(peerFingerprint);
+        if (known != contacts_.end()) {
+            known->second.reissueTokens = true;
+            persistContacts();
+        }
     }
     persistBlocked();
     try {
@@ -2685,6 +2702,20 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
             inner["bootstrap"]["forDevice"] = contact.requesterDevice;
         }
         contact.issuedToThem = true;
+        // The batch this carries is a fresh one, so nothing more is owed.
+        contact.reissueTokens = false;
+    } else if (contact.reissueTokens) {
+        // A block was lifted: they hold nothing of ours, so this message carries a
+        // batch. Addressed to nobody - any device of theirs may take it, and the
+        // rest ask for their own, which is the same rule a refill follows.
+        inner["bootstrap"] = {
+            {"sealing", sealingPublicB64()},
+            {"dest", myDest_},
+            {"servingKey", myServingKeyB64_},
+            {"view", sharedView()},
+            {"replyTokens", issueTokenBatch(peerFingerprint)},
+        };
+        contact.reissueTokens = false;
     }
 
     // After spending this token our stash for the peer would be this small; ask
