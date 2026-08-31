@@ -312,6 +312,9 @@ public:
     // self-message). The pin list itself lives in the GUI's local store; this only
     // broadcasts the change so every device keeps the same pinned chats.
     void syncChatPinToSelf(const std::string& peerFingerprint, bool pinned);
+    // Tells the account's other devices that this conversation was emptied here -
+    // our own copy of it, not the correspondent's.
+    void syncChatClearToSelf(const std::string& peerFingerprint);
 
     // Permanently removes a contact: drops it from the contact list, deletes its sealed
     // avatar blob, and persists. Local only and irreversible - the peer is not

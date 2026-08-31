@@ -708,6 +708,85 @@ int main()
             CHECK(heardAgain);
         }
 
+        // --- What another device of ours says, and what this one does with it ---
+        //
+        // Each notice is built as the wire carries it, under another device id,
+        // and handed to her: what matters is that it is applied here.
+        {
+            const auto fromAnotherDevice = [&](const nlohmann::json& notice) {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[alice.fingerprint()].push_back({"self-" + notice.at("id").get<std::string>(),
+                    "device",
+                    cms::seal(nlohmann::json::to_cbor(notice),
+                        Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
+            };
+            const auto notice = [&](const std::string& type, nlohmann::json extra) {
+                extra["v"] = 1;
+                extra["type"] = type;
+                extra["id"] = type;
+                extra["from"] = alice.fingerprint();
+                extra["sentAt"] = 1;
+                extra["device"] = "someotherdevice";
+                return extra;
+            };
+
+            // The account was renamed there.
+            CHECK(alice.displayName() != "renamed elsewhere");
+            fromAnotherDevice(notice("device.account-name", {{"name", "renamed elsewhere"}}));
+            alice.sync();
+            CHECK(alice.displayName() == "renamed elsewhere");
+
+            // It stopped taking calls there.
+            CHECK(alice.acceptCalls());
+            fromAnotherDevice(notice("device.account-prefs", {{"acceptCalls", false}}));
+            alice.sync();
+            CHECK(!alice.acceptCalls());
+            alice.setAcceptCalls(true);
+
+            // A contact's switches were changed there.
+            fromAnotherDevice(notice("device.contact-prefs",
+                {{"peer", bob.fingerprint()}, {"notifications", false}, {"allowCalls", false}}));
+            alice.sync();
+            CHECK(!alice.contactNotifications(bob.fingerprint()));
+            CHECK(!alice.contactCalls(bob.fingerprint()));
+
+            // Somebody was blocked there.
+            const std::string stranger = std::string(52, 'y');
+            fromAnotherDevice(notice("device.contact-block",
+                {{"peer", stranger}, {"blocked", true}}));
+            alice.sync();
+            CHECK(alice.isBlocked(stranger));
+            fromAnotherDevice(notice("device.contact-block",
+                {{"peer", stranger}, {"blocked", false}}));
+            alice.sync();
+            CHECK(!alice.isBlocked(stranger));
+
+            // A conversation was emptied there: the core hands it to the interface
+            // to wipe, and says which one.
+            fromAnotherDevice(notice("device.chat-clear", {{"peer", bob.fingerprint()}}));
+            bool sawClear = false;
+            for (const IncomingMessage& item : alice.sync()) {
+                if (item.contentType == "device.chat-clear") {
+                    sawClear = true;
+                    CHECK(item.refId == bob.fingerprint());
+                }
+            }
+            CHECK(sawClear);
+
+            // And a contact was removed there.
+            CHECK(alice.hasContact(bob.fingerprint()));
+            fromAnotherDevice(notice("device.contact-remove", {{"peer", bob.fingerprint()}}));
+            bool sawRemove = false;
+            for (const IncomingMessage& item : alice.sync()) {
+                if (item.contentType == "device.contact-remove") {
+                    sawRemove = true;
+                    CHECK(item.refId == bob.fingerprint());
+                }
+            }
+            CHECK(sawRemove);
+            CHECK(!alice.hasContact(bob.fingerprint()));
+        }
+
         // --- A stranger writing content ---
         //
         // Nobody without a contact row may put a message in front of the user; the

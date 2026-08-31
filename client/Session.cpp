@@ -306,6 +306,17 @@ std::string guessMime(const fs::path& path)
 // the same document, but binary values travel as themselves. A picture inside a
 // JSON message would have to be base64, which is a third more bytes to encrypt,
 // to store in a mailbox and to carry over a tunnel, for nothing.
+// What a device tells the account's other devices about: everything that changes
+// what the conversation looks like, and nothing that does not. A read receipt, a
+// call signal, a token errand and a file's handshake are between this device and
+// the correspondent.
+bool echoesToOwnDevices(const std::string& type)
+{
+    static const std::set<std::string> kEchoed{
+        "text", "image", "voice", "edit", "delete", "reaction", "chat.clear"};
+    return kEchoed.find(type) != kEchoed.end();
+}
+
 Bytes encodedBody(const nlohmann::json& inner)
 {
     return nlohmann::json::to_cbor(inner);
@@ -625,6 +636,15 @@ void Session::setDisplayName(const std::string& name)
     // Persist to meta.json (stored in the clear, like the creation label). Future
     // inviteUri() descriptors carry the new name; existing contacts are not told.
     persistMeta();
+    // The account's other devices carry the same account and show the same name.
+    try {
+        sendSelf({
+            {"type", "device.account-name"},
+            {"name", name},
+        });
+    } catch (const std::exception& error) {
+        bazarish::log::warn("account-name self-sync failed: {}", error.what());
+    }
 }
 
 const Bytes& Session::avatar() const
@@ -1092,6 +1112,16 @@ void Session::syncChatPinToSelf(const std::string& peerFingerprint, bool pinned)
         {"type", "device.chat-pin"},
         {"peer", peerFingerprint},
         {"pinned", pinned},
+    });
+}
+
+void Session::syncChatClearToSelf(const std::string& peerFingerprint)
+{
+    // Clearing "only for me" means this account, not this device: the other
+    // devices hold the same conversation and are told to drop it too.
+    sendSelf({
+        {"type", "device.chat-clear"},
+        {"peer", peerFingerprint},
     });
 }
 
@@ -1947,14 +1977,6 @@ bool Session::sendMessage(const std::string& peerFingerprint, const std::string&
     if (!replyTo.empty()) {
         inner["replyTo"] = replyTo;
     }
-    // The other devices of this account see what was sent from here. Done before
-    // the send so a message that fails to reach the contact still reads the same
-    // on every device of ours; it is our own mailbox, and costs no token.
-    try {
-        echoSentToSelf(peerFingerprint, inner);
-    } catch (const std::exception& error) {
-        bazarish::log::warn("could not echo a sent message to our own devices: {}", error.what());
-    }
     return sendContent(peerFingerprint, std::move(inner), watch);
 }
 
@@ -2588,6 +2610,19 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     if (isBlocked(peerFingerprint)) {
         throw std::runtime_error("this contact is blocked; unblock them to write to them");
     }
+    // The other devices of this account see what was done from here. Before the
+    // send, so an action that never reaches the contact still reads the same on
+    // every device of ours; it goes to our own mailbox and costs no token. Only
+    // what changes the conversation travels: a receipt, a call signal or a token
+    // errand is this device's business alone.
+    if (echoesToOwnDevices(inner.value("type", std::string()))) {
+        try {
+            echoSentToSelf(peerFingerprint, inner);
+        } catch (const std::exception& error) {
+            bazarish::log::warn(
+                "could not echo what was sent to our own devices: {}", error.what());
+        }
+    }
     const auto found = contacts_.find(peerFingerprint);
     if (found == contacts_.end()) {
         throw std::runtime_error("unknown contact: " + peerFingerprint);
@@ -3136,6 +3171,35 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                     message.text
                         = body.value("pinned", false) ? std::string("1") : std::string("0");
                 }
+            } else if (type == "device.chat-clear") {
+                // Another device of ours emptied its copy of a conversation; the
+                // GUI wipes the same one here. Honoured only from us.
+                if (message.fromFingerprint == fingerprint()) {
+                    message.contentType = type;
+                    message.refId = body.value("peer", std::string());
+                }
+            } else if (type == "device.account-name") {
+                // The account was renamed on another device of ours.
+                if (message.fromFingerprint == fingerprint()) {
+                    message.contentType = type;
+                    const std::string name = body.value("name", std::string());
+                    if (!name.empty() && name != name_) {
+                        name_ = name;
+                        client_->setDestinationOwner(destinationOwner());
+                        persistMeta();
+                    }
+                    message.text = name_;
+                }
+            } else if (type == "device.account-prefs") {
+                // An account-wide answer changed on another device of ours.
+                if (message.fromFingerprint == fingerprint()) {
+                    message.contentType = type;
+                    const bool accept = body.value("acceptCalls", true);
+                    if (accept != acceptCalls_) {
+                        acceptCalls_ = accept;
+                        persistMeta();
+                    }
+                }
             } else if (type == "device.saved-clear") {
                 // Another device of ours emptied the saved chat; the GUI wipes its
                 // transcript for that chat on receipt. Honoured only from us.
@@ -3676,6 +3740,16 @@ void Session::setAcceptCalls(const bool accept)
     }
     acceptCalls_ = accept;
     persistMeta();
+    // Whether this account takes calls is the account's answer, not this
+    // device's: a caller reaching another device must hear the same one.
+    try {
+        sendSelf({
+            {"type", "device.account-prefs"},
+            {"acceptCalls", accept},
+        });
+    } catch (const std::exception& error) {
+        bazarish::log::warn("account-prefs self-sync failed: {}", error.what());
+    }
 }
 
 void Session::declineCall(const std::string& callId)
