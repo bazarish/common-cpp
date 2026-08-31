@@ -539,6 +539,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     session.db_ = std::move(db);
     session.blocked_ = std::move(blocked);
     session.acceptCalls_ = meta.value("acceptCalls", true);
+    session.sendReceipts_ = meta.value("sendReceipts", true);
     session.cardB64_ = meta.value("card", std::string{});
     session.view_ = meta.value("view", std::string{});
     session.sharingAllowed_ = meta.value("sharingAllowed", true);
@@ -728,6 +729,7 @@ void Session::persistMeta() const
         // Sticky I2P: once this account has reached its server over I2P it keeps
         // refusing clearnet across restarts, unless the user allowed it again.
         {"acceptCalls", acceptCalls_},
+        {"sendReceipts", sendReceipts_},
     };
     db_->putText("meta", meta.dump(2));
 }
@@ -3194,9 +3196,13 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                 // An account-wide answer changed on another device of ours.
                 if (message.fromFingerprint == fingerprint()) {
                     message.contentType = type;
-                    const bool accept = body.value("acceptCalls", true);
-                    if (accept != acceptCalls_) {
+                    // Absent means unchanged, not "back to the default": a notice
+                    // says what it knows about.
+                    const bool accept = body.value("acceptCalls", acceptCalls_);
+                    const bool receipts = body.value("sendReceipts", sendReceipts_);
+                    if (accept != acceptCalls_ || receipts != sendReceipts_) {
                         acceptCalls_ = accept;
+                        sendReceipts_ = receipts;
                         persistMeta();
                     }
                 }
@@ -3740,12 +3746,29 @@ void Session::setAcceptCalls(const bool accept)
     }
     acceptCalls_ = accept;
     persistMeta();
-    // Whether this account takes calls is the account's answer, not this
-    // device's: a caller reaching another device must hear the same one.
+    syncAccountPrefsToSelf();
+}
+
+void Session::setSendReceipts(const bool on)
+{
+    if (sendReceipts_ == on) {
+        return;
+    }
+    sendReceipts_ = on;
+    persistMeta();
+    syncAccountPrefsToSelf();
+}
+
+void Session::syncAccountPrefsToSelf()
+{
+    // What this account answers, wherever it is reached from: a caller must hear
+    // the same thing and a correspondent must be told - or not told - the same
+    // thing, whichever device of ours happens to be reading.
     try {
         sendSelf({
             {"type", "device.account-prefs"},
-            {"acceptCalls", accept},
+            {"acceptCalls", acceptCalls_},
+            {"sendReceipts", sendReceipts_},
         });
     } catch (const std::exception& error) {
         bazarish::log::warn("account-prefs self-sync failed: {}", error.what());

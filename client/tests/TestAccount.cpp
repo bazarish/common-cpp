@@ -119,10 +119,19 @@ int main()
         }
         CHECK(foundLocked);
 
+        // The account's own answers are the account's, not the window's: they are
+        // written down and are the same the next time it is opened.
+        CHECK(sa.acceptCalls());
+        CHECK(sa.sendReceipts());
+        sa.setSendReceipts(false);
+        sa.setAcceptCalls(false);
+
         // Reopening preserves the connection and label.
         const Session reopened = manager.open("Acetone", "secret");
         CHECK(reopened.isConnected());
         CHECK(reopened.endpoint().serverFingerprint == "serverfp");
+        CHECK(!reopened.sendReceipts());
+        CHECK(!reopened.acceptCalls());
 
         // Export the encrypted account, then re-import it twice - once with an
         // at-rest passphrase, once without - and check that each import is one keyed

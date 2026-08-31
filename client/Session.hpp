@@ -315,6 +315,8 @@ public:
     // Tells the account's other devices that this conversation was emptied here -
     // our own copy of it, not the correspondent's.
     void syncChatClearToSelf(const std::string& peerFingerprint);
+    // Hands the account's own answers to its other devices.
+    void syncAccountPrefsToSelf();
 
     // Permanently removes a contact: drops it from the contact list, deletes its sealed
     // avatar blob, and persists. Local only and irreversible - the peer is not
@@ -353,6 +355,13 @@ public:
     // rather than ringing into nothing. Persisted with the account; on by default.
     bool acceptCalls() const { return acceptCalls_; }
     void setAcceptCalls(bool accept);
+
+    // Whether reading a message tells its sender so (the green tick). Off, the
+    // unread bookkeeping here is unchanged - only the correspondent is not told.
+    // An account-wide answer like the one above: a correspondent sees one account,
+    // not a set of devices, so it is persisted and mirrored to all of them.
+    bool sendReceipts() const { return sendReceipts_; }
+    void setSendReceipts(bool on);
 
     // Redeems the portal registration on the configured server and registers
     // this client ID. Mints this account's own I2P destination if it has none
@@ -1284,6 +1293,7 @@ private:
     bool sharingAllowed_ = true;
     // Incoming calls are taken unless the user says otherwise; see acceptCalls().
     bool acceptCalls_ = true;
+    bool sendReceipts_ = true;
     // The at-rest passphrase, retained for the session lifetime so contacts
     // (delivery tokens) can be re-sealed on every change. Empty when the
     // account is unencrypted.

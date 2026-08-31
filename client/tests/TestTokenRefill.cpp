@@ -736,12 +736,21 @@ int main()
             alice.sync();
             CHECK(alice.displayName() == "renamed elsewhere");
 
-            // It stopped taking calls there.
+            // It stopped taking calls there, and stopped telling correspondents
+            // when it reads them.
             CHECK(alice.acceptCalls());
-            fromAnotherDevice(notice("device.account-prefs", {{"acceptCalls", false}}));
+            CHECK(alice.sendReceipts());
+            fromAnotherDevice(notice("device.account-prefs",
+                {{"acceptCalls", false}, {"sendReceipts", false}}));
             alice.sync();
             CHECK(!alice.acceptCalls());
-            alice.setAcceptCalls(true);
+            CHECK(!alice.sendReceipts());
+            // A notice that says nothing about one of them leaves it alone.
+            fromAnotherDevice(notice("device.account-prefs", {{"acceptCalls", true}}));
+            alice.sync();
+            CHECK(alice.acceptCalls());
+            CHECK(!alice.sendReceipts());
+            alice.setSendReceipts(true);
 
             // A contact's switches were changed there.
             fromAnotherDevice(notice("device.contact-prefs",
