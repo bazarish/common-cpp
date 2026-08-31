@@ -388,10 +388,12 @@ void Client::ack(const std::string& blobId)
     api_.postJson("/v1/messaging/ack", {{"blobId", blobId}});
 }
 
-void Client::submitSelf(const std::string& deliveryId, const Bytes& payload)
+void Client::submitSelf(
+    const std::string& deliveryId, const Bytes& payload, const std::string& kind)
 {
     api_.postJson("/v1/messaging/self",
-        {{"deliveryId", deliveryId}, {"payload", toBase64(payload)}});
+        {{"deliveryId", deliveryId}, {"payload", toBase64(payload)}},
+        ApiClient::kDefaultReadTimeoutSeconds, kind);
 }
 
 }  // namespace bazarish::client

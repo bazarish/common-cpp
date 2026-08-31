@@ -408,12 +408,12 @@ ApiResponse ApiClient::getWaiting(
     return send("GET", path, query, {}, {}, true, {}, readTimeoutSeconds);
 }
 
-ApiResponse ApiClient::postJson(
-    const std::string& path, const nlohmann::json& body, const int readTimeoutSeconds)
+ApiResponse ApiClient::postJson(const std::string& path, const nlohmann::json& body,
+    const int readTimeoutSeconds, const std::string& note)
 {
     const std::string text = body.dump();
     return send("POST", path, {}, Bytes(text.begin(), text.end()), "application/json", true, {},
-        readTimeoutSeconds);
+        readTimeoutSeconds, false, note);
 }
 
 ApiResponse ApiClient::postBytes(
@@ -546,14 +546,15 @@ void ApiClient::setWireLog(WireLog* const log)
 }
 
 void ApiClient::noteWire(const std::string& method, const std::string& path,
-    const std::string& status, const std::size_t bytes, const std::int64_t elapsedMillis)
+    const std::string& note, const std::string& status, const std::size_t bytes,
+    const std::int64_t elapsedMillis)
 {
     if (wireLog_ == nullptr) {
         return;
     }
     WireEvent event;
     event.outgoing = true;
-    event.what = method + " " + path;
+    event.what = method + " " + path + (note.empty() ? std::string() : " (" + note + ")");
     event.status = status;
     event.detail = std::to_string(bytes) + " B - " + std::to_string(elapsedMillis) + " ms";
     wireLog_->record(std::move(event));
@@ -562,7 +563,7 @@ void ApiClient::noteWire(const std::string& method, const std::string& path,
 ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     const std::string& query, const Bytes& body, const std::string& contentType,
     const bool authenticate, const std::map<std::string, std::string>& extraHeaders,
-    const int readTimeoutSeconds, const bool clearnetOnly)
+    const int readTimeoutSeconds, const bool clearnetOnly, const std::string& note)
 {
     // Before the request lock: a call that may go over I2P must not start the
     // router unseeded. A clearnet-only call skips it - it cannot start the
@@ -614,7 +615,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
         const ApiResponse response = transmitLocked(
             method, path, query, body, contentType, headers, readTimeoutSeconds, clearnetOnly);
         if (!quietOnSuccess) {
-            noteWire(method, path, std::to_string(response.status), response.body.size(),
+            noteWire(method, path, note, std::to_string(response.status), response.body.size(),
                 elapsedMillis());
         }
         return response;
@@ -623,7 +624,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
         // more, with a signature this time - never by retrying the same way,
         // which is how a server stuck on 401 would spin a client forever.
         if (error.code != ErrorCode::eSessionInvalid || sessionId_.empty() || !sessionRoute) {
-            noteWire(method, path, "failed: " + std::string(error.what()), 0, elapsedMillis());
+            noteWire(method, path, note, "failed: " + std::string(error.what()), 0, elapsedMillis());
             throw;
         }
         constexpr int kRefusalsBeforeGivingUp = 3;
@@ -646,7 +647,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
         const ApiResponse response = transmitLocked(method, path, query, body, contentType,
             retryHeaders, readTimeoutSeconds, clearnetOnly);
         if (!quietOnSuccess) {
-            noteWire(method, path, std::to_string(response.status), response.body.size(),
+            noteWire(method, path, note, std::to_string(response.status), response.body.size(),
                 elapsedMillis());
         }
         return response;

@@ -124,8 +124,11 @@ public:
     // would tear down its own long poll.
     ApiResponse getWaiting(const std::string& path, const std::string& query, int readTimeoutSeconds);
     // readTimeoutSeconds bounds how long to wait for the response.
+    // note, when given, is what the call is for in the connection log: the path
+    // alone cannot say which kind of device sync a self-message carries, because
+    // that is inside the sealed payload.
     ApiResponse postJson(const std::string& path, const nlohmann::json& body,
-        int readTimeoutSeconds = kDefaultReadTimeoutSeconds);
+        int readTimeoutSeconds = kDefaultReadTimeoutSeconds, const std::string& note = {});
     ApiResponse postBytes(
         const std::string& path, const Bytes& body, const std::string& contentType);
     // Authenticated PUT with extra request headers (e.g. blob retention).
@@ -187,13 +190,14 @@ private:
     // One line for one call: what was asked, what came back, how big and how
     // long. The long poll is left out on success - it would be the only thing
     // the log ever showed - and its caller records it when it brought something.
-    void noteWire(const std::string& method, const std::string& path,
+    void noteWire(const std::string& method, const std::string& path, const std::string& note,
         const std::string& status, std::size_t bytes, std::int64_t elapsedMillis);
 
     ApiResponse send(const std::string& method, const std::string& path,
         const std::string& query, const Bytes& body, const std::string& contentType,
         bool authenticate, const std::map<std::string, std::string>& extraHeaders = {},
-        int readTimeoutSeconds = kDefaultReadTimeoutSeconds, bool clearnetOnly = false);
+        int readTimeoutSeconds = kDefaultReadTimeoutSeconds, bool clearnetOnly = false,
+        const std::string& note = {});
     // The transport half of send: everything from the request lock onward, with
     // the headers already decided. Opening a session reuses it while the lock is
     // held, which is why it is separate.

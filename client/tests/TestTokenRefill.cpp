@@ -499,9 +499,12 @@ int main()
             }
             bob.sync();
             CHECK(logHas(bob.connectionLog(), "text from", {}));
-            // A self-message names the kind it carries; the sealed payload cannot.
+            // A self-message names the kind it carries on the call that carries
+            // it: from the outside every one of them is the same POST, and a
+            // line of its own would have no status to report.
             alice.setDisplayName("Alice of the log");
-            CHECK(logHas(alice.connectionLog(), "self device.account-name", "sending"));
+            CHECK(logHas(alice.connectionLog(),
+                "POST /v1/messaging/self (device.account-name)", "200"));
         }
 
         // An interactive message: the buttons a bot attaches ride on an ordinary

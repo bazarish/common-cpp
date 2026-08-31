@@ -269,7 +269,10 @@ public:
     // mailbox, so there is no token to spend, no destination to dial and nothing
     // to federate - and it stays out of the tokenless budget, which is there to
     // bound strangers.
-    void submitSelf(const std::string& deliveryId, const Bytes& payload);
+    // kind names what the sealed payload carries ("device.saved"), for the
+    // connection log: from the outside every one of these is the same POST.
+    void submitSelf(const std::string& deliveryId, const Bytes& payload,
+        const std::string& kind = {});
 
     // What this account did on the wire, for the connection log. Lives here
     // because the transport and the session both write into it and the account
