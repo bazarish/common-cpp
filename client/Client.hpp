@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -270,8 +271,16 @@ public:
     // bound strangers.
     void submitSelf(const std::string& deliveryId, const Bytes& payload);
 
+    // What this account did on the wire, for the connection log. Lives here
+    // because the transport and the session both write into it and the account
+    // owns both. Held by shared pointer so a delivery still in flight can record
+    // its outcome without racing the account's teardown.
+    WireLog& wireLog();
+    std::shared_ptr<WireLog> wireLogHandle() const;
+
 private:
     const Identity identity_;
+    std::shared_ptr<WireLog> log_ = std::make_shared<WireLog>();
     ApiClient api_;
 };
 

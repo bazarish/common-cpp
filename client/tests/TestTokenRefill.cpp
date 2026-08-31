@@ -2,6 +2,7 @@
 #include "Client.hpp"
 #include "OutboundCourier.hpp"
 #include "Session.hpp"
+#include "WireLog.hpp"
 
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
@@ -463,6 +464,45 @@ int main()
         }
         CHECK(alice.hasContact(bob.fingerprint()));
         CHECK(bob.hasContact(alice.fingerprint()));
+
+        // The connection log: what the account did on the wire, which is the one
+        // place a user can see a delivery nobody signed for. One send has to
+        // leave three marks - the send itself, the far side's answer, and the
+        // server call underneath - and the receiving side has to see the arrival.
+        {
+            const auto logHas = [](const std::vector<WireEvent>& events,
+                                    const std::string& whatPrefix, const std::string& status) {
+                for (const WireEvent& event : events) {
+                    if (event.what.rfind(whatPrefix, 0) == 0
+                        && (status.empty() || event.status == status)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            alice.sendMessage(bob.fingerprint(), "logged");
+            bool stored = false;
+            for (int round = 0; round < 20 && !stored; ++round) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                stored = logHas(alice.connectionLog(), "text to", "stored");
+            }
+            const std::vector<WireEvent> aliceLog = alice.connectionLog();
+            CHECK(logHas(aliceLog, "text to", "sending"));
+            CHECK(stored);
+            // The account's own server, spoken to over HTTP: its status is the
+            // only confirmation this side gets for what it uploaded.
+            CHECK(logHas(aliceLog, "POST /v1/messaging/", "200"));
+            // Nothing here may carry what was written.
+            for (const WireEvent& event : aliceLog) {
+                CHECK(event.what.find("logged") == std::string::npos);
+                CHECK(event.detail.find("logged") == std::string::npos);
+            }
+            bob.sync();
+            CHECK(logHas(bob.connectionLog(), "text from", {}));
+            // A self-message names the kind it carries; the sealed payload cannot.
+            alice.setDisplayName("Alice of the log");
+            CHECK(logHas(alice.connectionLog(), "self device.account-name", "sending"));
+        }
 
         // An interactive message: the buttons a bot attaches ride on an ordinary
         // text message, and the far side has to be handed them as their wire form.

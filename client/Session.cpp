@@ -1127,6 +1127,7 @@ void Session::sendSelf(nlohmann::json inner)
     // Which of our devices sent it: the one that did already has the change, and
     // skips its own echo.
     inner["device"] = client_->clientId();
+    noteWire(true, "self " + inner.value("type", std::string("?")), "sending", {});
     const Bytes innerBytes = encodedBody(inner);
     const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
     client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing));
@@ -1478,6 +1479,27 @@ bool Session::refreshI2pTransientIfDue(const std::int64_t now, const std::int64_
     return true;
 }
 
+void Session::noteWire(
+    const bool outgoing, std::string what, std::string status, std::string detail) const
+{
+    client_->wireLog().record(
+        {0, outgoing, std::move(what), std::move(status), std::move(detail)});
+}
+
+// How a correspondent is named in the connection log: the name this account gave
+// them when there is one, and the head of their fingerprint either way - two
+// contacts with the same name are still two contacts.
+std::string Session::wireName(const std::string& peerFingerprint) const
+{
+    const std::string head
+        = peerFingerprint.substr(0, std::min(peerFingerprint.size(), kShortFingerprintChars));
+    const auto known = contacts_.find(peerFingerprint);
+    if (known == contacts_.end() || known->second.displayName.empty()) {
+        return head;
+    }
+    return known->second.displayName + " (" + head + ")";
+}
+
 std::string Session::signLogin(const std::string& challenge) const
 {
     // Fail closed. A challenge that will not say who consumes the signature is
@@ -1493,6 +1515,16 @@ std::string Session::signLogin(const std::string& challenge) const
 Bytes Session::deliveryMaskFor(const std::string& peerFingerprint) const
 {
     return deliveryTokenMask(deliverySecret_, peerFingerprint);
+}
+
+std::vector<WireEvent> Session::connectionLog() const
+{
+    return client_->wireLog().snapshot();
+}
+
+void Session::clearConnectionLog()
+{
+    client_->wireLog().clear();
 }
 
 std::vector<std::string> Session::issueTokenBatch(const std::string& peerFingerprint)
@@ -2686,6 +2718,8 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     // Captured before the bootstrap block below: when false here, this very send
     // is our first reply to the peer - the moment we accept/establish the dialog.
     const bool wasIssuedToThem = contact.issuedToThem;
+    // The caller's watch plus the connection log's own outcome line.
+    DeliveryWatch watchWithLog = watch;
 
     // First reply to a peer that wrote to us first: hand them a bootstrap (our
     // routing + a token batch) so the reverse direction is usable too. A read
@@ -2748,6 +2782,32 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     const Bytes payload = cms::seal(innerBytes, peerSealing);
     const Key peerServingKey = Key::fromPublicDer(fromBase64(contact.servingSealingB64));
 
+    // What this send is, in the connection log: the kind, who it is for and the
+    // id the two servers will call it by. The outcome arrives later on a courier
+    // thread, so it rides the same callback the interface watches, and it holds
+    // the log itself - this account may be closed before the last attempt ends.
+    {
+        const std::string kind = inner.value("type", std::string("?"));
+        const std::string peerLabel = wireName(peerFingerprint);
+        const std::string shortId
+            = deliveryIdFor(inner.value("id", std::string()), peerFingerprint)
+                  .substr(0, kShortFingerprintChars);
+        noteWire(true, kind + " to " + peerLabel, "sending", "id " + shortId);
+        DeliveryWatch logged = watch;
+        const std::shared_ptr<WireLog> log = client_->wireLogHandle();
+        logged.onOutcome = [log, kind, peerLabel, shortId, onOutcome = watch.onOutcome](
+                               const OutboundCourier::Outcome& outcome) {
+            const std::string status = outcome.stored
+                ? std::string("stored")
+                : "failed" + (outcome.errorCode.empty() ? std::string() : ": " + outcome.errorCode);
+            log->record({0, true, kind + " to " + peerLabel, status, "id " + shortId});
+            if (onOutcome) {
+                onOutcome(outcome);
+            }
+        };
+        watchWithLog = std::move(logged);
+    }
+
     const std::string token = useOverrideToken ? overrideToken : contact.sendTokens.back();
     // Spent before the envelope leaves, not after it lands. A send this client
     // gives up on may still have been stored by the recipient - only its
@@ -2765,7 +2825,8 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     // The message's own id goes down with it: the envelope is named after it, so
     // sending this message again is the same delivery rather than a second one.
     const bool delivered = deliver(contact.dest, peerServingKey, "content", peerFingerprint,
-        fromBase64(token), payload, watch, waitForOutcome, inner.value("id", std::string()));
+        fromBase64(token), payload, watchWithLog, waitForOutcome,
+        inner.value("id", std::string()));
 
     // If this send is the first reply that just established the reverse direction
     // (we accepted their request), share our avatar now - consent-gated, exactly
@@ -3319,6 +3380,10 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
             } else {
                 message.pendingId = entry.id;
             }
+            noteWire(false,
+                (message.contentType.empty() ? std::string("content") : message.contentType)
+                    + " from " + wireName(message.fromFingerprint),
+                {}, "id " + entry.id.substr(0, std::min(entry.id.size(), kShortFingerprintChars)));
             result.push_back(std::move(message));
         } catch (const std::exception& error) {
             // Isolate a poison item: a single unreadable pending entry must
@@ -3330,6 +3395,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
             // the exception propagates and the caller retries the whole tick.
             bazarish::log::warn(
                 "sync: dropping unreadable pending item: {}", error.what());
+            noteWire(false, "unreadable item", "dropped", error.what());
             client_->ack(entry.id);
         }
     }

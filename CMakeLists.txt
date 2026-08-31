@@ -186,6 +186,7 @@ if(BAZARISH_WITH_CLIENT)
         client/Qr.cpp
         client/Session.cpp
         client/WarmDestPool.cpp
+        client/WireLog.cpp
     )
     add_library(Bazarish::Client ALIAS bazarish_client)
     # The headers sit beside their sources and are included by name, which is how
@@ -218,4 +219,5 @@ if(BAZARISH_WITH_CLIENT)
     bazarish_client_add_test(TestLogin)
     bazarish_client_add_test(TestOutboundCourier)
     bazarish_client_add_test(TestTokenRefill)
+    bazarish_client_add_test(TestWireLog)
 endif()

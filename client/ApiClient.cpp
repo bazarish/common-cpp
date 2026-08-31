@@ -540,6 +540,25 @@ void ApiClient::seedRouterFromServer()
     }
 }
 
+void ApiClient::setWireLog(WireLog* const log)
+{
+    wireLog_ = log;
+}
+
+void ApiClient::noteWire(const std::string& method, const std::string& path,
+    const std::string& status, const std::size_t bytes, const std::int64_t elapsedMillis)
+{
+    if (wireLog_ == nullptr) {
+        return;
+    }
+    WireEvent event;
+    event.outgoing = true;
+    event.what = method + " " + path;
+    event.status = status;
+    event.detail = std::to_string(bytes) + " B - " + std::to_string(elapsedMillis) + " ms";
+    wireLog_->record(std::move(event));
+}
+
 ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     const std::string& query, const Bytes& body, const std::string& contentType,
     const bool authenticate, const std::map<std::string, std::string>& extraHeaders,
@@ -581,14 +600,30 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     for (const auto& [key, value] : extraHeaders) {
         headers.emplace(key, value);
     }
+    // A poll that waited and brought nothing back would be the only thing this
+    // log ever showed, so on success it is left to its caller, which knows
+    // whether anything came. A poll that failed is recorded here like any other.
+    const bool quietOnSuccess = path == kEventsPath;
+    const auto startedAt = std::chrono::steady_clock::now();
+    const auto elapsedMillis = [&startedAt]() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - startedAt)
+            .count();
+    };
     try {
-        return transmitLocked(
+        const ApiResponse response = transmitLocked(
             method, path, query, body, contentType, headers, readTimeoutSeconds, clearnetOnly);
+        if (!quietOnSuccess) {
+            noteWire(method, path, std::to_string(response.status), response.body.size(),
+                elapsedMillis());
+        }
+        return response;
     } catch (const ApiError& error) {
         // A refused session is answered by opening a new one and trying once
         // more, with a signature this time - never by retrying the same way,
         // which is how a server stuck on 401 would spin a client forever.
         if (error.code != ErrorCode::eSessionInvalid || sessionId_.empty() || !sessionRoute) {
+            noteWire(method, path, "failed: " + std::string(error.what()), 0, elapsedMillis());
             throw;
         }
         constexpr int kRefusalsBeforeGivingUp = 3;
@@ -608,8 +643,13 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
         for (const auto& [key, value] : extraHeaders) {
             retryHeaders.emplace(key, value);
         }
-        return transmitLocked(method, path, query, body, contentType, retryHeaders,
-            readTimeoutSeconds, clearnetOnly);
+        const ApiResponse response = transmitLocked(method, path, query, body, contentType,
+            retryHeaders, readTimeoutSeconds, clearnetOnly);
+        if (!quietOnSuccess) {
+            noteWire(method, path, std::to_string(response.status), response.body.size(),
+                elapsedMillis());
+        }
+        return response;
     }
 }
 

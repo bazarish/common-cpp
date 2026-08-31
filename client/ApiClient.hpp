@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include "WireLog.hpp"
+
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Errors.hpp>
@@ -62,6 +64,10 @@ struct ServerEndpoint {
     std::vector<Facade> reseeds;
 };
 
+
+// The long poll: a call that waits on purpose, and the one the connection log
+// leaves out until it brings something back.
+inline constexpr const char* kEventsPath = "/v1/messaging/events";
 
 // A server response. Non-2xx statuses are turned into ApiError by ApiClient,
 // so callers only ever see successful responses here.
@@ -144,6 +150,10 @@ public:
     // and would deadlock outright - the reseed runs while the router lock is held.
     ApiResponse getClearnet(const std::string& path, const std::string& query = "");
 
+    // Where this transport writes what it did, for the account's connection log.
+    // Null (the default) records nothing; the client sets it to its own log.
+    void setWireLog(WireLog* log);
+
     const std::string& clientId() const;
     const ServerEndpoint& endpoint() const;
     // The facade the transport is currently using (last one that worked), as a
@@ -173,6 +183,12 @@ private:
     // path that starts the router goes through here, because an I2P facade
     // request would otherwise start it with an empty netDb.
     void seedRouterFromServer();
+
+    // One line for one call: what was asked, what came back, how big and how
+    // long. The long poll is left out on success - it would be the only thing
+    // the log ever showed - and its caller records it when it brought something.
+    void noteWire(const std::string& method, const std::string& path,
+        const std::string& status, std::size_t bytes, std::int64_t elapsedMillis);
 
     ApiResponse send(const std::string& method, const std::string& path,
         const std::string& query, const Bytes& body, const std::string& contentType,
@@ -230,6 +246,8 @@ private:
     // Opens a session if one is due and possible. Returns whether a usable one is
     // in hand. Called with netMutex_ held.
     bool ensureSessionLocked();
+
+    WireLog* wireLog_ = nullptr;
     // A persistent unpublished outbound destination that dials I2P facades; its
     // tunnels stay warm across requests (a fresh transient per call would rebuild
     // a destination on every poll). Created lazily on first I2P facade use.

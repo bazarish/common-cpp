@@ -44,6 +44,17 @@ Client::Client(Identity identity, std::string clientId, ServerEndpoint endpoint,
     : identity_(std::move(identity))
     , api_(identity_, std::move(clientId), std::move(endpoint), std::move(i2pDataDir))
 {
+    api_.setWireLog(log_.get());
+}
+
+WireLog& Client::wireLog()
+{
+    return *log_;
+}
+
+std::shared_ptr<WireLog> Client::wireLogHandle() const
+{
+    return log_;
 }
 
 const Identity& Client::identity() const
@@ -317,12 +328,17 @@ std::vector<PendingEntry> Client::waitForPending(const int waitSeconds)
     // and the transport must not give up first.
     constexpr int kReadSlackSeconds = 20;
     const ApiResponse response = api_.getWaiting(
-        "/v1/messaging/events", "wait=" + std::to_string(waitSeconds), waitSeconds + kReadSlackSeconds);
+        kEventsPath, "wait=" + std::to_string(waitSeconds), waitSeconds + kReadSlackSeconds);
     const nlohmann::json body = response.json();
     std::vector<PendingEntry> entries;
     for (const nlohmann::json& entry : body.at("pending")) {
         entries.push_back(
             {entry.at("id").get<std::string>(), entry.at("class").get<std::string>()});
+    }
+    // A poll that waited and heard nothing says nothing: it happens all day and
+    // would be the only thing the connection log ever showed.
+    if (!entries.empty()) {
+        log_->record({0, false, "poll: " + std::to_string(entries.size()) + " waiting", "200", {}});
     }
     return entries;
 }

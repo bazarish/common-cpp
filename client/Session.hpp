@@ -502,6 +502,11 @@ public:
     // which verifies it (see verifyLoginBlob) and recovers this fingerprint.
     std::string signLogin(const std::string& challenge) const;
 
+    // What this account did on the wire, newest last: the connection log the
+    // account window shows. Kept in memory only, and small.
+    std::vector<WireEvent> connectionLog() const;
+    void clearConnectionLog();
+
 
     // A bazarish:// invite carrying our full self-verifying serving chain
     // (subscription certificate + server card). A contact can verify it and
@@ -1015,6 +1020,12 @@ private:
     // from our own stash of the peer's tokens (and our stash is left untouched): used
     // for a token-refill reply, which the peer's request prepaid with a fresh token,
     // so the reply is deliverable even when we hold none of their tokens.
+    // One line in the connection log, and how a correspondent is named in it:
+    // the local name when there is one, and the head of the fingerprint either
+    // way - a full one has no business in a window meant to be screenshotted.
+    void noteWire(bool outgoing, std::string what, std::string status, std::string detail) const;
+    std::string wireName(const std::string& peerFingerprint) const;
+
     bool sendContent(const std::string& peerFingerprint, nlohmann::json inner,
         const DeliveryWatch& watch = {}, bool waitForOutcome = false,
         bool establishOnFirstReply = true, const std::string& overrideToken = {});
