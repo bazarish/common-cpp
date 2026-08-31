@@ -34,6 +34,12 @@ namespace bazarish::client {
 
 namespace {
 
+// Whitespace only, or nothing at all: not a name a user could pick an account by.
+bool isBlank(const std::string& text)
+{
+    return text.find_first_not_of(" \t\r\n") == std::string::npos;
+}
+
 // The two kinds of message that carry a transfer's metadata. They travel
 // identically; the type is how the other side knows whether what is coming is a
 // file to keep or a picture to show.
@@ -590,7 +596,14 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     }
     session.encrypted_ = encrypted;
     session.passphrase_ = passphrase;
+    // An account is stored under its own name, so the file name is the name of
+    // record: a meta that carries none (or a blank one) leaves the account
+    // showing nothing at all, and the file beside it knew all along.
     session.name_ = meta.value("name", std::string{});
+    if (isBlank(session.name_)) {
+        session.name_ = accountFile.stem().string();
+        session.persistMeta();
+    }
     session.client_->setDestinationOwner(session.destinationOwner());
     session.loadSentFiles();
 
@@ -638,6 +651,12 @@ const std::string& Session::displayName() const
 
 void Session::setDisplayName(const std::string& name)
 {
+    // A nameless account is one the user cannot tell from another in the picker,
+    // in an invite or on their other devices, so it is refused where it is set
+    // rather than repaired everywhere it is read.
+    if (isBlank(name)) {
+        throw std::invalid_argument("an account needs a name");
+    }
     if (name == name_) {
         return;
     }

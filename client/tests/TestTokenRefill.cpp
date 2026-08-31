@@ -559,6 +559,43 @@ int main()
         // can send again now (this would throw "out of delivery tokens" otherwise).
         alice.sendMessage(bob.fingerprint(), "after refill");
 
+        // A refill is asked for by whatever is being sent, not by a message the
+        // user typed: the ask rides on the same envelope as the content, and
+        // every kind goes out through one path. Spend down with one kind at a
+        // time and watch the capacity come back up - only that kind can have
+        // asked for it. The bound is well past a batch, so a kind that never
+        // asks runs out instead of looping.
+        {
+            const auto refillsWith = [&](const std::function<void()>& send) {
+                constexpr int kBoundedTries = 200;
+                for (int i = 0; i < kBoundedTries; ++i) {
+                    const std::size_t before = alice.sendCapacity(bob.fingerprint());
+                    try {
+                        send();
+                    } catch (const std::exception& error) {
+                        // Running dry is the failure this checks for: a kind that
+                        // never asks for a refill spends the last token and stops.
+                        std::fprintf(stderr, "send stopped after %d: %s\n", i, error.what());
+                        return false;
+                    }
+                    bob.sync();
+                    alice.sync();
+                    if (alice.sendCapacity(bob.fingerprint()) > before) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            const std::string ref = toHex(randomBytes(8));
+            // An ordinary content kind that is not text.
+            CHECK(refillsWith([&]() { alice.sendReaction(bob.fingerprint(), ref, "\xf0\x9f\x91\x8d"); }));
+            // The one path that deliberately does not establish a dialog: a
+            // receipt still has to keep its own sending capacity alive.
+            CHECK(refillsWith([&]() { alice.sendReceipt(bob.fingerprint(), ref); }));
+            // A kind with no bubble of its own: it acts on a message already sent.
+            CHECK(refillsWith([&]() { alice.sendDelete(bob.fingerprint(), ref); }));
+        }
+
         // Removing an avatar travels like setting one. Bob holds Alice's until she
         // takes it back; a removal that is never sent would leave him holding it for
         // good, which is what used to happen.

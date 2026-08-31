@@ -89,8 +89,12 @@ AccountInfo readInfo(const std::string& id, const fs::path& file, const std::str
     const nlohmann::json meta = nlohmann::json::parse(db->text("meta"));
     // For an account in place the name and the file name are the same string; an
     // imported bundle is read before it has a file name of its own, and there the
-    // name inside is all there is.
-    info.name = meta.value("name", id);
+    // name inside is all there is. A blank one is no name at all, so the file
+    // name stands in - the account is stored under it.
+    info.name = meta.value("name", std::string{});
+    if (info.name.find_first_not_of(" \t\r\n") == std::string::npos) {
+        info.name = id;
+    }
     info.fingerprint = meta.value("fingerprint", std::string{});
     info.encrypted = meta.value("encrypted", false);
     info.connected = !meta.at("endpoint").value("facades", nlohmann::json::array()).empty();
