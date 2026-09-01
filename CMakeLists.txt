@@ -172,6 +172,7 @@ if(BAZARISH_WITH_CLIENT)
         client/AccountManager.cpp
         client/ApiClient.cpp
         client/AudioCodec.cpp
+        client/Authorship.cpp
         client/AudioIo.cpp
         client/Bot.cpp
         client/CallMedia.cpp
@@ -207,6 +208,7 @@ if(BAZARISH_WITH_CLIENT)
     endfunction()
 
     bazarish_client_add_test(TestAccount)
+    bazarish_client_add_test(TestAuthorship)
     bazarish_client_add_test(TestApiClient)
     bazarish_client_add_test(TestBot)
     bazarish_client_add_test(TestCallMedia)

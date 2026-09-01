@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "Client.hpp"
 #include "OutboundCourier.hpp"
+#include "AccountDb.hpp"
+#include "Authorship.hpp"
 #include "Session.hpp"
 #include "WireLog.hpp"
 
@@ -394,6 +396,10 @@ int main()
     {
         Session alice = Session::create(aDir, endpoint, std::string{});
         Session bob = Session::create(bDir, endpoint, std::string{});
+        // Alice's own signing key, read the way another device of hers would
+        // hold it: an envelope injected below has to be signed like a real one.
+        const Identity aliceIdentity
+            = Identity::fromPrivatePem(AccountDb(aDir, std::string{}).text("identity.pem"));
         {
             std::lock_guard<std::mutex> lock(m.mu);
             m.destFor[alice.fingerprint()] = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
@@ -678,7 +684,7 @@ int main()
             // And what another device does with one: the same line, in the same
             // chat, as one of her own. Built here as the wire carries it, under
             // another device id - the device that saved it skips its own echo.
-            const nlohmann::json saved = {
+            nlohmann::json saved = {
                 {"v", 1},
                 {"type", "device.saved"},
                 {"id", "saved-1"},
@@ -696,6 +702,10 @@ int main()
                     }},
             };
             {
+                // Signed as that other device of hers would have signed it: an
+                // envelope that cannot name its author is dropped before it is
+                // read, which is the whole point of the signature.
+                signAuthorship(saved, aliceIdentity);
                 // The wire carries CBOR, which is what the reader expects.
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"saved-echo", "device",
@@ -814,12 +824,60 @@ int main()
             CHECK(heardAgain);
         }
 
+        // A contact who holds our tokens can put an envelope in our mailbox -
+        // that is what a token is for - but he cannot put another name on it.
+        // Admission is not authorship, and the signature is what tells them
+        // apart.
+        {
+            const Identity bobIdentity
+                = Identity::fromPrivatePem(AccountDb(bDir, std::string{}).text("identity.pem"));
+            const std::string strangerFingerprint = Identity::generate().fingerprint();
+            const auto intoAliceMailbox = [&](const std::string& id, nlohmann::json content) {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[alice.fingerprint()].push_back({id, "content",
+                    cms::seal(nlohmann::json::to_cbor(content),
+                        Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
+            };
+            const auto text = [](const std::string& from, const std::string& id,
+                                  const std::string& body) {
+                return nlohmann::json{{"v", 1}, {"type", "text"}, {"id", id}, {"from", from},
+                    {"sentAt", 1}, {"text", body}};
+            };
+
+            // Bob signs, but writes somebody else's name on it.
+            nlohmann::json forged = text(strangerFingerprint, "forged-1", "trust me, I am them");
+            signAuthorship(forged, bobIdentity);
+            intoAliceMailbox("forged-1", forged);
+            // Bob does not sign at all.
+            intoAliceMailbox("unsigned-1", text(bob.fingerprint(), "unsigned-1", "no signature"));
+            // And the same message, honestly signed, to prove the gate is not
+            // simply dropping everything.
+            nlohmann::json honest = text(bob.fingerprint(), "honest-1", "this one is mine");
+            signAuthorship(honest, bobIdentity);
+            intoAliceMailbox("honest-1", honest);
+
+            bool sawForged = false;
+            bool sawUnsigned = false;
+            bool sawHonest = false;
+            for (const IncomingMessage& item : alice.sync()) {
+                sawForged = sawForged || item.text == "trust me, I am them";
+                sawUnsigned = sawUnsigned || item.text == "no signature";
+                sawHonest = sawHonest || item.text == "this one is mine";
+            }
+            CHECK(!sawForged);
+            CHECK(!sawUnsigned);
+            CHECK(sawHonest);
+        }
+
         // --- What another device of ours says, and what this one does with it ---
         //
         // Each notice is built as the wire carries it, under another device id,
         // and handed to her: what matters is that it is applied here.
         {
-            const auto fromAnotherDevice = [&](const nlohmann::json& notice) {
+            const auto fromAnotherDevice = [&](nlohmann::json notice) {
+                // Signed with this account's key, which is what a device of hers
+                // holds: unsigned, it would be dropped before it is read.
+                signAuthorship(notice, aliceIdentity);
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"self-" + notice.at("id").get<std::string>(),
                     "device",

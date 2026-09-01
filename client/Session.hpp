@@ -1023,6 +1023,9 @@ private:
     // One line in the connection log, and how a correspondent is named in it:
     // the local name when there is one, and the head of the fingerprint either
     // way - a full one has no business in a window meant to be screenshotted.
+    // One envelope into this account's own mailbox, signed and sealed to itself.
+    void submitSignedToSelf(nlohmann::json inner, const std::string& kind) const;
+
     void noteWire(bool outgoing, std::string what, std::string status, std::string detail) const;
     std::string wireName(const std::string& peerFingerprint) const;
 

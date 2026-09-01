@@ -3,6 +3,7 @@
 
 #include "AccountDb.hpp"
 
+#include "Authorship.hpp"
 #include "FederationFetch.hpp"
 #include "I2pKeys.hpp"
 #include "I2pRouter.hpp"
@@ -1015,15 +1016,10 @@ void Session::syncI2pMasterToSelf()
         {"sentAt", nowMillis()},
         {"i2pMaster", toBase64(i2pMaster_)},
     };
-    const Bytes innerBytes = encodedBody(inner);
-    // Sealed to our own sealing key: only this account's devices, which share
-    // the key, can read it.
-    const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
     // Straight into our own mailbox on our own server, which every device of
     // this account polls: the request's signature is the admission check, so
     // there is no destination to dial and no token to spend.
-    client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing),
-        "device.i2p-master");
+    submitSignedToSelf(inner, "device.i2p-master");
 }
 
 void Session::storeOwnAvatar(const Bytes& data, const std::string& mime)
@@ -1075,11 +1071,8 @@ void Session::syncAvatarToSelf()
         {"sentAt", nowMillis()},
         {"avatar", {{"mime", avatarMime_}, {"data", toBase64(avatar_)}}},
     };
-    const Bytes innerBytes = encodedBody(inner);
     // Sealed to our own sealing key: only this account's devices can read it.
-    const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
-    client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing),
-        "device.avatar");
+    submitSignedToSelf(inner, "device.avatar");
 }
 
 void Session::syncContactNameToSelf(const std::string& peerFingerprint, const std::string& name)
@@ -1096,10 +1089,7 @@ void Session::syncContactNameToSelf(const std::string& peerFingerprint, const st
         {"peer", peerFingerprint},
         {"name", name},
     };
-    const Bytes innerBytes = encodedBody(inner);
-    const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
-    client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing),
-        "device.contact-name");
+    submitSignedToSelf(inner, "device.contact-name");
 }
 
 std::string safeContactName(const std::string& proposed)
@@ -1131,9 +1121,7 @@ void Session::sendSelf(nlohmann::json inner)
     // skips its own echo.
     inner["device"] = client_->clientId();
     const std::string kind = inner.value("type", std::string());
-    const Bytes innerBytes = encodedBody(inner);
-    const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
-    client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing), kind);
+    submitSignedToSelf(inner, kind);
 }
 
 void Session::syncChatPinToSelf(const std::string& peerFingerprint, bool pinned)
@@ -1456,10 +1444,7 @@ void Session::syncDelegationTermToSelf()
         {"device", client_->clientId()},
         {"days", delegationDays_},
     };
-    const Bytes innerBytes = encodedBody(inner);
-    const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
-    client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing),
-        "device.delegation-term");
+    submitSignedToSelf(inner, "device.delegation-term");
 }
 
 bool Session::refreshI2pTransientIfDue(const std::int64_t now, const std::int64_t leadSeconds)
@@ -1519,6 +1504,17 @@ std::string Session::signLogin(const std::string& challenge) const
 Bytes Session::deliveryMaskFor(const std::string& peerFingerprint) const
 {
     return deliveryTokenMask(deliverySecret_, peerFingerprint);
+}
+
+void Session::submitSignedToSelf(nlohmann::json inner, const std::string& kind) const
+{
+    // Signed like anything else this account sends: another device of ours reads
+    // it as a message from us, and a message from us has to prove it.
+    signAuthorship(inner, client_->identity());
+    const Bytes innerBytes = encodedBody(inner);
+    // Sealed to our own sealing key: only this account's devices can read it.
+    const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
+    client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing), kind);
 }
 
 std::vector<WireEvent> Session::connectionLog() const
@@ -1966,7 +1962,9 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     };
     // E2E-encrypted to the peer's prekey: the first message is confidential.
     // Delivered tokenless under the "contact" admission class.
-    const Bytes encrypted = cms::seal(encodedBody(payload), peerPrekey);
+    nlohmann::json request = payload;
+    signAuthorship(request, client_->identity());
+    const Bytes encrypted = cms::seal(encodedBody(request), peerPrekey);
     deliver(peerDest, peerServingKey, "contact", peerFingerprint, std::nullopt, encrypted,
         DeliveryWatch{}, /*waitForOutcome=*/true, requestId);
 
@@ -2781,6 +2779,9 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     inner["routing"]
         = {{"dest", myDest_}, {"servingKey", myServingKeyB64_}, {"view", sharedView()}};
 
+    // Signed last, when the envelope is complete: what the peer verifies is the
+    // message as it was actually sent, bootstrap, routing and all.
+    signAuthorship(inner, client_->identity());
     const Bytes innerBytes = encodedBody(inner);
     const Key peerSealing = Key::fromPublicDer(fromBase64(contact.sealingPublicB64));
     const Bytes payload = cms::seal(innerBytes, peerSealing);
@@ -2891,6 +2892,33 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
             // server-visible delivery class never changes how we decrypt.
             const Bytes plain = cms::unseal(blob, sealingKey_);
             nlohmann::json body = decodedBody(plain);
+
+            // Who wrote it, before anything in it is believed. The envelope
+            // carries the answer itself: the transport only proves that someone
+            // holding a token of ours put it there, which is admission, not
+            // authorship. A message whose signature is missing, broken, or made
+            // by a key that is not the sender it claims to be, is consumed here -
+            // it never reaches a chat, a contact entry or the user.
+            {
+                std::string author;
+                try {
+                    author = authorOf(body);
+                } catch (const std::exception& error) {
+                    bazarish::log::warn("sync: dropping an item that does not name its "
+                                        "author: {}", error.what());
+                    noteWire(false, "unsigned item", "dropped", error.what());
+                    client_->ack(entry.id);
+                    continue;
+                }
+                if (author != body.value("from", std::string())) {
+                    bazarish::log::warn("sync: dropping an item signed by {} claiming to be {}",
+                        bazarish::log::redact(author),
+                        bazarish::log::redact(body.value("from", std::string())));
+                    noteWire(false, "item signed by another key", "dropped", {});
+                    client_->ack(entry.id);
+                    continue;
+                }
+            }
 
             IncomingMessage message;
             message.deliveryClass = entry.deliveryClass;
@@ -3569,10 +3597,7 @@ void Session::echoSentToSelf(const std::string& peerFingerprint, const nlohmann:
         {"device", client_->clientId()},
         {"message", inner},
     };
-    const Bytes innerBytes = encodedBody(echo);
-    const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
-    client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing),
-        "device.message");
+    submitSignedToSelf(echo, "device.message");
 }
 
 void Session::sendTokenRequest(const std::string& peerFingerprint)
@@ -3635,10 +3660,7 @@ void Session::askDevicesForToken(const std::string& peerFingerprint)
         {"device", client_->clientId()},
         {"peer", peerFingerprint},
     };
-    const Bytes innerBytes = encodedBody(inner);
-    const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
-    client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing),
-        "device.token-request");
+    submitSignedToSelf(inner, "device.token-request");
 }
 
 void Session::grantTokenToDevices(
@@ -3666,10 +3688,7 @@ void Session::grantTokenToDevices(
         {"peer", peerFingerprint},
         {"token", token},
     };
-    const Bytes innerBytes = encodedBody(inner);
-    const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
-    client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing),
-        "device.token-grant");
+    submitSignedToSelf(inner, "device.token-grant");
 }
 
 // ============================ Audio calls ============================
@@ -3756,10 +3775,7 @@ void Session::announceCallTaken(const std::string& callId)
         {"callId", callId},
     };
     try {
-        const Bytes innerBytes = encodedBody(inner);
-        const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
-        client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing),
-        "call.taken");
+        submitSignedToSelf(inner, "call.taken");
     } catch (const std::exception& error) {
         // The call this device is taking matters more than the other devices'
         // ringing, which stops on its own at the ring timeout.

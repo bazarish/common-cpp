@@ -29,7 +29,10 @@ constexpr std::size_t kMaxMessagePayloadBytes = 512 * 1024;
 // answer, and the ML-KEM ciphertext of the seal itself (1088). The cap is that
 // worst case rounded up, so a greeting is a greeting - the client holds the
 // user to kMaxContactGreetingBytes - and nothing else fits.
-constexpr std::size_t kMaxContactRequestBytes = 9216;
+// Every message names its author with a hybrid signature, and a contact request
+// has no card and no token to name it any other way - so the cap has to leave
+// room for one: the ML-DSA-65 public key and signature are about 7 KiB of it.
+constexpr std::size_t kMaxContactRequestBytes = 20480;
 // What a user may write into a contact request. A line of hello, not a channel.
 constexpr std::size_t kMaxContactGreetingBytes = 100;
 
