@@ -437,9 +437,30 @@ EmbeddedEndpoint::~EmbeddedEndpoint()
     const std::shared_ptr<i2pd::client::ClientDestination> closing = dest;
     bazarish::log::info("i2p: closing destination {} ({})",
         label.empty() ? std::string("unnamed") : label, hostAddress);
+    // Streams accepted but never taken belong to that same lane: it may be
+    // sending on them at this moment. Dropping the last reference here destroys
+    // them under the lane's feet, and the lane then writes through what it is
+    // holding - a crash inside Stream::SendPackets, seen while an account was
+    // being closed. They go back to the lane with the destination.
+    std::deque<std::shared_ptr<i2pd::stream::Stream>> pending;
+    {
+        const std::lock_guard<std::mutex> lock(acceptMutex);
+        pending.swap(acceptQueue);
+    }
+    const std::shared_ptr<i2pd::datagram::DatagramDestination> closingDatagram = datagram;
     dest.reset();
     datagram.reset();
-    boost::asio::post(closing->GetService(), [closing]() { closing->Stop(); });
+    boost::asio::post(closing->GetService(),
+        [closing, closingDatagram = closingDatagram, pending = std::move(pending)]() mutable {
+            for (const std::shared_ptr<i2pd::stream::Stream>& stream : pending) {
+                if (stream) {
+                    stream->Close();
+                }
+            }
+            pending.clear();
+            closingDatagram.reset();
+            closing->Stop();
+        });
 }
 
 bool EmbeddedEndpoint::ready() const { return dest->IsReady(); }
