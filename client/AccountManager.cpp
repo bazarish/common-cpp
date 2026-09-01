@@ -4,6 +4,8 @@
 #include "AccountDb.hpp"
 #include "AccountKey.hpp"
 
+#include <bazarish/Limits.hpp>
+
 #include <memory>
 
 #include <bazarish/Log.hpp>
@@ -232,6 +234,14 @@ AccountInfo AccountManager::create(const std::string& name, const std::string& p
     const std::string id = sanitizeFileName(name);
     if (id.empty()) {
         throw std::runtime_error("an account needs a name");
+    }
+    // The name travels: it is the label a contact request seeds the recipient's
+    // address book with, and that request is the one thing a stranger may put in
+    // a mailbox. Bounded here as well as where it is set, so an account cannot be
+    // created with a name that would not fit.
+    if (name.size() > kMaxAccountNameBytes) {
+        throw std::runtime_error("an account name may be at most "
+            + std::to_string(kMaxAccountNameBytes) + " bytes");
     }
     if (exists(id)) {
         throw std::runtime_error("an account with this name already exists");

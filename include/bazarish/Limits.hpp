@@ -15,26 +15,28 @@ namespace bazarish {
 // sender can put in someone's mailbox in a single delivery.
 constexpr std::size_t kMaxMessagePayloadBytes = 512 * 1024;
 
-// Cap on a TOKENLESS contact-class payload: the sealed bytes a stranger may
-// place in a mailbox without spending anything. It is a protocol constant, not
-// an operator's dial - raising it on one server would only invite deliveries
-// every other server refuses, and lowering it would break contact requests that
-// are correct.
+// The cap on a tokenless contact request, in delivered (sealed) bytes. It is the
+// one thing a stranger may put in a mailbox, so it is the measured worst case and
+// not a generous number: room above what a request can weigh is room to fill a
+// mailbox with.
 //
-// Measured against a real request (CBOR body sealed to the peer's hybrid
-// prekey): 8177 bytes with no greeting, 8312 with a 100-byte greeting and a
-// 32-byte display name. It is made of the two hybrid sealing keys the bootstrap
-// carries (1315 bytes each, of which 1206 is the ML-KEM half), the 64-token
-// reply batch (2816 bytes of base64) the requester hands over so the peer can
-// answer, and the ML-KEM ciphertext of the seal itself (1088). The cap is that
-// worst case rounded up, so a greeting is a greeting - the client holds the
-// user to kMaxContactGreetingBytes - and nothing else fits.
-// Every message names its author with a hybrid signature, and a contact request
-// has no card and no token to name it any other way - so the cap has to leave
-// room for one: the ML-DSA-65 public key and signature are about 7 KiB of it.
-constexpr std::size_t kMaxContactRequestBytes = 20480;
+// Measured at 13878 bytes: the two hybrid sealing keys the bootstrap carries, the
+// 64-token reply batch the requester hands over so the peer can answer, the
+// ML-KEM ciphertext of the seal, the authorship block with the sender's keys in
+// it (a request has no card and no token, so the signature is the only thing that
+// names them), the longest greeting a user may write and the longest name an
+// account may carry. The 32 bytes on top are what the variable-length parts can
+// add: an ECDSA signature is 70 to 72 bytes and a CBOR integer is as wide as its
+// value.
+constexpr std::size_t kMaxContactRequestBytes = 13910;
 // What a user may write into a contact request. A line of hello, not a channel.
 constexpr std::size_t kMaxContactGreetingBytes = 100;
+// An account's own display name, in bytes. It rides in a contact request as the
+// label the recipient seeds their contact with, and that request is the one thing
+// a stranger may put in a mailbox - so the name is bounded here, or the size of
+// that request would not be. Counted in bytes and not characters because that is
+// what a mailbox holds; 64 leaves about 32 characters of a non-Latin alphabet.
+constexpr std::size_t kMaxAccountNameBytes = 64;
 
 // Delivery classes, as the server sees them. The content type is end to end and
 // never visible here.

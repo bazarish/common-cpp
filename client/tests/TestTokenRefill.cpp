@@ -121,6 +121,9 @@ struct Mock {
     std::map<std::string, std::set<std::string>> registered;  // owner fp -> valid token hashes (b64)
     std::map<std::string, std::set<std::string>> singletons;  // owner fp -> hashes registered 1-at-a-time
     std::map<std::string, std::set<std::string>> seenIds;     // recipient fp -> admitted deliveryIds
+    // The biggest tokenless request this server was ever handed: what the
+    // protocol cap has to be, and no more.
+    std::size_t largestContactRequest = 0;
     int nextId = 1;
     // A delivery into this mailbox that spends one of the mailbox owner's OWN
     // singleton-registered tokens sets the flag: that is exactly the prepaid-token
@@ -203,6 +206,10 @@ private:
                     && mock_.singletons[mailbox].count(tokenB64) != 0) {
                     mock_.refillUsedPrepaid = true;
                 }
+            }
+            if (cls == "contact") {
+                mock_.largestContactRequest
+                    = std::max(mock_.largestContactRequest, payload.size());
             }
             if (fresh) {
                 mock_.mailbox[mailbox].push_back(
@@ -873,6 +880,41 @@ int main()
             CHECK(!sawForged);
             CHECK(!sawUnsigned);
             CHECK(sawHonest);
+        }
+
+        // The one thing a stranger may put in a mailbox is a contact request, so
+        // its size has to be a known number rather than a generous one: the cap
+        // is what the worst case actually weighs. Build that worst case - the
+        // longest name this account may carry and the longest greeting a user may
+        // write - and measure it where the server sees it.
+        {
+            const fs::path cDir = fs::temp_directory_path() / "bz-refill-c";
+            fs::remove(cDir);
+            Session carol = Session::create(cDir, endpoint, std::string{});
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.destFor[carol.fingerprint()]
+                    = "flkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+            }
+            carol.registerAccount();
+            carol.setFetchTransport(directDial);
+            carol.setOutboundCourier(courierFor());
+
+            const std::string longestName(kMaxAccountNameBytes, 'n');
+            alice.setDisplayName(longestName);
+            CHECK(alice.displayName() == longestName);
+            const std::string longestGreeting(kMaxContactGreetingBytes, 'g');
+            alice.addByInvite(carol.inviteUri(), longestGreeting);
+
+            const std::size_t largest = [&]() {
+                std::lock_guard<std::mutex> lock(m.mu);
+                return m.largestContactRequest;
+            }();
+            std::printf("TestTokenRefill: the largest contact request is %zu bytes\n", largest);
+            CHECK(largest <= kMaxContactRequestBytes);
+            // And no slack: room above the worst case is room for a stranger to
+            // fill a mailbox with. A drift either way has to be noticed here.
+            CHECK(kMaxContactRequestBytes - largest < 64);
         }
 
         // --- A second device of this account asks for the address book ---

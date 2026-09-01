@@ -669,6 +669,10 @@ void Session::setDisplayName(const std::string& name)
     if (isBlank(name)) {
         throw std::invalid_argument("an account needs a name");
     }
+    if (name.size() > kMaxAccountNameBytes) {
+        throw std::invalid_argument("an account name may be at most "
+            + std::to_string(kMaxAccountNameBytes) + " bytes");
+    }
     if (name == name_) {
         return;
     }
@@ -2825,10 +2829,11 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
         = {{"dest", myDest_}, {"servingKey", myServingKeyB64_}, {"view", sharedView()}};
 
     // Signed last, when the envelope is complete: what the peer verifies is the
-    // message as it was actually sent, bootstrap, routing and all. Our keys ride
-    // with the bootstrap and nowhere else - a correspondent needs them once, and
-    // they are a quarter of the block.
-    signAuthorship(inner, client_->identity(), inner.contains("bootstrap"));
+    // message as it was actually sent, bootstrap, routing and all. Our keys do
+    // not ride here at all: adding a contact goes through their card, so the side
+    // that was added already holds the adder's keys from the request, and the
+    // adder holds theirs from the card they read.
+    signAuthorship(inner, client_->identity(), /*withKeys=*/false);
     const Bytes innerBytes = encodedBody(inner);
     const Key peerSealing = Key::fromPublicDer(fromBase64(contact.sealingPublicB64));
     const Bytes payload = cms::seal(innerBytes, peerSealing);
@@ -3382,7 +3387,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                 if (message.fromFingerprint == fingerprint()) {
                     message.contentType = type;
                     const std::string name = body.value("name", std::string());
-                    if (!name.empty() && name != name_) {
+                    if (!name.empty() && name.size() <= kMaxAccountNameBytes && name != name_) {
                         name_ = name;
                         client_->setDestinationOwner(destinationOwner());
                         persistMeta();
