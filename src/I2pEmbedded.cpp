@@ -452,6 +452,15 @@ EmbeddedEndpoint::~EmbeddedEndpoint()
     datagram.reset();
     boost::asio::post(closing->GetService(),
         [closing, closingDatagram = closingDatagram, pending = std::move(pending)]() mutable {
+            // Held across the stop. Stopping a destination drops its streaming
+            // destination, and every stream still queued on this lane reaches
+            // its owner through a reference to that object - not a pointer it
+            // could check - so freeing it here is read back by the next queued
+            // packet. AddressSanitizer names it exactly: freed in
+            // ClientDestination::Stop, read in Stream::SendPackets ->
+            // StreamingDestination::GetOwner.
+            const std::shared_ptr<i2pd::stream::StreamingDestination> streaming
+                = closing->GetStreamingDestination();
             for (const std::shared_ptr<i2pd::stream::Stream>& stream : pending) {
                 if (stream) {
                     stream->Close();
@@ -460,6 +469,10 @@ EmbeddedEndpoint::~EmbeddedEndpoint()
             pending.clear();
             closingDatagram.reset();
             closing->Stop();
+            // Everything those streams left on this lane runs before this last
+            // handler, and the references go with it - after the lane has
+            // nothing of theirs left to run.
+            boost::asio::post(closing->GetService(), [closing, streaming]() {});
         });
 }
 
