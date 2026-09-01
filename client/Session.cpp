@@ -2711,7 +2711,18 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     // delivered. Nothing is dialled, no token is spent, and every device of this
     // account gets it - which is the whole of what saving means here.
     if (isSavedChat(peerFingerprint)) {
-        return saveToSelf(std::move(inner));
+        const bool kept = saveToSelf(std::move(inner));
+        // Reported like any other send, because the caller is watching for an
+        // answer and there is one: the note is on this account's own server, for
+        // its other devices to pick up. Left unreported, the interface either
+        // waits for a delivery that is not coming or paints one that has not
+        // happened yet.
+        if (watch.onOutcome) {
+            OutboundCourier::Outcome outcome;
+            outcome.stored = kept;
+            watch.onOutcome(outcome);
+        }
+        return kept;
     }
     if (isBlocked(peerFingerprint)) {
         throw std::runtime_error("this contact is blocked; unblock them to write to them");
