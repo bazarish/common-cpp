@@ -39,6 +39,11 @@ struct ContactCard {
     // sealed to, whose private half the user's server holds. NOT a signature.
     // Empty when not published yet.
     Bytes servingSealingKeyDer;
+    // The identity keys that signed this card (SPKI DER). A card is where a
+    // correspondent's identity is met; every message of theirs is verified
+    // against these, so the reader keeps them rather than the fingerprint alone.
+    Bytes identityClassicalDer;
+    Bytes identityPqDer;
 
     static Bytes issue(const Identity& userIdentity, const std::string& dest = {},
         const Bytes& sealingPublicKeyDer = {}, const Bytes& servingSealingKeyDer = {});

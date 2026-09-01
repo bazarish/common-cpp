@@ -3,6 +3,7 @@
 
 #include "AudioIo.hpp"
 #include "CallMedia.hpp"
+#include "Authorship.hpp"
 #include "Client.hpp"
 #include "FileTransfer.hpp"
 #include "OutboundLeases.hpp"
@@ -99,6 +100,12 @@ struct Contact {
     // never overwritten by anything the peer sends. The user may rename it, and
     // that rename is mirrored only to the account's own other devices.
     std::string displayName;
+    // The peer's identity public keys (SPKI DER, base64): what every message of
+    // theirs is checked against. Learned once - from their card when we add them,
+    // or from the block on their contact request or first reply - and kept, so
+    // their later messages need not carry them.
+    std::string identityClassicalB64;
+    std::string identityPqB64;
     // The peer's avatar as last received (raw PNG/JPEG bytes) and its mime; the
     // bytes live in a sealed per-contact file, only the mime rides in the JSON.
     Bytes avatar;
@@ -501,6 +508,14 @@ public:
     // the browser. Returns a base64 token the user pastes back into the portal,
     // which verifies it (see verifyLoginBlob) and recovers this fingerprint.
     std::string signLogin(const std::string& challenge) const;
+
+    // Asks this account's other devices for the address book. A device that has
+    // just been enrolled has no other way to learn a contact: there is no lookup
+    // from a fingerprint to a destination, and the capability to read a card is
+    // held by the devices that already have it. Answered by every other device
+    // that has contacts, in as many messages as the book takes; with no other
+    // device the mailbox simply holds the question.
+    void askDevicesForContacts();
 
     // What this account did on the wire, newest last: the connection log the
     // account window shows. Kept in memory only, and small.
@@ -1023,6 +1038,20 @@ private:
     // One line in the connection log, and how a correspondent is named in it:
     // the local name when there is one, and the head of the fingerprint either
     // way - a full one has no business in a window meant to be screenshotted.
+    // One contact as the address book carries it, and the two halves of the
+    // exchange: an answer to another device of ours, and what to do with one.
+    nlohmann::json contactBookEntry(
+        const std::string& peerFingerprint, const Contact& contact) const;
+    void sendContactBookTo(const std::string& toDevice);
+    void applyContactBook(const nlohmann::json& entries);
+
+    // The identity keys this account holds for a correspondent, or an empty pair
+    // when it holds none. Its own keys for its own devices.
+    IdentityKeys knownKeysFor(const std::string& peerFingerprint) const;
+    // Keeps the keys a correspondent introduced themselves with. Once only: a
+    // later message may not re-introduce a contact under different keys.
+    static void rememberKeys(Contact& contact, const IdentityKeys& keys);
+
     // One envelope into this account's own mailbox, signed and sealed to itself.
     void submitSignedToSelf(nlohmann::json inner, const std::string& kind) const;
 
@@ -1278,6 +1307,9 @@ private:
     // Correspondents whose mail is dropped as it is read. Kept apart from the
     // contacts so a block outlives the contact it was made on.
     std::set<std::string> blocked_;
+    // The devices of this account that have already asked the others for the
+    // address book; each device asks once.
+    std::vector<std::string> contactsAskedBy_;
     // Our own serving destination + serving sealing key (SPKI DER, base64),
     // learned on subscribe (GET /v1/messaging/destination) and forwarded to
     // contacts in the E2E bootstrap so they route and seal replies to us.

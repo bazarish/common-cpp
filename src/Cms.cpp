@@ -294,6 +294,8 @@ VerifiedHybridJson verifyJsonHybrid(const Bytes& der)
     return VerifiedHybridJson{
         nlohmann::json::parse(bodyBytes.begin(), bodyBytes.end()),
         hybridFingerprint(outer.signerPublicDer, pqPublicDer),
+        outer.signerPublicDer,
+        pqPublicDer,
     };
 }
 

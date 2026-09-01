@@ -46,6 +46,12 @@ struct VerifiedHybridJson {
     nlohmann::json body;
     // The hybrid identity fingerprint covering both public keys.
     std::string identityFingerprint;
+    // The keys that signed, as SubjectPublicKeyInfo DER. Handed out because a
+    // statement is also how a reader learns the signer's keys: a contact card
+    // is where the identity of a correspondent is first met, and the messages
+    // they send afterwards are verified against these.
+    Bytes signerClassicalDer;
+    Bytes signerPqDer;
 };
 
 // Verifies both layers and the key types (an EC key smuggled into the pq

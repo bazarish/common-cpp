@@ -52,6 +52,10 @@ const char* const kCallOpeningStage = "Opening the audio path";
 // Length of a delivery id: what one envelope is called on the wire, in bytes
 // before hex encoding.
 constexpr std::size_t kDeliveryIdBytes = 16;
+// How much of one message an address-book answer may fill. Well under the
+// protocol's payload limit, because a contact is never split across two of them
+// and an avatar can be most of an entry.
+constexpr std::size_t kContactBookChunkBytes = 128 * 1024;
 // The account's own secret behind those names.
 // A contact request names itself with this many random bytes; the name is what
 // makes sending the same request again the same delivery.
@@ -524,6 +528,8 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
             contact.sealingPublicB64 = entry.at("sealingPublicB64").get<std::string>();
             contact.dest = entry.at("dest").get<std::string>();
             contact.servingSealingB64 = entry.at("servingSealingB64").get<std::string>();
+            contact.identityClassicalB64 = entry.value("identityClassicalB64", std::string());
+            contact.identityPqB64 = entry.value("identityPqB64", std::string());
             contact.sendTokens = entry.at("sendTokens").get<std::vector<std::string>>();
             contact.issuedToThem = entry.at("issuedToThem").get<bool>();
             // Display name and avatar metadata are newer fields: tolerate their
@@ -556,6 +562,11 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     session.blocked_ = std::move(blocked);
     session.acceptCalls_ = meta.value("acceptCalls", true);
     session.sendReceipts_ = meta.value("sendReceipts", true);
+    // Which devices have already asked the others for the address book. Kept per
+    // device id, not as one flag: a device id is drawn fresh on import, so a copy
+    // of an account that has asked before still asks for itself.
+    session.contactsAskedBy_
+        = meta.value("contactsAskedBy", std::vector<std::string>());
     session.cardB64_ = meta.value("card", std::string{});
     session.view_ = meta.value("view", std::string{});
     session.sharingAllowed_ = meta.value("sharingAllowed", true);
@@ -759,6 +770,7 @@ void Session::persistMeta() const
         // refusing clearnet across restarts, unless the user allowed it again.
         {"acceptCalls", acceptCalls_},
         {"sendReceipts", sendReceipts_},
+        {"contactsAskedBy", contactsAskedBy_},
     };
     db_->putText("meta", meta.dump(2));
 }
@@ -771,6 +783,8 @@ nlohmann::json Session::contactsToJson() const
             {"sealingPublicB64", contact.sealingPublicB64},
             {"dest", contact.dest},
             {"servingSealingB64", contact.servingSealingB64},
+            {"identityClassicalB64", contact.identityClassicalB64},
+            {"identityPqB64", contact.identityPqB64},
             {"sendTokens", contact.sendTokens},
             {"needsOwnBatch", contact.needsOwnBatch},
             {"issuedToThem", contact.issuedToThem},
@@ -1509,12 +1523,38 @@ Bytes Session::deliveryMaskFor(const std::string& peerFingerprint) const
 void Session::submitSignedToSelf(nlohmann::json inner, const std::string& kind) const
 {
     // Signed like anything else this account sends: another device of ours reads
-    // it as a message from us, and a message from us has to prove it.
-    signAuthorship(inner, client_->identity());
+    // it as a message from us, and a message from us has to prove it. Our keys
+    // do not travel here - the device reading this is us.
+    signAuthorship(inner, client_->identity(), /*withKeys=*/false);
     const Bytes innerBytes = encodedBody(inner);
     // Sealed to our own sealing key: only this account's devices can read it.
     const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
     client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing), kind);
+}
+
+IdentityKeys Session::knownKeysFor(const std::string& peerFingerprint) const
+{
+    if (peerFingerprint == fingerprint()) {
+        // Our own devices: we are the author, and we hold our own keys.
+        return IdentityKeys{
+            client_->identity().classical().publicDer(), client_->identity().pq().publicDer()};
+    }
+    const auto found = contacts_.find(peerFingerprint);
+    if (found == contacts_.end() || found->second.identityClassicalB64.empty()
+        || found->second.identityPqB64.empty()) {
+        return {};
+    }
+    return IdentityKeys{fromBase64(found->second.identityClassicalB64),
+        fromBase64(found->second.identityPqB64)};
+}
+
+void Session::rememberKeys(Contact& contact, const IdentityKeys& keys)
+{
+    if (keys.empty() || !contact.identityClassicalB64.empty()) {
+        return;  // learned once; a later message cannot re-introduce a contact
+    }
+    contact.identityClassicalB64 = toBase64(keys.classicalDer);
+    contact.identityPqB64 = toBase64(keys.pqDer);
 }
 
 std::vector<WireEvent> Session::connectionLog() const
@@ -1963,7 +2003,9 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     // E2E-encrypted to the peer's prekey: the first message is confidential.
     // Delivered tokenless under the "contact" admission class.
     nlohmann::json request = payload;
-    signAuthorship(request, client_->identity());
+    // With our keys: this is the first thing they ever hear from us, and every
+    // message after it is checked against what they keep from here.
+    signAuthorship(request, client_->identity(), /*withKeys=*/true);
     const Bytes encrypted = cms::seal(encodedBody(request), peerPrekey);
     deliver(peerDest, peerServingKey, "contact", peerFingerprint, std::nullopt, encrypted,
         DeliveryWatch{}, /*waitForOutcome=*/true, requestId);
@@ -1974,6 +2016,9 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     contact.dest = peerDest;
     contact.sealingPublicB64 = toBase64(peerPrekey.publicDer());
     contact.servingSealingB64 = toBase64(peerServingKey.publicDer());
+    // Their card signed itself: those are the keys their messages are checked
+    // against from here on, so they are kept rather than the fingerprint alone.
+    rememberKeys(contact, IdentityKeys{info.card.identityClassicalDer, info.card.identityPqDer});
     contact.issuedToThem = true;
     contact.view = descriptorView;
     // The name (from an invite or the alias used) is a one-time local label set
@@ -2780,8 +2825,10 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
         = {{"dest", myDest_}, {"servingKey", myServingKeyB64_}, {"view", sharedView()}};
 
     // Signed last, when the envelope is complete: what the peer verifies is the
-    // message as it was actually sent, bootstrap, routing and all.
-    signAuthorship(inner, client_->identity());
+    // message as it was actually sent, bootstrap, routing and all. Our keys ride
+    // with the bootstrap and nowhere else - a correspondent needs them once, and
+    // they are a quarter of the block.
+    signAuthorship(inner, client_->identity(), inner.contains("bootstrap"));
     const Bytes innerBytes = encodedBody(inner);
     const Key peerSealing = Key::fromPublicDer(fromBase64(contact.sealingPublicB64));
     const Bytes payload = cms::seal(innerBytes, peerSealing);
@@ -2900,9 +2947,14 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
             // by a key that is not the sender it claims to be, is consumed here -
             // it never reaches a chat, a contact entry or the user.
             {
+                const std::string claimed = body.value("from", std::string());
                 std::string author;
                 try {
-                    author = authorOf(body);
+                    // Keys travel only with a bootstrap, so most messages are
+                    // checked against what this account already keeps for the
+                    // sender they claim to be. A sender it keeps nothing for is
+                    // one it cannot check - and does not read.
+                    author = authorOf(body, knownKeysFor(claimed));
                 } catch (const std::exception& error) {
                     bazarish::log::warn("sync: dropping an item that does not name its "
                                         "author: {}", error.what());
@@ -2910,10 +2962,9 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                     client_->ack(entry.id);
                     continue;
                 }
-                if (author != body.value("from", std::string())) {
+                if (author != claimed) {
                     bazarish::log::warn("sync: dropping an item signed by {} claiming to be {}",
-                        bazarish::log::redact(author),
-                        bazarish::log::redact(body.value("from", std::string())));
+                        bazarish::log::redact(author), bazarish::log::redact(claimed));
                     noteWire(false, "item signed by another key", "dropped", {});
                     client_->ack(entry.id);
                     continue;
@@ -3009,8 +3060,11 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
             // Bootstrap may ride with any content type; apply it before dispatch
             // so a new or migrated contact is established regardless of type.
             if (body.contains("bootstrap")) {
-                applyBootstrap(contacts_[message.fromFingerprint], body.at("bootstrap"),
-                    client_->clientId(), soleDevice());
+                Contact& peer = contacts_[message.fromFingerprint];
+                // The keys ride with the bootstrap, and this is where a contact
+                // is made: from here on their messages are checked against them.
+                rememberKeys(peer, keysIn(body));
+                applyBootstrap(peer, body.at("bootstrap"), client_->clientId(), soleDevice());
                 message.establishedContact = true;
                 establishedPeers.insert(message.fromFingerprint);
             }
@@ -3203,6 +3257,21 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                         && days != delegationDays_) {
                         setDelegationDays(days, false);
                     }
+                }
+            } else if (type == "device.contacts-request") {
+                // Another device of ours has no address book. Every device that
+                // has one answers; the asker takes them all and keeps the first
+                // complete answer for each contact.
+                message.contentType = type;
+                if (body.value("device", std::string()) != client_->clientId()) {
+                    sendContactBookTo(body.value("device", std::string()));
+                }
+            } else if (type == "device.contacts") {
+                // The book, or a part of it, from one of our devices.
+                message.contentType = type;
+                if (body.value("forDevice", std::string()) == client_->clientId()
+                    && body.contains("contacts")) {
+                    applyContactBook(body.at("contacts"));
                 }
             } else if (type == "device.token-request") {
                 // Another of our devices has nothing left to write to this peer
@@ -3468,6 +3537,19 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
             bazarish::log::warn("sync: token refill failed: {}", error.what());
         }
     }
+    // Once per device, on the first sync that reached the server: ask the other
+    // devices of this account for the address book. A device that is the only
+    // one gets no answer, and the question costs it one self-addressed message.
+    if (std::find(contactsAskedBy_.begin(), contactsAskedBy_.end(), client_->clientId())
+        == contactsAskedBy_.end()) {
+        contactsAskedBy_.push_back(client_->clientId());
+        persistMeta();
+        try {
+            askDevicesForContacts();
+        } catch (const std::exception& error) {
+            bazarish::log::warn("sync: could not ask for the address book: {}", error.what());
+        }
+    }
     return result;
 }
 
@@ -3646,6 +3728,148 @@ bool Session::soleDevice() const
         bazarish::log::info("device list unavailable, treating this as one of several: {}",
             error.what());
         return false;
+    }
+}
+
+void Session::askDevicesForContacts()
+{
+    // The one thing a fresh device cannot get from the network: a contact is
+    // reached by destination and read by capability, and there is no lookup that
+    // turns a fingerprint into either. The account's other devices hold the book.
+    const nlohmann::json inner = {
+        {"v", kMessageFormatVersion},
+        {"type", "device.contacts-request"},
+        {"id", toHex(randomBytes(16))},
+        {"from", fingerprint()},
+        {"sentAt", nowMillis()},
+        {"device", client_->clientId()},
+    };
+    submitSignedToSelf(inner, "device.contacts-request");
+}
+
+nlohmann::json Session::contactBookEntry(
+    const std::string& peerFingerprint, const Contact& contact) const
+{
+    // What a contact IS: who they are, where they are reached and what this
+    // account decided about them. Nothing that belongs to one device or to one
+    // exchange in flight - above all no delivery tokens, which are one-time and
+    // spending one twice is losing a message.
+    nlohmann::json entry = {
+        {"peer", peerFingerprint},
+        {"sealing", contact.sealingPublicB64},
+        {"dest", contact.dest},
+        {"servingKey", contact.servingSealingB64},
+        {"view", contact.view},
+        {"sharingRefused", contact.sharingRefused},
+        {"name", contact.displayName},
+        {"notifications", contact.notifications},
+        {"allowCalls", contact.allowCalls},
+        {"issuedToThem", contact.issuedToThem},
+        {"blocked", isBlocked(peerFingerprint)},
+        {"identityClassical", contact.identityClassicalB64},
+        {"identityPq", contact.identityPqB64},
+    };
+    if (!contact.avatar.empty()) {
+        entry["avatar"] = toBase64(contact.avatar);
+        entry["avatarMime"] = contact.avatarMime;
+    }
+    return entry;
+}
+
+void Session::sendContactBookTo(const std::string& toDevice)
+{
+    if (toDevice.empty() || contacts_.empty()) {
+        return;
+    }
+    // Sent in as many messages as it takes: one contact never spans two, and an
+    // avatar that would not fit is left behind rather than splitting the entry -
+    // the correspondent sends it again themselves the next time they write.
+    std::vector<nlohmann::json> chunk;
+    std::size_t chunkBytes = 0;
+    int seq = 0;
+    const auto flush = [&](const bool last) {
+        if (chunk.empty() && !last) {
+            return;
+        }
+        const nlohmann::json inner = {
+            {"v", kMessageFormatVersion},
+            {"type", "device.contacts"},
+            {"id", toHex(randomBytes(16))},
+            {"from", fingerprint()},
+            {"sentAt", nowMillis()},
+            {"device", client_->clientId()},
+            {"forDevice", toDevice},
+            {"seq", seq++},
+            {"last", last},
+            {"contacts", chunk},
+        };
+        submitSignedToSelf(inner, "device.contacts");
+        chunk.clear();
+        chunkBytes = 0;
+    };
+    for (const auto& [peerFingerprint, contact] : contacts_) {
+        nlohmann::json entry = contactBookEntry(peerFingerprint, contact);
+        std::size_t entryBytes = encodedBody(entry).size();
+        if (entryBytes > kContactBookChunkBytes && entry.contains("avatar")) {
+            entry.erase("avatar");
+            entry.erase("avatarMime");
+            entryBytes = encodedBody(entry).size();
+        }
+        if (chunkBytes + entryBytes > kContactBookChunkBytes) {
+            flush(false);
+        }
+        chunkBytes += entryBytes;
+        chunk.push_back(std::move(entry));
+    }
+    flush(true);
+}
+
+void Session::applyContactBook(const nlohmann::json& entries)
+{
+    // Gaps only. What this device knows about a contact it already has stands:
+    // routing learned from the correspondent themselves is fresher than a copy
+    // of it, and a duplicate must not undo a rename or a move.
+    bool changed = false;
+    for (const nlohmann::json& entry : entries) {
+        const std::string peerFingerprint = entry.value("peer", std::string());
+        if (peerFingerprint.empty() || peerFingerprint == fingerprint()) {
+            continue;
+        }
+        const bool isNew = contacts_.find(peerFingerprint) == contacts_.end();
+        Contact& contact = contacts_[peerFingerprint];
+        const auto fill = [](std::string& field, const std::string& value) {
+            if (field.empty() && !value.empty()) {
+                field = value;
+            }
+        };
+        fill(contact.sealingPublicB64, entry.value("sealing", std::string()));
+        fill(contact.dest, entry.value("dest", std::string()));
+        fill(contact.servingSealingB64, entry.value("servingKey", std::string()));
+        fill(contact.view, entry.value("view", std::string()));
+        fill(contact.displayName, entry.value("name", std::string()));
+        fill(contact.identityClassicalB64, entry.value("identityClassical", std::string()));
+        fill(contact.identityPqB64, entry.value("identityPq", std::string()));
+        if (isNew) {
+            contact.sharingRefused = entry.value("sharingRefused", false);
+            contact.notifications = entry.value("notifications", true);
+            contact.allowCalls = entry.value("allowCalls", true);
+            contact.issuedToThem = entry.value("issuedToThem", false);
+            // No tokens travel, so this device has nothing to write with yet: it
+            // asks the others for one, which is the path that already exists.
+            contact.needsOwnBatch = true;
+            if (entry.value("blocked", false)) {
+                blocked_.insert(peerFingerprint);
+            }
+        }
+        if (contact.avatar.empty() && entry.contains("avatar")) {
+            storeContactAvatar(peerFingerprint, fromBase64(entry.at("avatar").get<std::string>()),
+                entry.value("avatarMime", std::string()));
+        }
+        changed = true;
+    }
+    if (changed) {
+        persistContacts();
+        db_->putText("blocked", nlohmann::json(blocked_).dump());
     }
 }
 

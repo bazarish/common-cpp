@@ -400,6 +400,12 @@ int main()
         // hold it: an envelope injected below has to be signed like a real one.
         const Identity aliceIdentity
             = Identity::fromPrivatePem(AccountDb(aDir, std::string{}).text("identity.pem"));
+        // A backup taken before she had anybody: restored later, it is a device
+        // that holds the account and knows nobody, which is the case the address
+        // book exists for.
+        const fs::path earlyBundle = fs::temp_directory_path() / "bz-refill-early.bundle";
+        fs::remove(earlyBundle);
+        alice.exportAccount(earlyBundle, "bundle-password");
         {
             std::lock_guard<std::mutex> lock(m.mu);
             m.destFor[alice.fingerprint()] = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
@@ -705,7 +711,7 @@ int main()
                 // Signed as that other device of hers would have signed it: an
                 // envelope that cannot name its author is dropped before it is
                 // read, which is the whole point of the signature.
-                signAuthorship(saved, aliceIdentity);
+                signAuthorship(saved, aliceIdentity, /*withKeys=*/false);
                 // The wire carries CBOR, which is what the reader expects.
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"saved-echo", "device",
@@ -846,14 +852,14 @@ int main()
 
             // Bob signs, but writes somebody else's name on it.
             nlohmann::json forged = text(strangerFingerprint, "forged-1", "trust me, I am them");
-            signAuthorship(forged, bobIdentity);
+            signAuthorship(forged, bobIdentity, /*withKeys=*/true);
             intoAliceMailbox("forged-1", forged);
             // Bob does not sign at all.
             intoAliceMailbox("unsigned-1", text(bob.fingerprint(), "unsigned-1", "no signature"));
             // And the same message, honestly signed, to prove the gate is not
             // simply dropping everything.
             nlohmann::json honest = text(bob.fingerprint(), "honest-1", "this one is mine");
-            signAuthorship(honest, bobIdentity);
+            signAuthorship(honest, bobIdentity, /*withKeys=*/false);
             intoAliceMailbox("honest-1", honest);
 
             bool sawForged = false;
@@ -869,6 +875,99 @@ int main()
             CHECK(sawHonest);
         }
 
+        // --- A second device of this account asks for the address book ---
+        //
+        // The one thing a fresh device cannot get from the network: no lookup
+        // turns a fingerprint into a destination, and the capability to read a
+        // card is held by the devices that already have the contact. So it asks,
+        // and the device that has the book answers over the account's own
+        // mailbox.
+        {
+            // Bob's face reaches Alice the ordinary way, so the book has one to
+            // carry.
+            const Bytes face = {0xFF, 0xD8, 0xFF, 0xE0, 'b', 'o', 'b'};
+            bob.setAvatar(face, "image/jpeg");
+            for (int round = 0; round < 3 && alice.contactAvatar(bob.fingerprint()).empty();
+                ++round) {
+                alice.sync();
+            }
+            CHECK(alice.contactAvatar(bob.fingerprint()) == face);
+            alice.renameContact(bob.fingerprint(), "Bob of the book");
+
+            const fs::path secondDir = fs::temp_directory_path() / "bz-refill-a-second.db";
+            fs::remove(secondDir);
+            Session::importAccount(earlyBundle, secondDir, "bundle-password");
+            Session second = Session::open(secondDir, std::string{});
+            // A device id is drawn fresh on import, which is what makes the two
+            // devices distinguishable at all.
+            CHECK(second.fingerprint() == alice.fingerprint());
+            CHECK(!second.hasContact(bob.fingerprint()));
+
+            // First sync: the question goes out (once per device, automatically).
+            second.sync();
+            // Alice answers it.
+            alice.sync();
+            // And the book arrives.
+            for (int round = 0; round < 3 && !second.hasContact(bob.fingerprint()); ++round) {
+                second.sync();
+            }
+            CHECK(second.hasContact(bob.fingerprint()));
+            CHECK(second.contactDisplayName(bob.fingerprint()) == "Bob of the book");
+            CHECK(second.contactAvatar(bob.fingerprint()) == face);
+            // Sending capacity is not transferable: tokens are one-time, and two
+            // devices spending the same one is a message lost.
+            CHECK(second.sendCapacity(bob.fingerprint()) == 0);
+            // What arrived is enough to check what Bob writes: his keys came with
+            // the book, so the second device can read him without them on the
+            // wire. A message he sends now is verified against exactly those.
+            bob.sendMessage(alice.fingerprint(), "hello, second device");
+            bool sawBob = false;
+            for (int round = 0; round < 3 && !sawBob; ++round) {
+                for (const IncomingMessage& item : second.sync()) {
+                    sawBob = sawBob || item.text == "hello, second device";
+                }
+            }
+            CHECK(sawBob);
+
+            // An avatar too big for one message is left behind rather than
+            // splitting the contact across two: the face arrives again from the
+            // correspondent, the address it is reached at cannot.
+            {
+                const Bytes huge(200 * 1024, 0x41);
+                bob.setAvatar(huge, "image/jpeg");
+                for (int round = 0; round < 3 && alice.contactAvatar(bob.fingerprint()) != huge;
+                    ++round) {
+                    alice.sync();
+                }
+                CHECK(alice.contactAvatar(bob.fingerprint()) == huge);
+
+                const fs::path thirdDir = fs::temp_directory_path() / "bz-refill-a-third.db";
+                fs::remove(thirdDir);
+                Session::importAccount(earlyBundle, thirdDir, "bundle-password");
+                Session third = Session::open(thirdDir, std::string{});
+                third.sync();
+                alice.sync();
+                for (int round = 0; round < 3 && !third.hasContact(bob.fingerprint()); ++round) {
+                    third.sync();
+                }
+                CHECK(third.hasContact(bob.fingerprint()));
+                CHECK(third.contactAvatar(bob.fingerprint()).empty());
+                CHECK(third.contactDisplayName(bob.fingerprint()) == "Bob of the book");
+            }
+
+            // Asked once: a second sync does not ask again.
+            const std::size_t before = [&]() {
+                std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[alice.fingerprint()].size();
+            }();
+            second.sync();
+            const std::size_t after = [&]() {
+                std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[alice.fingerprint()].size();
+            }();
+            CHECK(after == before);
+        }
+
         // --- What another device of ours says, and what this one does with it ---
         //
         // Each notice is built as the wire carries it, under another device id,
@@ -877,7 +976,7 @@ int main()
             const auto fromAnotherDevice = [&](nlohmann::json notice) {
                 // Signed with this account's key, which is what a device of hers
                 // holds: unsigned, it would be dropped before it is read.
-                signAuthorship(notice, aliceIdentity);
+                signAuthorship(notice, aliceIdentity, /*withKeys=*/false);
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"self-" + notice.at("id").get<std::string>(),
                     "device",

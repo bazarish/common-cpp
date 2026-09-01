@@ -1,8 +1,6 @@
 // Bazarish project (c) 2026
 #include "Authorship.hpp"
 
-#include <bazarish/Bytes.hpp>
-
 #include <stdexcept>
 
 namespace bazarish::client {
@@ -16,39 +14,66 @@ Bytes encodedContent(const nlohmann::json& content)
     return nlohmann::json::to_cbor(content);
 }
 
-}  // namespace
-
-void signAuthorship(nlohmann::json& content, const Identity& identity)
+// Keys and signatures ride as CBOR byte strings. Base64 inside a CBOR document
+// would be a third bigger for nothing, and this block is the largest thing on
+// most messages.
+nlohmann::json asBytes(const Bytes& data)
 {
-    const Bytes signedBytes = encodedContent(content);
-    const nlohmann::json keys = {
-        {"c", toBase64(identity.classical().publicDer())},
-        {"pq", toBase64(identity.pq().publicDer())},
-    };
-    const std::string keysText = keys.dump();
-    content[kAuthorshipField] = {
-        {"k", toBase64(Bytes(keysText.begin(), keysText.end()))},
-        {"c", toBase64(sign(identity.classical(), signedBytes))},
-        {"p", toBase64(sign(identity.pq(), signedBytes))},
-    };
+    return nlohmann::json::binary(data);
 }
 
-// Whose signature this envelope carries. Throws when it carries none, when a key
-// is not of the two kinds this protocol signs with, or when either signature
-// fails - a caller that cannot name the author must not show the message.
-std::string authorOf(const nlohmann::json& content)
+Bytes fromBytes(const nlohmann::json& value)
+{
+    if (!value.is_binary()) {
+        throw std::runtime_error("the authorship block is malformed");
+    }
+    const nlohmann::json::binary_t& binary = value.get_binary();
+    return Bytes(binary.begin(), binary.end());
+}
+
+}  // namespace
+
+void signAuthorship(nlohmann::json& content, const Identity& identity, const bool withKeys)
+{
+    const Bytes signedBytes = encodedContent(content);
+    nlohmann::json block = {
+        {"c", asBytes(sign(identity.classical(), signedBytes))},
+        {"p", asBytes(sign(identity.pq(), signedBytes))},
+    };
+    if (withKeys) {
+        block["kc"] = asBytes(identity.classical().publicDer());
+        block["kp"] = asBytes(identity.pq().publicDer());
+    }
+    content[kAuthorshipField] = std::move(block);
+}
+
+IdentityKeys keysIn(const nlohmann::json& content)
+{
+    if (!content.contains(kAuthorshipField)) {
+        return {};
+    }
+    const nlohmann::json& block = content.at(kAuthorshipField);
+    if (!block.contains("kc") || !block.contains("kp")) {
+        return {};
+    }
+    return IdentityKeys{fromBytes(block.at("kc")), fromBytes(block.at("kp"))};
+}
+
+std::string authorOf(const nlohmann::json& content, const IdentityKeys& known)
 {
     const nlohmann::json& block = content.at(kAuthorshipField);
+    const IdentityKeys carried = keysIn(content);
+    const IdentityKeys& keys = carried.empty() ? known : carried;
+    if (keys.empty()) {
+        throw std::runtime_error("no keys to check this author against");
+    }
+
     nlohmann::json signedPart = content;
     signedPart.erase(kAuthorshipField);
     const Bytes signedBytes = encodedContent(signedPart);
 
-    const Bytes keysRaw = fromBase64(block.at("k").get<std::string>());
-    const nlohmann::json keys = nlohmann::json::parse(keysRaw.begin(), keysRaw.end());
-    const Bytes classicalDer = fromBase64(keys.at("c").get<std::string>());
-    const Bytes pqDer = fromBase64(keys.at("pq").get<std::string>());
-    const Key classical = Key::fromPublicDer(classicalDer);
-    const Key pq = Key::fromPublicDer(pqDer);
+    const Key classical = Key::fromPublicDer(keys.classicalDer);
+    const Key pq = Key::fromPublicDer(keys.pqDer);
     // Key-type checks close the downgrade hole, exactly as the request auth does.
     if (!classical.isA("EC")) {
         throw std::runtime_error("author's classical key is not EC");
@@ -56,13 +81,13 @@ std::string authorOf(const nlohmann::json& content)
     if (!pq.isA("ML-DSA-65")) {
         throw std::runtime_error("author's pq key is not ML-DSA-65");
     }
-    if (!verify(classical, signedBytes, fromBase64(block.at("c").get<std::string>()))) {
+    if (!verify(classical, signedBytes, fromBytes(block.at("c")))) {
         throw std::runtime_error("the author's classical signature does not verify");
     }
-    if (!verify(pq, signedBytes, fromBase64(block.at("p").get<std::string>()))) {
+    if (!verify(pq, signedBytes, fromBytes(block.at("p")))) {
         throw std::runtime_error("the author's post-quantum signature does not verify");
     }
-    return hybridFingerprint(classicalDer, pqDer);
+    return hybridFingerprint(keys.classicalDer, keys.pqDer);
 }
 
 }  // namespace bazarish::client

@@ -69,6 +69,8 @@ ContactCard ContactCard::verify(const Bytes& der)
             = fromBase64(verified.body.at("servingKey").get<std::string>());
     }
     requireSigner(verified, card.user);
+    card.identityClassicalDer = verified.signerClassicalDer;
+    card.identityPqDer = verified.signerPqDer;
     return card;
 }
 
