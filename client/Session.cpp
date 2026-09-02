@@ -1020,6 +1020,18 @@ std::string Session::loadI2pDestination(const Bytes& privateKeysDat)
     return i2pAddress_;
 }
 
+void Session::replaceI2pMaster(const Bytes& privateKeysDat)
+{
+    const I2pMasterKey master = loadI2pMaster(privateKeysDat);
+    i2pMaster_ = master.privateKeys;
+    i2pAddress_ = master.base32;
+    persistI2pBlob("i2p-master", i2pMaster_);
+    // The delegation this device held was signed by the master it is replacing,
+    // so it is not a capability for this address at all.
+    i2pTransient_.clear();
+    db_->erase("i2p-transient");
+}
+
 void Session::disableI2pDest()
 {
     // Revoking is an empty delegation: the server tears the destination down and
@@ -3464,12 +3476,30 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                 // Idempotent (a device that already has it ignores it) and handled
                 // silently - not a user-visible message.
                 message.contentType = type;
-                if (message.fromFingerprint == fingerprint() && i2pMaster_.empty()) {
+                if (message.fromFingerprint == fingerprint()) {
                     try {
-                        loadI2pDestination(fromBase64(body.at("i2pMaster").get<std::string>()));
+                        const Bytes master
+                            = fromBase64(body.at("i2pMaster").get<std::string>());
+                        if (i2pMaster_.empty()) {
+                            loadI2pDestination(master);
+                        } else if (master != i2pMaster_) {
+                            // Another device published a different address for this
+                            // account. Believed only when the server confirms it is
+                            // the one being served: a stale copy of an older master
+                            // must not take a working address away from this device.
+                            const std::string offered = i2pBase32(master) + ".b32.i2p";
+                            if (client_->myDestination().dest == offered) {
+                                replaceI2pMaster(master);
+                                log::info("this account's address is now {}", offered);
+                            } else {
+                                log::info("ignoring an address another device sent: the "
+                                          "server does not serve it");
+                            }
+                        }
                     } catch (const std::exception& error) {
-                        // Malformed, wrong key type, or already configured. This device
-                        // then keeps an address of its own, which is worth knowing.
+                        // Malformed, wrong key type, or the server could not be
+                        // asked. This device then keeps the address it has, which
+                        // is worth knowing.
                         bazarish::log::warn("master key from another device rejected: {}",
                             error.what());
                     }

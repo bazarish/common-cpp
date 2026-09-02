@@ -1104,6 +1104,10 @@ private:
     bool reconcileI2pAddress();
     // Asks the account's other devices for the keys to one address.
     void askDevicesForI2pMaster(const std::string& servedHost);
+    // Takes on an address in place of the one this device holds, dropping the
+    // delegation signed by the old master with it. Only ever called for the
+    // address the server confirms it is serving.
+    void replaceI2pMaster(const Bytes& privateKeysDat);
     // Settles which address this account is served on, before anything is
     // published. True when this device can operate it (it already holds the
     // keys, another device handed them over, or the account is new here and this
