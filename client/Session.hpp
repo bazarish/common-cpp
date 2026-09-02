@@ -1150,6 +1150,14 @@ private:
     // never in two places.
     void syncDelegationTermToSelf();
     void askDevicesForToken(const std::string& peerFingerprint);
+    // Takes one delivery token out of a contact's stash and returns it. Which one
+    // is drawn at random: two devices of one account hold stashes that may overlap
+    // (a batch handed to one and copied to another, a restore), and taking from
+    // the same end on both makes them collide on the very same token every time.
+    // Drawing at random turns a certainty into a one-in-the-stash chance. The
+    // token is gone from the stash either way - spent if it is taken, and refused
+    // is also spent.
+    std::string takeSendToken(Contact& contact);
     // Whether this account has no other device registered. Asked of the server
     // once per sync and only when it matters (a batch addressed to nobody has
     // just arrived), because the answer decides whether this device keeps it
@@ -1234,7 +1242,7 @@ private:
     // message of its own (an ack, a receipt).
     bool deliver(const std::string& toDest, const Key& servingSealingKey,
         const std::string& deliveryClass, const std::string& mailbox,
-        const std::optional<Bytes>& token, const Bytes& payload,
+        const std::vector<Bytes>& tokens, const Bytes& payload,
         const DeliveryWatch& watch = {}, bool waitForOutcome = true,
         const std::string& e2eId = {});
     // The courier this account delivers through, built on first use (the router

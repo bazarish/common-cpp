@@ -118,11 +118,12 @@ using FetchTransport
 
 // Seals a delivery envelope to a destination server. deliveryClass is the
 // server-visible admission selector ("content" or "contact"); mailbox is the
-// recipient's fingerprint, deliveryId deduplicates retries, token is the
-// one-time delivery token for "content" (absent for "contact"). The result is
-// the opaque sealed blob the send endpoint expects.
+// recipient's fingerprint, deliveryId deduplicates retries, and tokens are the
+// one-time delivery tokens for "content" - as many as the payload weighs, one
+// per kBytesPerDeliveryToken (empty for "contact", which is tokenless). The
+// result is the opaque sealed blob the send endpoint expects.
 Bytes sealDeliveryEnvelope(const std::string& deliveryClass, const std::string& mailbox,
-    const std::string& deliveryId, const std::optional<Bytes>& token,
+    const std::string& deliveryId, const std::vector<Bytes>& tokens,
     const Key& recipientSealingKey);
 
 // What one envelope is called on the wire, derived rather than drawn fresh: the

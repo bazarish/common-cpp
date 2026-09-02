@@ -14,6 +14,20 @@ namespace bazarish {
 // client to client and never sits in a mailbox at all. It also bounds what one
 // sender can put in someone's mailbox in a single delivery.
 constexpr std::size_t kMaxMessagePayloadBytes = 512 * 1024;
+// What one delivery token buys. A message is admitted by as many tokens as it
+// weighs, one per this many bytes and never fewer than one: a conversation of
+// text costs a token a message the way it always did, while filling a mailbox
+// with the largest payload the protocol allows costs the sender eighteen. The
+// sender counts them out and the recipient's server checks the count, so neither
+// side has to trust the other's arithmetic.
+constexpr std::size_t kBytesPerDeliveryToken = 30 * 1024;
+
+// How many tokens a payload of this size must be delivered with.
+constexpr std::size_t tokensForPayload(const std::size_t payloadBytes)
+{
+    return payloadBytes == 0 ? 1 : (payloadBytes + kBytesPerDeliveryToken - 1)
+            / kBytesPerDeliveryToken;
+}
 
 // The cap on a tokenless contact request, in delivered (sealed) bytes. It is the
 // one thing a stranger may put in a mailbox, so it is the measured worst case and

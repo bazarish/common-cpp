@@ -210,11 +210,17 @@ private:
             if (cls == "content" && fresh) {
                 // Consume the presented token: it must be one the mailbox owner
                 // registered (else a real server would reject the delivery).
-                const std::string tokenB64 = inner.at("token").get<std::string>();
-                CHECK(mock_.registered[mailbox].erase(tokenB64) == 1);
-                if (mailbox == mock_.watchMailbox
-                    && mock_.singletons[mailbox].count(tokenB64) != 0) {
-                    mock_.refillUsedPrepaid = true;
+                // As many as the payload weighs, and every one of them known to
+                // the mailbox owner - a real server consumes exactly the count it
+                // computes for itself.
+                CHECK(inner.at("tokens").size() == bazarish::tokensForPayload(payload.size()));
+                for (const auto& entry : inner.at("tokens")) {
+                    const std::string tokenB64 = entry.get<std::string>();
+                    CHECK(mock_.registered[mailbox].erase(tokenB64) == 1);
+                    if (mailbox == mock_.watchMailbox
+                        && mock_.singletons[mailbox].count(tokenB64) != 0) {
+                        mock_.refillUsedPrepaid = true;
+                    }
                 }
             }
             if (cls == "contact") {

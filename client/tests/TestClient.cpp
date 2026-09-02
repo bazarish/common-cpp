@@ -332,13 +332,13 @@ int main()
     {
         const Key recipientSealing = Key::fromPublicDer(serverSealing.publicDer());
         const Bytes sealed = sealDeliveryEnvelope(
-            "content", bob.fingerprint(), "msg-1", Bytes(32, 0x33), recipientSealing);
+            "content", bob.fingerprint(), "msg-1", {Bytes(32, 0x33)}, recipientSealing);
         const Bytes plain = cms::unseal(sealed, serverSealing);
         const nlohmann::json inner = nlohmann::json::parse(plain.begin(), plain.end());
         CHECK(inner.at("class") == "content");
         CHECK(inner.at("mailbox") == bob.fingerprint());
         CHECK(inner.at("deliveryId") == "msg-1");
-        CHECK(inner.contains("token"));
+        CHECK(inner.at("tokens").size() == 1);
     }
 
     server.stop();

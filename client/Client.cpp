@@ -24,7 +24,7 @@ Bytes cardQueryBytes(const CardFetchQuery& query)
 }  // namespace
 
 Bytes sealDeliveryEnvelope(const std::string& deliveryClass, const std::string& mailbox,
-    const std::string& deliveryId, const std::optional<Bytes>& token,
+    const std::string& deliveryId, const std::vector<Bytes>& tokens,
     const Key& recipientSealingKey)
 {
     nlohmann::json inner = {
@@ -32,8 +32,12 @@ Bytes sealDeliveryEnvelope(const std::string& deliveryClass, const std::string& 
         {"mailbox", mailbox},
         {"deliveryId", deliveryId},
     };
-    if (token.has_value()) {
-        inner["token"] = toBase64(*token);
+    if (!tokens.empty()) {
+        nlohmann::json list = nlohmann::json::array();
+        for (const Bytes& token : tokens) {
+            list.push_back(toBase64(token));
+        }
+        inner["tokens"] = std::move(list);
     }
     const std::string text = inner.dump();
     return cms::seal(Bytes(text.begin(), text.end()), recipientSealingKey);
