@@ -587,32 +587,28 @@ int main()
             CHECK(after > before);
         }
 
-        const auto rejects = [](const auto& fn) {
-            try {
-                fn();
-            } catch (const std::exception&) {
-                return true;
-            }
-            return false;
-        };
-
         // Drain Bob's stash of Alice's tokens to EMPTY. Alice does NOT sync in between, so
         // she never sees Bob's low-stash signal and never refills him: Bob ends holding
         // none of Alice's tokens.
-        while (!rejects([&]() { bob.sendMessage(alice.fingerprint(), "b->a " + std::to_string(bobSent)); })) {
+        while (bob.sendCapacity(alice.fingerprint()) > 0) {
+            bob.sendMessage(alice.fingerprint(), "b->a " + std::to_string(bobSent));
             ++bobSent;
         }
         CHECK(bobSent > 0);
-        // Confirm the stash is truly empty: another send is rejected up front.
-        CHECK(rejects([&]() { bob.sendMessage(alice.fingerprint(), "overflow"); }));
+        // A send with nothing to carry it does not fail: it is held, and it is
+        // held without taking anything, because there is nothing to take.
+        bob.sendMessage(alice.fingerprint(), "overflow");
+        CHECK(bob.sendCapacity(alice.fingerprint()) == 0);
 
         // Drain Alice's stash too. Her low-stash sends embed a fresh prepaid token each
         // (registered one-at-a-time with her own server); she ends empty as well.
-        while (!rejects([&]() { alice.sendMessage(bob.fingerprint(), "a->b " + std::to_string(aliceSent)); })) {
+        while (alice.sendCapacity(bob.fingerprint()) > 0) {
+            alice.sendMessage(bob.fingerprint(), "a->b " + std::to_string(aliceSent));
             ++aliceSent;
         }
         CHECK(aliceSent > 0);
-        CHECK(rejects([&]() { alice.sendMessage(bob.fingerprint(), "overflow"); }));
+        alice.sendMessage(bob.fingerprint(), "overflow");
+        CHECK(alice.sendCapacity(bob.fingerprint()) == 0);
 
         // Bob syncs: he processes Alice's stream (the tail carries lowStash + refillToken)
         // and must reply with a token-refill. He holds NONE of Alice's tokens, so the only

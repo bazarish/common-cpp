@@ -237,6 +237,8 @@ void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap,
             contact.sendTokens.push_back(offered[pick]);
         }
         contact.needsOwnBatch = true;
+        bazarish::log::info("stash for {}: {} after one token out of an unaddressed batch",
+            bazarish::log::redact(contact.dest), contact.sendTokens.size());
         return;
     }
     if (forDevice.empty()) {
@@ -264,6 +266,10 @@ void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap,
             contact.sendTokens.push_back(token);
         }
     }
+    // What a stash is worth is the one number a user can watch changing without
+    // being told why. Every path that grows one says so.
+    bazarish::log::info("stash for {}: {} after a batch of {} addressed to this device",
+        bazarish::log::redact(contact.dest), contact.sendTokens.size(), offered.size());
 }
 
 std::string readFileText(const fs::path& path)
@@ -2924,25 +2930,27 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     // A caller-supplied token is spent instead of one from our stash (a prepaid
     // token-refill reply), so an empty stash is not an error on that path.
     const bool useOverrideToken = !overrideToken.empty();
+    // Kept only while the stash is thin enough that this send may have to wait:
+    // a message that waits is sent again from what the user wrote, not from the
+    // envelope this function has been adding to. Above the watermark no message
+    // can be short, so nothing is copied.
+    const bool mayWait = !useOverrideToken
+        && contact.sendTokens.size() <= tokensForPayload(kMaxMessagePayloadBytes);
+    const nlohmann::json asWritten = mayWait ? inner : nlohmann::json();
     if (!useOverrideToken && contact.sendTokens.empty()) {
-        // This device is out of capacity for them. Two asks, because they have
-        // different answerers: the contact (tokenless, so an empty stash can
-        // still speak) and this account's own devices, one of which may be
-        // holding tokens for this contact right now.
+        // Nothing to carry it with. The message waits rather than failing, and
+        // this device asks its own devices for a token - the token that arrives
+        // carries this message, which asks the correspondent for a batch on its
+        // way past. Spending it on an errand instead would send nothing and leave
+        // the user's message exactly where it was.
+        holdForToken(peerFingerprint, asWritten, watch, establishOnFirstReply);
         try {
-            sendTokenRequest(peerFingerprint);
+            askDevicesForToken(peerFingerprint);
         } catch (const std::exception& error) {
-            bazarish::log::warn("could not ask {} for delivery tokens: {}",
+            bazarish::log::warn("could not ask this account's devices for a token for {}: {}",
                 bazarish::log::redact(peerFingerprint), error.what());
         }
-        // Out of one-time delivery tokens for this peer: their stash refills when
-        // they come back online (the low-stash signal we sent earlier prompts it),
-        // so this is a recoverable "resend later", not a permanent failure. Surfaced
-        // verbatim on the failed bubble, so keep it human and free of the raw
-        // fingerprint.
-        throw std::runtime_error("Out of delivery tokens for this contact. Your other devices "
-                                 "have been asked for one, and this contact refills you when "
-                                 "they are next online - try again in a moment.");
+        return false;
     }
     // Captured before the bootstrap block below: when false here, this very send
     // is our first reply to the peer - the moment we accept/establish the dialog.
@@ -3034,17 +3042,16 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     // a bootstrap or a refill ask rides in the same envelope.
     const std::size_t tokensNeeded = tokensForPayload(payload.size());
     if (!useOverrideToken && contact.sendTokens.size() < tokensNeeded) {
+        // Not enough for what this one weighs. It waits for the rest the same way
+        // an empty stash waits, and the ask goes out once.
+        holdForToken(peerFingerprint, asWritten, watch, establishOnFirstReply);
         try {
-            sendTokenRequest(peerFingerprint);
+            askDevicesForToken(peerFingerprint);
         } catch (const std::exception& error) {
-            bazarish::log::warn("could not ask {} for delivery tokens: {}",
+            bazarish::log::warn("could not ask this account's devices for a token for {}: {}",
                 bazarish::log::redact(peerFingerprint), error.what());
         }
-        throw std::runtime_error("This message needs " + std::to_string(tokensNeeded)
-            + " delivery tokens for this contact and this device holds "
-            + std::to_string(contact.sendTokens.size())
-            + ". Your other devices have been asked, and this contact refills you when they"
-              " are next online - try again in a moment.");
+        return false;
     }
     if (bootstrapIssued) {
         contact.issuedToThem = true;
@@ -3636,9 +3643,17 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                         if (std::find(contact.sendTokens.begin(), contact.sendTokens.end(), token)
                             == contact.sendTokens.end()) {
                             contact.sendTokens.push_back(token);
+                            bazarish::log::info("stash for {}: {} after a token from {}",
+                                bazarish::log::redact(peer), contact.sendTokens.size(),
+                                body.value("device", std::string()).substr(0, kShortFingerprintChars));
                         }
                         persistContacts();
-                        if (contact.needsOwnBatch || contact.sendTokens.size() == 1) {
+                        // The errand that buys a batch is worth a token only when
+                        // there is nothing better to spend it on. A message the
+                        // user wrote and is waiting to send is better: it carries
+                        // the same ask on its way past.
+                        if ((contact.needsOwnBatch || contact.sendTokens.size() == 1)
+                            && !sendWaitingFor(peer)) {
                             sendTokenRequest(peer);
                         }
                     }
@@ -3887,6 +3902,9 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
 
     // Refill peers that ran low (a fresh token batch, sent as a token-refill).
     // Done after the loop so the outbound send never races the fetch loop.
+    // Whatever the pass brought in - a refill, a batch on a message, a token from
+    // another device - may be exactly what a held message was waiting for.
+    flushWaitingSends();
     // A device that owes itself an addressed batch of tokens.
     //
     // The errand that buys one costs a token, and a device with exactly one has
@@ -3907,7 +3925,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 if (askedOwnDevicesFor_.insert(peerFingerprint).second) {
                     askDevicesForToken(peerFingerprint);
                 }
-            } else if (contact.sendTokens.size() > 1) {
+            } else if (contact.sendTokens.size() > 1 && !sendWaitingFor(peerFingerprint)) {
                 sendTokenRequest(peerFingerprint);
             }
         } catch (const std::exception& error) {
@@ -4068,6 +4086,61 @@ void Session::retireThisDevice()
 void Session::closeAccountOnServer()
 {
     client_->closeAccount();
+}
+
+void Session::holdForToken(const std::string& peerFingerprint, const nlohmann::json& inner,
+    const DeliveryWatch& watch, const bool establishOnFirstReply)
+{
+    if (inner.is_null()) {
+        // Above the watermark, so this cannot be a message that merely has to
+        // wait: something is wrong with the stash rather than short of it.
+        throw std::runtime_error("Out of delivery tokens for this contact.");
+    }
+    bazarish::log::info("a message for {} waits for a delivery token",
+        bazarish::log::redact(peerFingerprint));
+    waitingSends_.push_back({peerFingerprint, inner, watch, establishOnFirstReply});
+    if (watch.onPhase) {
+        watch.onPhase(kPhaseWaitingForToken);
+    }
+}
+
+bool Session::sendWaitingFor(const std::string& peerFingerprint) const
+{
+    return std::any_of(waitingSends_.begin(), waitingSends_.end(),
+        [&peerFingerprint](const WaitingSend& held) { return held.peer == peerFingerprint; });
+}
+
+void Session::flushWaitingSends()
+{
+    if (waitingSends_.empty()) {
+        return;
+    }
+    // Taken out first: a send that has to wait again is put back by sendContent,
+    // and a list that is walked while it grows is a list that never ends.
+    std::vector<WaitingSend> held;
+    held.swap(waitingSends_);
+    for (WaitingSend& send : held) {
+        const auto contact = contacts_.find(send.peer);
+        if (contact == contacts_.end()) {
+            continue;  // the contact went away while its message waited
+        }
+        if (contact->second.sendTokens.empty()) {
+            waitingSends_.push_back(std::move(send));  // still nothing to carry it
+            continue;
+        }
+        try {
+            sendContent(send.peer, send.inner, send.watch, false, send.establishOnFirstReply);
+        } catch (const std::exception& error) {
+            bazarish::log::warn("a message that waited for a token could not go: {}",
+                error.what());
+            if (send.watch.onOutcome) {
+                OutboundCourier::Outcome failed;
+                failed.stored = false;
+                failed.errorMessage = error.what();
+                send.watch.onOutcome(failed);
+            }
+        }
+    }
 }
 
 void Session::flushPendingEchoes()

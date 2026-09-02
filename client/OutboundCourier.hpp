@@ -61,6 +61,9 @@ inline constexpr int kReplyGraceSeconds = 30;
 inline constexpr char kPhasePreparing[] = "preparing";
 inline constexpr char kPhaseDialing[] = "dialing";
 inline constexpr char kPhaseSending[] = "sending";
+// Nothing to carry this message with yet: it is held until a token arrives, and
+// what the user sees is a message waiting rather than one being sent.
+inline constexpr char kPhaseWaitingForToken[] = "waiting-for-token";
 // A token the recipient's server would not take. Reported as
 // "token-refused:<how many are left to try>", built by the session: the message
 // is not failing, it is being offered again with another capability.

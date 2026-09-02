@@ -1444,6 +1444,27 @@ private:
     // signed for, reported on the courier's thread and written to our own mailbox
     // here. Held behind a pointer because a session moves and a delivery in
     // flight must not be left holding the address it moved from.
+    // A message the user wrote that this device has no capability to carry yet.
+    // Held in memory only, and never written down: an outbound queue on disk
+    // would be a record of who this account writes to. It is sent the moment a
+    // token arrives, and a restart reports it failed like any other send that was
+    // in flight.
+    struct WaitingSend {
+        std::string peer;
+        nlohmann::json inner;
+        DeliveryWatch watch;
+        bool establishOnFirstReply = true;
+    };
+    std::vector<WaitingSend> waitingSends_;
+    // Sends what is waiting for a token, for every peer that now has one.
+    void flushWaitingSends();
+    // Holds a message until there is a capability to carry it, and says so on the
+    // send's own watch so the interface reads "waiting" rather than "sending".
+    void holdForToken(const std::string& peerFingerprint, const nlohmann::json& inner,
+        const DeliveryWatch& watch, bool establishOnFirstReply);
+    // Whether anything the user wrote is waiting on a token for this peer.
+    bool sendWaitingFor(const std::string& peerFingerprint) const;
+
     struct EchoQueue {
         std::mutex mutex;
         std::vector<std::pair<std::string, nlohmann::json>> pending;
