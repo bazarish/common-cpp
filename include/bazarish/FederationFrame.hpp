@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <stdexcept>
+#include <cstring>
+#include <algorithm>
 #include <string>
 
 namespace bazarish {
@@ -24,6 +26,8 @@ namespace bazarish {
 // A header line is control, not content: past this it is not a header any more,
 // and reading on would be an unbounded allocation on a peer's say-so.
 constexpr std::size_t kMaxFederationHeaderLineBytes = 64 * 1024;
+// How much of a frame is taken from the stream at once.
+constexpr std::size_t kFrameReadChunkBytes = 8 * 1024;
 
 struct FederationDeliverResult {
     bool delivered = false;
@@ -47,6 +51,73 @@ struct FederationFetchResult {
 };
 
 namespace detail {
+
+// A reader that takes what the stream gives it and keeps the surplus.
+//
+// A frame is a header line and, for a delivery, the payload after it. Read a
+// byte at a time - which is what readExact of one byte is - a 2 KB header costs
+// one cross-thread round trip per byte on the router's own lane: measured tens
+// to hundreds of milliseconds per delivery, all of it waiting. Read in whatever
+// pieces arrive, it costs two or three.
+template <class Stream>
+class FrameReader {
+public:
+    explicit FrameReader(Stream& stream)
+        : stream_(stream)
+    {
+    }
+
+    // Up to and not including the newline. Throws when the line outgrows what a
+    // header may be, or when the stream ends first.
+    std::string line()
+    {
+        std::string out;
+        for (;;) {
+            while (at_ < buffer_.size()) {
+                const char c = buffer_[at_++];
+                if (c == '\n') {
+                    return out;
+                }
+                out.push_back(c);
+                if (out.size() > kMaxFederationHeaderLineBytes) {
+                    throw std::runtime_error("federation header line too long");
+                }
+            }
+            fill();
+        }
+    }
+
+    void read(void* const out, const std::size_t size)
+    {
+        auto* const bytes = static_cast<unsigned char*>(out);
+        std::size_t done = 0;
+        while (done < size) {
+            if (at_ >= buffer_.size()) {
+                fill();
+            }
+            const std::size_t take = std::min(size - done, buffer_.size() - at_);
+            std::memcpy(bytes + done, buffer_.data() + at_, take);
+            at_ += take;
+            done += take;
+        }
+    }
+
+private:
+    void fill()
+    {
+        buffer_.resize(kFrameReadChunkBytes);
+        const std::size_t got = stream_.readSome(buffer_.data(), buffer_.size());
+        if (got == 0) {
+            throw std::runtime_error("the stream ended mid-frame");
+        }
+        buffer_.resize(got);
+        at_ = 0;
+    }
+
+    Stream& stream_;
+    std::string buffer_;
+    std::size_t at_ = 0;
+};
 
 // Reads a newline-terminated header line from the stream.
 template <class Stream>
