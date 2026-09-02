@@ -1150,9 +1150,6 @@ private:
     // never in two places.
     void syncDelegationTermToSelf();
     void askDevicesForToken(const std::string& peerFingerprint);
-    // Asks a contact for a batch over the tokenless contact channel, for when
-    // this device has nothing left to spend on the ask itself.
-    void askPeerForTokensTokenlessly(const std::string& peerFingerprint);
     // Whether this account has no other device registered. Asked of the server
     // once per sync and only when it matters (a batch addressed to nobody has
     // just arrived), because the answer decides whether this device keeps it
@@ -1442,9 +1439,12 @@ private:
     struct EchoQueue {
         std::mutex mutex;
         std::vector<std::pair<std::string, nlohmann::json>> pending;
-        // Peers whose server refused a delivery: their stash here is suspect and
-        // a fresh batch is asked for on the session's own thread.
-        std::vector<std::string> refused;
+        // Deliveries the recipient's server refused for their token. Each entry
+        // sends the same envelope again with the next token in the stash - the
+        // refusal was about the capability, not about the message - and it runs
+        // on the session's own thread, the only one that may take a token out of
+        // a stash.
+        std::vector<std::shared_ptr<std::function<void()>>> refused;
     };
     std::shared_ptr<EchoQueue> echoQueue_ = std::make_shared<EchoQueue>();
     AddressDecisionFn addressDecision_;

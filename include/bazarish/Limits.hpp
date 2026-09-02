@@ -20,15 +20,16 @@ constexpr std::size_t kMaxMessagePayloadBytes = 512 * 1024;
 // not a generous number: room above what a request can weigh is room to fill a
 // mailbox with.
 //
-// Measured at 13878 bytes: the two hybrid sealing keys the bootstrap carries, the
-// 64-token reply batch the requester hands over so the peer can answer, the
+// Measured at 22710 bytes: the two hybrid sealing keys the bootstrap carries, the
+// 256-token reply batch the requester hands over so the peer can answer, the
 // ML-KEM ciphertext of the seal, the authorship block with the sender's keys in
 // it (a request has no card and no token, so the signature is the only thing that
 // names them), the longest greeting a user may write and the longest name an
 // account may carry. The 32 bytes on top are what the variable-length parts can
 // add: an ECDSA signature is 70 to 72 bytes and a CBOR integer is as wide as its
-// value.
-constexpr std::size_t kMaxContactRequestBytes = 13910;
+// value. The batch is what dominates this number, and it is that size so that a
+// long conversation with an absent correspondent never runs the sender dry.
+constexpr std::size_t kMaxContactRequestBytes = 22742;
 // What a user may write into a contact request. A line of hello, not a channel.
 constexpr std::size_t kMaxContactGreetingBytes = 100;
 // An account's own display name, in bytes. It rides in a contact request as the

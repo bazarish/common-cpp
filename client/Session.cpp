@@ -96,11 +96,22 @@ fs::path i2pDirFor(const fs::path& accountFile)
     return accountFile.parent_path().parent_path() / "i2p";
 }
 
-// Tokens minted per batch handed to a contact. When a peer's stash of our
-// tokens drops to kRefillThreshold, they signal it and we mint another batch
-// (see Contacts.md refill) - so a conversation never runs dry.
-constexpr int kTokenBatchSize = 64;
-constexpr std::size_t kRefillThreshold = 16;
+// Tokens minted per batch handed to a contact, and the level at which the holder
+// asks for the next batch. The refill rides on an ordinary message, so it can
+// only be asked for while there is something to say - and the answer waits on a
+// correspondent who may be away for days. Half a batch of headroom is what keeps
+// a long conversation, or a peer who is simply offline, from running the sender
+// dry before anybody can answer. A stash that is being spent on nothing good is
+// not what these numbers are for: a flood is ended by removing the contact,
+// which destroys every token it holds of ours.
+// How many refused tokens one message walks through before it gives up. A stale
+// token happens - another device spent it, a copy of it was somewhere else - and
+// the next one usually works. This many refusals in a row is not that: it is a
+// batch the far side no longer knows, and dialling through the rest of it would
+// be minutes of work for a message that is not going to be taken.
+constexpr int kRefusedTokenRetries = 5;
+constexpr int kTokenBatchSize = 256;
+constexpr std::size_t kRefillThreshold = 128;
 
 // How long a call rings before it self-resolves: an unanswered outgoing call
 // becomes "no answer", an unanswered incoming one "missed" - so a ringing call
@@ -3023,10 +3034,15 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
             : ", token " + toHex(fromBase64(contact.sendTokens.back()))
                   .substr(0, kSpentTokenPrefixChars);
         noteWire(true, kind + " to " + peerLabel, "sending", "id " + shortId + tokenLabel);
+        // Filled in below, once there is a watch to send it through. A send that
+        // may not spend a token of its own - a refill reply paying with the
+        // token it was handed - has nothing to try again with, so it gets none.
+        const std::shared_ptr<std::function<void()>> resend
+            = useOverrideToken ? nullptr : std::make_shared<std::function<void()>>();
         DeliveryWatch logged = watch;
         const std::shared_ptr<WireLog> log = client_->wireLogHandle();
         logged.onOutcome = [log, kind, peerLabel, shortId, peerFingerprint, echoPayload,
-                               echoQueue = echoQueue_, onOutcome = watch.onOutcome](
+                               echoQueue = echoQueue_, onOutcome = watch.onOutcome, resend](
                                const OutboundCourier::Outcome& outcome) {
             const std::string status = outcome.stored
                 ? std::string("stored")
@@ -3039,28 +3055,78 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
                 const std::lock_guard<std::mutex> lock(echoQueue->mutex);
                 echoQueue->pending.push_back({peerFingerprint, echoPayload});
             }
-            // A refusal is the recipient's server saying the capability was not
-            // one: the token is gone either way, and the rest of the stash may be
-            // just as dead - a copy of it was spent somewhere else. Asking for a
-            // fresh batch costs the peer one message and puts live tokens on top
-            // of the pile, so the next attempt is not the same attempt.
+            // A refusal is the recipient's server saying that capability was not
+            // one. It says that about the token that was presented and about
+            // nothing else: the rest of the stash has not been shown to anybody.
+            // So the message is offered again with the next token, and the user
+            // is told which attempt it is on rather than that it failed.
             //
             // Only this refusal. STORAGE_FULL says the mailbox is full and the
             // token untouched (the far side even re-registers it),
             // RECIPIENT_SERVER_UNREACHABLE says nothing was presented at all, and
-            // MESSAGE_TOO_LARGE is about the message. Throwing the stash away for
-            // any of those would cost a round trip and answer nothing.
-            if (!outcome.stored
+            // MESSAGE_TOO_LARGE is about the message. None of them is about the
+            // capability, and none is worth a second token.
+            if (!outcome.stored && resend
                 && outcome.errorCode
                     == std::string(bazarish::toString(ErrorCode::eDeliveryRejected))) {
                 const std::lock_guard<std::mutex> lock(echoQueue->mutex);
-                echoQueue->refused.push_back(peerFingerprint);
+                echoQueue->refused.push_back(resend);
+                return;  // the outcome is not final: the next token decides
             }
             if (onOutcome) {
                 onOutcome(outcome);
             }
         };
         watchWithLog = std::move(logged);
+        if (resend) {
+            // The same envelope, with the next token in the stash. A refusal is
+            // about the capability that was presented and about nothing else, so
+            // the message is offered again rather than failed - and the user is
+            // told which try it is on. It gives up after a few: a batch that
+            // refuses this many times running is a batch, not a stale token, and
+            // walking the rest of it would be minutes of dialling for nothing.
+            *resend = [this, peerFingerprint, dest = contact.dest,
+                          contentKind = inner.value("type", std::string()), payload,
+                          e2eId = inner.value("id", std::string()),
+                          servingB64 = contact.servingSealingB64, wrapped = watchWithLog,
+                          report = watch.onOutcome,
+                          left = std::make_shared<int>(kRefusedTokenRetries)]() {
+                const auto peer = contacts_.find(peerFingerprint);
+                if (*left > 0 && peer != contacts_.end() && !peer->second.sendTokens.empty()) {
+                    --*left;
+                    const std::string token = peer->second.sendTokens.back();
+                    peer->second.sendTokens.pop_back();
+                    persistContacts();
+                    if (wrapped.onPhase) {
+                        wrapped.onPhase(std::string(kPhaseTokenRefused) + ":"
+                            + std::to_string(peer->second.sendTokens.size()));
+                    }
+                    deliver(dest, Key::fromPublicDer(fromBase64(servingB64)), "content",
+                        peerFingerprint, fromBase64(token), payload, wrapped, false, e2eId);
+                    return;
+                }
+                (void)contentKind;
+                // Nothing left to try with. The message failed, and the ask for a
+                // fresh batch goes to this account's own devices - the peer is
+                // never asked, a contact request being the only tokenless door.
+                bazarish::log::warn("every token tried for {} was refused",
+                    bazarish::log::redact(peerFingerprint));
+                OutboundCourier::Outcome spent;
+                spent.stored = false;
+                spent.errorCode = std::string(bazarish::toString(ErrorCode::eDeliveryRejected));
+                spent.errorMessage = "the recipient's server refused the delivery tokens this"
+                                     " device tried";
+                if (report) {
+                    report(spent);
+                }
+                try {
+                    askDevicesForToken(peerFingerprint);
+                } catch (const std::exception& error) {
+                    bazarish::log::warn("could not ask for fresh tokens after a refusal: {}",
+                        error.what());
+                }
+            };
+        }
     }
 
     const std::string token = useOverrideToken ? overrideToken : contact.sendTokens.back();
@@ -3964,7 +4030,7 @@ void Session::closeAccountOnServer()
 void Session::flushPendingEchoes()
 {
     std::vector<std::pair<std::string, nlohmann::json>> ready;
-    std::vector<std::string> refused;
+    std::vector<std::shared_ptr<std::function<void()>>> refused;
     {
         const std::lock_guard<std::mutex> lock(echoQueue_->mutex);
         ready.swap(echoQueue_->pending);
@@ -3978,29 +4044,15 @@ void Session::flushPendingEchoes()
                 "could not echo what was sent to our own devices: {}", error.what());
         }
     }
-    std::sort(refused.begin(), refused.end());
-    refused.erase(std::unique(refused.begin(), refused.end()), refused.end());
-    for (const std::string& peerFingerprint : refused) {
-        // The refusal says this capability was not one. The rest of the stash
-        // came out of the same batch and is worth no more than the one that was
-        // just refused - a batch is cloned or spent as a batch - so it goes, and
-        // with it the "every send burns one more dead token" behaviour. What
-        // replaces it is asked for in the same breath, and until it arrives the
-        // account window says plainly that there is nothing to write with.
-        const auto found = contacts_.find(peerFingerprint);
-        if (found != contacts_.end() && !found->second.sendTokens.empty()) {
-            bazarish::log::info("dropping {} token(s) for {} after a refusal",
-                found->second.sendTokens.size(), bazarish::log::redact(peerFingerprint));
-            found->second.sendTokens.clear();
-            found->second.needsOwnBatch = true;
-            persistContacts();
-        }
+    // Each of these sends the same envelope again with the next token in the
+    // stash, on this thread - taking a token out of a stash is this thread's
+    // work. A refusal is about the capability that was presented and about
+    // nothing else, so the rest of the batch stands.
+    for (const std::shared_ptr<std::function<void()>>& again : refused) {
         try {
-            askDevicesForToken(peerFingerprint);
-            askPeerForTokensTokenlessly(peerFingerprint);
+            (*again)();
         } catch (const std::exception& error) {
-            bazarish::log::warn("could not ask for fresh tokens after a refusal: {}",
-                error.what());
+            bazarish::log::warn("a refused delivery could not be tried again: {}", error.what());
         }
     }
 }
@@ -4023,39 +4075,6 @@ void Session::echoSentToSelf(const std::string& peerFingerprint, const nlohmann:
     submitSignedToSelf(echo, "device.message");
 }
 
-void Session::askPeerForTokensTokenlessly(const std::string& peerFingerprint)
-{
-    const auto found = contacts_.find(peerFingerprint);
-    if (found == contacts_.end()) {
-        return;
-    }
-    const Contact& contact = found->second;
-    // Only for a contact already established: a stranger's mailbox is not
-    // somewhere to write without a capability. The channel is the tokenless one
-    // their own refill takes when they hold none of ours - which is why neither
-    // side ends up waiting on the other forever.
-    if (!contact.issuedToThem || contact.sealingPublicB64.empty()
-        || contact.servingSealingB64.empty() || contact.dest.empty()) {
-        return;
-    }
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "token-request"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
-        {"device", client_->clientId()},
-        {"routing",
-            {{"dest", myDest_}, {"servingKey", myServingKeyB64_}, {"view", sharedView()}}},
-    };
-    signAuthorship(inner, client_->identity(), /*withKeys=*/false);
-    const Bytes payload
-        = cms::seal(encodedBody(inner), Key::fromPublicDer(fromBase64(contact.sealingPublicB64)));
-    const Key peerServingKey = Key::fromPublicDer(fromBase64(contact.servingSealingB64));
-    noteWire(true, "token request to " + wireName(peerFingerprint), "sending",
-        "no token to spend");
-    deliver(contact.dest, peerServingKey, "contact", peerFingerprint, std::nullopt, payload);
-}
 
 void Session::sendTokenRequest(const std::string& peerFingerprint)
 {
@@ -4068,15 +4087,12 @@ void Session::sendTokenRequest(const std::string& peerFingerprint)
         return;  // no descriptor yet: nothing to ask, and nowhere to ask it
     }
     if (contact.sendTokens.empty()) {
-        // Nothing to spend, so both ways out are taken. A token from one of this
-        // account's own devices costs the peer nothing and is instant when one of
-        // them is online; and the request itself goes over the tokenless contact
-        // channel - the same one their refill takes when they hold none of ours,
-        // and the reason neither side waits on the other forever. Tokenless only
-        // for a contact already established: a stranger's mailbox is not somewhere
-        // to write without a capability.
+        // Nothing to spend, so the only way out is a token from one of this
+        // account's own devices - which costs the peer nothing and is instant
+        // while one of them is online. The peer is not asked: a contact request is
+        // the only tokenless path into a mailbox, and a top-up over it would turn
+        // that one narrow door into a channel anybody could knock on.
         askDevicesForToken(peerFingerprint);
-        askPeerForTokensTokenlessly(peerFingerprint);
         return;
     }
     nlohmann::json inner = {

@@ -61,6 +61,10 @@ inline constexpr int kReplyGraceSeconds = 30;
 inline constexpr char kPhasePreparing[] = "preparing";
 inline constexpr char kPhaseDialing[] = "dialing";
 inline constexpr char kPhaseSending[] = "sending";
+// A token the recipient's server would not take. Reported as
+// "token-refused:<how many are left to try>", built by the session: the message
+// is not failing, it is being offered again with another capability.
+inline constexpr char kPhaseTokenRefused[] = "token-refused";
 // Retries are reported as "retry <n>/<attempts>", built by the courier.
 inline constexpr char kPhaseRetryPrefix[] = "retry ";
 

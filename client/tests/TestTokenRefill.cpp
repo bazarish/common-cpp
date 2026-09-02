@@ -639,15 +639,20 @@ int main()
         // asks runs out instead of looping.
         {
             const auto refillsWith = [&](const std::function<void()>& send) {
-                constexpr int kBoundedTries = 200;
-                for (int i = 0; i < kBoundedTries; ++i) {
+                // Bounded by what is actually in the stash right now, plus room:
+                // a kind that never asks for a refill runs dry inside that, which
+                // is the failure this looks for. Reading the capacity rather than
+                // naming a number keeps this true whatever a batch is worth.
+                constexpr std::size_t kMargin = 32;
+                const std::size_t bounded = alice.sendCapacity(bob.fingerprint()) + kMargin;
+                for (std::size_t i = 0; i < bounded; ++i) {
                     const std::size_t before = alice.sendCapacity(bob.fingerprint());
                     try {
                         send();
                     } catch (const std::exception& error) {
                         // Running dry is the failure this checks for: a kind that
                         // never asks for a refill spends the last token and stops.
-                        std::fprintf(stderr, "send stopped after %d: %s\n", i, error.what());
+                        std::fprintf(stderr, "send stopped after %zu: %s\n", i, error.what());
                         return false;
                     }
                     bob.sync();
@@ -869,24 +874,17 @@ int main()
                 CHECK(alice.sendCapacity(bob.fingerprint()) > 0);
                 CHECK(alice.sendCapacity(bob.fingerprint()) == afterFull - 1);
 
+                const std::size_t beforeRefusal = alice.sendCapacity(bob.fingerprint());
                 refuseOnce("DELIVERY_REJECTED");
                 // The courier answers on its own thread, so the account acts on
                 // the refusal at its next pass - which is where every other
                 // consequence of a delivery is applied too.
                 alice.sync();
-                // The batch is gone, and this device says so rather than burning
-                // what is left one failed send at a time.
-                CHECK(alice.sendCapacity(bob.fingerprint()) == 0);
-
-                // And it comes back on its own: the drop went out with an ask -
-                // to this account's own devices, and to the correspondent over
-                // the tokenless channel, which is the one that works when there
-                // is nothing left to spend on asking.
-                for (int round = 0; round < 4 && alice.sendCapacity(bob.fingerprint()) == 0;
-                    ++round) {
-                    bob.sync();
-                    alice.sync();
-                }
+                // A refusal is about the capability that was presented and about
+                // nothing else: the token that was refused is spent, and the next
+                // one is spent trying again. What the batch is worth is not
+                // decided by one of its members.
+                CHECK(alice.sendCapacity(bob.fingerprint()) < beforeRefusal);
                 CHECK(alice.sendCapacity(bob.fingerprint()) > 0);
             }
 
