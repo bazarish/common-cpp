@@ -1008,6 +1008,29 @@ int main()
                 return m.mailbox[alice.fingerprint()].size();
             }();
             CHECK(after == before);
+
+            // A backup taken with contacts in place hands the restored device one
+            // delivery token per conversation, and gives it up here: a one-time
+            // capability cannot be in two places, and one write per contact is
+            // all the restored device needs to buy tokens of its own.
+            const std::size_t held = alice.sendCapacity(bob.fingerprint());
+            CHECK(held > 0);
+            const fs::path laterBundle = fs::temp_directory_path() / "bz-refill-later.bundle";
+            fs::remove(laterBundle);
+            alice.exportAccount(laterBundle, "bundle-password");
+            CHECK(alice.sendCapacity(bob.fingerprint()) == held - 1);
+
+            const fs::path fourthDir = fs::temp_directory_path() / "bz-refill-a-fourth.db";
+            fs::remove(fourthDir);
+            Session::importAccount(laterBundle, fourthDir, "bundle-password");
+            Session fourth = Session::open(fourthDir, std::string{});
+            CHECK(fourth.hasContact(bob.fingerprint()));
+            CHECK(fourth.sendCapacity(bob.fingerprint()) == 1);
+            // And it spends that one on the errand that buys it a batch of its
+            // own rather than sitting on it: after the first sync the borrowed
+            // token is gone from here, whether or not the peer answered yet.
+            fourth.sync();
+            CHECK(fourth.sendCapacity(bob.fingerprint()) == 0);
         }
 
         // --- What another device of ours says, and what this one does with it ---

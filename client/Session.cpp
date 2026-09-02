@@ -4647,21 +4647,36 @@ void Session::changePassphrase(const std::string& passphrase)
     persistMeta();
 }
 
-void Session::exportAccount(const fs::path& outFile, const std::string& password) const
+void Session::exportAccount(const fs::path& outFile, const std::string& password)
 {
     const nlohmann::json meta = nlohmann::json::parse(db_->text("meta"));
     // Use the in-memory contacts; the bundle carries them in the clear (the
     // bundle password is the protection).
     nlohmann::json contacts = contactsToJson();
-    // Delivery tokens are one-time write capabilities. Two devices holding the
-    // same ones is two devices spending the same ones: the second spend is
-    // refused by the recipient's server, which is what a restored device that
-    // "cannot send to anybody" was. The restored device starts with none and
-    // buys its own batch through the path that exists for exactly this.
+    // Delivery tokens are one-time write capabilities, so a copy in the bundle is
+    // a second device spending what this one already spent - refused by the
+    // recipient's server, which is what a restored device that "cannot send to
+    // anybody" was. One token per conversation is therefore handed over rather
+    // than copied: it leaves this device's stash and goes into the bundle, so the
+    // restored device can write once to each contact. That one write is the
+    // token-request that buys it a batch of its own, which is what needsOwnBatch
+    // makes it spend the token on.
+    bool tokensMoved = false;
     for (auto& [contactFp, entry] : contacts.items()) {
-        (void)contactFp;
-        entry["sendTokens"] = nlohmann::json::array();
+        const auto held = contacts_.find(contactFp);
+        nlohmann::json handed = nlohmann::json::array();
+        if (held != contacts_.end() && !held->second.sendTokens.empty()) {
+            handed.push_back(held->second.sendTokens.back());
+            held->second.sendTokens.pop_back();
+            tokensMoved = true;
+        }
+        entry["sendTokens"] = handed;
         entry["needsOwnBatch"] = true;
+    }
+    if (tokensMoved) {
+        // The tokens are gone from here the moment the bundle is written, so this
+        // device never spends what it has given away.
+        persistContacts();
     }
 
     // The keys are re-serialized unencrypted inside the bundle; the password

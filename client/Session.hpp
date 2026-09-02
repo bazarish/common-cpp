@@ -284,8 +284,10 @@ public:
     // Exports the whole session (identity, sealing key, routing meta and
     // contacts) into a single password-encrypted file (CMS PWRI). The bundle
     // holds the keys in plain PEM internally - the password protects the file.
-    void exportAccount(
-        const std::filesystem::path& outFile, const std::string& password) const;
+    // One delivery token per conversation moves into the bundle and leaves this
+    // device's stash: one-time capabilities cannot be in two places, and the
+    // restored device needs one write per contact to buy tokens of its own.
+    void exportAccount(const std::filesystem::path& outFile, const std::string& password);
     // Imports an exported bundle into a fresh accountFile. A non-empty
     // atRestPassphrase re-encrypts the imported keys on disk.
     static void importAccount(const std::filesystem::path& bundleFile,
