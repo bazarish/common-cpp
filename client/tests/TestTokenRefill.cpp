@@ -130,6 +130,9 @@ struct Mock {
     // refill path (a batch token would not be a singleton).
     std::string watchMailbox;
     bool refillUsedPrepaid = false;
+    // What the far side answers instead of "delivered", when a test wants to see
+    // what a client does with a refusal. Empty means it accepts, as before.
+    std::string refuseWith;
 };
 
 // A send leaves on the courier's own thread, so a test that wants to see the far
@@ -196,6 +199,13 @@ private:
 
         {
             std::lock_guard<std::mutex> lock(mock_.mu);
+            if (!mock_.refuseWith.empty()) {
+                // Refused before anything is spent or stored, the way a server
+                // refuses a token it does not know.
+                const nlohmann::json refusal = {{"delivered", false},
+                    {"errorCode", mock_.refuseWith}, {"errorMessage", "refused by the test"}};
+                return refusal.dump() + "\n";
+            }
             const bool fresh = mock_.seenIds[mailbox].insert(deliveryId).second;
             if (cls == "content" && fresh) {
                 // Consume the presented token: it must be one the mailbox owner
@@ -826,6 +836,59 @@ int main()
             // And what he already held was not thrown away by it.
             bob.sync();
             CHECK(bob.sendCapacity(alice.fingerprint()) >= bobHeld);
+
+            // What a client does with a refusal, by the kind of refusal it is. A
+            // capability the far side will not take is not a capability: it goes,
+            // and so does the rest of the batch it came out of - a batch is
+            // cloned and spent as a batch. Anything else says nothing about the
+            // tokens and must leave them alone.
+            {
+                const auto refuseOnce = [&](const std::string& code) {
+                    {
+                        std::lock_guard<std::mutex> lock(m.mu);
+                        m.refuseWith = code;
+                    }
+                    try {
+                        alice.sendMessage(bob.fingerprint(), "into a refusal");
+                    } catch (const std::exception&) {
+                        // The send failing is the point; what it did to the stash
+                        // is what is being checked.
+                    }
+                    std::lock_guard<std::mutex> lock(m.mu);
+                    m.refuseWith.clear();
+                };
+
+                CHECK(alice.sendCapacity(bob.fingerprint()) > 1);
+                refuseOnce("STORAGE_FULL");
+                // One token was spent on the attempt, as every send spends one.
+                // The rest stand: a full mailbox says nothing about them.
+                const std::size_t afterFull = alice.sendCapacity(bob.fingerprint());
+                CHECK(afterFull > 0);
+
+                refuseOnce("RECIPIENT_SERVER_UNREACHABLE");
+                CHECK(alice.sendCapacity(bob.fingerprint()) > 0);
+                CHECK(alice.sendCapacity(bob.fingerprint()) == afterFull - 1);
+
+                refuseOnce("DELIVERY_REJECTED");
+                // The courier answers on its own thread, so the account acts on
+                // the refusal at its next pass - which is where every other
+                // consequence of a delivery is applied too.
+                alice.sync();
+                // The batch is gone, and this device says so rather than burning
+                // what is left one failed send at a time.
+                CHECK(alice.sendCapacity(bob.fingerprint()) == 0);
+
+                // And it comes back on its own: the drop went out with an ask -
+                // to this account's own devices, and to the correspondent over
+                // the tokenless channel, which is the one that works when there
+                // is nothing left to spend on asking.
+                for (int round = 0; round < 4 && alice.sendCapacity(bob.fingerprint()) == 0;
+                    ++round) {
+                    bob.sync();
+                    alice.sync();
+                }
+                CHECK(alice.sendCapacity(bob.fingerprint()) > 0);
+            }
 
             bob.sendMessage(alice.fingerprint(), "after the unblock");
             bool heardAgain = false;

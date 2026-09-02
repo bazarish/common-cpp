@@ -3037,7 +3037,15 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
             // just as dead - a copy of it was spent somewhere else. Asking for a
             // fresh batch costs the peer one message and puts live tokens on top
             // of the pile, so the next attempt is not the same attempt.
-            if (!outcome.stored && outcome.errorCode == "DELIVERY_REJECTED") {
+            //
+            // Only this refusal. STORAGE_FULL says the mailbox is full and the
+            // token untouched (the far side even re-registers it),
+            // RECIPIENT_SERVER_UNREACHABLE says nothing was presented at all, and
+            // MESSAGE_TOO_LARGE is about the message. Throwing the stash away for
+            // any of those would cost a round trip and answer nothing.
+            if (!outcome.stored
+                && outcome.errorCode
+                    == std::string(bazarish::toString(ErrorCode::eDeliveryRejected))) {
                 const std::lock_guard<std::mutex> lock(echoQueue->mutex);
                 echoQueue->refused.push_back(peerFingerprint);
             }
