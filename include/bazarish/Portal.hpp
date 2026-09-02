@@ -38,6 +38,8 @@ struct LoginConsumer {
     std::string name;
     std::string place;
     std::string role;
+
+    friend bool operator==(const LoginConsumer&, const LoginConsumer&) = default;
 };
 
 // What each field may hold. These are display limits: a window shows this much

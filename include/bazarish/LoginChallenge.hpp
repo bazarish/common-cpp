@@ -39,14 +39,23 @@ public:
     std::string verify(
         const std::string& challenge, const std::string& loginBlob, std::int64_t now);
 
+    // The words this portal currently signs under, and the operator's way to
+    // change them while it runs. A challenge handed out before the change names
+    // the old consumer and stops verifying: it was shown to a user under words
+    // this portal no longer stands behind, and re-labelling it is exactly what
+    // the tag exists to prevent. Throws when the new consumer is incomplete.
+    LoginConsumer consumer() const;
+    void setConsumer(LoginConsumer consumer);
+
 private:
     void pruneExpired(std::int64_t now);
+    std::string currentCanonical() const;
 
     std::string secret_;
     LoginConsumer consumer_;
     std::string canonicalConsumer_;
     std::int64_t windowSeconds_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::unordered_map<std::string, std::int64_t> consumed_;  // nonce -> ts
 };
 

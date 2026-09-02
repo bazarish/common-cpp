@@ -145,6 +145,36 @@ void testIncompleteConsumerRefused()
     CHECK_THROWS(LoginChallenge("portal-secret", roleless));
 }
 
+// An operator renames the deployment while it runs: new challenges carry the new
+// words, and one issued under the old ones stops verifying rather than buying a
+// session under a name nobody agreed to.
+void testConsumerChangedWhileRunning()
+{
+    const Identity identity = Identity::generate();
+    LoginChallenge portal("portal-secret", panel());
+    const std::int64_t t = 5000;
+
+    const std::string before = portal.issue(t);
+    const std::string blobBefore = signLoginBlob(identity, t, before);
+
+    const LoginConsumer renamed{"Bazarish alpha", "https://alpha.example", "Administrator"};
+    portal.setConsumer(renamed);
+    CHECK(portal.consumer() == renamed);
+
+    const std::string after = portal.issue(t);
+    CHECK(readLoginConsumer(after).name == renamed.name);
+    CHECK(readLoginConsumer(after).place == renamed.place);
+    CHECK(portal.verify(after, signLoginBlob(identity, t, after), t) == identity.fingerprint());
+
+    CHECK_THROWS(portal.verify(before, blobBefore, t));
+
+    // A consumer the portal could not stand behind never replaces the one it has.
+    LoginConsumer roleless = renamed;
+    roleless.role.clear();
+    CHECK_THROWS(portal.setConsumer(roleless));
+    CHECK(portal.consumer() == renamed);
+}
+
 }  // namespace
 
 int main()
@@ -153,6 +183,7 @@ int main()
     testRejections();
     testRelabelling();
     testIncompleteConsumerRefused();
+    testConsumerChangedWhileRunning();
     std::printf("TestLoginChallenge: all checks passed\n");
     return 0;
 }

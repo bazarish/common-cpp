@@ -33,15 +33,38 @@ LoginChallenge::LoginChallenge(
 {
 }
 
+LoginConsumer LoginChallenge::consumer() const
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return consumer_;
+}
+
+void LoginChallenge::setConsumer(LoginConsumer consumer)
+{
+    // Canonicalised (and so validated) before the lock: a consumer this portal
+    // cannot stand behind must not replace the one it is using.
+    std::string canonical = canonicalConsumer(consumer);
+    const std::lock_guard<std::mutex> lock(mutex_);
+    consumer_ = std::move(consumer);
+    canonicalConsumer_ = std::move(canonical);
+}
+
+std::string LoginChallenge::currentCanonical() const
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return canonicalConsumer_;
+}
+
 std::string LoginChallenge::issue(const std::int64_t now)
 {
+    const std::string canonical = currentCanonical();
     const std::string nonce = toHex(randomBytes(16));
     const nlohmann::json challenge = {
         {"v", kLoginChallengeVersion},
         {"nonce", nonce},
         {"ts", now},
-        {"consumer", nlohmann::json::parse(canonicalConsumer_)},
-        {"tag", tagFor(secret_, nonce, now, canonicalConsumer_)},
+        {"consumer", nlohmann::json::parse(canonical)},
+        {"tag", tagFor(secret_, nonce, now, canonical)},
     };
     const std::string text = challenge.dump();
     return toBase64(Bytes(text.begin(), text.end()));
@@ -64,7 +87,8 @@ std::string LoginChallenge::verify(
     // 1. Decode and validate the challenge envelope. The consumer is read the
     // same way the client reads it, so what is checked here is what the user was
     // shown before signing.
-    if (canonicalConsumer(readLoginConsumer(challenge)) != canonicalConsumer_) {
+    const std::string canonical = currentCanonical();
+    if (canonicalConsumer(readLoginConsumer(challenge)) != canonical) {
         throw std::runtime_error("login challenge: it names another consumer");
     }
     const Bytes raw = fromBase64(challenge);
@@ -76,7 +100,7 @@ std::string LoginChallenge::verify(
     if (ts < now - windowSeconds_ || ts > now + windowSeconds_) {
         throw std::runtime_error("login challenge: expired");
     }
-    if (!constantTimeEqual(tag, tagFor(secret_, nonce, ts, canonicalConsumer_))) {
+    if (!constantTimeEqual(tag, tagFor(secret_, nonce, ts, canonical))) {
         throw std::runtime_error("login challenge: bad tag (not issued here)");
     }
 
