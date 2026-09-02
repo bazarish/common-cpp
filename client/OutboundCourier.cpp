@@ -65,6 +65,7 @@ OutboundCourier::~OutboundCourier()
 
 void OutboundCourier::stop()
 {
+    std::deque<Task> dropped;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         if (!running_) {
@@ -74,8 +75,11 @@ void OutboundCourier::stop()
         // Whatever is still queued is not sent and not remembered: there is no
         // outbound queue on disk, so an unfinished send comes back as failed on
         // the next start and it is the user who decides to send it again.
-        queue_.clear();
+        dropped.swap(queue_);
     }
+    // Every task ends somewhere. A dropped one that says nothing leaves its row
+    // in the interface at "sending" for the rest of the run.
+    reportDropped(dropped);
     cv_.notify_all();
     watchCv_.notify_all();
     for (std::thread& worker : workers_) {
@@ -93,12 +97,32 @@ void OutboundCourier::submit(Task task)
 {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        if (!running_) {
+        if (running_) {
+            queue_.push_back(std::move(task));
+            cv_.notify_one();
             return;
         }
-        queue_.push_back(std::move(task));
     }
-    cv_.notify_one();
+    // Handed in after the courier stopped: said so here, because nothing else
+    // will ever answer for it.
+    std::deque<Task> refused;
+    refused.push_back(std::move(task));
+    reportDropped(refused);
+}
+
+void OutboundCourier::reportDropped(const std::deque<Task>& tasks)
+{
+    for (const Task& task : tasks) {
+        if (!task.onOutcome) {
+            continue;
+        }
+        Outcome outcome;
+        outcome.stored = false;
+        // No error code: nothing was presented to anybody, so this says nothing
+        // about the capability that was going to be spent.
+        outcome.errorMessage = "this device stopped sending before the message left";
+        task.onOutcome(outcome);
+    }
 }
 
 void OutboundCourier::workerLoop()

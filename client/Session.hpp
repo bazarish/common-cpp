@@ -977,7 +977,17 @@ public:
     // The GUI passes false so a surfaced item is NOT acked here (it comes back with a
     // non-empty pendingId); the GUI acks it via ackPending only after durably
     // persisting it, so a crash between fetch and store never loses a message.
-    std::vector<IncomingMessage> sync(bool autoAckSurfaced = true);
+    // maxItems caps how many mailbox items this pass takes; zero takes them all.
+    // A caller whose thread is also the one that starts a call, sends a message
+    // and publishes the levels a call window draws asks for a bounded pass: a
+    // mailbox with a hundred items in it must not be a minute in which none of
+    // that happens. It then comes straight back for the rest.
+    std::vector<IncomingMessage> sync(bool autoAckSurfaced = true, std::size_t maxItems = 0);
+    // What such a caller passes, and what it asks afterwards. Each item is a
+    // fetch over I2P, so a handful is the most a user should ever wait behind.
+    static constexpr std::size_t kPendingItemsPerPass = 5;
+    // Whether the last pass left items in the mailbox.
+    bool morePending() const { return morePending_; }
 
     // Acks a pending mailbox item by its server-side blob id (IncomingMessage's
     // pendingId), removing it from the mailbox. Called after the item has been
@@ -1350,6 +1360,8 @@ private:
     // through backup and restore, and never changed - every envelope the account
     // has sent is named under it. Never leaves the account.
     std::string deliveryIdSeed_;
+    // Set by sync(): the mailbox held more than one pass takes.
+    bool morePending_ = false;
     // Secret behind every delivery mask: drawn once when the account is created,
     // carried through backup and restore, and never sent - only masks derived
     // from it are, and only to this account's own server.

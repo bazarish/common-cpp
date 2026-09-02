@@ -2547,6 +2547,8 @@ void Session::sendReceipt(const std::string& peerFingerprint, const std::string&
         {"sentAt", nowMillis()},
         {"ref", refMessageId},
     };
+    bazarish::log::info("read receipt for {} on its way to {}", refMessageId,
+        bazarish::log::redact(peerFingerprint));
     sendContent(peerFingerprint, std::move(inner), {}, false,
         /*establishOnFirstReply=*/false);
 }
@@ -3114,7 +3116,7 @@ void Session::persistSentFiles() const
 }
 
 
-std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
+std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size_t maxItems)
 {
     // What the courier confirmed since the last pass: the account's other
     // devices hear about a message once it is somewhere, not before.
@@ -3131,7 +3133,13 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
     // requested - their acceptance): we push our avatar to the established ones
     // after the loop, same "never write mid-iteration" rule.
     std::set<std::string> establishedPeers;
-    for (const PendingEntry& entry : client_->listPending()) {
+    const std::vector<PendingEntry> waiting = client_->listPending();
+    morePending_ = maxItems > 0 && waiting.size() > maxItems;
+    std::size_t handled = 0;
+    for (const PendingEntry& entry : waiting) {
+        if (maxItems > 0 && handled++ >= maxItems) {
+            break;
+        }
         try {
             const Bytes blob = client_->fetchBlob(entry.id);
             // Every item is sealed to our user sealing key the same way; the
@@ -4315,12 +4323,20 @@ void Session::startCallMedia()
             call_.stage.clear();  // talking: no stage to report any more
         }
     });
+    bazarish::log::info("call media: from {} to {}", call_.dgram->routingHost(),
+        call_.peerMediaDest);
     call_.media->start();
 }
 
 void Session::clearCall()
 {
     if (call_.media) {
+        // What the call actually carried. A call that ends with nothing received
+        // is the one thing the interface cannot show and the one thing worth
+        // knowing: it separates a path that never opened from a peer who said
+        // nothing.
+        bazarish::log::info("call media: {} datagrams sent, {} received",
+            call_.media->packetsSent(), call_.media->packetsReceived());
         call_.media->stop();
     }
     call_.media.reset();

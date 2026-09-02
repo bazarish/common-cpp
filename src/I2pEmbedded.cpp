@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <fstream>
 #include <map>
+#include <set>
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
@@ -443,6 +444,20 @@ public:
     std::condition_variable rawCv;
     std::deque<std::vector<std::uint8_t>> rawQueue;
 
+    // Where raw datagrams go, once. A blinded (b33) address is not the hash it
+    // routes to: it has to be looked up, and call media sends fifty datagrams a
+    // second - one lookup each is a lookup storm, and every packet sent before
+    // the first answer arrives is a packet that never left.
+    //
+    // Held by shared_ptr because the answer arrives on an engine thread and the
+    // call it belongs to may be over by then: the lookup writes into this, never
+    // into the endpoint.
+    struct RawTargets {
+        std::mutex mutex;
+        std::map<std::string, i2pd::data::IdentHash> resolved;
+        std::set<std::string> lookups;
+    };
+    std::shared_ptr<RawTargets> rawTargets = std::make_shared<RawTargets>();
 };
 
 EmbeddedEndpoint::~EmbeddedEndpoint()
@@ -667,13 +682,39 @@ void EmbeddedEndpoint::sendRawDatagram(const std::string& host, const void* data
         }
         else
         {
-            auto blinded = std::make_shared<i2pd::data::BlindedPublicKey>(std::string_view(label));
-            const std::shared_ptr<i2pd::datagram::DatagramDestination> sender = datagram;
-            std::vector<std::uint8_t> copy(payload, payload + size);
-            dest->RequestDestinationWithEncryptedLeaseSet(blinded,
-                [sender, copy](std::shared_ptr<i2pd::data::LeaseSet> ls)
+            // A blinded address. Looked up once and remembered: what follows is a
+            // stream of media, not one message.
+            const std::shared_ptr<RawTargets> targets = rawTargets;
+            {
+                const std::lock_guard<std::mutex> lock(targets->mutex);
+                const auto known = targets->resolved.find(host);
+                if (known != targets->resolved.end())
                 {
-                    if (ls) { sender->SendRawDatagramTo(copy.data(), copy.size(), ls->GetIdentHash()); }
+                    datagram->SendRawDatagramTo(payload, size, known->second);
+                    return;
+                }
+                if (!targets->lookups.insert(host).second)
+                {
+                    return;  // a lookup is already out; this datagram waits for nobody
+                }
+            }
+            bazarish::log::info("i2p: looking up {} to send it datagrams", host);
+            auto blinded = std::make_shared<i2pd::data::BlindedPublicKey>(std::string_view(label));
+            dest->RequestDestinationWithEncryptedLeaseSet(blinded,
+                [targets, host](std::shared_ptr<i2pd::data::LeaseSet> ls)
+                {
+                    const std::lock_guard<std::mutex> lock(targets->mutex);
+                    targets->lookups.erase(host);
+                    if (!ls)
+                    {
+                        // Said out loud: without it a call with nothing to route
+                        // to is a call with no sound and no reason given.
+                        bazarish::log::warn("i2p: {} has no leaseset; datagrams to it go nowhere",
+                            host);
+                        return;
+                    }
+                    targets->resolved[host] = ls->GetIdentHash();
+                    bazarish::log::info("i2p: {} answered; datagrams to it can go", host);
                 });
         }
     }

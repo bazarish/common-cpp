@@ -137,6 +137,10 @@ public:
 private:
     void workerLoop();
     void watchdogLoop();
+    // Answers for tasks that will never be run: a send handed in after the
+    // courier stopped, or one still queued when it did. Called with the lock
+    // released - the callback belongs to the caller, not to this queue.
+    void reportDropped(const std::deque<Task>& tasks);
     // One dial and one frame exchange. reachable says whether the far side
     // answered at all - not answering is the only thing worth a second attempt.
     Outcome attempt(const Task& task, std::chrono::steady_clock::time_point deadline,
