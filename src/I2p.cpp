@@ -178,6 +178,16 @@ std::optional<Privacy> privacyFromString(const std::string_view text)
     return std::nullopt;
 }
 
+std::string_view privacyName(const Privacy privacy)
+{
+    switch (privacy) {
+        case Privacy::eMinimal: return "minimal";
+        case Privacy::eMiddle: return "middle";
+        case Privacy::eMax: return "max";
+    }
+    return "max";
+}
+
 void setI2pLogging(const bool enabled)
 {
     g_i2pLogging = enabled;

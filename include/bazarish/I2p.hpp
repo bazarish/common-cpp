@@ -30,6 +30,10 @@ enum class Privacy { eMinimal, eMiddle, eMax };
 // Parses "minimal" | "middle" | "max" (for CLI flags); nullopt otherwise.
 std::optional<Privacy> privacyFromString(std::string_view text);
 
+// The same three words back, so a service can report the level it is running on
+// in the spelling its config file uses.
+std::string_view privacyName(Privacy privacy);
+
 // Parallel tunnels per direction in a destination's pool (throughput /
 // redundancy for one address). I2P caps the per-pool quantity at 16.
 inline constexpr int kDefaultTunnelQuantity = 3;
