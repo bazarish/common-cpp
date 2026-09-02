@@ -1360,8 +1360,14 @@ private:
     // through backup and restore, and never changed - every envelope the account
     // has sent is named under it. Never leaves the account.
     std::string deliveryIdSeed_;
-    // Set by sync(): the mailbox held more than one pass takes.
+    // Set by sync(): the mailbox held more than one pass takes, and what is left
+    // is work rather than items already in somebody's hands.
     bool morePending_ = false;
+    // Items handed out for the caller to store, whose ack has not come back yet.
+    // A bounded pass would otherwise fetch the same five items over and over: the
+    // ack travels back through the caller and lands after the next pass has
+    // already asked for them.
+    std::set<std::string> awaitingAck_;
     // Secret behind every delivery mask: drawn once when the account is created,
     // carried through backup and restore, and never sent - only masks derived
     // from it are, and only to this account's own server.

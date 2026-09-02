@@ -3134,12 +3134,19 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
     // after the loop, same "never write mid-iteration" rule.
     std::set<std::string> establishedPeers;
     const std::vector<PendingEntry> waiting = client_->listPending();
-    morePending_ = maxItems > 0 && waiting.size() > maxItems;
+    morePending_ = false;
     std::size_t handled = 0;
     for (const PendingEntry& entry : waiting) {
-        if (maxItems > 0 && handled++ >= maxItems) {
+        // Already surfaced and waiting for its ack: it is being dealt with, and
+        // fetching it again would be this pass undoing the last one.
+        if (awaitingAck_.find(entry.id) != awaitingAck_.end()) {
+            continue;
+        }
+        if (maxItems > 0 && handled >= maxItems) {
+            morePending_ = true;  // work left that nobody is holding
             break;
         }
+        ++handled;
         try {
             const Bytes blob = client_->fetchBlob(entry.id);
             // Every item is sealed to our user sealing key the same way; the
@@ -3733,6 +3740,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 client_->ack(entry.id);
             } else {
                 message.pendingId = entry.id;
+                awaitingAck_.insert(entry.id);
             }
             noteWire(false,
                 (message.contentType.empty() ? std::string("content") : message.contentType)
@@ -3822,9 +3830,11 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
 
 void Session::ackPending(const std::string& pendingId)
 {
-    if (!pendingId.empty()) {
-        client_->ack(pendingId);
+    if (pendingId.empty()) {
+        return;
     }
+    awaitingAck_.erase(pendingId);
+    client_->ack(pendingId);
 }
 
 void Session::sendTokenRefill(const std::string& peerFingerprint, const std::string& forDevice,
