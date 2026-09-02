@@ -1408,6 +1408,9 @@ private:
     // Contacts this run has already asked the account's own devices about, so an
     // unanswerable ask is made once and not on every sync.
     std::set<std::string> askedOwnDevicesFor_;
+    // Prepaid reply tokens this run has already spent on a refill, so an item
+    // offered twice is not answered twice with a capability that is gone.
+    std::set<std::string> answeredPrepaid_;
     // Echoes waiting for this account's own thread: a send the recipient's server
     // signed for, reported on the courier's thread and written to our own mailbox
     // here. Held behind a pointer because a session moves and a delivery in

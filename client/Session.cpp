@@ -3814,6 +3814,16 @@ void Session::ackPending(const std::string& pendingId)
 void Session::sendTokenRefill(const std::string& peerFingerprint, const std::string& forDevice,
     const std::string& prepaidToken)
 {
+    // A prepaid token pays for exactly one reply. An item in the mailbox can be
+    // offered again - an ack that did not stick, a fetch that ran twice - and
+    // answering it again spends a capability that was consumed the first time:
+    // the recipient's server refuses it, this device learns nothing, and the
+    // pair goes round again on the next pass. Answered once per token, then.
+    if (!prepaidToken.empty() && !answeredPrepaid_.insert(prepaidToken).second) {
+        bazarish::log::debug("refill for {} already answered with this token",
+            bazarish::log::redact(peerFingerprint));
+        return;
+    }
     const auto found = contacts_.find(peerFingerprint);
     if (found == contacts_.end()) {
         return;
