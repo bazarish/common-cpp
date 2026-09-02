@@ -116,9 +116,6 @@ fs::path AccountManager::globalRoot()
     }
     return fs::current_path() / "Bazarish";
 #else
-    if (const char* const xdg = std::getenv("XDG_DATA_HOME"); xdg != nullptr && xdg[0] != '\0') {
-        return fs::path(xdg) / "bazarish";
-    }
     const char* const home = std::getenv("HOME");
     const fs::path base = home != nullptr ? fs::path(home) : fs::current_path();
     return base / ".local" / "share" / "bazarish";

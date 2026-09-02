@@ -28,7 +28,6 @@ struct AccountInfo {
 // opens and removes them.
 class AccountManager {
 public:
-    // Default location: $XDG_DATA_HOME/bazarish/accounts (or ~/.local/share).
     // Where this installation keeps everything: accounts, the I2P router's state,
     // the global settings. Normally the user's data directory; when a file named
     // ".bazarish.portable" sits beside the executable, a "bazarish_data" folder

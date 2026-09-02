@@ -247,6 +247,18 @@ int main()
     }
 
     fs::remove_all(root);
+
+#ifndef _WIN32
+    // One data directory, not two: XDG_DATA_HOME named a second place to keep
+    // accounts, sounds and settings, and a second place is one the user has to be
+    // told about.
+    if (const char* const home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
+        CHECK(::setenv("XDG_DATA_HOME", "/tmp/bazarish-not-this-one", 1) == 0);
+        CHECK(AccountManager::globalRoot()
+            == fs::path(home) / ".local" / "share" / "bazarish");
+    }
+#endif
+
     std::fprintf(stderr, "TestAccount passed\n");
     return 0;
 }
