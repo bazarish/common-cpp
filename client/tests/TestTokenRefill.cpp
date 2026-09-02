@@ -1036,7 +1036,16 @@ int main()
                 std::lock_guard<std::mutex> lock(m.mu);
                 return m.mailbox[alice.fingerprint()].size();
             }();
-            CHECK(after == before);
+            // Nothing new is written by that sync: the question is asked once
+            // per device. Items may still be consumed by it - this device's own
+            // token asks are addressed to the account, so it fetches them too.
+            CHECK(after <= before);
+            // And Alice does not answer a question that was not asked again: the
+            // book stays one contact, not two copies of one.
+            alice.sync();
+            second.sync();
+            CHECK(second.hasContact(bob.fingerprint()));
+            CHECK(second.contactDisplayName(bob.fingerprint()) == "Bob of the book");
 
             // A backup taken with contacts in place hands the restored device one
             // delivery token per conversation, and gives it up here: a one-time
@@ -1055,11 +1064,14 @@ int main()
             Session fourth = Session::open(fourthDir, std::string{});
             CHECK(fourth.hasContact(bob.fingerprint()));
             CHECK(fourth.sendCapacity(bob.fingerprint()) == 1);
-            // And it spends that one on the errand that buys it a batch of its
-            // own rather than sitting on it: after the first sync the borrowed
-            // token is gone from here, whether or not the peer answered yet.
+            // And it keeps that one for whatever the user writes first. The
+            // errand that buys a batch costs a token, and the first real message
+            // carries the same request anyway (low stash, prepaid reply,
+            // addressed to this device) - so spending it here would leave a
+            // restored device unable to write at all, which is the one thing it
+            // must be able to do.
             fourth.sync();
-            CHECK(fourth.sendCapacity(bob.fingerprint()) == 0);
+            CHECK(fourth.sendCapacity(bob.fingerprint()) == 1);
         }
 
         // --- What another device of ours says, and what this one does with it ---

@@ -1150,6 +1150,9 @@ private:
     // the conversation reads the same everywhere. Rides our own mailbox like the
     // other device.* service messages; best effort, and never a chat bubble on
     // the device that sent it.
+    // Writes whatever the courier has confirmed since the last call to the
+    // account's other devices.
+    void flushPendingEchoes();
     void echoSentToSelf(const std::string& peerFingerprint, const nlohmann::json& inner);
 
     // Pushes our own avatar to a contact as an "avatar" service message, once,
@@ -1399,6 +1402,18 @@ private:
     // transient (i2p-transient.dat) is the time-boxed delegation for the
     // current serving server. Both are sealed at rest when the account is
     // encrypted.
+    // Contacts this run has already asked the account's own devices about, so an
+    // unanswerable ask is made once and not on every sync.
+    std::set<std::string> askedOwnDevicesFor_;
+    // Echoes waiting for this account's own thread: a send the recipient's server
+    // signed for, reported on the courier's thread and written to our own mailbox
+    // here. Held behind a pointer because a session moves and a delivery in
+    // flight must not be left holding the address it moved from.
+    struct EchoQueue {
+        std::mutex mutex;
+        std::vector<std::pair<std::string, nlohmann::json>> pending;
+    };
+    std::shared_ptr<EchoQueue> echoQueue_ = std::make_shared<EchoQueue>();
     AddressDecisionFn addressDecision_;
     Bytes i2pMaster_;
     std::string i2pAddress_;

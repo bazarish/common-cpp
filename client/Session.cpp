@@ -1792,6 +1792,9 @@ bool Session::deliver(const std::string& toDest, const Key& servingSealingKey,
         return false;
     }
     const OutboundCourier::Outcome outcome = courier.deliverNow(task);
+    // This one answered on this thread, so the echo it queued can go now rather
+    // than waiting for a sync.
+    flushPendingEchoes();
     if (!outcome.stored) {
         // Typed, so a caller can tell a refusal it should repeat (the recipient's
         // address is taking too many contact requests just now) from one it
@@ -2864,19 +2867,16 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     if (isBlocked(peerFingerprint)) {
         throw std::runtime_error("this contact is blocked; unblock them to write to them");
     }
-    // The other devices of this account see what was done from here. Before the
-    // send, so an action that never reaches the contact still reads the same on
-    // every device of ours; it goes to our own mailbox and costs no token. Only
-    // what changes the conversation travels: a receipt, a call signal or a token
+    // What this device did in the conversation goes to the account's other
+    // devices - but only once the recipient's server has signed for it. Echoing
+    // before the send meant a message that never arrived was still shown on every
+    // other device, and every retry echoed again: one failed send became a column
+    // of grey copies over there. The copy is taken here, while the message is
+    // still what the user wrote, and sent from the outcome below. Only what
+    // changes the conversation travels: a receipt, a call signal or a token
     // errand is this device's business alone.
-    if (echoesToOwnDevices(inner.value("type", std::string()))) {
-        try {
-            echoSentToSelf(peerFingerprint, inner);
-        } catch (const std::exception& error) {
-            bazarish::log::warn(
-                "could not echo what was sent to our own devices: {}", error.what());
-        }
-    }
+    const nlohmann::json echoPayload
+        = echoesToOwnDevices(inner.value("type", std::string())) ? inner : nlohmann::json();
     const auto found = contacts_.find(peerFingerprint);
     if (found == contacts_.end()) {
         throw std::runtime_error("unknown contact: " + peerFingerprint);
@@ -2897,9 +2897,10 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     // token-refill reply), so an empty stash is not an error on that path.
     const bool useOverrideToken = !overrideToken.empty();
     if (!useOverrideToken && contact.sendTokens.empty()) {
-        // This device is out of capacity for them. Ask for a batch of our own -
-        // tokenless, so an empty stash can still speak - and tell the user to try
-        // again rather than silently dropping what they wrote.
+        // This device is out of capacity for them. Two asks, because they have
+        // different answerers: the contact (tokenless, so an empty stash can
+        // still speak) and this account's own devices, one of which may be
+        // holding tokens for this contact right now.
         try {
             sendTokenRequest(peerFingerprint);
         } catch (const std::exception& error) {
@@ -2911,8 +2912,9 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
         // so this is a recoverable "resend later", not a permanent failure. Surfaced
         // verbatim on the failed bubble, so keep it human and free of the raw
         // fingerprint.
-        throw std::runtime_error("Out of delivery tokens for this contact - resend once "
-                                 "they are back online and refill your sending capacity.");
+        throw std::runtime_error("Out of delivery tokens for this contact. Your other devices "
+                                 "have been asked for one, and this contact refills you when "
+                                 "they are next online - try again in a moment.");
     }
     // Captured before the bootstrap block below: when false here, this very send
     // is our first reply to the peer - the moment we accept/establish the dialog.
@@ -3000,12 +3002,20 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
         noteWire(true, kind + " to " + peerLabel, "sending", "id " + shortId);
         DeliveryWatch logged = watch;
         const std::shared_ptr<WireLog> log = client_->wireLogHandle();
-        logged.onOutcome = [log, kind, peerLabel, shortId, onOutcome = watch.onOutcome](
+        logged.onOutcome = [log, kind, peerLabel, shortId, peerFingerprint, echoPayload,
+                               echoQueue = echoQueue_, onOutcome = watch.onOutcome](
                                const OutboundCourier::Outcome& outcome) {
             const std::string status = outcome.stored
                 ? std::string("stored")
                 : "failed" + (outcome.errorCode.empty() ? std::string() : ": " + outcome.errorCode);
             log->record({0, true, kind + " to " + peerLabel, status, "id " + shortId});
+            // Queued, not sent: this runs on the courier's thread and writing to
+            // the account's own mailbox is the session's work. The queue is
+            // drained on the session's own thread, at its next sync.
+            if (outcome.stored && !echoPayload.is_null()) {
+                const std::lock_guard<std::mutex> lock(echoQueue->mutex);
+                echoQueue->pending.push_back({peerFingerprint, echoPayload});
+            }
             if (onOutcome) {
                 onOutcome(outcome);
             }
@@ -3073,6 +3083,9 @@ void Session::persistSentFiles() const
 
 std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
 {
+    // What the courier confirmed since the last pass: the account's other
+    // devices hear about a message once it is somewhere, not before.
+    flushPendingEchoes();
     std::vector<IncomingMessage> result;
     // Peers whose stash of our tokens is running low and who asked for a
     // refill; topped up after the fetch loop so we never write mid-iteration.
@@ -3711,17 +3724,31 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
 
     // Refill peers that ran low (a fresh token batch, sent as a token-refill).
     // Done after the loop so the outbound send never races the fetch loop.
-    // A device that took one token out of an unaddressed batch owes itself a
-    // batch of its own: spend it now rather than at the first message, so the
-    // shared pool stops being shared as early as possible.
+    // A device that owes itself an addressed batch of tokens.
+    //
+    // The errand that buys one costs a token, and a device with exactly one has
+    // something better to do with it: whatever the user writes next carries the
+    // same request (`lowStash` and a prepaid reply token, addressed to this
+    // device), so the message goes out AND the batch comes back. Spending the
+    // last one here instead left a restored device unable to write at all until
+    // the correspondent answered - the one thing a restored device must be able
+    // to do. With none at all there is nothing to spend, and the only way out is
+    // a token from one of this account's own devices; asked once per run, so a
+    // contact that is simply unreachable does not fill the mailbox.
     for (auto& [peerFingerprint, contact] : contacts_) {
-        if (!contact.needsOwnBatch || contact.sendTokens.empty()) {
+        if (!contact.needsOwnBatch) {
             continue;
         }
         try {
-            sendTokenRequest(peerFingerprint);
+            if (contact.sendTokens.empty()) {
+                if (askedOwnDevicesFor_.insert(peerFingerprint).second) {
+                    askDevicesForToken(peerFingerprint);
+                }
+            } else if (contact.sendTokens.size() > 1) {
+                sendTokenRequest(peerFingerprint);
+            }
         } catch (const std::exception& error) {
-            bazarish::log::warn("sync: could not ask {} for this device's own tokens: {}",
+            bazarish::log::warn("sync: could not ask for this device's own tokens for {}: {}",
                 bazarish::log::redact(peerFingerprint), error.what());
         }
     }
@@ -3866,6 +3893,23 @@ void Session::retireThisDevice()
 void Session::closeAccountOnServer()
 {
     client_->closeAccount();
+}
+
+void Session::flushPendingEchoes()
+{
+    std::vector<std::pair<std::string, nlohmann::json>> ready;
+    {
+        const std::lock_guard<std::mutex> lock(echoQueue_->mutex);
+        ready.swap(echoQueue_->pending);
+    }
+    for (const auto& [peerFingerprint, inner] : ready) {
+        try {
+            echoSentToSelf(peerFingerprint, inner);
+        } catch (const std::exception& error) {
+            bazarish::log::warn(
+                "could not echo what was sent to our own devices: {}", error.what());
+        }
+    }
 }
 
 void Session::echoSentToSelf(const std::string& peerFingerprint, const nlohmann::json& inner)
