@@ -37,6 +37,14 @@ namespace bazarish::client {
 
 namespace {
 
+// How much of a spent delivery token the connection log names: enough to match
+// against what a server says it refused, not enough to be one.
+constexpr std::size_t kSpentTokenPrefixChars = 12;
+
+}  // namespace
+
+namespace {
+
 // Whitespace only, or nothing at all: not a name a user could pick an account by.
 bool isBlank(const std::string& text)
 {
@@ -2999,7 +3007,15 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
         const std::string shortId
             = deliveryIdFor(inner.value("id", std::string()), peerFingerprint)
                   .substr(0, kShortFingerprintChars);
-        noteWire(true, kind + " to " + peerLabel, "sending", "id " + shortId);
+        // The capability this send spends, by its first bytes. A refused delivery
+        // is refused for one of three reasons and the server names the token in
+        // its own log; without the same handle on this side the two accounts of
+        // one failure cannot be put next to each other.
+        const std::string tokenLabel = useOverrideToken || contact.sendTokens.empty()
+            ? std::string()
+            : ", token " + toHex(fromBase64(contact.sendTokens.back()))
+                  .substr(0, kSpentTokenPrefixChars);
+        noteWire(true, kind + " to " + peerLabel, "sending", "id " + shortId + tokenLabel);
         DeliveryWatch logged = watch;
         const std::shared_ptr<WireLog> log = client_->wireLogHandle();
         logged.onOutcome = [log, kind, peerLabel, shortId, peerFingerprint, echoPayload,
