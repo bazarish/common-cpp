@@ -869,6 +869,32 @@ int main()
             signAuthorship(honest, bobIdentity, /*withKeys=*/false);
             intoAliceMailbox("honest-1", honest);
 
+            // And what he cannot do at all: talk on the channel this account
+            // uses to talk to itself. A device message is a message from one of
+            // her own devices; his signature proves he is not one, whatever the
+            // type says. Two of them are worth the check by themselves - one
+            // changes a setting of hers, the other writes into her address book.
+            const std::string plantedPeer = Identity::generate().fingerprint();
+            const auto deviceNotice = [&](const std::string& id, nlohmann::json extra) {
+                extra["v"] = 1;
+                extra["id"] = id;
+                extra["from"] = bob.fingerprint();
+                extra["sentAt"] = 1;
+                extra["device"] = "not-a-device-of-hers";
+                signAuthorship(extra, bobIdentity, /*withKeys=*/false);
+                intoAliceMailbox(id, extra);
+            };
+            const std::int64_t termBefore = alice.delegationDays();
+            deviceNotice("bob-term", {{"type", "device.delegation-term"},
+                                         {"days", termBefore == 7 ? 30 : 7}});
+            deviceNotice("bob-book",
+                {{"type", "device.contacts"},
+                    {"forDevice", "not-a-device-of-hers"},
+                    {"contacts", nlohmann::json::array({nlohmann::json{
+                                     {"fingerprint", plantedPeer},
+                                     {"dest", "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p"},
+                                     {"displayName", "planted"}}})}});
+
             bool sawForged = false;
             bool sawUnsigned = false;
             bool sawHonest = false;
@@ -878,6 +904,9 @@ int main()
                 sawHonest = sawHonest || item.text == "this one is mine";
             }
             CHECK(!sawForged);
+            // Neither notice was his to send.
+            CHECK(alice.delegationDays() == termBefore);
+            CHECK(!alice.hasContact(plantedPeer));
             CHECK(!sawUnsigned);
             CHECK(sawHonest);
         }

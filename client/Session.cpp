@@ -3398,6 +3398,18 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                 // was taken above; there is nothing to show and nothing else to
                 // do here.
                 message.contentType = type;
+            } else if (type.rfind("device.", 0) == 0
+                && message.fromFingerprint != fingerprint()) {
+                // The device channel is this account talking to itself. A message
+                // of one of these types from anybody else - an admitted contact
+                // is still anybody else - is not a device of ours and is read as
+                // nothing: some of them change settings, and one of them writes
+                // into the address book.
+                bazarish::log::warn("sync: dropping a device message from {}",
+                    bazarish::log::redact(message.fromFingerprint));
+                noteWire(false, "device message from a contact", "dropped", type);
+                client_->ack(entry.id);
+                continue;
             } else if (type == "device.delegation-term") {
                 // Another device changed the account's delegation term. Adopt it
                 // and, when it is shorter than what is out there, re-issue now:
@@ -3461,8 +3473,10 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                 // is served on. Every device that holds one answers; the asker
                 // takes the one that matches what the server serves.
                 message.contentType = type;
-                if (body.value("device", std::string()) != client_->clientId()
-                    && message.fromFingerprint == fingerprint() && !i2pMaster_.empty()) {
+                const std::string wanted = body.value("host", std::string());
+                const bool haveWanted = !i2pMaster_.empty()
+                    && (wanted.empty() || i2pBase32(i2pMaster_) + ".b32.i2p" == wanted);
+                if (body.value("device", std::string()) != client_->clientId() && haveWanted) {
                     try {
                         syncI2pMasterToSelf();
                     } catch (const std::exception& error) {
@@ -3976,9 +3990,11 @@ void Session::sendContactBookTo(const std::string& toDevice)
     // the correspondent sends it again themselves the next time they write.
     std::vector<nlohmann::json> chunk;
     std::size_t chunkBytes = 0;
-    int seq = 0;
-    const auto flush = [&](const bool last) {
-        if (chunk.empty() && !last) {
+    // No sequence number and no end marker: the merge fills gaps and is applied
+    // per message, so the order chunks arrive in does not matter and there is
+    // nothing for the asker to wait for. An empty one is not sent at all.
+    const auto flush = [&]() {
+        if (chunk.empty()) {
             return;
         }
         const nlohmann::json inner = {
@@ -3989,8 +4005,6 @@ void Session::sendContactBookTo(const std::string& toDevice)
             {"sentAt", nowMillis()},
             {"device", client_->clientId()},
             {"forDevice", toDevice},
-            {"seq", seq++},
-            {"last", last},
             {"contacts", chunk},
         };
         submitSignedToSelf(inner, "device.contacts");
@@ -4006,12 +4020,12 @@ void Session::sendContactBookTo(const std::string& toDevice)
             entryBytes = encodedBody(entry).size();
         }
         if (chunkBytes + entryBytes > kContactBookChunkBytes) {
-            flush(false);
+            flush();
         }
         chunkBytes += entryBytes;
         chunk.push_back(std::move(entry));
     }
-    flush(true);
+    flush();
 }
 
 void Session::applyContactBook(const nlohmann::json& entries)
