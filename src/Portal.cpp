@@ -99,13 +99,32 @@ std::string signLoginBlob(
 std::string verifyLoginBlob(
     const std::string& blob, const std::int64_t now, const std::string& challenge)
 {
-    const Bytes raw = fromBase64(blob);
-    const nlohmann::json parsed = nlohmann::json::parse(raw.begin(), raw.end());
+    // The commonest way to get here is the challenge pasted back into the field
+    // that wants the signature - both are base64 of a JSON object, so only their
+    // contents tell them apart. Which one arrived is what the operator needs to
+    // be told; a parser's complaint about a missing key helps nobody.
+    const char* const kNotASignature
+        = "this is not a signature: the field wants what your client's Signature window copied";
+    nlohmann::json parsed;
+    try {
+        const Bytes raw = fromBase64(blob);
+        parsed = nlohmann::json::parse(raw.begin(), raw.end());
+    } catch (const std::exception&) {
+        throw std::runtime_error(kNotASignature);
+    }
+    if (parsed.contains("consumer") && parsed.contains("nonce")) {
+        throw std::runtime_error(
+            "this is the challenge, not the signature: paste what your client copied");
+    }
     auth::Headers headers;
-    headers[auth::kHeaderKeys] = parsed.at("k").get<std::string>();
-    headers[auth::kHeaderTimestamp] = parsed.at("t").get<std::string>();
-    headers[auth::kHeaderSignatureClassical] = parsed.at("c").get<std::string>();
-    headers[auth::kHeaderSignaturePq] = parsed.at("p").get<std::string>();
+    try {
+        headers[auth::kHeaderKeys] = parsed.at("k").get<std::string>();
+        headers[auth::kHeaderTimestamp] = parsed.at("t").get<std::string>();
+        headers[auth::kHeaderSignatureClassical] = parsed.at("c").get<std::string>();
+        headers[auth::kHeaderSignaturePq] = parsed.at("p").get<std::string>();
+    } catch (const nlohmann::json::exception&) {
+        throw std::runtime_error(kNotASignature);
+    }
     return auth::verifyRequest(
         headers, now, kLoginMethod, kLoginPath, Bytes(challenge.begin(), challenge.end()));
 }

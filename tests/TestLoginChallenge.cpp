@@ -175,6 +175,33 @@ void testConsumerChangedWhileRunning()
     CHECK(portal.consumer() == renamed);
 }
 
+// The mistake every operator makes once: the challenge pasted back into the box
+// that wants the signature. Both are base64 of a JSON object, so the message has
+// to be the one that helps.
+void testChallengePastedAsBlob()
+{
+    LoginChallenge portal("portal-secret", panel());
+    const std::int64_t t = 5000;
+    const std::string challenge = portal.issue(t);
+
+    std::string complaint;
+    try {
+        (void)portal.verify(challenge, challenge, t);
+    } catch (const std::exception& error) {
+        complaint = error.what();
+    }
+    CHECK(complaint.find("this is the challenge, not the signature") != std::string::npos);
+
+    // And something that is not base64 of JSON at all says so in words too.
+    std::string other;
+    try {
+        (void)portal.verify(challenge, "paste-went-wrong", t);
+    } catch (const std::exception& error) {
+        other = error.what();
+    }
+    CHECK(other.find("not a signature") != std::string::npos);
+}
+
 }  // namespace
 
 int main()
@@ -184,6 +211,7 @@ int main()
     testRelabelling();
     testIncompleteConsumerRefused();
     testConsumerChangedWhileRunning();
+    testChallengePastedAsBlob();
     std::printf("TestLoginChallenge: all checks passed\n");
     return 0;
 }
