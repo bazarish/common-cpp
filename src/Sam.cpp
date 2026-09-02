@@ -23,6 +23,7 @@
 #include <map>
 #include <mutex>
 #include <sstream>
+#include <string>
 #include <thread>
 
 namespace bazarish::sam {
@@ -622,10 +623,24 @@ Stream::~Stream()
     close();
 }
 
+void Stream::setReadTimeout(const int seconds)
+{
+    readTimeoutSeconds_ = seconds;
+}
+
 std::size_t Stream::readSome(void* buffer, const std::size_t size)
 {
     if (socket_ == kInvalidSocket) {
         return 0;
+    }
+    // Waited for here rather than through SO_RCVTIMEO: a router that takes a
+    // request and says nothing is the case this exists for, and the wait has to
+    // end in a failure the caller sees rather than in a socket error it has to
+    // guess at.
+    if (readTimeoutSeconds_ > 0
+        && !socketReadable(socket_, readTimeoutSeconds_ * kMillisecondsPerSecond)) {
+        throw Error(Result::eI2pError,
+            "SAM: nothing read within " + std::to_string(readTimeoutSeconds_) + "s");
     }
     const std::ptrdiff_t got = socketRead(socket_, buffer, size);
     if (got < 0) {

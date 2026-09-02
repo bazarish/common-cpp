@@ -128,6 +128,12 @@ public:
     Stream(const Stream&) = delete;
     Stream& operator=(const Stream&) = delete;
 
+    // How long one read may wait with no byte arriving before it gives up and
+    // throws. Zero, the default, waits for as long as the stream is open: that is
+    // what an accept loop waiting for a peer's next request wants, and what no
+    // client ever does - a far side that takes a request and goes quiet is
+    // otherwise a thread parked for good.
+    void setReadTimeout(std::chrono::seconds timeout);
     // Reads up to size bytes; returns the count, 0 on EOF/close.
     std::size_t readSome(void* buffer, std::size_t size);
     // Reads exactly size bytes; throws on short read / EOF.

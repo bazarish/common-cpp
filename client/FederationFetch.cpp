@@ -15,6 +15,10 @@ namespace bazarish::client {
 // them. Separate from the dial timeout, which is about reaching the far side.
 constexpr int kOwnTunnelsSeconds = 180;
 constexpr int kDialSeconds = 90;
+// How long the answer may take once the request is on the peer's server. It
+// answers a card from its own store, so this is a bound on a far side that took
+// the request and went quiet - not on any work it has to do.
+constexpr int kReplySeconds = 90;
 
 FetchOutcome federationFetchOverI2p(bazarish::i2p::Router& router, const std::string& dest,
     const std::string& op, const Bytes& sealed, const bazarish::i2p::Privacy privacy,
@@ -45,6 +49,9 @@ FetchOutcome federationFetchOverI2p(bazarish::i2p::Router& router, const std::st
     if (!stream) {
         throw std::runtime_error("federation fetch: cannot reach " + dest);
     }
+    // A peer that accepts the stream and then says nothing must not hold this
+    // thread: an add sits at "preparing" for as long as this waits.
+    stream->setReadTimeout(std::chrono::seconds(kReplySeconds));
 
     const FederationFetchResult reply = federationSendFetch(*stream, op, sealed);
     FetchOutcome outcome;

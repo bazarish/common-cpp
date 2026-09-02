@@ -123,6 +123,9 @@ public:
     Stream(const Stream&) = delete;
     Stream& operator=(const Stream&) = delete;
 
+    // How long a read may wait for data before it throws, in seconds. Zero, the
+    // default, waits for as long as the socket is open.
+    void setReadTimeout(int seconds);
     // Reads up to size bytes; returns the count, 0 on EOF.
     std::size_t readSome(void* buffer, std::size_t size);
     // Reads exactly size bytes; throws on a short read.
@@ -137,6 +140,7 @@ public:
 
 private:
     Socket socket_;
+    int readTimeoutSeconds_ = 0;
 };
 
 // A SAM session: one control connection, and the destination it operates for as

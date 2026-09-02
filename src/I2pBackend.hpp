@@ -23,6 +23,7 @@ class StreamBackend {
 public:
     virtual ~StreamBackend() = default;
 
+    virtual void setReadTimeout(std::chrono::seconds timeout) = 0;
     virtual std::size_t readSome(void* buffer, std::size_t size) = 0;
     virtual void writeAll(const void* data, std::size_t size) = 0;
     virtual std::size_t pendingBytes() const = 0;

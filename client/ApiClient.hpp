@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -217,11 +218,14 @@ private:
     std::vector<std::size_t> facadeOrder() const;
     // Performs one HTTP/1.1 exchange to an I2P facade over the persistent
     // outbound destination. writeBody streams the request body onto the stream
-    // after the head (bodyLen must equal the bytes it writes). Returns nullopt
-    // when the facade is unreachable. Throws only on a malformed response.
+    // after the head (bodyLen must equal the bytes it writes). readTimeoutSeconds
+    // bounds the wait for the answer, as it does on the clearnet leg. Returns
+    // nullopt when the facade is unreachable or did not answer in time. Throws
+    // only on a malformed response.
     std::optional<ApiResponse> i2pExchange(const Facade& facade, const std::string& method,
         const std::string& fullPath, const std::map<std::string, std::string>& headers,
-        std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody);
+        std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody,
+        int readTimeoutSeconds);
 
     const Identity& identity_;
     const std::string clientId_;
@@ -260,6 +264,9 @@ private:
     // client is serialized on netMutex_, so one is enough; a stale one is dropped
     // and redialled on its next use.
     std::unique_ptr<bazarish::i2p::Stream> i2pStream_;
+    // When that connection last carried anything. A kept stream is only good
+    // while the far side keeps its end, and past a quiet spell it no longer does.
+    std::chrono::steady_clock::time_point i2pStreamUsedAt_;
     // Index of the last facade that worked; the GUI "connected via" reads it.
     std::size_t activeFacade_ = 0;
     // Serializes the two network entry points (send / putFile) so the client is

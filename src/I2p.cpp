@@ -209,6 +209,11 @@ struct Stream::Impl {
 Stream::Stream() : impl_(std::make_unique<Impl>()) {}
 Stream::~Stream() = default;
 
+void Stream::setReadTimeout(const std::chrono::seconds timeout)
+{
+    impl_->transport->setReadTimeout(timeout);
+}
+
 std::size_t Stream::readSome(void* buffer, const std::size_t size)
 {
     return impl_->transport->readSome(buffer, size);

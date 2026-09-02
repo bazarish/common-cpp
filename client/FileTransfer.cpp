@@ -239,6 +239,10 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
             continue;
         }
         try {
+            // A peer that opens a stream and then says nothing must not hold this
+            // thread: every wait on this side is bounded by the same span the
+            // drain below is given.
+            stream->setReadTimeout(std::chrono::seconds(kDrainSeconds));
             std::array<std::uint8_t, 8> header{};
             stream->readExact(header.data(), header.size());
             const std::uint64_t offset = decodeBigEndian64(header);
@@ -296,8 +300,17 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
                     if (onProgress) {
                         onProgress(onTheWire(sent, stream->pendingBytes()), total);
                     }
-                    if (stream->readSome(drain.data(), drain.size()) == 0) {
-                        break;  // the receiver closed: everything was delivered
+                    try {
+                        if (stream->readSome(drain.data(), drain.size()) == 0) {
+                            break;  // the receiver closed: everything was delivered
+                        }
+                    } catch (const std::exception& error) {
+                        // The receiver never closed. The bytes are written either
+                        // way, and it is the receiver that decides the transfer is
+                        // complete, so this is the end of the wait and not of the
+                        // attempt.
+                        log::debug("file-serve: the receiver did not close: {}", error.what());
+                        break;
                     }
                 }
                 if (onProgress) {
@@ -319,6 +332,10 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
 // for its own tunnels before deciding the sender is unreachable.
 constexpr int kOwnTunnelsSeconds = 180;
 constexpr int kDialSeconds = 90;
+// How long the sender may go without sending a byte before the attempt is given
+// up on. A transfer that is running sends continuously; one that has stopped
+// would otherwise hold this thread for as long as the stream looks open.
+constexpr int kSenderQuietSeconds = 120;
 
 void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
     const fs::path& destPath, const bazarish::i2p::Privacy privacy,
@@ -349,6 +366,7 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
                   throw std::runtime_error("cannot reach the sender");
               }
 
+              stream->setReadTimeout(std::chrono::seconds(kSenderQuietSeconds));
               std::array<std::uint8_t, 8> header{};
               encodeBigEndian64(offset, header);
               stream->writeAll(header.data(), header.size());

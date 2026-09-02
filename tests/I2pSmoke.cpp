@@ -11,10 +11,19 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <exception>
 #include <string>
 #include <thread>
 
 using namespace std::chrono;
+
+// The read-deadline case below: how long the far side holds the stream without
+// sending anything, what the reader gives it, and how much longer than that the
+// reader may take to say so. The engine is polled in slices, so a deadline is
+// noticed at the first slice past it rather than to the second.
+constexpr int kQuietHoldSeconds = 30;
+constexpr int kReadDeadlineSeconds = 3;
+constexpr int kDeadlineSlackSeconds = 10;
 
 int main(int argc, char** argv)
 {
@@ -70,6 +79,39 @@ int main(int argc, char** argv)
     }
     std::printf("[smoke] STREAM echo: \"%s\"\n", streamResult.c_str());
 
+    // A far side that takes the stream and then says nothing. Without a deadline
+    // the read below never returns - the stream stays open to this side and the
+    // caller's thread is gone for good.
+    std::thread quietPeer([&] {
+        std::string peer;
+        auto s = server->accept(peer, seconds(300));
+        if (!s) { return; }
+        std::this_thread::sleep_for(seconds(kQuietHoldSeconds));
+        s->close();
+    });
+    std::string deadlineResult = "<none>";
+    if (auto cs = client->connect(server->routingHost(), seconds(240)))
+    {
+        cs->setReadTimeout(seconds(kReadDeadlineSeconds));
+        const std::string ping = "wrapper-quiet-ping";
+        cs->writeAll(ping.data(), ping.size());
+        const auto started = steady_clock::now();
+        char buf[256];
+        try {
+            const std::size_t n = cs->readSome(buf, sizeof buf);
+            deadlineResult = "read returned " + std::to_string(n) + " bytes";
+        } catch (const std::exception& error) {
+            const auto waited = duration_cast<seconds>(steady_clock::now() - started).count();
+            std::printf("[smoke] read gave up after %llds: %s\n",
+                static_cast<long long>(waited), error.what());
+            deadlineResult = waited <= kReadDeadlineSeconds + kDeadlineSlackSeconds
+                ? "timed out"
+                : "timed out late";
+        }
+        cs->close();
+    }
+    std::printf("[smoke] READ DEADLINE: %s\n", deadlineResult.c_str());
+
     std::string datagramResult = "<none>";
     {
         const std::string ping = "wrapper-datagram-ping";
@@ -89,10 +131,13 @@ int main(int argc, char** argv)
 
     streamEcho.join();
     datagramEcho.join();
-    const bool ok = streamResult == "wrapper-stream-ping" && datagramResult == "wrapper-datagram-ping";
-    std::printf("[smoke] RESULT stream=%s datagram=%s refresh=%s\n",
+    quietPeer.join();
+    const bool ok = streamResult == "wrapper-stream-ping"
+        && datagramResult == "wrapper-datagram-ping" && deadlineResult == "timed out";
+    std::printf("[smoke] RESULT stream=%s datagram=%s refresh=%s deadline=%s\n",
         streamResult == "wrapper-stream-ping" ? "OK" : "FAIL",
         datagramResult == "wrapper-datagram-ping" ? "OK" : "FAIL",
-        server->ready() ? "OK" : "FAIL");
+        server->ready() ? "OK" : "FAIL",
+        deadlineResult == "timed out" ? "OK" : "FAIL");
     return ok ? 0 : 1;
 }

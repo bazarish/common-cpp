@@ -62,6 +62,10 @@ class SamStream final : public backend::StreamBackend {
 public:
     explicit SamStream(std::unique_ptr<sam::Stream> stream) : stream_(std::move(stream)) {}
 
+    void setReadTimeout(const std::chrono::seconds timeout) override
+    {
+        stream_->setReadTimeout(static_cast<int>(timeout.count()));
+    }
     std::size_t readSome(void* buffer, const std::size_t size) override
     {
         return stream_->readSome(buffer, size);

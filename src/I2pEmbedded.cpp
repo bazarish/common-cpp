@@ -35,6 +35,7 @@
 #include <map>
 #include <atomic>
 #include <condition_variable>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -55,6 +56,10 @@ namespace {
 
 constexpr i2pd::data::SigningKeyType kSigType = i2pd::data::SIGNING_KEY_TYPE_EDDSA_SHA512_ED25519;
 constexpr std::size_t kB32SuffixLen = 8;  // ".b32.i2p"
+// How long one receive waits on the engine before the caller looks up again:
+// long enough not to spin, short enough that a closed stream and an expired read
+// deadline are both noticed promptly.
+constexpr int kReceivePollSeconds = 5;
 
 // libi2pd's crypto state must be initialised once before any key operation. With
 // precomputation=false this is a cheap no-op-safe call; the guard keeps it once.
@@ -291,6 +296,10 @@ class EmbeddedStream final : public backend::StreamBackend {
 public:
     ~EmbeddedStream() override { close(); }
 
+    void setReadTimeout(const std::chrono::seconds timeout) override
+    {
+        readTimeoutSeconds = static_cast<int>(timeout.count());
+    }
     std::size_t readSome(void* buffer, std::size_t size) override;
     void writeAll(const void* data, std::size_t size) override;
     std::size_t pendingBytes() const override;
@@ -303,11 +312,15 @@ public:
     // streaming layer.
     std::shared_ptr<i2pd::client::ClientDestination> owner;
     std::atomic<bool> closed{false};
+    // Zero waits for as long as the stream is open.
+    std::atomic<int> readTimeoutSeconds{0};
 };
 
 std::size_t EmbeddedStream::readSome(void* buffer, std::size_t size)
 {
     if (!stream || closed || size == 0) { return 0; }
+    const std::chrono::seconds timeout{readTimeoutSeconds.load()};
+    const auto started = std::chrono::steady_clock::now();
     while (!closed)
     {
         auto promise = std::make_shared<std::promise<std::size_t>>();
@@ -316,11 +329,19 @@ std::size_t EmbeddedStream::readSome(void* buffer, std::size_t size)
             [promise](const boost::system::error_code&, std::size_t received)
             {
                 promise->set_value(received);
-            }, 5);
+            }, kReceivePollSeconds);
         const std::size_t received = future.get();
         if (received > 0) { return received; }
         if (isClosedStatus(stream->GetStatus())) { return 0; }
-        // otherwise a poll timeout on a still-open stream: wait again
+        // Otherwise a poll timeout on a stream the engine still calls open. That
+        // is also what a stream whose far side has gone away looks like - the
+        // close travels through tunnels and need not arrive - so a caller that
+        // set a deadline is told rather than left waiting on it.
+        if (timeout.count() > 0 && std::chrono::steady_clock::now() - started >= timeout)
+        {
+            throw std::runtime_error("bazarish::i2p: nothing read within "
+                + std::to_string(timeout.count()) + "s");
+        }
     }
     return 0;
 }

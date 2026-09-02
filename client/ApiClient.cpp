@@ -52,6 +52,13 @@ bazarish::http::ClientOptions facadeOptions(const Facade& facade, const int read
 constexpr int kKeepAliveAttempts = 2;
 constexpr int kOutboundReadySeconds = 180;
 constexpr int kFacadeDialSeconds = 60;
+// How long a kept connection may stay quiet before it is dialled again instead
+// of written into. The server closes an idle keep-alive connection on its own
+// read timeout and the facade holds a finished reply no longer than a minute, so
+// past this the stream is presumed gone - and a close travelling back through
+// I2P tunnels need never arrive, which is what leaves a quiet stream looking
+// open to this side long after it is anything but.
+constexpr auto kKeptStreamIdleSeconds = std::chrono::seconds(60);
 // The secret a session key is derived from.
 constexpr std::size_t kSessionSecretBytes = 32;
 // The session id is local to each side (it fixes the MAC key together with the
@@ -322,7 +329,8 @@ std::string ApiClient::activeFacadeUrl() const
 
 std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const std::string& method,
     const std::string& fullPath, const std::map<std::string, std::string>& headers,
-    const std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody)
+    const std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody,
+    const int readTimeoutSeconds)
 {
     reportConnectProgress(30, "Starting the I2P router");
     sharedI2pRouter(i2pDataDir_);  // started here if it is not up yet
@@ -350,6 +358,10 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     // not a round trip - the request travels on the very packet that opens the
     // stream. Reusing it saves that per-request weight, and stops each request
     // being a connection of its own to anyone counting them.
+    if (i2pStream_
+        && std::chrono::steady_clock::now() - i2pStreamUsedAt_ >= kKeptStreamIdleSeconds) {
+        i2pStream_.reset();  // quiet for too long to still be there
+    }
     for (int attempt = 0; attempt < kKeepAliveAttempts; ++attempt) {
         const bool reused = static_cast<bool>(i2pStream_);
         if (!reused) {
@@ -360,6 +372,12 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
             }
         }
         reportConnectProgress(65, "Connected to the server over I2P");
+        // What the clearnet leg has always had: a bound on waiting for the
+        // answer. Without it a far side that takes the request and goes quiet
+        // parks this thread for good, and every request behind it with it.
+        i2pStream_->setReadTimeout(std::chrono::seconds(readTimeoutSeconds));
+        const auto askedAt = std::chrono::steady_clock::now();
+        i2pStreamUsedAt_ = askedAt;
         try {
             const std::string head = buildI2pHttpRequest(
                 method, facade.host, fullPath, headers, bodyLen, /*keepAlive=*/true);
@@ -379,15 +397,29 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
                 response.contentType = it->second;
             }
             response.headers = parsed.headers;  // already lowercased by the parser
+            i2pStreamUsedAt_ = std::chrono::steady_clock::now();
             return response;
         } catch (const std::exception& error) {
             i2pStream_.reset();
+            // Told apart by how long it took rather than by what was thrown: both
+            // backends report a spent deadline in their own way, and what matters
+            // here is whether the whole budget went on waiting.
+            const bool timedOut = std::chrono::steady_clock::now() - askedAt
+                >= std::chrono::seconds(readTimeoutSeconds);
             // A connection the server had already closed fails on its next use, and
             // that is not the facade misbehaving: dial again and ask once more.
             // Both body writers replay from their source, so the repeat is whole.
-            if (reused) {
+            // A wait that ran out is not that: the request may well have been
+            // taken, and asking again here would be this client deciding on its own
+            // to do twice what it was asked to do once.
+            if (reused && !timedOut) {
                 bazarish::log::info("kept connection was already closed; dialling again");
                 continue;
+            }
+            if (timedOut) {
+                bazarish::log::warn("i2p facade {} did not answer within {}s: {}",
+                    facade.host.substr(0, 12), readTimeoutSeconds, error.what());
+                return std::nullopt;  // the caller reports it and decides on a retry
             }
             bazarish::log::warn("i2p facade {} answered unframed: {}",
                 facade.host.substr(0, 12), error.what());
@@ -732,7 +764,8 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
                 = i2pExchange(facade, method, fullPath, i2pHeaders, body.size(),
                     [&body](bazarish::i2p::Stream& stream) {
                         stream.writeAll(body.data(), body.size());
-                    });
+                    },
+                    readTimeoutSeconds);
             if (!response) {
                 lastError = "i2p facade unreachable: " + facade.host;
                 continue;
@@ -874,7 +907,8 @@ ApiResponse ApiClient::putFile(const std::string& path, const std::filesystem::p
                 continue;
             }
             const std::optional<ApiResponse> response = i2pExchange(facade, "PUT",
-                facade.basePath + path, i2pHeaders, static_cast<std::size_t>(length), writeFileBody);
+                facade.basePath + path, i2pHeaders, static_cast<std::size_t>(length), writeFileBody,
+                kDefaultReadTimeoutSeconds);
             if (!response) {
                 lastError = "i2p facade unreachable: " + facade.host;
                 continue;
