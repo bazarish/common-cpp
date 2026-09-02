@@ -3032,6 +3032,15 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
                 const std::lock_guard<std::mutex> lock(echoQueue->mutex);
                 echoQueue->pending.push_back({peerFingerprint, echoPayload});
             }
+            // A refusal is the recipient's server saying the capability was not
+            // one: the token is gone either way, and the rest of the stash may be
+            // just as dead - a copy of it was spent somewhere else. Asking for a
+            // fresh batch costs the peer one message and puts live tokens on top
+            // of the pile, so the next attempt is not the same attempt.
+            if (!outcome.stored && outcome.errorCode == "DELIVERY_REJECTED") {
+                const std::lock_guard<std::mutex> lock(echoQueue->mutex);
+                echoQueue->refused.push_back(peerFingerprint);
+            }
             if (onOutcome) {
                 onOutcome(outcome);
             }
@@ -3914,9 +3923,11 @@ void Session::closeAccountOnServer()
 void Session::flushPendingEchoes()
 {
     std::vector<std::pair<std::string, nlohmann::json>> ready;
+    std::vector<std::string> refused;
     {
         const std::lock_guard<std::mutex> lock(echoQueue_->mutex);
         ready.swap(echoQueue_->pending);
+        refused.swap(echoQueue_->refused);
     }
     for (const auto& [peerFingerprint, inner] : ready) {
         try {
@@ -3924,6 +3935,17 @@ void Session::flushPendingEchoes()
         } catch (const std::exception& error) {
             bazarish::log::warn(
                 "could not echo what was sent to our own devices: {}", error.what());
+        }
+    }
+    std::sort(refused.begin(), refused.end());
+    refused.erase(std::unique(refused.begin(), refused.end()), refused.end());
+    for (const std::string& peerFingerprint : refused) {
+        try {
+            askDevicesForToken(peerFingerprint);
+            askPeerForTokensTokenlessly(peerFingerprint);
+        } catch (const std::exception& error) {
+            bazarish::log::warn("could not ask for fresh tokens after a refusal: {}",
+                error.what());
         }
     }
 }
@@ -3946,6 +3968,40 @@ void Session::echoSentToSelf(const std::string& peerFingerprint, const nlohmann:
     submitSignedToSelf(echo, "device.message");
 }
 
+void Session::askPeerForTokensTokenlessly(const std::string& peerFingerprint)
+{
+    const auto found = contacts_.find(peerFingerprint);
+    if (found == contacts_.end()) {
+        return;
+    }
+    const Contact& contact = found->second;
+    // Only for a contact already established: a stranger's mailbox is not
+    // somewhere to write without a capability. The channel is the tokenless one
+    // their own refill takes when they hold none of ours - which is why neither
+    // side ends up waiting on the other forever.
+    if (!contact.issuedToThem || contact.sealingPublicB64.empty()
+        || contact.servingSealingB64.empty() || contact.dest.empty()) {
+        return;
+    }
+    nlohmann::json inner = {
+        {"v", kMessageFormatVersion},
+        {"type", "token-request"},
+        {"id", toHex(randomBytes(8))},
+        {"from", fingerprint()},
+        {"sentAt", nowMillis()},
+        {"device", client_->clientId()},
+        {"routing",
+            {{"dest", myDest_}, {"servingKey", myServingKeyB64_}, {"view", sharedView()}}},
+    };
+    signAuthorship(inner, client_->identity(), /*withKeys=*/false);
+    const Bytes payload
+        = cms::seal(encodedBody(inner), Key::fromPublicDer(fromBase64(contact.sealingPublicB64)));
+    const Key peerServingKey = Key::fromPublicDer(fromBase64(contact.servingSealingB64));
+    noteWire(true, "token request to " + wireName(peerFingerprint), "sending",
+        "no token to spend");
+    deliver(contact.dest, peerServingKey, "contact", peerFingerprint, std::nullopt, payload);
+}
+
 void Session::sendTokenRequest(const std::string& peerFingerprint)
 {
     const auto found = contacts_.find(peerFingerprint);
@@ -3957,10 +4013,15 @@ void Session::sendTokenRequest(const std::string& peerFingerprint)
         return;  // no descriptor yet: nothing to ask, and nowhere to ask it
     }
     if (contact.sendTokens.empty()) {
-        // Nothing to spend, so nothing to ask with. The way out is a token
-        // borrowed from another of this account's own devices, not a tokenless
-        // write into a stranger's mailbox.
+        // Nothing to spend, so both ways out are taken. A token from one of this
+        // account's own devices costs the peer nothing and is instant when one of
+        // them is online; and the request itself goes over the tokenless contact
+        // channel - the same one their refill takes when they hold none of ours,
+        // and the reason neither side waits on the other forever. Tokenless only
+        // for a contact already established: a stranger's mailbox is not somewhere
+        // to write without a capability.
         askDevicesForToken(peerFingerprint);
+        askPeerForTokensTokenlessly(peerFingerprint);
         return;
     }
     nlohmann::json inner = {
