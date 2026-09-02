@@ -54,6 +54,7 @@ add_library(bazarish_common STATIC
     src/Reactions.cpp
     src/Log.cpp
     src/Health.cpp
+    src/Restart.cpp
     src/HttpClient.cpp
     src/HttpServer.cpp
     src/Hmac.cpp
@@ -134,6 +135,7 @@ bazarish_add_test(TestServerDescriptor)
 bazarish_add_test(TestResolve)
 bazarish_add_test(TestLog)
 bazarish_add_test(TestHealth)
+bazarish_add_test(TestRestart)
 bazarish_add_test(TestHttpClient)
 bazarish_add_test(TestLoginChallenge)
 bazarish_add_test(TestCaptcha)
