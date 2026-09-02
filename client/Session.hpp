@@ -427,6 +427,10 @@ public:
     // owner has to be able to see the list and end one.
     std::vector<Client::DeviceEntry> devices();
     void retireDevice(const std::string& clientId);
+    // Retires this device: the server stops holding mail for it and drops the
+    // queue it has. What the account is on the server is untouched - this is the
+    // "leave this device" half of leaving, without ending the account.
+    void retireThisDevice();
     // Ends this account on its server: the destination is revoked, the mailbox
     // and everything else held for it is dropped, and the registration is gone.
     // Throws when the server refused or could not be reached - the profile it
@@ -509,6 +513,21 @@ public:
     // proving ownership of this identity's key without the key ever reaching
     // the browser. Returns a base64 token the user pastes back into the portal,
     // which verifies it (see verifyLoginBlob) and recovers this fingerprint.
+    // Asked when the server serves an address this device has no keys for and no
+    // other device answered: (served host, this device's host or empty). The
+    // front-end puts the choice to the user and answers with one of the two
+    // calls below; until then this account publishes nothing.
+    using AddressDecisionFn
+        = std::function<void(const std::string& servedHost, const std::string& ourHost)>;
+    void onAddressDecision(AddressDecisionFn handler) { addressDecision_ = std::move(handler); }
+
+    // The user chose to serve this device's address (minting one if this device
+    // has none). Contacts holding the served address stop reaching this account
+    // until they are told the new one.
+    void publishThisDeviceAddress();
+    // The user chose a clean address: a new master, published as the account's.
+    void publishFreshAddress();
+
     std::string signLogin(const std::string& challenge) const;
 
     // A signer of this account's own, for a front-end that must not wait for
@@ -1076,6 +1095,19 @@ private:
     // persists the same master (preserving the b32 across devices). Best effort;
     // a no-op when there is no master or our routing is not known yet.
     void syncI2pMasterToSelf();
+    // Looks in this account's own mailbox for the address its other devices
+    // already use. `wantedHost` narrows it to the one the server serves; empty
+    // takes the first this account wrote to itself. Read-only: nothing is acked.
+    bool adoptI2pMasterFromOwnMailbox(const std::string& wantedHost = {});
+    bool reconcileI2pAddress();
+    // Asks the account's other devices for the keys to one address.
+    void askDevicesForI2pMaster(const std::string& servedHost);
+    // Settles which address this account is served on, before anything is
+    // published. True when this device can operate it (it already holds the
+    // keys, another device handed them over, or the account is new here and this
+    // device's address becomes its own). False when the server serves an address
+    // nobody answered for: the choice is then the user's, and onAddressDecision
+    // has been told about it.
 
     // Mints a fresh token batch for the peer and sends it as a token-refill, in
     // response to the peer signalling a low stash (Contacts.md). prepaidToken, when
@@ -1361,6 +1393,7 @@ private:
     // transient (i2p-transient.dat) is the time-boxed delegation for the
     // current serving server. Both are sealed at rest when the account is
     // encrypted.
+    AddressDecisionFn addressDecision_;
     Bytes i2pMaster_;
     std::string i2pAddress_;
     Bytes i2pTransient_;

@@ -844,11 +844,18 @@ void Session::registerAccount()
     storeCard(result);
     client_->registerThisClient();
 
-    // Every account routes through a destination of its own, so mint the master
-    // if this account has none. The delegation can only be handed over once the
-    // account exists, which is what the call above created - hence the second,
-    // routing-carrying card published right after it.
-    ensureI2pDestination();
+    // Every account routes through a destination of its own. Which one is a
+    // question for the server before it is a decision here: an account that
+    // already has an address must keep it, because every contact holds it and
+    // none of them would learn a replacement.
+    reportConnectProgress(83, "Checking the address your server serves");
+    if (!reconcileI2pAddress()) {
+        // The server serves an address this device cannot operate and no other
+        // device answered with its keys. Publishing anything here would take the
+        // account's address away from its contacts, so the choice is the user's.
+        bazarish::log::warn("this server serves an address this device has no keys for");
+        return;
+    }
     reportConnectProgress(85, "Publishing your own destination");
     try {
         publishRouting();
@@ -1021,6 +1028,121 @@ void Session::disableI2pDest()
     client_->sendI2pTransient(std::string(), 0);
     i2pTransient_.clear();
     db_->erase("i2p-transient");
+}
+
+bool Session::adoptI2pMasterFromOwnMailbox(const std::string& wantedHost)
+{
+    // Read-only on purpose: nothing is acked here, so the ordinary sync still
+    // sees every item and does with it what it always does. This looks for one
+    // thing only - the address this account already has.
+    try {
+        for (const PendingEntry& entry : client_->listPending()) {
+            const Bytes blob = client_->fetchBlob(entry.id);
+            const nlohmann::json body = decodedBody(cms::unseal(blob, sealingKey_));
+            if (body.value("type", std::string()) != "device.i2p-master"
+                || body.value("from", std::string()) != fingerprint()) {
+                continue;
+            }
+            // Signed by us, like everything else this account writes to itself.
+            if (authorOf(body, knownKeysFor(fingerprint())) != fingerprint()) {
+                continue;
+            }
+            const Bytes master = fromBase64(body.at("i2pMaster").get<std::string>());
+            if (!wantedHost.empty() && i2pBase32(master) + ".b32.i2p" != wantedHost) {
+                continue;  // another device's older address; not the one being served
+            }
+            loadI2pDestination(master);
+            log::info("adopted this account's address from another of its devices");
+            return true;
+        }
+    } catch (const std::exception& error) {
+        log::warn("could not read this account's own mailbox for its address: {}",
+            error.what());
+    }
+    return false;
+}
+
+void Session::askDevicesForI2pMaster(const std::string& servedHost)
+{
+    const nlohmann::json inner = {
+        {"v", kMessageFormatVersion},
+        {"type", "device.i2p-master-request"},
+        {"id", toHex(randomBytes(16))},
+        {"from", fingerprint()},
+        {"sentAt", nowMillis()},
+        {"device", client_->clientId()},
+        // Which address is wanted, so a device holding several - or an older one
+        // - answers with the one the server is actually serving.
+        {"host", servedHost},
+    };
+    submitSignedToSelf(inner, "device.i2p-master-request");
+}
+
+bool Session::reconcileI2pAddress()
+{
+    const std::string servedHost = [this]() {
+        try {
+            return client_->myDestination().dest;
+        } catch (const std::exception& error) {
+            log::info("server did not say which address it serves: {}", error.what());
+            return std::string();
+        }
+    }();
+    const std::string ourHost = i2pMaster_.empty() ? std::string() : i2pAddress_ + ".b32.i2p";
+
+    // Nothing served yet: this account is new here, and this device's address -
+    // minted now if it has none - becomes the account's.
+    if (servedHost.empty()) {
+        ensureI2pDestination();
+        return true;
+    }
+    // The usual case, including a restored device whose backup carried the keys.
+    if (!ourHost.empty() && servedHost == ourHost) {
+        return true;
+    }
+
+    // The server serves an address this device cannot operate. The account's
+    // other devices are asked for it - the one that published it holds the keys -
+    // and their answer is looked for where it lands: this account's own mailbox.
+    log::info("this server serves {}, this device holds {}", servedHost,
+        ourHost.empty() ? "no address" : ourHost);
+    try {
+        askDevicesForI2pMaster(servedHost);
+    } catch (const std::exception& error) {
+        log::info("could not ask this account's other devices for its address: {}", error.what());
+    }
+    if (adoptI2pMasterFromOwnMailbox(servedHost)) {
+        return true;
+    }
+    // Nobody answered in time. What happens next is the user's call, not this
+    // device's: publishing its own address, or a fresh one, takes the account
+    // away from the contacts holding the served one.
+    if (addressDecision_) {
+        addressDecision_(servedHost, ourHost);
+    }
+    return false;
+}
+
+void Session::publishThisDeviceAddress()
+{
+    // Whatever the server serves, this account is served on this device's address
+    // from here. Contacts holding the old one are writing nowhere until they hear
+    // from this account again - which the next message to each of them does, so
+    // the recovery is the ordinary one.
+    ensureI2pDestination();
+    publishRouting();
+}
+
+void Session::publishFreshAddress()
+{
+    // A clean address, on purpose: the keys to the served one are gone, and the
+    // account starts again from an address it can operate.
+    i2pMaster_.clear();
+    i2pAddress_.clear();
+    i2pTransient_.clear();
+    db_->erase("i2p-transient");
+    ensureI2pDestination();
+    publishRouting();
 }
 
 void Session::syncI2pMasterToSelf()
@@ -3322,6 +3444,20 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced)
                         }
                     }
                 }
+            } else if (type == "device.i2p-master-request") {
+                // Another of our devices has no keys for the address this account
+                // is served on. Every device that holds one answers; the asker
+                // takes the one that matches what the server serves.
+                message.contentType = type;
+                if (body.value("device", std::string()) != client_->clientId()
+                    && message.fromFingerprint == fingerprint() && !i2pMaster_.empty()) {
+                    try {
+                        syncI2pMasterToSelf();
+                    } catch (const std::exception& error) {
+                        log::info("could not answer a device asking for our address: {}",
+                            error.what());
+                    }
+                }
             } else if (type == "device.i2p-master") {
                 // A self-sync from another of our devices: adopt the I2P master if we
                 // do not already hold one, so this device keeps the same address.
@@ -3676,6 +3812,11 @@ std::vector<Client::DeviceEntry> Session::devices()
 void Session::retireDevice(const std::string& clientId)
 {
     client_->retireClient(clientId);
+}
+
+void Session::retireThisDevice()
+{
+    client_->retireClient(client_->clientId());
 }
 
 void Session::closeAccountOnServer()
@@ -4511,7 +4652,17 @@ void Session::exportAccount(const fs::path& outFile, const std::string& password
     const nlohmann::json meta = nlohmann::json::parse(db_->text("meta"));
     // Use the in-memory contacts; the bundle carries them in the clear (the
     // bundle password is the protection).
-    const nlohmann::json contacts = contactsToJson();
+    nlohmann::json contacts = contactsToJson();
+    // Delivery tokens are one-time write capabilities. Two devices holding the
+    // same ones is two devices spending the same ones: the second spend is
+    // refused by the recipient's server, which is what a restored device that
+    // "cannot send to anybody" was. The restored device starts with none and
+    // buys its own batch through the path that exists for exactly this.
+    for (auto& [contactFp, entry] : contacts.items()) {
+        (void)contactFp;
+        entry["sendTokens"] = nlohmann::json::array();
+        entry["needsOwnBatch"] = true;
+    }
 
     // The keys are re-serialized unencrypted inside the bundle; the password
     // protects the bundle as a whole, decoupling the export from whatever
@@ -4530,6 +4681,11 @@ void Session::exportAccount(const fs::path& outFile, const std::string& password
         {"v", 1},
         {"identityPem", client_->identity().privatePem()},
         {"sealingPem", sealingKey_.privatePem()},
+        // The account's I2P routing identity, which is an account's and not a
+        // device's: without it a restored device mints a destination of its own
+        // and delegates that, and every contact holding the old address is
+        // writing to somewhere nobody serves any more.
+        {"i2pMaster", toBase64(i2pMaster_)},
         {"meta", meta},
         {"contacts", contacts},
         {"avatar", toBase64(avatar_)},
@@ -4581,6 +4737,14 @@ void Session::importAccount(const fs::path& bundleFile, const fs::path& accountF
     // them a restored account has a mime type and nothing behind it, and the
     // loader answers that by forgetting the mime too - which is what a restored
     // account with no picture looked like.
+    // The routing identity comes back with the account: the address contacts
+    // already hold keeps working, and this device delegates the same one.
+    if (bundle.contains("i2pMaster")) {
+        const Bytes master = fromBase64(bundle.at("i2pMaster").get<std::string>());
+        if (!master.empty()) {
+            db.put("i2p-master", master);
+        }
+    }
     if (bundle.contains("avatar")) {
         const Bytes avatar = fromBase64(bundle.at("avatar").get<std::string>());
         if (!avatar.empty()) {
