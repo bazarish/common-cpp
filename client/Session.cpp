@@ -25,6 +25,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
@@ -112,6 +113,10 @@ constexpr std::int64_t kInviteDeliveryTimeoutMs = 120000;
 // carries a keep-alive twice a second, so this is silence, not a pause.
 constexpr std::int64_t kMediaSilenceTimeoutMs = 20000;
 constexpr std::int64_t kRingTimeoutMs = 60000;
+// How many finished calls are remembered, so a late invitation for one of them is
+// recognised as late. A handful covers any order the mailbox can hand two items
+// over in; this is not a history.
+constexpr std::size_t kEndedCallsRemembered = 32;
 
 // Inner end-to-end payload format version (see docs Messages.md).
 constexpr int kMessageFormatVersion = 1;
@@ -4583,6 +4588,21 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
     message.callId = body.value("callId", std::string());
 
     if (type == "call.invite") {
+        // An invitation is only good while it rings. One that spent longer than
+        // that in the mailbox - this device was offline, or the item was held
+        // behind others - is a call that ended before it was ever heard, and
+        // ringing for it now is ringing at nobody.
+        const std::int64_t sentAt = body.value("sentAt", static_cast<std::int64_t>(0));
+        if (sentAt > 0 && nowMillis() - sentAt > kRingTimeoutMs) {
+            bazarish::log::info("call invite ignored: it is {} ms old",
+                nowMillis() - sentAt);
+            return;
+        }
+        if (std::find(endedCalls_.begin(), endedCalls_.end(), message.callId)
+            != endedCalls_.end()) {
+            bazarish::log::info("call invite ignored: that call is already over");
+            return;
+        }
         if (call_.state != CallState::eIdle && call_.callId == message.callId) {
             // The same invite again - a redelivery, not a second caller. Declining
             // it told the caller "busy" for the very call this side had already
@@ -4684,7 +4704,14 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
     }
 
     // call.decline / call.end: record the outcome and tear the call down if it is
-    // the one we track.
+    // the one we track. Either way the call is over, and that is worth remembering
+    // for the invitation that may still be behind it in the mailbox.
+    if (!message.callId.empty()) {
+        endedCalls_.push_back(message.callId);
+        if (endedCalls_.size() > kEndedCallsRemembered) {
+            endedCalls_.pop_front();
+        }
+    }
     if (call_.state != CallState::eIdle && call_.callId == message.callId
         && from == call_.peerFingerprint) {
         if (type == "call.decline" && call_.state != CallState::eOutgoing) {

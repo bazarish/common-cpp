@@ -23,6 +23,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <deque>
 #include <set>
 #include <string>
 #include <vector>
@@ -1363,6 +1364,11 @@ private:
     // Set by sync(): the mailbox held more than one pass takes, and what is left
     // is work rather than items already in somebody's hands.
     bool morePending_ = false;
+    // Calls this session has already seen the end of, newest last. An invitation
+    // and the word that the call is over are two mailbox items, and nothing
+    // promises they arrive in that order: without this, an invite fetched after
+    // its own ending rings for a call that is long finished.
+    std::deque<std::string> endedCalls_;
     // Items handed out for the caller to store, whose ack has not come back yet.
     // A bounded pass would otherwise fetch the same five items over and over: the
     // ack travels back through the caller and lands after the next pass has
