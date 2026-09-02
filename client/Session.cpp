@@ -3940,6 +3940,20 @@ void Session::flushPendingEchoes()
     std::sort(refused.begin(), refused.end());
     refused.erase(std::unique(refused.begin(), refused.end()), refused.end());
     for (const std::string& peerFingerprint : refused) {
+        // The refusal says this capability was not one. The rest of the stash
+        // came out of the same batch and is worth no more than the one that was
+        // just refused - a batch is cloned or spent as a batch - so it goes, and
+        // with it the "every send burns one more dead token" behaviour. What
+        // replaces it is asked for in the same breath, and until it arrives the
+        // account window says plainly that there is nothing to write with.
+        const auto found = contacts_.find(peerFingerprint);
+        if (found != contacts_.end() && !found->second.sendTokens.empty()) {
+            bazarish::log::info("dropping {} token(s) for {} after a refusal",
+                found->second.sendTokens.size(), bazarish::log::redact(peerFingerprint));
+            found->second.sendTokens.clear();
+            found->second.needsOwnBatch = true;
+            persistContacts();
+        }
         try {
             askDevicesForToken(peerFingerprint);
             askPeerForTokensTokenlessly(peerFingerprint);
