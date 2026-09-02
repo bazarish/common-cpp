@@ -175,6 +175,7 @@ if(BAZARISH_WITH_CLIENT)
         client/ApiClient.cpp
         client/AudioCodec.cpp
         client/Authorship.cpp
+        client/LoginSigner.cpp
         client/AudioIo.cpp
         client/Bot.cpp
         client/CallMedia.cpp

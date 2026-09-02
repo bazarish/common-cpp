@@ -153,6 +153,11 @@ int main()
             = fs::temp_directory_path() / ("bazarish-export-" + toHex(randomBytes(8)));
         fs::create_directories(scratch);
         const fs::path bundle = scratch / "acetone.bundle";
+        // A picture is a row of its own in the account, so a bundle that carried
+        // only the meta restored a mime with nothing behind it - which the loader
+        // then dropped, leaving a restored account with no face at all.
+        const Bytes face = {'P', 'N', 'G', 0x01, 0x02, 0x03};
+        sa.setAvatar(face, "image/png");
         sa.exportAccount(bundle, "bundle-pw");
 
         // The scratch directory goes once the sessions reading from it are gone: an
@@ -162,6 +167,8 @@ int main()
             onlyTheDatabase(scratch / "imported-enc.db");
             const Session importedEnc = Session::open(scratch / "imported-enc.db", "atrest-pw");
             CHECK(importedEnc.fingerprint() == a.fingerprint);
+            CHECK(importedEnc.avatarMime() == "image/png");
+            CHECK(importedEnc.avatar() == face);
             CHECK_THROWS(Session::open(scratch / "imported-enc.db"));
 
             Session::importAccount(bundle, scratch / "imported-plain.db", "bundle-pw");

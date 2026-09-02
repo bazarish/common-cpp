@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "Session.hpp"
 
+#include "LoginSigner.hpp"
+
 #include "AccountDb.hpp"
 
 #include "Authorship.hpp"
@@ -1509,14 +1511,15 @@ std::string Session::wireName(const std::string& peerFingerprint) const
 
 std::string Session::signLogin(const std::string& challenge) const
 {
-    // Fail closed. A challenge that will not say who consumes the signature is
-    // not signed at all: the user would have nothing on screen to compare with
-    // the site they think they are signing in to, which is exactly how a
-    // handshake is stolen.
-    const service::LoginConsumer consumer = service::readLoginConsumer(challenge);
-    log::info("signing a login for \"{}\" at {} as {}", consumer.name, consumer.place,
-        consumer.role);
-    return service::signLoginBlob(client_->identity(), nowSeconds(), challenge);
+    return signLoginChallenge(client_->identity(), challenge);
+}
+
+std::shared_ptr<LoginSigner> Session::loginSigner() const
+{
+    // Its own key, not this session's: the front-end signs on the thread the
+    // user clicked on while this session may be in the middle of a sync.
+    return std::make_shared<LoginSigner>(
+        Identity::fromPrivatePem(client_->identity().privatePem()));
 }
 
 Bytes Session::deliveryMaskFor(const std::string& peerFingerprint) const
@@ -4513,12 +4516,24 @@ void Session::exportAccount(const fs::path& outFile, const std::string& password
     // The keys are re-serialized unencrypted inside the bundle; the password
     // protects the bundle as a whole, decoupling the export from whatever
     // at-rest passphrase this account directory happens to use.
+    // Avatars are rows of their own, so a bundle carrying only meta and contacts
+    // restores an account whose picture is a mime type with nothing behind it -
+    // and the loader then drops the mime too. They travel here as bytes: this
+    // account's own, and one per contact that has one.
+    nlohmann::json avatars = nlohmann::json::object();
+    for (const auto& [contactFp, contact] : contacts_) {
+        if (!contact.avatar.empty()) {
+            avatars[contactFp] = toBase64(contact.avatar);
+        }
+    }
     const nlohmann::json bundle = {
         {"v", 1},
         {"identityPem", client_->identity().privatePem()},
         {"sealingPem", sealingKey_.privatePem()},
         {"meta", meta},
         {"contacts", contacts},
+        {"avatar", toBase64(avatar_)},
+        {"contactAvatars", avatars},
         // Who this account has cut off travels with it: a restored account that
         // forgot its block list would let them all back in.
         {"blocked", nlohmann::json(blocked_)},
@@ -4561,6 +4576,24 @@ void Session::importAccount(const fs::path& bundleFile, const fs::path& accountF
     db.putText("contacts", bundle.at("contacts").dump());
     if (bundle.contains("blocked")) {
         db.putText("blocked", bundle.at("blocked").dump());
+    }
+    // The pictures go back into the rows the loader reads them from. Without
+    // them a restored account has a mime type and nothing behind it, and the
+    // loader answers that by forgetting the mime too - which is what a restored
+    // account with no picture looked like.
+    if (bundle.contains("avatar")) {
+        const Bytes avatar = fromBase64(bundle.at("avatar").get<std::string>());
+        if (!avatar.empty()) {
+            db.put("avatar.self", avatar);
+        }
+    }
+    if (bundle.contains("contactAvatars")) {
+        for (const auto& [contactFp, encoded] : bundle.at("contactAvatars").items()) {
+            const Bytes avatar = fromBase64(encoded.get<std::string>());
+            if (!avatar.empty()) {
+                db.put("avatar-" + contactFp, avatar);
+            }
+        }
     }
 }
 

@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include "LoginSigner.hpp"
+
 #include "AudioIo.hpp"
 #include "CallMedia.hpp"
 #include "Authorship.hpp"
@@ -508,6 +510,11 @@ public:
     // the browser. Returns a base64 token the user pastes back into the portal,
     // which verifies it (see verifyLoginBlob) and recovers this fingerprint.
     std::string signLogin(const std::string& challenge) const;
+
+    // A signer of this account's own, for a front-end that must not wait for
+    // this session's thread to finish what it is doing. It carries a copy of the
+    // identity and needs nothing else.
+    std::shared_ptr<LoginSigner> loginSigner() const;
 
     // Asks this account's other devices for the address book. A device that has
     // just been enrolled has no other way to learn a contact: there is no lookup
