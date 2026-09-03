@@ -328,6 +328,10 @@ public:
     // self-message). The pin list itself lives in the GUI's local store; this only
     // broadcasts the change so every device keeps the same pinned chats.
     void syncChatPinToSelf(const std::string& peerFingerprint, bool pinned);
+    // Tells this account's other devices that this conversation has been read
+    // through the message sent at this moment. The moment is the sender's own
+    // stamp, which is the same on every device - a local row id is not.
+    void syncReadToSelf(const std::string& peerFingerprint, std::int64_t sentAtMs);
     // Tells the account's other devices that this conversation was emptied here -
     // our own copy of it, not the correspondent's.
     void syncChatClearToSelf(const std::string& peerFingerprint);

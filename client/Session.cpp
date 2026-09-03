@@ -1331,6 +1331,22 @@ void Session::syncChatPinToSelf(const std::string& peerFingerprint, bool pinned)
     });
 }
 
+void Session::syncReadToSelf(const std::string& peerFingerprint, const std::int64_t sentAtMs)
+{
+    if (peerFingerprint.empty() || sentAtMs <= 0) {
+        return;
+    }
+    // Reading is an account's act, not a device's: the same conversation on the
+    // user's other device has been read too, and it has no other way to know. The
+    // mark is the message's own sent-at, because that is what every device agrees
+    // on - the row it occupies locally is not.
+    sendSelf({
+        {"type", "device.read"},
+        {"peer", peerFingerprint},
+        {"ts", sentAtMs},
+    });
+}
+
 void Session::syncChatClearToSelf(const std::string& peerFingerprint)
 {
     // Clearing "only for me" means this account, not this device: the other
@@ -3865,6 +3881,14 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                     message.refId = body.value("peer", std::string());
                     message.text
                         = body.value("pinned", false) ? std::string("1") : std::string("0");
+                }
+            } else if (type == "device.read") {
+                // Another device of ours read this conversation up to a moment.
+                // Honoured only from us, like every other device-sync kind.
+                if (message.fromFingerprint == fingerprint()) {
+                    message.contentType = type;
+                    message.refId = body.value("peer", std::string());
+                    message.text = std::to_string(body.value("ts", std::int64_t{0}));
                 }
             } else if (type == "device.chat-clear") {
                 // Another device of ours emptied its copy of a conversation; the
