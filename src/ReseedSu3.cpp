@@ -3,6 +3,8 @@
 
 #include <zlib.h>
 
+#include <iterator>
+
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -14,8 +16,10 @@ namespace {
 
 // SU3 (I2P's signed-update container, here carrying reseed data). The reader
 // this is written for is any I2P router: magic, a fixed header, then the ZIP.
-constexpr char kSu3Magic[] = "I2Psu3";
-constexpr std::size_t kSu3MagicBytes = 7;  // the six letters and the zero after them
+// The six letters and the zero after them, written out rather than taken from a
+// string literal: what goes on the wire is seven bytes, and saying so leaves no
+// room for a reader (or a compiler) to wonder about the terminator.
+constexpr std::uint8_t kSu3Magic[] = {'I', '2', 'P', 's', 'u', '3', 0};
 constexpr std::uint8_t kSu3FormatVersion = 0;
 // Unsigned: what this carries is routers, and every one of them is signed by the
 // router it describes. A signature over the container would say who packed it,
@@ -135,7 +139,7 @@ Bytes packReseedSu3(const std::vector<Bytes>& routers, const std::string& signer
     version.resize(std::max(version.size(), kMinVersionBytes), '\0');
 
     Bytes out;
-    out.insert(out.end(), kSu3Magic, kSu3Magic + kSu3MagicBytes);
+    out.insert(out.end(), std::begin(kSu3Magic), std::end(kSu3Magic));
     out.push_back(kSu3FormatVersion);
     putBe16(out, kSignatureType);
     putBe16(out, kSignatureLength);
