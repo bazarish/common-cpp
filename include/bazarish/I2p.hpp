@@ -115,6 +115,13 @@ std::string routerVersion();
 // fewer than count when the netDb holds fewer. Requires a live Router.
 std::vector<Bytes> sampleRouterInfos(std::size_t count);
 
+// Packs RouterInfos into an **su3 reseed archive** - the format every I2P router
+// reads: a ZIP of the routers inside the standard container. Unsigned: what it
+// carries is signed router by router, and a signature over the container would
+// only name whoever packed it. signerId is the name that goes in the header, for
+// an operator reading the file. Needs no running router.
+Bytes packReseedSu3(const std::vector<Bytes>& routers, const std::string& signerId);
+
 // Writes RouterInfos into a router data directory's netDb, to be called BEFORE
 // constructing the Router that will use dataDir - the engine loads its netDb
 // once, at start. Malformed entries are skipped; returns how many were written.

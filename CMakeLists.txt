@@ -53,6 +53,7 @@ add_library(bazarish_common STATIC
     src/I2pHttp.cpp
     src/Reactions.cpp
     src/Log.cpp
+    src/ReseedSu3.cpp
     src/Health.cpp
     src/Restart.cpp
     src/HttpClient.cpp
@@ -115,6 +116,7 @@ bazarish_add_test(TestAuth)
 bazarish_add_test(TestBytes)
 bazarish_add_test(TestCrypto)
 bazarish_add_test(TestCms)
+bazarish_add_test(TestReseedSu3)
 bazarish_add_test(TestCertificates)
 bazarish_add_test(TestTokens)
 bazarish_add_test(TestErrors)

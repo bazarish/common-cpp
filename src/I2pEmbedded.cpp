@@ -861,9 +861,19 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
         std::string joined;
         for (const std::string& url : config.reseedUrls)
         {
+            if (url.rfind("https://", 0) != 0)
+            {
+                // Not an address but an archive already on disk: an offline
+                // install, or a test feeding the engine a file it packed itself.
+                args.push_back("--reseed.file=" + url);
+                continue;
+            }
             joined += (joined.empty() ? "" : ",") + url;
         }
-        args.push_back("--reseed.urls=" + joined);
+        if (!joined.empty())
+        {
+            args.push_back("--reseed.urls=" + joined);
+        }
     }
 
     std::vector<char*> argv;
