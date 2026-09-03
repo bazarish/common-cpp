@@ -46,9 +46,3 @@ file here.
   named after the destination, so on a router that serves one destination per
   user they amount to a plain-text roster of the addresses this installation has
   served. Drop this patch if/when the parameter is merged upstream.
-- `0003-libi2pd-reseed-url-may-name-the-archive.patch` - an entry in `reseed.urls`
-  that already ends in `.su3` is fetched as it stands; only a bare host still gets
-  `i2pseeds.su3` appended. A Bazarish server publishes its reseed at whatever path
-  its operator already serves (a portal page), not at the conventional one, and
-  the address in a server descriptor names the archive itself. Drop this patch
-  if/when upstream accepts a full-URL reseed entry.

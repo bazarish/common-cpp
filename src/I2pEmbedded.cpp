@@ -852,12 +852,15 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
     if (!config.reseedUrls.empty())
     {
         // The addresses this router bootstraps from, in place of the engine's
-        // built-in list. The engine fetches the su3 itself - with the user agent
-        // every I2P router sends, following redirects - unpacks it and loads the
-        // routers, each of which carries its own signature and is verified on
-        // load. The su3's own signature is not required (reseed.verify is off by
-        // default): a private reseed is signed by nobody a stock client trusts,
-        // so requiring it would mean no private reseeds at all.
+        // built-in list. Each is a reseed base - the same shape every public
+        // reseed has - and the engine appends the archive's standard name to it,
+        // fetches it with the user agent every I2P router sends, unpacks it and
+        // loads the routers, each of which carries its own signature and is
+        // verified on load. The su3's own signature is not required
+        // (reseed.verify is off by default): a private reseed is signed by nobody
+        // a stock client trusts, so requiring it would mean no private reseeds.
+        // The trailing slash is put back if it is missing, because the engine
+        // concatenates rather than joins.
         std::string joined;
         for (const std::string& url : config.reseedUrls)
         {
@@ -869,6 +872,10 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
                 continue;
             }
             joined += (joined.empty() ? "" : ",") + url;
+            if (joined.back() != '/')
+            {
+                joined += '/';
+            }
         }
         if (!joined.empty())
         {
