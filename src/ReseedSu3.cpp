@@ -31,6 +31,10 @@ constexpr std::uint8_t kContentTypeReseed = 0x03;
 // The format's own minimum for the version field, which is a text timestamp.
 constexpr std::size_t kMinVersionBytes = 16;
 constexpr std::size_t kUnusedAfterContentType = 12;
+// Everything before the version field: magic and its zero, format version,
+// signature type and length, the four one-byte fields with their unused bytes,
+// the content length, and the twelve unused bytes at the end.
+constexpr std::size_t kHeaderBytes = 40;
 
 // ZIP, stored (never deflated): a RouterInfo is already compact, and a reader
 // that finds no compression takes the bytes as they are.
@@ -139,7 +143,14 @@ Bytes packReseedSu3(const std::vector<Bytes>& routers, const std::string& signer
     version.resize(std::max(version.size(), kMinVersionBytes), '\0');
 
     Bytes out;
-    out.insert(out.end(), std::begin(kSu3Magic), std::end(kSu3Magic));
+    // Room for the header and the archive up front. The magic goes in byte by
+    // byte: a range insert into a vector that is still empty is a pattern gcc 12
+    // reads as a write into nothing, and the packaged build treats warnings as
+    // errors.
+    out.reserve(kHeaderBytes + version.size() + signerId.size() + zip.size());
+    for (const std::uint8_t byte : kSu3Magic) {
+        out.push_back(byte);
+    }
     out.push_back(kSu3FormatVersion);
     putBe16(out, kSignatureType);
     putBe16(out, kSignatureLength);
