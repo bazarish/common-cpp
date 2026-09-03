@@ -21,6 +21,16 @@ constexpr std::size_t kMaxMessagePayloadBytes = 512 * 1024;
 // sender counts them out and the recipient's server checks the count, so neither
 // side has to trust the other's arithmetic.
 constexpr std::size_t kBytesPerDeliveryToken = 30 * 1024;
+// How many reply tokens a contact request carries. Far fewer than an ordinary
+// batch, because this one rides the only tokenless path into a mailbox and its
+// size is what a flood of requests costs the recipient. Enough for the first
+// exchange; the full batch arrives with the first reply, which is paid for.
+constexpr int kRequestTokenBatchSize = 16;
+// How many contact requests may sit unfetched in one mailbox. The per-minute
+// limit bounds the rate; this bounds the pile, so an address that is being
+// hammered stops taking requests instead of holding a day of them. A sender is
+// told to come back, the way a rate-limited one is.
+constexpr std::size_t kMaxPendingContactRequests = 30;
 
 // How many tokens a payload of this size must be delivered with.
 constexpr std::size_t tokensForPayload(const std::size_t payloadBytes)

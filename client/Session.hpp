@@ -1028,7 +1028,10 @@ private:
     // device that saved it already has it.
     bool saveToSelf(nlohmann::json message);
     void persistBlocked();
-    std::vector<std::string> issueTokenBatch(const std::string& peerFingerprint);
+    // Mints count tokens for this correspondent and registers them with our own
+    // server. An ordinary batch is one size; the one a contact request carries is
+    // another, and much smaller (kRequestTokenBatchSize).
+    std::vector<std::string> issueTokenBatch(const std::string& peerFingerprint, int count);
     // Mints ONE fresh delivery token (registers its hash with our server) and
     // returns it (base64). Used to prepay a specific reply - a low-stash request
     // embeds one so the peer's token-refill reply is always deliverable.

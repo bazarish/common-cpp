@@ -1740,14 +1740,15 @@ void Session::clearConnectionLog()
     client_->wireLog().clear();
 }
 
-std::vector<std::string> Session::issueTokenBatch(const std::string& peerFingerprint)
+std::vector<std::string> Session::issueTokenBatch(const std::string& peerFingerprint,
+    const int count)
 {
     const Bytes mask = deliveryMaskFor(peerFingerprint);
     std::vector<std::string> tokens;
     std::vector<Bytes> minted;
-    tokens.reserve(kTokenBatchSize);
-    minted.reserve(kTokenBatchSize);
-    for (int i = 0; i < kTokenBatchSize; ++i) {
+    tokens.reserve(static_cast<std::size_t>(count));
+    minted.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) {
         const Bytes token = generateDeliveryToken(mask);
         tokens.push_back(toBase64(token));
         minted.push_back(token);
@@ -2145,7 +2146,11 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
 
     // Mint a batch the peer will use to write back to us and hand it over, with
     // our prekey and our routing (dest + serving sealing key), in the bootstrap.
-    const std::vector<std::string> replyTokens = issueTokenBatch(peerFingerprint);
+    // A small one: this rides the tokenless path, and what it weighs is what a
+    // flood of requests costs the person being asked. The full batch follows in
+    // their first reply, which is paid for like any other message.
+    const std::vector<std::string> replyTokens
+        = issueTokenBatch(peerFingerprint, kRequestTokenBatchSize);
 
     const nlohmann::json payload = {
         {"v", kMessageFormatVersion},
@@ -2972,7 +2977,7 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
             {"dest", myDest_},
             {"servingKey", myServingKeyB64_},
             {"view", sharedView()},
-            {"replyTokens", issueTokenBatch(peerFingerprint)},
+            {"replyTokens", issueTokenBatch(peerFingerprint, kTokenBatchSize)},
         };
         // Addressed when we know which device asked: their other devices then
         // leave this batch alone and ask for their own rather than spending the
@@ -2993,7 +2998,7 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
             {"dest", myDest_},
             {"servingKey", myServingKeyB64_},
             {"view", sharedView()},
-            {"replyTokens", issueTokenBatch(peerFingerprint)},
+            {"replyTokens", issueTokenBatch(peerFingerprint, kTokenBatchSize)},
         };
         reissueCleared = true;
     }
@@ -4003,7 +4008,7 @@ void Session::sendTokenRefill(const std::string& peerFingerprint, const std::str
         {"id", toHex(randomBytes(8))},
         {"from", fingerprint()},
         {"sentAt", nowMillis()},
-        {"bootstrap", {{"replyTokens", issueTokenBatch(peerFingerprint)}, {"forDevice", forDevice}}},
+        {"bootstrap", {{"replyTokens", issueTokenBatch(peerFingerprint, kTokenBatchSize)}, {"forDevice", forDevice}}},
         {"routing",
             {{"dest", myDest_}, {"servingKey", myServingKeyB64_}, {"view", sharedView()}}},
     };
