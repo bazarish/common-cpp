@@ -173,6 +173,11 @@ struct EndpointConfig {
     // Whose destination it is, when one router serves several profiles. Empty
     // for destinations that belong to no profile (e.g. a shared warm pool).
     std::string owner = {};
+    // Whether this destination carries real-time media. A destination is pinned
+    // for its life to one of the router's single-threaded lanes; a bulk transfer
+    // sharing a lane with a call's media is a call that stutters while the file
+    // moves. Media asks for the lane kept for it, which nothing else is put on.
+    bool realtime = false;
 };
 
 // One I2P destination on the router: a stable address that can accept and open

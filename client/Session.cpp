@@ -4474,10 +4474,15 @@ std::shared_ptr<bazarish::i2p::Endpoint> Session::openCallMediaSession()
     // single biggest latency/jitter lever for realtime media. Safe here because
     // the media destination is one-time and unlinked from the identity
     // destination, so a short tunnel never weakens identity anonymity.
-    return i2pRouter().createEndpoint(bazarish::i2p::EndpointConfig{
-        i2pRouter().generateKeys(), bazarish::i2p::LeaseSetKind::eEncrypted,
-        bazarish::i2p::Privacy::eMinimal, bazarish::i2p::kDefaultTunnelQuantity, true,
-        "Call media", destinationOwner()});
+    bazarish::i2p::EndpointConfig config{i2pRouter().generateKeys(),
+        bazarish::i2p::LeaseSetKind::eEncrypted, bazarish::i2p::Privacy::eMinimal,
+        bazarish::i2p::kDefaultTunnelQuantity, true, "Call media", destinationOwner()};
+    // The one destination that carries real time. It goes on the lane kept for
+    // media, so a file moving through another destination cannot make a call
+    // stutter: a lane is a single thread, and everything pinned to it waits its
+    // turn behind whatever else is on it.
+    config.realtime = true;
+    return i2pRouter().createEndpoint(config);
 }
 
 void Session::startCallMedia()

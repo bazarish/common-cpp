@@ -188,10 +188,26 @@ public:
     // The io_context a new destination should run on (round-robin across lanes).
     // The chosen lane's single thread serializes all of that destination's
     // handlers, while different destinations spread across lanes run in parallel.
+    // The first lane is not handed out here: it is kept for real-time media (see
+    // reserved()), because a lane is one thread and a file moving on it is a
+    // call stuttering on it. With a single lane there is nothing to keep apart
+    // and everything shares it.
     boost::asio::io_context& next()
     {
-        const std::size_t i = nextLane_.fetch_add(1, std::memory_order_relaxed) % lanes_.size();
+        if (lanes_.size() == 1) {
+            return lanes_.front()->ctx;
+        }
+        const std::size_t i
+            = 1 + nextLane_.fetch_add(1, std::memory_order_relaxed) % (lanes_.size() - 1);
         return lanes_[i]->ctx;
+    }
+
+    // The lane kept for real-time media. Calls are the only thing on it, and a
+    // call has one media destination at a time, so it is a lane with one
+    // destination on it for as long as the call lasts.
+    boost::asio::io_context& reserved()
+    {
+        return lanes_.front()->ctx;
     }
 
 private:
@@ -210,7 +226,8 @@ private:
 // the hardware concurrency, clamped to [2, 8]. The destination layer (streaming,
 // datagrams, leaseset/garlic handling) runs here alongside the i2pd engine's own
 // transport and tunnel threads, so a fraction of the cores is plenty and leaves
-// headroom for the engine.
+// headroom for the engine. One of them is kept for real-time media and the rest
+// carry everything else, which is why the floor is two rather than one.
 std::size_t ioContextCount()
 {
     const unsigned hw = std::thread::hardware_concurrency();
@@ -1061,7 +1078,8 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     // while every handler of this destination stays on a single thread.
     impl->io = io;
     impl->dest = std::make_shared<i2pd::client::ClientDestination>(
-        impl->io->next(), parseKeys(config.keys.blob()), config.published, &params);
+        config.realtime ? impl->io->reserved() : impl->io->next(),
+        parseKeys(config.keys.blob()), config.published, &params);
     impl->dest->Start();
     {
         std::lock_guard<std::mutex> lock(destsMutex);
