@@ -2761,6 +2761,12 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
     // One serve per asking device: two devices of theirs can pull the same file at
     // once, each over its own one-time address, and each needs its own cancel
     // handle and its own progress.
+    // What the cancel map calls this serve: one file may be served to two devices
+    // of the same contact at once, and each has its own thread to stop. What the
+    // INTERFACE calls it is the message's own id - the row it draws is the file
+    // message's row - so progress is reported under fileId and nothing else. The
+    // two were the same name once, and a serve to a named device then reported
+    // under a name no conversation held: the sender's progress bar disappeared.
     const std::string serveId = forDevice.empty() ? fileId : fileId + "@" + forDevice;
     const std::shared_ptr<std::atomic<bool>> cancel = std::make_shared<std::atomic<bool>>(false);
     {
@@ -2770,14 +2776,15 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
     std::thread([this, peerFingerprint, fileId, serveId, forDevice, source, ciphertextPath,
                     cancel]() {
         try {
-            // Every stage of one serve is keyed the same way. Reporting the first
-            // one under the file id and the rest under the per-device serve id
-            // left the sender's row frozen at "Encrypting" while the transfer
-            // ran to completion under a key nothing was watching.
+            // Every stage of one serve is keyed by the message's own id, which is
+            // the row the interface draws. Reporting any of them under the
+            // per-device serve id reports them under a key no conversation holds:
+            // the sender's progress bar then never appears, or freezes at the one
+            // stage that was named correctly.
             emitTransfer(
-                serveId, TransferState::eRequested, 0, 0, {}, "Encrypting", peerFingerprint);
+                fileId, TransferState::eRequested, 0, 0, {}, "Encrypting", peerFingerprint);
             const PreparedFile prepared = prepareFile(source, ciphertextPath);
-            emitTransfer(serveId, TransferState::eRequested, 0, 0, {}, "Making an address",
+            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, "Making an address",
                 peerFingerprint);
             bazarish::i2p::EndpointConfig config{i2pRouter().generateKeys()};
             config.privacy = transferPrivacy();
@@ -2786,7 +2793,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             config.owner = destinationOwner();
             const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
                 = i2pRouter().createEndpoint(config);
-            emitTransfer(serveId, TransferState::eRequested, 0, 0, {}, "Publishing the address",
+            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, "Publishing the address",
                 peerFingerprint);
             if (!endpoint->waitReady(std::chrono::seconds(180))) {
                 throw std::runtime_error("could not publish a one-time destination");
@@ -2808,14 +2815,14 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                 {"forDevice", forDevice},
             };
             sendContent(peerFingerprint, std::move(inner));
-            emitTransfer(serveId, TransferState::eRequested, 0, 0, {}, "Waiting for them",
+            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, "Waiting for them",
                 peerFingerprint);
 
             const bool served
                 = serveFile(*endpoint, ciphertextPath, std::chrono::seconds(kServeWindowSeconds),
-                    [this, serveId, peerFingerprint](const std::uint64_t sent,
+                    [this, fileId, peerFingerprint](const std::uint64_t sent,
                         const std::uint64_t total) {
-                        emitTransfer(serveId, TransferState::eRunning, sent, total, {}, "Sending",
+                        emitTransfer(fileId, TransferState::eRunning, sent, total, {}, "Sending",
                             peerFingerprint);
                     },
                     cancel.get());
@@ -2825,7 +2832,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                 throw std::runtime_error(
                     cancel->load() ? "transfer stopped" : "your contact never connected");
             }
-            emitTransfer(serveId, TransferState::eDone, 0, 0, {}, {}, peerFingerprint);
+            emitTransfer(fileId, TransferState::eDone, 0, 0, {}, {}, peerFingerprint);
             {
                 const std::lock_guard<std::mutex> lock(transfers_->mutex);
                 transfers_->serving.erase(fileId);
