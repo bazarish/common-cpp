@@ -271,14 +271,15 @@ struct RouterConfig {
     std::filesystem::path dataDir;
     // Client (notransit) or Server (relays transit). Floodfill is never enabled.
     Role role = Role::eClient;
-    // Whether the router may bootstrap from i2pd's built-in reseed hosts. A
-    // server has nobody to ask, so it keeps them. A client does: it takes its
-    // netDb from its own server over the clearnet facade, and reaching a public
-    // reseed host would announce the bootstrap to a third party - so the client
-    // turns this off unless there is no clearnet facade to ask at all.
-    bool allowPublicReseed = true;
+    // Where a router with no peers gets its first netDb from: full https URLs of
+    // su3 reseed archives, which the engine fetches, unpacks and loads itself.
+    // These replace the engine's built-in list, so the bootstrap stays between
+    // the user and the addresses their own server named. Left empty, the engine
+    // uses its built-in public hosts - which is what a router with nobody to ask
+    // must do, and the only case in which it reaches a third party.
+    std::vector<std::string> reseedUrls{};
     // A SOCKS5 proxy for what this router does on the clearnet: its connections to
-    // other routers and the built-in reseeds. Empty host = straight out, which is
+    // other routers and the reseed fetch. Empty host = straight out, which is
     // the default. SSU2 is switched off while one is set - its datagrams are not
     // proxied, and unproxied is not an option here.
     std::string socksProxyHost{};

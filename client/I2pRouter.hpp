@@ -52,22 +52,13 @@ std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
 // state. Heavyweight (start/stop join engine threads); call off the GUI thread.
 void reconcileI2pRouter(const std::filesystem::path& dataDir);
 
-// Installs a private reseed for a router data directory that has no netDb yet:
-// the routers are written straight into the netDb the engine loads at start, so
-// a first I2P start never reaches for a public reseed host. A no-op once the
-// directory has a netDb (the router reseeds itself from what it knows) or once
-// the router is running. Must run before the router for dataDir is created.
-// Returns whether the router will start with a netDb of its own - false means
-// the fetch failed and there is nothing to start from.
-bool seedRouterOnce(
-    const std::filesystem::path& dataDir, const std::function<std::vector<Bytes>()>& fetch);
-
-// Whether the embedded router may bootstrap from i2pd's built-in reseed hosts.
-// Default FALSE: the netDb comes from the user's own server over its clearnet
-// facade, and contacting a public reseed host would announce the bootstrap to a
-// third party. It is turned on only for the one case where there is nobody to
-// ask - the server descriptor carries no clearnet facade, or none answered.
-void setPublicReseedAllowed(bool allowed);
+// Where a router with no peers bootstraps from: the su3 reseed addresses this
+// account's server named in its descriptor. Full https URLs, fetched and loaded
+// by the engine itself. Set before the router is created; an empty list leaves
+// the engine its built-in public hosts, which is what a client with nobody to
+// ask must fall back to.
+void setReseedUrls(std::vector<std::string> urls);
+std::vector<std::string> reseedUrls();
 
 // A router that knows fewer peers than this cannot build a tunnel on its own and
 // has to be handed a slice of somebody's netDb first. Ten is enough to start
@@ -86,14 +77,7 @@ std::size_t knownRouterCount(
 using BootstrapNoticeFn = std::function<void(const std::string& message)>;
 void setBootstrapNoticeSink(BootstrapNoticeFn sink);
 
-// Clearnet facades this application knows of, from every account it has open.
-// Bootstrapping I2P belongs to the application, not to one account: a client
-// that holds three accounts should ask all three servers before it reaches for a
-// public reseed host. Each entry is a facade URL.
-void setReseedFacades(std::vector<std::string> urls);
-std::vector<std::string> reseedFacades();
 void reportBootstrapNotice(const std::string& message);
-bool publicReseedAllowed();
 
 // Connect progress: the core reports named milestones of a connect (reseed,
 // router start, tunnel build, dial, subscribe) so the UI can show what is

@@ -268,7 +268,7 @@ bool ApiClient::ensureSessionLocked()
         headers.emplace("X-Bazarish-Client", clientId_);
         const ApiResponse response
             = transmitLocked("POST", "/v1/auth/session", {}, Bytes(text.begin(), text.end()),
-                "application/json", headers, kDefaultReadTimeoutSeconds, false);
+                "application/json", headers, kDefaultReadTimeoutSeconds);
         const nlohmann::json reply = response.json();
         const Bytes opened
             = cms::unseal(fromBase64(reply.at("sealed").get<std::string>()), replyKey);
@@ -445,7 +445,7 @@ ApiResponse ApiClient::postJson(const std::string& path, const nlohmann::json& b
 {
     const std::string text = body.dump();
     return send("POST", path, {}, Bytes(text.begin(), text.end()), "application/json", true, {},
-        readTimeoutSeconds, false, note);
+        readTimeoutSeconds, note);
 }
 
 ApiResponse ApiClient::postBytes(
@@ -477,101 +477,6 @@ ApiResponse ApiClient::getPublic(const std::string& path, const std::string& que
     return send("GET", path, query, {}, {}, false);
 }
 
-ApiResponse ApiClient::getClearnet(const std::string& path, const std::string& query)
-{
-    return send("GET", path, query, {}, {}, false, {}, kDefaultReadTimeoutSeconds, true);
-}
-
-namespace {
-
-std::vector<Bytes> routersFromReseedBody(const nlohmann::json& body)
-{
-    std::vector<Bytes> routers;
-    for (const nlohmann::json& entry : body.at("routers")) {
-        routers.push_back(fromBase64(entry.get<std::string>()));
-    }
-    return routers;
-}
-
-}  // namespace
-
-void ApiClient::seedRouterFromServer()
-{
-    if (i2pDataDir_.empty() || !i2pEnabled()) {
-        return;  // no embedded transport to bootstrap
-    }
-    const bool seeded = seedRouterOnce(i2pDataDir_, [this]() {
-        reportConnectProgress(10, "Asking your server for the I2P network database");
-        try {
-            // Clearnet by construction: this call bootstraps the transport itself.
-            return routersFromReseedBody(getClearnet("/v1/messaging/reseed").json());
-        } catch (const std::exception& error) {
-            bazarish::log::info("own server did not reseed: {}", error.what());
-        }
-        // Every other server this application holds an account with, in turn:
-        // bootstrapping is the application's job, not one account's, and a
-        // client with three accounts has three places to ask before it reaches
-        // outside. Started at a rotating position so one unreachable facade is
-        // not always the first thing tried.
-        const std::vector<std::string> facades = reseedFacades();
-        static std::atomic<std::size_t> nextFacade{0};
-        for (std::size_t i = 0; i < facades.size(); ++i) {
-            const std::string& url = facades[(nextFacade + i) % facades.size()];
-            try {
-                const Facade facade = parseFacadeUrl(url);
-                if (facadeIsI2p(facade)) {
-                    continue;  // an I2P facade cannot be reached before I2P is up
-                }
-                reportConnectProgress(15, "Asking another of your servers for the network database");
-                bazarish::http::ClientRequest ask;
-                ask.method = "GET";
-                ask.target = facade.basePath + "/v1/messaging/reseed";
-                const bazarish::http::ClientResponse res
-                    = bazarish::http::request(facade.host, facade.port, ask, {});
-                if (res.status != 200) {
-                    continue;
-                }
-                std::vector<Bytes> routers = routersFromReseedBody(nlohmann::json::parse(res.body));
-                if (!routers.empty()) {
-                    ++nextFacade;
-                    return routers;
-                }
-            } catch (const std::exception& error) {
-                bazarish::log::info("reseed from {} failed: {}", url, error.what());
-            }
-        }
-        ++nextFacade;
-        return std::vector<Bytes>{};
-    });
-    // i2pd's own reseed hosts are the last resort, and only when there is nobody
-    // to ask: no clearnet facade in this server's descriptor, or none answered.
-    // Otherwise the bootstrap stays between the user and their own server.
-    if (seeded) {
-        reportConnectProgress(25, "Network database ready");
-    }
-    if (!seeded) {
-        const bool haveClearnetFacade = std::any_of(endpoint_.facades.begin(),
-            endpoint_.facades.end(), [](const Facade& f) { return !facadeIsI2p(f); });
-        setPublicReseedAllowed(true);
-        reportConnectProgress(25, "Your server did not answer: bootstrapping from public reseeds");
-        // Said where the user can see it, not only in a log: this is the one
-        // moment the client reaches outside the network they chose, and it is
-        // their call whether that is acceptable.
-        reportBootstrapNotice(haveClearnetFacade
-                ? "Your server did not answer with an I2P network database, so this client is "
-                  "bootstrapping I2P from public reseed hosts."
-                : "This server publishes no clearnet address to bootstrap from, so this client "
-                  "is bootstrapping I2P from public reseed hosts.");
-        if (haveClearnetFacade) {
-            bazarish::log::warn(
-                "no clearnet facade answered the reseed: falling back to public reseed hosts");
-        } else {
-            bazarish::log::warn(
-                "this server publishes no clearnet facade: falling back to public reseed hosts");
-        }
-    }
-}
-
 void ApiClient::setWireLog(WireLog* const log)
 {
     wireLog_ = log;
@@ -595,14 +500,8 @@ void ApiClient::noteWire(const std::string& method, const std::string& path,
 ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     const std::string& query, const Bytes& body, const std::string& contentType,
     const bool authenticate, const std::map<std::string, std::string>& extraHeaders,
-    const int readTimeoutSeconds, const bool clearnetOnly, const std::string& note)
+    const int readTimeoutSeconds, const std::string& note)
 {
-    // Before the request lock: a call that may go over I2P must not start the
-    // router unseeded. A clearnet-only call skips it - it cannot start the
-    // router, and the seeding fetch is itself one of those.
-    if (!clearnetOnly) {
-        seedRouterFromServer();
-    }
     const std::lock_guard<std::mutex> lock(netMutex_);
     // The signed canonical path is the server-visible path: no base path and
     // no query string (the facade strips the base path before forwarding and
@@ -645,7 +544,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     };
     try {
         const ApiResponse response = transmitLocked(
-            method, path, query, body, contentType, headers, readTimeoutSeconds, clearnetOnly);
+            method, path, query, body, contentType, headers, readTimeoutSeconds);
         if (!quietOnSuccess) {
             noteWire(method, path, note, std::to_string(response.status), response.body.size(),
                 elapsedMillis());
@@ -677,7 +576,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
             retryHeaders.emplace(key, value);
         }
         const ApiResponse response = transmitLocked(method, path, query, body, contentType,
-            retryHeaders, readTimeoutSeconds, clearnetOnly);
+            retryHeaders, readTimeoutSeconds);
         if (!quietOnSuccess) {
             noteWire(method, path, note, std::to_string(response.status), response.body.size(),
                 elapsedMillis());
@@ -688,8 +587,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
 
 ApiResponse ApiClient::transmitLocked(const std::string& method, const std::string& path,
     const std::string& query, const Bytes& body, const std::string& contentType,
-    const std::map<std::string, std::string>& headerMap, const int readTimeoutSeconds,
-    const bool clearnetOnly)
+    const std::map<std::string, std::string>& headerMap, const int readTimeoutSeconds)
 {
     // The headers the I2P transport writes verbatim (Host / Content-Length /
     // Connection are added by the builder); the clearnet leg sends the same set.
@@ -722,30 +620,16 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
 
     // The API goes to the facades, in order, failing over only when one is
     // unreachable; a facade that answers with an error is final (no failover) and
-    // the caller's retry loop re-enters here. A clearnet-only request is the
-    // reseed, and it goes to the reseed addresses instead - they are a different
-    // list precisely because they serve a different purpose.
-    const std::vector<Facade>& facades
-        = clearnetOnly && !endpoint_.reseeds.empty() ? endpoint_.reseeds : endpoint_.facades;
-    std::vector<std::size_t> attempts;
-    if (&facades == &endpoint_.reseeds) {
-        attempts.resize(facades.size());
-        for (std::size_t i = 0; i < facades.size(); ++i) {
-            attempts[i] = i;
-        }
-    } else {
-        attempts = facadeOrder();
-    }
+    // the caller's retry loop re-enters here. There is no second list any more:
+    // the reseed addresses are not an API, and nothing else this client does
+    // leaves I2P.
+    const std::vector<Facade>& facades = endpoint_.facades;
+    const std::vector<std::size_t> attempts = facadeOrder();
     std::string lastError = "no facade configured";
     for (const std::size_t index : attempts) {
         const Facade& facade = facades[index];
 
         if (facadeIsI2p(facade)) {
-            if (clearnetOnly) {
-                // The caller bootstraps the I2P transport itself; it cannot use it.
-                lastError = "clearnet-only request: " + facade.host;
-                continue;
-            }
             if (!i2pEnabled()) {
                 // I2P turned off in settings: use clearnet facades only. With no
                 // reachable clearnet facade the loop ends in an explicit error.
@@ -780,8 +664,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
         // Only two things reach a clearnet address: the reseed, which carries no
         // identity and is what makes I2P possible at all, and everything at all
         // when a stand is being talked to without I2P on purpose.
-        if (!clearnetOnly && !bazarish::allowFacadeWithoutI2pForDevPurposes()
-            && !facadeIsOwnLoopback(facade)) {
+        if (!bazarish::allowFacadeWithoutI2pForDevPurposes() && !facadeIsOwnLoopback(facade)) {
             lastError = "this client speaks to its server over I2P only: " + facade.host;
             continue;
         }
@@ -816,9 +699,6 @@ ApiResponse ApiClient::putFile(const std::string& path, const std::filesystem::p
     const std::string& bodySha256Hex, const std::string& contentType,
     const std::map<std::string, std::string>& extraHeaders, const UploadProgressFn& onProgress)
 {
-    // Before the request lock: a call that may go over I2P must not start the
-    // router unseeded, and the seeding is itself a (clearnet) request.
-    seedRouterFromServer();
     const std::lock_guard<std::mutex> lock(netMutex_);
     const std::uintmax_t length = std::filesystem::file_size(filePath);
 

@@ -849,13 +849,21 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
     // has been talking to, and when. Keeping them buys a little tunnel-building
     // quality; leaving them on disk costs a log of the user's activity.
     args.push_back("--persist.profiles=false");
-    if (!config.allowPublicReseed)
+    if (!config.reseedUrls.empty())
     {
-        // Point the reseeder at a local file that does not exist: it then tries
-        // that file, fails, and - by its own control flow - never falls through
-        // to the built-in reseed servers. Exactly the intent: this router
-        // bootstraps from the netDb its own server handed it, or not at all.
-        args.push_back("--reseed.file=" + (config.dataDir / "no-public-reseed.su3").string());
+        // The addresses this router bootstraps from, in place of the engine's
+        // built-in list. The engine fetches the su3 itself - with the user agent
+        // every I2P router sends, following redirects - unpacks it and loads the
+        // routers, each of which carries its own signature and is verified on
+        // load. The su3's own signature is not required (reseed.verify is off by
+        // default): a private reseed is signed by nobody a stock client trusts,
+        // so requiring it would mean no private reseeds at all.
+        std::string joined;
+        for (const std::string& url : config.reseedUrls)
+        {
+            joined += (joined.empty() ? "" : ",") + url;
+        }
+        args.push_back("--reseed.urls=" + joined);
     }
 
     std::vector<char*> argv;

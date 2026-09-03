@@ -72,7 +72,6 @@ void stopWarmPool()
 std::atomic<bool> g_i2pEnabled{true};
 std::atomic<bazarish::i2p::Privacy> g_tunnelPrivacy{bazarish::i2p::Privacy::eMinimal};
 // Strict by default: the netDb comes from our own server, not a public host.
-std::atomic<bool> g_publicReseedAllowed{false};
 // The SOCKS5 proxy the router's clearnet side goes through, empty by default.
 // A string needs a mutex where a flag needs none.
 std::string g_proxyHost;
@@ -149,13 +148,13 @@ std::vector<std::string>& facadesSlot()
 }
 }  // namespace
 
-void setReseedFacades(std::vector<std::string> urls)
+void setReseedUrls(std::vector<std::string> urls)
 {
     const std::lock_guard<std::mutex> lock(facadesMutex());
     facadesSlot() = std::move(urls);
 }
 
-std::vector<std::string> reseedFacades()
+std::vector<std::string> reseedUrls()
 {
     const std::lock_guard<std::mutex> lock(facadesMutex());
     return facadesSlot();
@@ -211,53 +210,6 @@ int samTransportPort()
     return g_samPort;
 }
 
-bool seedRouterOnce(
-    const std::filesystem::path& dataDir, const std::function<std::vector<Bytes>()>& fetch)
-{
-    if (!fetch) {
-        return false;
-    }
-    if (usingSamTransport()) {
-        return true;  // an external router keeps its own netDb
-    }
-    const std::lock_guard<std::mutex> lock(routerMutex());
-    // Answered once: this sits on the path of every request that may go over I2P.
-    static bool netDbReady = false;
-    if (netDbReady) {
-        return true;
-    }
-    // Not "is there a netDb" but "is there enough of one": a directory with a
-    // handful of stale routers is a router that cannot build a tunnel and will
-    // sit there trying. A running engine answers nothing here - it may well be
-    // the one sitting there with an empty netDb.
-    if (knownRouterCount(dataDir) >= kMinKnownRouters) {
-        netDbReady = true;
-        return true;
-    }
-    std::size_t written = 0;
-    try {
-        written = bazarish::i2p::seedRouterInfos(dataDir, fetch());
-        bazarish::log::info("private reseed: {} routers", written);
-    } catch (const std::exception& error) {
-        bazarish::log::info("private reseed unavailable: {}", error.what());
-        return false;
-    }
-    if (written == 0) {
-        return false;
-    }
-    // The engine reads its netDb when its network starts, so one that is already
-    // up knows nothing of the files just written until it is cycled.
-    const std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
-    if (router && router->running()) {
-        stopWarmPool();
-        router->stop();
-        router->start();
-        ensureWarmPool(*router);
-    }
-    netDbReady = true;
-    return true;
-}
-
 // Everything a router needs to know about which transport it is, in one place:
 // two call sites build one, and they must not drift apart.
 bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir)
@@ -265,7 +217,7 @@ bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir
     bazarish::i2p::RouterConfig config;
     config.dataDir = dataDir;
     config.role = bazarish::i2p::Role::eClient;
-    config.allowPublicReseed = g_publicReseedAllowed.load();
+    config.reseedUrls = reseedUrls();
     config.socksProxyHost = i2pSocksProxyHost();
     config.socksProxyPort = i2pSocksProxyPort();
     if (usingSamTransport()) {
@@ -399,19 +351,10 @@ void reconcileI2pRouter(const std::filesystem::path& dataDir)
     const std::lock_guard<std::mutex> lock(routerMutex());
     std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
     if (g_i2pEnabled.load()) {
-        // An engine started on an empty netDb has nobody to learn the network
-        // from: it builds no tunnel, and every destination it is asked for dies
-        // waiting. Left down until an account hands it a netDb (or public reseeds
-        // are allowed), which is also what starts it.
-        // The gate below is about this process's own netDb, which an external
-        // router does not have and does not need.
-        if (!router && !usingSamTransport() && !g_publicReseedAllowed.load()
-            && knownRouterCount(dataDir) < kMinKnownRouters) {
-            bazarish::log::info(
-                "i2p: not starting on {} known routers - waiting for a bootstrap",
-                knownRouterCount(dataDir));
-            return;
-        }
+        // The engine bootstraps itself now: it is given the reseed addresses this
+        // account's server named, or - with none - the ones it carries. There is
+        // nothing to wait for before starting it, and waiting was what left a
+        // client with an empty netDb sitting there forever.
         if (!router) {
             try {
                 router = std::make_unique<bazarish::i2p::Router>(routerConfigFor(dataDir));
@@ -450,15 +393,7 @@ void reportConnectProgress(const int percent, const std::string& text)
     }
 }
 
-void setPublicReseedAllowed(bool allowed)
-{
-    g_publicReseedAllowed.store(allowed);
-}
 
-bool publicReseedAllowed()
-{
-    return g_publicReseedAllowed.load();
-}
 
 void setI2pEnabled(bool enabled)
 {

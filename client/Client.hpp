@@ -260,10 +260,6 @@ public:
     // when the server has no event face, so the caller can fall back to polling.
     std::vector<PendingEntry> waitForPending(int waitSeconds);
     Bytes fetchBlob(const std::string& blobId);
-    // A slice of the server's netDb, for starting I2P without touching a public
-    // reseed host (GET /v1/messaging/reseed). Unauthenticated on the server side:
-    // this runs before the client has any transport at all.
-    std::vector<Bytes> fetchReseed();
     void ack(const std::string& blobId);
     // Writes a blob into this account's own mailbox for its other devices. The
     // request's signature is the whole admission check: the caller owns the

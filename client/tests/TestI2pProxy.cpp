@@ -28,7 +28,6 @@ int main()
     bazarish::i2p::RouterConfig config;
     config.dataDir = dir;
     config.role = bazarish::i2p::Role::eClient;
-    config.allowPublicReseed = false;
     bazarish::i2p::Router router(config);
 
     // No proxy: every transport goes straight out, and the datagram one is on.

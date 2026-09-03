@@ -190,23 +190,6 @@ int main()
         CHECK(threw);
     }
 
-    // The reseed bootstraps the I2P transport itself, so it must never be routed
-    // over an I2P facade - which would ask the router to start before it has a
-    // netDb, while the reseed already holds the router lock. With an I2P facade
-    // configured and preferred, getClearnet still lands on the clearnet one.
-    {
-        ServerEndpoint mixed;
-        mixed.serverFingerprint = endpoint.serverFingerprint;
-        mixed.facades = {Facade{false, "pgb6a4qhbfqx6mrxxjvhpxbsyf7hlpvxsl7hkeutqxvxpv4fzbaa.b32.i2p",
-                             80, {}},
-            endpoint.facades[0]};
-        // A non-empty data dir is what makes I2P facades preferred.
-        ApiClient api(alice, "abc123", mixed, std::filesystem::temp_directory_path() / "bz-i2p");
-        const ApiResponse response = api.getClearnet("/v1/messaging/reseed");
-        CHECK(response.status == 200);
-        CHECK(response.json().at("routers").size() == 1);
-    }
-
     server.stop();
 
     // A transport failure (nothing listening) is an ApiError with no HTTP

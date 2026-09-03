@@ -59,10 +59,11 @@ struct ServerEndpoint {
     // of them is an I2P address: this client talks to its server over I2P and
     // nothing else.
     std::vector<Facade> facades;
-    // Clearnet addresses used for exactly one request - the slice of netdb a
-    // router with no peers starts from. No API is spoken here, and once the
-    // router is up they are not asked again.
-    std::vector<Facade> reseeds;
+    // Where a router with no peers bootstraps from: full https URLs of su3 reseed
+    // archives, kept verbatim because nothing here is a Bazarish API - the engine
+    // fetches and loads them itself, and once it has a netDb they are not asked
+    // again. Empty leaves the engine its own built-in hosts.
+    std::vector<std::string> reseeds;
 };
 
 
@@ -148,11 +149,6 @@ public:
 
     // Unauthenticated GET (alias resolution is findable by design).
     ApiResponse getPublic(const std::string& path, const std::string& query = "");
-    // Unauthenticated GET pinned to a CLEARNET facade. Its one caller is the
-    // private reseed, which bootstraps the very transport an I2P facade needs:
-    // routing it over I2P would ask the router to start before it has a netDb,
-    // and would deadlock outright - the reseed runs while the router lock is held.
-    ApiResponse getClearnet(const std::string& path, const std::string& query = "");
 
     // Where this transport writes what it did, for the account's connection log.
     // Null (the default) records nothing; the client sets it to its own log.
@@ -182,12 +178,6 @@ public:
     // holds the long poll open (they are separate so a wait never blocks a send).
 
 private:
-    // Seeds the embedded router's netDb from our own server before it is ever
-    // started, so a first start never falls back to a public reseed host. Every
-    // path that starts the router goes through here, because an I2P facade
-    // request would otherwise start it with an empty netDb.
-    void seedRouterFromServer();
-
     // One line for one call: what was asked, what came back, how big and how
     // long. The long poll is left out on success - it would be the only thing
     // the log ever showed - and its caller records it when it brought something.
@@ -197,15 +187,14 @@ private:
     ApiResponse send(const std::string& method, const std::string& path,
         const std::string& query, const Bytes& body, const std::string& contentType,
         bool authenticate, const std::map<std::string, std::string>& extraHeaders = {},
-        int readTimeoutSeconds = kDefaultReadTimeoutSeconds, bool clearnetOnly = false,
+        int readTimeoutSeconds = kDefaultReadTimeoutSeconds,
         const std::string& note = {});
     // The transport half of send: everything from the request lock onward, with
     // the headers already decided. Opening a session reuses it while the lock is
     // held, which is why it is separate.
     ApiResponse transmitLocked(const std::string& method, const std::string& path,
         const std::string& query, const Bytes& body, const std::string& contentType,
-        const std::map<std::string, std::string>& headers, int readTimeoutSeconds,
-        bool clearnetOnly);
+        const std::map<std::string, std::string>& headers, int readTimeoutSeconds);
 
 
     // True if a facade's host ends in ".b32.i2p" (reached over the embedded I2P

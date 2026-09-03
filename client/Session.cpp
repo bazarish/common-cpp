@@ -415,9 +415,11 @@ bazarish::i2p::Router& Session::i2pRouter() const
     // reused regardless of which account starts it first. Started lazily on
     // first transport use; client role (notransit).
     const fs::path dataDir = i2pDirFor(accountPath_);
-    // On a first-ever start, take the netDb from our own server over the clearnet
-    // facade rather than announcing an I2P bootstrap to a public reseed host.
-    seedRouterOnce(dataDir, [this]() { return client_->fetchReseed(); });
+    // The addresses this account's server named, for the engine to bootstrap
+    // from. Set before the router is made: with none of them it uses its own
+    // built-in hosts, which is the one case where the bootstrap leaves the
+    // network the user chose.
+    setReseedUrls(client_->endpoint().reseeds);
     return sharedI2pRouter(dataDir);
 }
 
@@ -544,7 +546,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     }
     if (endpointJson.contains("reseeds")) {
         for (const nlohmann::json& url : endpointJson.at("reseeds")) {
-            endpoint.reseeds.push_back(parseFacadeUrl(url.get<std::string>()));
+            endpoint.reseeds.push_back(url.get<std::string>());
         }
     }
 
@@ -783,8 +785,8 @@ void Session::persistMeta() const
         facades.push_back(facadeToUrl(facade));
     }
     nlohmann::json reseeds = nlohmann::json::array();
-    for (const Facade& reseed : endpoint.reseeds) {
-        reseeds.push_back(facadeToUrl(reseed));
+    for (const std::string& reseed : endpoint.reseeds) {
+        reseeds.push_back(reseed);
     }
     const nlohmann::json meta = {
         {"clientId", client_->clientId()},
