@@ -844,7 +844,10 @@ public:
     void requestFile(const std::string& peerFingerprint, const std::string& e2eId,
         const std::filesystem::path& dest);
 
-    // Abandons a running or requested transfer.
+    // Abandons a running or requested transfer: this side stops at once, and the
+    // other side is told so it stops its half too - a transfer costs both of them
+    // a destination and both of them tunnels, so a stop that ended only one half
+    // would leave the other serving nobody until its window ran out.
     void cancelTransfer(const std::string& e2eId);
 
     // Where transfer progress and outcomes are reported. One handler for the
@@ -1288,6 +1291,23 @@ private:
 
     void serveRequestedFile(const std::string& peerFingerprint, const std::string& fileId,
         const std::string& forDevice);
+    // Removes one serve from the registry, but only while it is still the serve
+    // that registered it.
+    void dropServe(const std::string& serveId, const std::shared_ptr<std::atomic<bool>>& cancel);
+    // One half of a transfer that has just been stopped: who was on the other
+    // side of it, and which device was pulling the file.
+    struct StoppedHalf {
+        std::string peer;
+        std::string device;
+    };
+    // Stops every part of one transfer this device runs - the fetch we asked for
+    // and each serve of the same file - and reports it as stopped. fromPeer, when
+    // set, limits it to that contact (a stop that arrived over the wire may not
+    // touch anybody else's transfer); forDevice, when set, limits it to the
+    // device that asked for the file. Returns what was stopped, so the caller can
+    // tell the other side.
+    std::vector<StoppedHalf> stopTransfer(const std::string& fileId,
+        const std::string& fromPeer = {}, const std::string& forDevice = {});
     // A sealed offer came back for a file we asked for: fetch it. Also threaded.
     void startAnnouncedFetch(const FileOffer& offer, const std::string& peer);
     void emitTransfer(const std::string& e2eId, TransferState state, std::uint64_t bytes,
@@ -1355,12 +1375,23 @@ private:
     struct PendingTransfer {
         std::filesystem::path dest;
         std::shared_ptr<std::atomic<bool>> cancel;
+        // Who is serving it: stopping on this side has to reach them.
+        std::string peer;
+    };
+    // One file this side is serving, under the per-device key it was registered
+    // with: the flag that stops it, and whose transfer it is. The file's own id
+    // is kept beside the key because two devices of one contact pull the same
+    // file under two keys, and a stop names the file, not the key.
+    struct ServingTransfer {
+        std::shared_ptr<std::atomic<bool>> cancel;
+        std::string fileId;
+        std::string peer;
+        std::string forDevice;
     };
     struct TransferRegistry {
         std::mutex mutex;
         std::map<std::string, PendingTransfer> pending;
-        // Files this side is serving right now, with the flag that stops each.
-        std::map<std::string, std::shared_ptr<std::atomic<bool>>> serving;
+        std::map<std::string, ServingTransfer> serving;
         TransferEventFn onEvent;
     };
     std::shared_ptr<TransferRegistry> transfers_ = std::make_shared<TransferRegistry>();

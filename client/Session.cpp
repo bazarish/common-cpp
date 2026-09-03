@@ -326,6 +326,11 @@ constexpr int kServeWindowSeconds = 30 * 60;
 // other side, so one that arrives from a mailbox after a restart is answered to
 // an empty room - and costs a published destination to find that out.
 constexpr std::int64_t kFileRequestFreshnessMs = 5 * 60 * 1000;
+// How long the sender waits for its one-time address to publish, and how often it
+// looks up from that wait. It looks up so a transfer stopped while the tunnels are
+// still being built stops then, rather than when the whole wait has run out.
+constexpr int kPublishWaitSeconds = 180;
+constexpr int kPublishPollSeconds = 2;
 
 std::string guessMime(const fs::path& path)
 {
@@ -2659,7 +2664,7 @@ void Session::requestFile(
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
         transfers_->pending[e2eId]
-            = PendingTransfer{dest, std::make_shared<std::atomic<bool>>(false)};
+            = PendingTransfer{dest, std::make_shared<std::atomic<bool>>(false), peerFingerprint};
     }
     emitTransfer(e2eId, TransferState::eRequested, 0, 0, {}, "Asking the sender",
         peerFingerprint);
@@ -2678,20 +2683,78 @@ void Session::requestFile(
     sendContent(peerFingerprint, std::move(inner));
 }
 
-void Session::cancelTransfer(const std::string& e2eId)
+void Session::dropServe(
+    const std::string& serveId, const std::shared_ptr<std::atomic<bool>>& cancel)
 {
     const std::lock_guard<std::mutex> lock(transfers_->mutex);
-    const auto found = transfers_->pending.find(e2eId);
-    if (found != transfers_->pending.end()) {
-        found->second.cancel->store(true);
-        transfers_->pending.erase(found);
+    const auto found = transfers_->serving.find(serveId);
+    // Only if it is still this serve. The user may have stopped this one and the
+    // contact asked again, and the entry under the same key then belongs to the
+    // new serve - removing it would leave that one unstoppable.
+    if (found != transfers_->serving.end() && found->second.cancel == cancel) {
+        transfers_->serving.erase(found);
     }
-    // The same id on the other side of a transfer: we are serving this file and
-    // the user wants it stopped. The serve loop checks the flag between chunks.
-    const auto serving = transfers_->serving.find(e2eId);
-    if (serving != transfers_->serving.end()) {
-        serving->second->store(true);
-        transfers_->serving.erase(serving);
+}
+
+std::vector<Session::StoppedHalf> Session::stopTransfer(
+    const std::string& fileId, const std::string& fromPeer, const std::string& forDevice)
+{
+    std::vector<StoppedHalf> stopped;
+    {
+        const std::lock_guard<std::mutex> lock(transfers_->mutex);
+        const auto found = transfers_->pending.find(fileId);
+        // Our own fetch of this file. `forDevice` names the device that asked, so
+        // a stop meant for another device of ours leaves this one pulling.
+        if (found != transfers_->pending.end()
+            && (fromPeer.empty() || found->second.peer == fromPeer)
+            && (forDevice.empty() || forDevice == client_->clientId())) {
+            found->second.cancel->store(true);
+            stopped.push_back(StoppedHalf{found->second.peer, client_->clientId()});
+            transfers_->pending.erase(found);
+        }
+        // Every serve of the same file: one contact may be pulling it onto two
+        // devices at once, each over its own address and its own key in this map.
+        for (auto it = transfers_->serving.begin(); it != transfers_->serving.end();) {
+            const ServingTransfer& serve = it->second;
+            const bool stops = serve.fileId == fileId
+                && (fromPeer.empty() || serve.peer == fromPeer)
+                && (forDevice.empty() || serve.forDevice == forDevice);
+            if (!stops) {
+                ++it;
+                continue;
+            }
+            serve.cancel->store(true);
+            stopped.push_back(StoppedHalf{serve.peer, serve.forDevice});
+            it = transfers_->serving.erase(it);
+        }
+    }
+    for (const StoppedHalf& half : stopped) {
+        // Reported from here rather than from the transfer's own thread: that
+        // thread may be inside a wait for tunnels, and a stop the interface shows
+        // minutes after the click is a stop the user does not believe in.
+        emitTransfer(fileId, TransferState::eFailed, 0, 0,
+            fromPeer.empty() ? "you stopped this transfer" : "the transfer was stopped", {},
+            half.peer);
+    }
+    return stopped;
+}
+
+void Session::cancelTransfer(const std::string& e2eId)
+{
+    for (const StoppedHalf& half : stopTransfer(e2eId)) {
+        try {
+            sendContent(half.peer,
+                nlohmann::json{{"v", kMessageFormatVersion}, {"type", "file.cancel"},
+                    {"id", toHex(randomBytes(8))}, {"from", fingerprint()},
+                    {"sentAt", nowMillis()}, {"fileId", e2eId},
+                    // Whose half is stopped: the device that asked for the file.
+                    // Their other devices may be pulling it over addresses of
+                    // their own, and this does not touch those.
+                    {"device", half.device}});
+        } catch (const std::exception& error) {
+            bazarish::log::warn("could not tell {} the transfer was stopped: {}",
+                bazarish::log::redact(half.peer), error.what());
+        }
     }
 }
 
@@ -2773,7 +2836,8 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
     const std::shared_ptr<std::atomic<bool>> cancel = std::make_shared<std::atomic<bool>>(false);
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
-        transfers_->serving[serveId] = cancel;
+        transfers_->serving[serveId]
+            = ServingTransfer{cancel, fileId, peerFingerprint, forDevice};
     }
     std::thread([this, peerFingerprint, fileId, serveId, forDevice, source, ciphertextPath,
                     cancel]() {
@@ -2797,8 +2861,15 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                 = i2pRouter().createEndpoint(config);
             emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, "Publishing the address",
                 peerFingerprint);
-            if (!endpoint->waitReady(std::chrono::seconds(180))) {
-                throw std::runtime_error("could not publish a one-time destination");
+            const auto publishDeadline
+                = std::chrono::steady_clock::now() + std::chrono::seconds(kPublishWaitSeconds);
+            while (!endpoint->waitReady(std::chrono::seconds(kPublishPollSeconds))) {
+                if (cancel->load()) {
+                    throw std::runtime_error("transfer stopped");
+                }
+                if (std::chrono::steady_clock::now() >= publishDeadline) {
+                    throw std::runtime_error("could not publish a one-time destination");
+                }
             }
 
             FileOffer offer;
@@ -2835,13 +2906,19 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                     cancel->load() ? "transfer stopped" : "your contact never connected");
             }
             emitTransfer(fileId, TransferState::eDone, 0, 0, {}, {}, peerFingerprint);
-            {
-                const std::lock_guard<std::mutex> lock(transfers_->mutex);
-                transfers_->serving.erase(fileId);
-            }
+            dropServe(serveId, cancel);
         } catch (const std::exception& error) {
+            // A stop is already reported, and the other side already told: it is
+            // what set this flag. Reporting it again here would overwrite the
+            // reason the user was given with the exception that carried it out.
+            if (cancel->load()) {
+                std::error_code stoppedEc;
+                fs::remove(ciphertextPath, stoppedEc);
+                return;
+            }
             emitTransfer(
                 fileId, TransferState::eFailed, 0, 0, error.what(), {}, peerFingerprint);
+            dropServe(serveId, cancel);
             // Tell the other side too: without this the requester waits on an
             // offer that will never come, with nothing to explain the silence.
             try {
@@ -2884,10 +2961,19 @@ void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& pee
                 cancel.get(), destinationOwner());
             emitTransfer(offer.fileId, TransferState::eDone, offer.size, offer.size, {}, {}, peer);
         } catch (const std::exception& error) {
-            emitTransfer(offer.fileId, TransferState::eFailed, 0, 0, error.what(), {}, peer);
+            // Same rule as the serving side: whoever stopped this transfer has
+            // already said so, in the words the user needs.
+            if (!cancel->load()) {
+                emitTransfer(offer.fileId, TransferState::eFailed, 0, 0, error.what(), {}, peer);
+            }
         }
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
-        transfers_->pending.erase(offer.fileId);
+        const auto found = transfers_->pending.find(offer.fileId);
+        // Same rule as a serve: a fetch the user stopped and started again holds
+        // this key now, and it is not this thread's to remove.
+        if (found != transfers_->pending.end() && found->second.cancel == cancel) {
+            transfers_->pending.erase(found);
+        }
     }).detach();
 }
 
@@ -3515,6 +3601,13 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                     // Malformed offer: the transfer simply never starts.
                     bazarish::log::warn("file offer ignored: {}", error.what());
                 }
+            } else if (type == "file.cancel") {
+                // Silent: the other side stopped this transfer. Whichever half we
+                // were running - pulling the file or serving it - ends here, so
+                // neither of us keeps a one-time destination up for nothing.
+                message.contentType = type;
+                stopTransfer(body.value("fileId", std::string()), message.fromFingerprint,
+                    body.value("device", std::string()));
             } else if (type == "file.unavailable") {
                 message.contentType = type;
                 const std::string fileId = body.value("fileId", std::string());
