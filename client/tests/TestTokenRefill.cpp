@@ -1009,6 +1009,66 @@ int main()
             CHECK(kMaxContactRequestBytes - largest < 64);
         }
 
+        // --- A request buys nothing until it is agreed to ---
+        //
+        // Two requests from one stranger used to be exactly what it took to make
+        // this side answer: each carries an unaddressed reply batch, a device that
+        // is one of several takes one token out of each, and the errand that buys a
+        // batch of its own fires at two. That errand carried the bootstrap, so it
+        // was an acceptance nobody gave - and the Agree button went with it.
+        {
+            const fs::path dDir = fs::temp_directory_path() / "bz-refill-d";
+            fs::remove(dDir);
+            Session dana = Session::create(dDir, endpoint, std::string{});
+            {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.destFor[dana.fingerprint()]
+                    = "glkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+            }
+            dana.registerAccount();
+            dana.setFetchTransport(directDial);
+            dana.setOutboundCourier(courierFor());
+
+            const auto heldForAlice = [&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[alice.fingerprint()].size();
+            };
+            const std::size_t beforeRequests = heldForAlice();
+            // Asked twice, the way a resend asks: two requests, two batches.
+            alice.addByInvite(dana.inviteUri(), "let me in");
+            alice.addByInvite(dana.inviteUri(), "let me in again");
+            for (int round = 0; round < 3; ++round) {
+                dana.sync();
+            }
+            CHECK(dana.hasContact(alice.fingerprint()));
+            // Unanswered, so the button is still there to press...
+            CHECK(dana.contactIsPending(alice.fingerprint()));
+            // ...and nothing at all has gone back to her.
+            CHECK(heldForAlice() == beforeRequests);
+
+            // Reading the request is not answering it: no receipt goes back, so a
+            // requester learns nothing about a stranger's client from having
+            // asked.
+            dana.sendReceipt(alice.fingerprint(), "whatever-they-sent");
+            CHECK(heldForAlice() == beforeRequests);
+
+            // Agreeing is what opens the way back - once the batch it carries is
+            // in her mailbox, and not on the strength of a send that left here.
+            dana.acceptContactRequest(alice.fingerprint());
+            CHECK(dana.contactIsPending(alice.fingerprint()));
+            CHECK(dana.contactAcceptInFlight(alice.fingerprint()));
+            // A second Agree while the first is in the air mints no second batch.
+            dana.acceptContactRequest(alice.fingerprint());
+            CHECK(waitFor([&]() { return heldForAlice() > beforeRequests; }));
+            for (int round = 0; round < 3 && dana.contactIsPending(alice.fingerprint());
+                ++round) {
+                dana.sync();  // where a confirmed acceptance is written down
+            }
+            CHECK(!dana.contactIsPending(alice.fingerprint()));
+            CHECK(!dana.contactAcceptInFlight(alice.fingerprint()));
+            fs::remove(dDir);
+        }
+
         // --- A second device of this account asks for the address book ---
         //
         // The one thing a fresh device cannot get from the network: no lookup

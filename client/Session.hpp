@@ -96,8 +96,16 @@ struct Contact {
     // each authorizes one message into the peer's mailbox.
     std::vector<std::string> sendTokens;
     // Whether we have already issued a token batch to this peer (so they
-    // can write to us). Set on the contact request or the first reply.
+    // can write to us). Set on the contact request, or - for a request we
+    // agreed to - only once that acceptance is confirmed stored by their
+    // server: until the batch is in their mailbox they cannot answer, so a
+    // contact marked accepted here would be a dialog that exists on one side.
     bool issuedToThem = false;
+    // An acceptance whose bootstrap is on its way. Not persisted: a client that
+    // closes mid-flight has no proof the batch ever landed, so the request is
+    // pending again on the next run and is agreed to afresh. It keeps a second
+    // Agree from minting a second batch while the first is in the air.
+    bool acceptInFlight = false;
     // Local display name for this contact: the alias used when adding, or the
     // name carried in the invite. Purely local - never sent to the peer and
     // never overwritten by anything the peer sends. The user may rename it, and
@@ -320,6 +328,10 @@ public:
     // Whether this contact sent us a request we have not yet accepted (we hold
     // their tokens but have not issued ours). Drives the "Agree" affordance.
     bool contactIsPending(const std::string& peerFingerprint) const;
+    // Whether an acceptance for this contact is in the air: agreed to here, not
+    // yet confirmed by the peer's server. Still pending, and not to be agreed to
+    // twice while it is.
+    bool contactAcceptInFlight(const std::string& peerFingerprint) const;
     // Renames a contact locally and mirrors the change to the account's other
     // devices (a device.contact-name self-message). No-op for an unknown contact.
     void renameContact(const std::string& peerFingerprint, const std::string& name);
@@ -1512,6 +1524,12 @@ private:
         // on the session's own thread, the only one that may take a token out of
         // a stash.
         std::vector<std::shared_ptr<std::function<void()>>> refused;
+        // Acceptances whose bootstrap the peer's server confirmed it stored, and
+        // ones it never took. Both are decided on the courier's thread and
+        // applied on the session's, which is the only one that may touch the
+        // contact book.
+        std::vector<std::string> established;
+        std::vector<std::string> notEstablished;
     };
     std::shared_ptr<EchoQueue> echoQueue_ = std::make_shared<EchoQueue>();
     AddressDecisionFn addressDecision_;

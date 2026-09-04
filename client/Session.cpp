@@ -761,6 +761,12 @@ bool Session::contactIsPending(const std::string& peerFingerprint) const
     return found != contacts_.end() && !found->second.issuedToThem;
 }
 
+bool Session::contactAcceptInFlight(const std::string& peerFingerprint) const
+{
+    const auto found = contacts_.find(peerFingerprint);
+    return found != contacts_.end() && found->second.acceptInFlight;
+}
+
 std::string Session::sealingPublicB64() const
 {
     return toBase64(sealingKey_.publicDer());
@@ -2237,9 +2243,12 @@ void Session::acceptContactRequest(const std::string& peerFingerprint)
 {
     // Agreeing twice sends the requester a second "accepted your request": the
     // reply carries a fresh id, so nothing downstream can collapse the pair. Once
-    // we have replied (issuedToThem), there is nothing left to agree to.
+    // we have replied there is nothing left to agree to - and while the first
+    // acceptance is still in the air there is nothing to agree to yet, or the
+    // second one would mint a second batch for a peer about to hold the first.
     const auto existing = contacts_.find(peerFingerprint);
-    if (existing != contacts_.end() && existing->second.issuedToThem) {
+    if (existing != contacts_.end()
+        && (existing->second.issuedToThem || existing->second.acceptInFlight)) {
         bazarish::log::info("contact request from {} was already agreed to",
             bazarish::log::redact(peerFingerprint));
         return;
@@ -2581,15 +2590,19 @@ Session::RoutingPushResult Session::pushRoutingToContacts(
 
 void Session::sendReceipt(const std::string& peerFingerprint, const std::string& refMessageId)
 {
-    // A read receipt confirms a read; it must NOT auto-accept an un-accepted contact
-    // request. So it is sent with establishOnFirstReply=false: no bootstrap is
-    // attached and issuedToThem is not flipped, so the sender's message can turn
-    // green (read) while the request stays pending until explicit Agree (or a real
-    // reply). Earlier this bailed entirely for un-accepted contacts, which left the
-    // sender stuck on "yellow"; sending without the bootstrap fixes that.
+    // A read receipt confirms a read, and only a contact is told anything at all.
+    // Nothing is sent about a contact request: reading one is not answering it,
+    // and a requester who learns that a stranger's client is running and has
+    // opened their message has been told something they were never agreed to be
+    // told. The cost is stated plainly - the requester's own plate stops at
+    // delivered and never turns read until they are accepted - and it is the
+    // cheaper half of the trade.
     const auto found = contacts_.find(peerFingerprint);
     if (found == contacts_.end() || found->second.sendTokens.empty()) {
         return;  // unknown contact, or no token to deliver the receipt with
+    }
+    if (!found->second.issuedToThem) {
+        return;  // their request is unanswered: this account says nothing to them
     }
     nlohmann::json inner = {
         {"v", kMessageFormatVersion},
@@ -2601,8 +2614,11 @@ void Session::sendReceipt(const std::string& peerFingerprint, const std::string&
     };
     bazarish::log::info("read receipt for {} on its way to {}", refMessageId,
         bazarish::log::redact(peerFingerprint));
-    sendContent(peerFingerprint, std::move(inner), {}, false,
-        /*establishOnFirstReply=*/false);
+    // Never the send that establishes anything: agreeing is the user's act.
+    if (!sendContent(peerFingerprint, std::move(inner), {}, false,
+            /*establishOnFirstReply=*/false)) {
+        bazarish::log::info("the read receipt for {} waits for a token", refMessageId);
+    }
 }
 
 void Session::sendReaction(const std::string& peerFingerprint, const std::string& refMessageId,
@@ -3068,9 +3084,6 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
         }
         return false;
     }
-    // Captured before the bootstrap block below: when false here, this very send
-    // is our first reply to the peer - the moment we accept/establish the dialog.
-    const bool wasIssuedToThem = contact.issuedToThem;
     // What the bootstrap below decides, applied only when the envelope actually
     // leaves: everything between here and the send may still refuse it.
     bool bootstrapIssued = false;
@@ -3082,7 +3095,10 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     // routing + a token batch) so the reverse direction is usable too. A read
     // receipt (establishOnFirstReply=false) skips this, so confirming a read never
     // auto-accepts an un-accepted contact request.
-    if (establishOnFirstReply && !contact.issuedToThem) {
+    // Not while one is already in the air: a second message written before the
+    // acceptance is confirmed would mint a second batch of 256 tokens for a peer
+    // who is about to receive the first.
+    if (establishOnFirstReply && !contact.issuedToThem && !contact.acceptInFlight) {
         inner["bootstrap"] = {
             {"sealing", sealingPublicB64()},
             {"dest", myDest_},
@@ -3170,9 +3186,12 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
         return false;
     }
     if (bootstrapIssued) {
-        contact.issuedToThem = true;
-        // The batch this carries is a fresh one, so nothing more is owed.
-        contact.reissueTokens = false;
+        // Not accepted yet: this send IS the acceptance, and what makes it one is
+        // the batch it carries reaching the peer's mailbox. Until their server
+        // confirms it stored, the request stands unanswered and the Agree button
+        // stays where it is - a contact marked accepted on the strength of a send
+        // that never landed is a dialog that exists on one side only.
+        contact.acceptInFlight = true;
     }
     if (reissueCleared) {
         contact.reissueTokens = false;
@@ -3217,8 +3236,8 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
         DeliveryWatch logged = watch;
         const std::shared_ptr<WireLog> log = client_->wireLogHandle();
         logged.onOutcome = [log, kind, peerLabel, shortId, peerFingerprint, echoPayload,
-                               echoQueue = echoQueue_, onOutcome = watch.onOutcome, resend](
-                               const OutboundCourier::Outcome& outcome) {
+                               echoQueue = echoQueue_, onOutcome = watch.onOutcome, resend,
+                               bootstrapIssued](const OutboundCourier::Outcome& outcome) {
             const std::string status = outcome.stored
                 ? std::string("stored")
                 : "failed" + (outcome.errorCode.empty() ? std::string() : ": " + outcome.errorCode);
@@ -3247,6 +3266,19 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
                 const std::lock_guard<std::mutex> lock(echoQueue->mutex);
                 echoQueue->refused.push_back(resend);
                 return;  // the outcome is not final: the next token decides
+            }
+            // Below the refusal above, which is not an outcome yet: an acceptance
+            // is an acceptance once the batch it carries is in their mailbox, and
+            // a token the far side would not take says nothing about that.
+            // Queued rather than applied - this runs on the courier's thread, and
+            // the contact book is the session's.
+            if (bootstrapIssued) {
+                const std::lock_guard<std::mutex> lock(echoQueue->mutex);
+                if (outcome.stored) {
+                    echoQueue->established.push_back(peerFingerprint);
+                } else {
+                    echoQueue->notEstablished.push_back(peerFingerprint);
+                }
             }
             if (onOutcome) {
                 onOutcome(outcome);
@@ -3314,13 +3346,6 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     const bool delivered = deliver(contact.dest, peerServingKey, "content", peerFingerprint,
         tokens, payload, watchWithLog, waitForOutcome,
         inner.value("id", std::string()));
-
-    // If this send is the first reply that just established the reverse direction
-    // (we accepted their request), share our avatar now - consent-gated, exactly
-    // the "reply to the friend request" the spec ties avatar exchange to.
-    if (!wasIssuedToThem) {
-        maybeSendAvatarToContact(peerFingerprint);
-    }
     return delivered;
 }
 
@@ -3775,7 +3800,8 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                         // there is nothing better to spend it on. A message the
                         // user wrote and is waiting to send is better: it carries
                         // the same ask on its way past.
-                        if ((contact.needsOwnBatch || contact.sendTokens.size() == 1)
+                        if (contact.issuedToThem
+                            && (contact.needsOwnBatch || contact.sendTokens.size() == 1)
                             && !sendWaitingFor(peer)) {
                             sendTokenRequest(peer);
                         }
@@ -3954,6 +3980,20 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                         persistBlocked();
                     }
                 }
+            } else if (type == "device.contact-accepted") {
+                // Another device of ours agreed to a contact request. Nothing is
+                // sent to the peer from here (the device that agreed carries the
+                // exchange, and its token batch is its own); this side only stops
+                // treating the contact as one still waiting on an answer.
+                if (message.fromFingerprint == fingerprint()) {
+                    message.contentType = type;
+                    message.refId = body.value("peer", std::string());
+                    const auto known = contacts_.find(message.refId);
+                    if (known != contacts_.end() && !known->second.issuedToThem) {
+                        known->second.issuedToThem = true;
+                        persistContacts();
+                    }
+                }
             } else if (type == "device.contact-prefs") {
                 // Another device of ours changed what a contact may do here.
                 if (message.fromFingerprint == fingerprint()) {
@@ -4048,7 +4088,11 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
     // a token from one of this account's own devices; asked once per run, so a
     // contact that is simply unreachable does not fill the mailbox.
     for (auto& [peerFingerprint, contact] : contacts_) {
-        if (!contact.needsOwnBatch) {
+        // Nothing is bought on the strength of a request nobody answered. Until
+        // this account agrees - the Agree button, or a reply, which is the same
+        // decision - a requester is sent nothing at all, and this errand would be
+        // an acceptance the user never gave: it carries the bootstrap.
+        if (!contact.needsOwnBatch || !contact.issuedToThem) {
             continue;
         }
         try {
@@ -4278,10 +4322,53 @@ void Session::flushPendingEchoes()
 {
     std::vector<std::pair<std::string, nlohmann::json>> ready;
     std::vector<std::shared_ptr<std::function<void()>>> refused;
+    std::vector<std::string> established;
+    std::vector<std::string> notEstablished;
     {
         const std::lock_guard<std::mutex> lock(echoQueue_->mutex);
         ready.swap(echoQueue_->pending);
         refused.swap(echoQueue_->refused);
+        established.swap(echoQueue_->established);
+        notEstablished.swap(echoQueue_->notEstablished);
+    }
+    // An acceptance the peer's server took: the batch is in their mailbox, so the
+    // reverse direction exists and the contact is answered. Only here does the
+    // request stop being one.
+    for (const std::string& peerFingerprint : established) {
+        const auto found = contacts_.find(peerFingerprint);
+        if (found == contacts_.end() || found->second.issuedToThem) {
+            continue;
+        }
+        found->second.issuedToThem = true;
+        found->second.acceptInFlight = false;
+        // The batch that landed is a fresh one, so nothing more is owed.
+        found->second.reissueTokens = false;
+        persistContacts();
+        // The decision belongs to the account, not to the device that made it:
+        // the others hold the same request and would go on offering an Agree that
+        // has been given.
+        try {
+            sendSelf({
+                {"type", "device.contact-accepted"},
+                {"peer", peerFingerprint},
+            });
+        } catch (const std::exception& error) {
+            bazarish::log::warn("contact-accept self-sync failed: {}", error.what());
+        }
+        // What the acceptance is allowed to carry with it, now that there is a
+        // contact to carry it to.
+        maybeSendAvatarToContact(peerFingerprint);
+    }
+    // One that never landed. The request is pending again, exactly as it reads on
+    // screen: the Agree button comes back, and pressing it mints a fresh batch
+    // rather than promising one the peer never got.
+    for (const std::string& peerFingerprint : notEstablished) {
+        const auto found = contacts_.find(peerFingerprint);
+        if (found != contacts_.end() && found->second.acceptInFlight) {
+            found->second.acceptInFlight = false;
+            bazarish::log::warn("the acceptance for {} did not land: the request stands",
+                bazarish::log::redact(peerFingerprint));
+        }
     }
     for (const auto& [peerFingerprint, inner] : ready) {
         try {
@@ -4330,6 +4417,12 @@ void Session::sendTokenRequest(const std::string& peerFingerprint)
         return;
     }
     Contact& contact = found->second;
+    if (!contact.issuedToThem) {
+        // Their request stands unanswered, so this account has nothing to say to
+        // them - least of all an errand that would hand them our routing and a
+        // batch of our tokens.
+        return;
+    }
     if (contact.sealingPublicB64.empty() || contact.servingSealingB64.empty()) {
         return;  // no descriptor yet: nothing to ask, and nowhere to ask it
     }
@@ -4353,8 +4446,13 @@ void Session::sendTokenRequest(const std::string& peerFingerprint)
             {{"dest", myDest_}, {"servingKey", myServingKeyB64_}, {"view", sharedView()}}},
     };
     // Spends one of our tokens like any other message: the peer answers with a
-    // batch addressed to this device, and no other device of ours holds it.
-    sendContent(peerFingerprint, std::move(inner));
+    // batch addressed to this device, and no other device of ours holds it. It
+    // never establishes anything on its own (the guard above is what decides
+    // that), so an errand can carry no bootstrap.
+    if (!sendContent(peerFingerprint, std::move(inner), {}, false,
+            /*establishOnFirstReply=*/false)) {
+        return;  // held for want of a token; it goes out when one arrives
+    }
     contact.needsOwnBatch = false;
     persistContacts();
 }
