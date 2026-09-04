@@ -1066,7 +1066,6 @@ int main()
             }
             CHECK(!dana.contactIsPending(alice.fingerprint()));
             CHECK(!dana.contactAcceptInFlight(alice.fingerprint()));
-            fs::remove(dDir);
         }
 
         // --- A second device of this account asks for the address book ---
