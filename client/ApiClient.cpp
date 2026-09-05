@@ -228,15 +228,22 @@ const ServerEndpoint& ApiClient::endpoint() const
     return endpoint_;
 }
 
+std::int64_t ApiClient::sessionBackoffSeconds(const int httpStatus)
+{
+    // Without a wait at all, a server that answers every session with 401 would
+    // have us open one per request forever.
+    constexpr std::int64_t kAfterRefusalSeconds = 900;
+    // Long enough that a dead network is not one wasted dial per request, short
+    // enough that a hiccup does not cost a quarter of an hour of full signatures.
+    constexpr std::int64_t kAfterSilenceSeconds = 60;
+    return httpStatus == 0 ? kAfterSilenceSeconds : kAfterRefusalSeconds;
+}
+
 bool ApiClient::ensureSessionLocked()
 {
     // Renewed before it lapses, not after: the server tells us when it expires
     // exactly so a client never has to learn it from a refused request.
     constexpr std::int64_t kRenewLeadSeconds = 300;
-    // How long we keep signing after a session was refused out of hand. Without
-    // it, a server that answers every session with 401 would have us open one per
-    // request forever.
-    constexpr std::int64_t kBlockedForSeconds = 900;
 
     const std::int64_t now = nowSeconds();
     if (!sessionId_.empty() && now + kRenewLeadSeconds < sessionUntil_) {
@@ -263,7 +270,7 @@ bool ApiClient::ensureSessionLocked()
             toBase64(cms::seal(Bytes(innerText.begin(), innerText.end()), servingKey))}};
         const std::string text = body.dump();
         const auth::Headers signed_ = auth::signRequest(identity_, now, "POST",
-            "/v1/auth/session", Bytes(text.begin(), text.end()));
+            "/v1/auth/session", Bytes(text.begin(), text.end()), clientId_);
         std::map<std::string, std::string> headers(signed_.begin(), signed_.end());
         headers.emplace("X-Bazarish-Client", clientId_);
         const ApiResponse response
@@ -283,11 +290,19 @@ bool ApiClient::ensureSessionLocked()
         sessionRefusals_ = 0;
         bazarish::log::info("session open for {} s", sessionUntil_ - now);
         return true;
-    } catch (const std::exception& error) {
-        // Anything at all: no session face, no destination yet, a refusal. Keep
-        // signing, and do not ask again for a while.
+    } catch (const ApiError& error) {
+        // A server that answered has said something about sessions - no session
+        // face here, no destination to seal to yet - and it will say the same
+        // thing to the next request. A transport failure said nothing at all.
         sessionId_.clear();
-        sessionBlockedUntil_ = now + kBlockedForSeconds;
+        sessionBlockedUntil_ = now + sessionBackoffSeconds(error.httpStatus);
+        bazarish::log::info("no session, signing each request: {}", error.what());
+        return false;
+    } catch (const std::exception& error) {
+        // An answer that would not open, or anything else unexpected: the far
+        // side misbehaved rather than went missing, so it is the long wait.
+        sessionId_.clear();
+        sessionBlockedUntil_ = now + sessionBackoffSeconds(1);
         bazarish::log::info("no session, signing each request: {}", error.what());
         return false;
     }
@@ -519,9 +534,9 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
         if (sessionRoute && ensureSessionLocked()) {
             const std::uint64_t seq = ++sessionSeq_;
             authHeaders = auth::macRequest(auth::sessionHandle(sessionSecret_, seq), sessionKey_,
-                seq, nowSeconds(), method, path, body);
+                seq, nowSeconds(), method, path, body, clientId_);
         } else {
-            authHeaders = auth::signRequest(identity_, nowSeconds(), method, path, body);
+            authHeaders = auth::signRequest(identity_, nowSeconds(), method, path, body, clientId_);
         }
         headers = std::map<std::string, std::string>(authHeaders.begin(), authHeaders.end());
         headers.emplace("X-Bazarish-Client", clientId_);
@@ -568,7 +583,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
             bazarish::log::warn("sessions keep being refused; signing every request for now");
         }
         const auth::Headers signedHeaders
-            = auth::signRequest(identity_, nowSeconds(), method, path, body);
+            = auth::signRequest(identity_, nowSeconds(), method, path, body, clientId_);
         std::map<std::string, std::string> retryHeaders(
             signedHeaders.begin(), signedHeaders.end());
         retryHeaders.emplace("X-Bazarish-Client", clientId_);
@@ -705,7 +720,7 @@ ApiResponse ApiClient::putFile(const std::string& path, const std::filesystem::p
     // The body is signed only through its digest, so a multi-gigabyte file is
     // never materialized to sign or send it.
     const auth::Headers signedHeaders
-        = auth::signRequestDigest(identity_, nowSeconds(), "PUT", path, bodySha256Hex);
+        = auth::signRequestDigest(identity_, nowSeconds(), "PUT", path, bodySha256Hex, clientId_);
     std::map<std::string, std::string> headers(signedHeaders.begin(), signedHeaders.end());
     headers["X-Bazarish-Client"] = clientId_;
     for (const auto& [key, value] : extraHeaders) {

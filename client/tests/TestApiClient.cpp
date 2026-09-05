@@ -3,6 +3,7 @@
 #include <bazarish/ServerDescriptor.hpp>
 
 #include <bazarish/Auth.hpp>
+#include <bazarish/Cms.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Errors.hpp>
 
@@ -71,7 +72,8 @@ int main()
         std::string user;
         try {
             user = auth::verifyRequest(collectAuthHeaders(request), nowSeconds(), "GET",
-                request.path, Bytes(request.body.begin(), request.body.end()));
+                request.path, Bytes(request.body.begin(), request.body.end()),
+                request.header("X-Bazarish-Client"));
         } catch (const std::exception& error) {
             response.status = 401;
             response.contentType = "text/plain";
@@ -91,7 +93,8 @@ int main()
         std::string user;
         try {
             user = auth::verifyRequest(collectAuthHeaders(request), nowSeconds(), "POST",
-                "/v1/messaging/clients", Bytes(request.body.begin(), request.body.end()));
+                "/v1/messaging/clients", Bytes(request.body.begin(), request.body.end()),
+                request.header("X-Bazarish-Client"));
         } catch (const std::exception& error) {
             response.status = 401;
             response.contentType = "text/plain";
@@ -207,6 +210,143 @@ int main()
             CHECK(!error.code.has_value());
         }
         CHECK(threw);
+    }
+
+    // --- Sessions ---
+    //
+    // What every request after the first one is supposed to carry. The stub here
+    // is the messaging half: it opens a session against a serving key it holds,
+    // and then answers either scheme, reporting which one it saw.
+    {
+        // How long a failed open stops us asking again, as a policy rather than a
+        // wait a test would have to sit through: a server that answered is
+        // arguing and is left alone for a long time; silence is the network.
+        CHECK(ApiClient::sessionBackoffSeconds(0) < ApiClient::sessionBackoffSeconds(503));
+        CHECK(ApiClient::sessionBackoffSeconds(503) == ApiClient::sessionBackoffSeconds(401));
+
+        const Key serving = Key::generateSealing();
+        http::Server sessionServer(localOptions());
+        // What the stub decides to do next, driven by the test.
+        int refuseOpenWith = 0;       // non-zero: answer the open with this status
+        bool refuseNextMac = false;   // answer one MAC'd request SESSION_INVALID
+        std::string lastScheme;       // "signature" or "session"
+        int opens = 0;
+        Bytes sessionSecret;
+        std::string sessionId;
+        Bytes sessionKey;
+
+        sessionServer.post("/v1/auth/session", [&](const http::Request& request) {
+            http::Response response;
+            if (refuseOpenWith != 0) {
+                response.status = refuseOpenWith;
+                response.body = makeErrorEnvelope(
+                    ErrorCode::eDeliveryRejected, "no sessions here").dump();
+                return response;
+            }
+            // Opening one is the one thing a session may not do (a leaked secret
+            // must not renew itself for ever), so the stub insists on a signature
+            // exactly as the server does.
+            CHECK(!auth::hasSessionHeaders(collectAuthHeaders(request)));
+            (void)auth::verifyRequest(collectAuthHeaders(request), nowSeconds(), "POST",
+                "/v1/auth/session", Bytes(request.body.begin(), request.body.end()),
+                request.header("X-Bazarish-Client"));
+            const nlohmann::json body = nlohmann::json::parse(request.body);
+            const Bytes opened
+                = cms::unseal(fromBase64(body.at("sealed").get<std::string>()), serving);
+            const nlohmann::json inner = nlohmann::json::parse(opened.begin(), opened.end());
+            sessionSecret = fromBase64(inner.at("secret").get<std::string>());
+            sessionId = toHex(sha256(sessionSecret)).substr(0, 32);
+            sessionKey = auth::deriveSessionKey(sessionSecret, sessionId);
+            ++opens;
+            const Key replyKey
+                = Key::fromPublicDer(fromBase64(inner.at("replyKey").get<std::string>()));
+            const std::string answer
+                = nlohmann::json{{"expiresUnix", nowSeconds() + 3600}}.dump();
+            response.body = nlohmann::json{{"sealed",
+                toBase64(cms::seal(Bytes(answer.begin(), answer.end()), replyKey))}}.dump();
+            return response;
+        });
+
+        sessionServer.get("/v1/messaging/storage-usage", [&](const http::Request& request) {
+            http::Response response;
+            auth::Headers headers = collectAuthHeaders(request);
+            for (const char* const name :
+                {auth::kHeaderSession, auth::kHeaderSeq, auth::kHeaderMac}) {
+                if (request.hasHeader(name)) {
+                    headers[name] = request.header(name);
+                }
+            }
+            if (auth::hasSessionHeaders(headers)) {
+                if (refuseNextMac) {
+                    refuseNextMac = false;
+                    response.status = 401;
+                    response.body = makeErrorEnvelope(
+                        ErrorCode::eSessionInvalid, "unknown or expired session").dump();
+                    return response;
+                }
+                // The device is inside the MAC, so verifying needs the header the
+                // request actually arrived with.
+                (void)auth::verifyMac(headers, sessionKey, nowSeconds(), "GET",
+                    "/v1/messaging/storage-usage", Bytes(),
+                    request.header("X-Bazarish-Client"));
+                lastScheme = "session";
+            } else {
+                (void)auth::verifyRequest(headers, nowSeconds(), "GET",
+                    "/v1/messaging/storage-usage", Bytes(),
+                    request.header("X-Bazarish-Client"));
+                lastScheme = "signature";
+            }
+            response.body = nlohmann::json{{"used", 0}}.dump();
+            return response;
+        });
+
+        const int sessionPort = sessionServer.start();
+        CHECK(sessionPort > 0);
+        ServerEndpoint sessionEndpoint;
+        sessionEndpoint.serverFingerprint = "unused-here";
+        sessionEndpoint.facades = {Facade{false, "127.0.0.1", sessionPort, {}}};
+
+        {
+            ApiClient api(alice, "abc123", sessionEndpoint);
+            // Nothing to seal a secret to yet: every request signs.
+            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+            CHECK(lastScheme == "signature");
+            CHECK(opens == 0);
+
+            // Once the account knows its serving key, the first request opens a
+            // session and every one after it carries a MAC.
+            api.setSessionSealingKey(serving.publicDer());
+            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+            CHECK(lastScheme == "session");
+            CHECK(opens == 1);
+            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+            CHECK(lastScheme == "session");
+            CHECK(opens == 1);  // the same session, not one per request
+
+            // A session refused mid-request: the client signs that request rather
+            // than retrying the same way, and opens a fresh session for the next.
+            refuseNextMac = true;
+            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+            CHECK(lastScheme == "signature");
+            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+            CHECK(lastScheme == "session");
+            CHECK(opens == 2);
+        }
+
+        // A server that answers the open with a refusal is believed: the client
+        // keeps signing even once the route starts working again.
+        {
+            ApiClient api(alice, "abc123", sessionEndpoint);
+            refuseOpenWith = 503;
+            api.setSessionSealingKey(serving.publicDer());
+            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+            CHECK(lastScheme == "signature");
+            refuseOpenWith = 0;
+            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+            CHECK(lastScheme == "signature");  // still inside the long wait
+        }
+
+        sessionServer.stop();
     }
 
     std::fprintf(stderr, "TestApiClient passed\n");

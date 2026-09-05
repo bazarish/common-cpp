@@ -173,6 +173,12 @@ public:
     // is sealed to (this user's serving key, whose private half the server holds)
     // and the key to unseal nothing with - the server only answers with an id.
     void setSessionSealingKey(Bytes servingSealingKeyDer);
+    // How long a failed session open stops this client from asking again. A
+    // server that answered is arguing about sessions and will answer the same
+    // way next time, so it is asked again only much later; a status of 0 is
+    // nobody answering at all, which is the network and not an argument - that
+    // wait is short, because it is over as soon as the network is back.
+    static std::int64_t sessionBackoffSeconds(int httpStatus);
     // What this client's outbound destination is called in the router status
     // view. An account keeps two: the one its session dials with, and the one that
     // holds the long poll open (they are separate so a wait never blocks a send).

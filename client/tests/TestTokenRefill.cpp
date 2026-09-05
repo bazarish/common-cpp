@@ -66,11 +66,13 @@ auth::Headers collectAuthHeaders(const http::Request& request)
 }
 
 // Verifies the request signature against the real path and returns the caller
-// fingerprint, mirroring the server-side authenticated() wrapper.
+// fingerprint, mirroring the server-side authenticated() wrapper - including the
+// device the request speaks for, which is signed with it.
 std::string requireCaller(const http::Request& request)
 {
     return auth::verifyRequest(collectAuthHeaders(request), nowSeconds(), request.method,
-        request.path, Bytes(request.body.begin(), request.body.end()));
+        request.path, Bytes(request.body.begin(), request.body.end()),
+        request.header("X-Bazarish-Client"));
 }
 
 // The tests write handlers the way the stub server used to take them - fill in
