@@ -6,6 +6,8 @@
 #include "Session.hpp"
 #include "WireLog.hpp"
 
+#include "TunnelStub.hpp"
+
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Cms.hpp>
@@ -48,31 +50,17 @@ namespace {
 
 namespace fs = std::filesystem;
 
-std::int64_t nowSeconds()
-{
-    return static_cast<std::int64_t>(std::time(nullptr));
-}
 
-auth::Headers collectAuthHeaders(const http::Request& request)
-{
-    auth::Headers headers;
-    for (const char* const name : {auth::kHeaderKeys, auth::kHeaderTimestamp,
-             auth::kHeaderSignatureClassical, auth::kHeaderSignaturePq}) {
-        if (request.hasHeader(name)) {
-            headers[name] = request.header(name);
-        }
-    }
-    return headers;
-}
-
-// Verifies the request signature against the real path and returns the caller
-// fingerprint, mirroring the server-side authenticated() wrapper - including the
-// device the request speaks for, which is signed with it.
+// Who the tunnel said this is. The transport authenticates the caller once, when
+// it opens; a route behind it is told, exactly as the real server tells one from
+// the session it holds.
 std::string requireCaller(const http::Request& request)
 {
-    return auth::verifyRequest(collectAuthHeaders(request), nowSeconds(), request.method,
-        request.path, Bytes(request.body.begin(), request.body.end()),
-        request.header("X-Bazarish-Client"));
+    const std::string caller = request.header(bazarish::teststub::kCallerHeader);
+    if (caller.empty()) {
+        throw std::runtime_error("no caller: this request did not come through the tunnel");
+    }
+    return caller;
 }
 
 // The tests write handlers the way the stub server used to take them - fill in
@@ -92,6 +80,10 @@ http::Server::Options localOptions()
 {
     http::Server::Options options;
     options.port = 0;  // the kernel picks one
+    // Every route here locks one mutex, and the tunnel means each client holds a
+    // connection for a whole exchange: with the default four, five accounts and
+    // their couriers can occupy every thread and wait on each other.
+    options.threads = 16;
     return options;
 }
 
@@ -400,11 +392,16 @@ int main()
             respondJson(response, {{"ok", true}});
         }));
 
+    // The stub speaks the tunnel, because that is the only transport a client
+    // has: one sealed path in, sealed frames out, and these routes behind it.
+    const Identity stubServerIdentity = Identity::generate();
+    const Key stubServerSealing = Key::generateSealing();
+    bazarish::teststub::Tunnel tunnelStub(server, stubServerIdentity, stubServerSealing);
     const int port = server.start();
     CHECK(port > 0);
 
     ServerEndpoint endpoint;
-    endpoint.serverFingerprint = m.serverFp;
+    endpoint.serverFingerprint = stubServerIdentity.fingerprint();
     endpoint.facades = {Facade{false, "127.0.0.1", port, {}}};
 
     const fs::path aDir = fs::temp_directory_path() / "bz-refill-a";

@@ -165,8 +165,6 @@ public:
     void releaseI2pLink();
     // The key a session secret is sealed to: this user's serving sealing key,
     // whose private half the serving server holds. Without it the client keeps
-    // signing every request.
-    void setSessionSealingKey(Bytes servingSealingKeyDer);
 
     // --- Account (service node) ---
 

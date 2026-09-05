@@ -91,10 +91,6 @@ void Client::releaseI2pLink()
     api_.releaseI2pLink();
 }
 
-void Client::setSessionSealingKey(Bytes servingSealingKeyDer)
-{
-    api_.setSessionSealingKey(std::move(servingSealingKeyDer));
-}
 
 PublishResult Client::publishCard(const Bytes& sealingPrekeyDer, const std::string& ownDest)
 {

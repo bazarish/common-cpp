@@ -254,9 +254,23 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
                         = std::make_shared<asio::steady_timer>(executor);
                     parked->expires_at(std::chrono::steady_clock::time_point::max());
                     const std::shared_ptr<Response> answer = std::make_shared<Response>();
-                    Responder respond = [parked, answer, executor](Response response) {
+                    // Answered, whether or not this coroutine has reached the wait
+                    // below yet: a handler may respond on the spot (a request
+                    // carried inside another one is dispatched and answers at
+                    // once), and cancelling a wait that has not started is a
+                    // cancel nobody hears - the connection would then hang until
+                    // the caller gave up.
+                    const std::shared_ptr<std::atomic<bool>> answered
+                        = std::make_shared<std::atomic<bool>>(false);
+                    Responder respond = [parked, answer, executor, answered](Response response) {
                         *answer = std::move(response);
-                        asio::post(executor, [parked]() { parked->cancel(); });
+                        answered->store(true);
+                        // Bringing the deadline forward rather than cancelling:
+                        // it wakes a wait that is already running AND makes one
+                        // that starts afterwards return at once, so neither order
+                        // can lose the answer.
+                        asio::post(executor,
+                            [parked]() { parked->expires_at(std::chrono::steady_clock::now()); });
                     };
                     std::optional<Response> immediate;
                     try {
@@ -267,9 +281,11 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
                             {}, R"({"error":{"code":"DELIVERY_REJECTED","message":"internal error"}})"};
                     }
                     if (!immediate.has_value()) {
-                        boost::system::error_code ignored;
-                        co_await parked->async_wait(
-                            asio::redirect_error(asio::use_awaitable, ignored));
+                        while (!answered->load()) {
+                            boost::system::error_code ignored;
+                            co_await parked->async_wait(
+                                asio::redirect_error(asio::use_awaitable, ignored));
+                        }
                         immediate = *answer;
                     }
                     http::response<http::string_body> out{
@@ -359,6 +375,41 @@ void Server::routeAsync(const std::string& method, const std::string& pattern, A
     entry.handler = std::move(handler);
     const std::lock_guard<std::mutex> lock(impl_->routesMutex);
     impl_->routes.push_back(std::move(entry));
+}
+
+void Server::dispatch(const Request& request, Responder respond)
+{
+    const Route* route = nullptr;
+    std::vector<std::string> captures;
+    {
+        const std::lock_guard<std::mutex> lock(impl_->routesMutex);
+        route = impl_->match(request.method, request.path, captures);
+    }
+    if (route == nullptr) {
+        Response missing;
+        missing.status = 404;
+        missing.body = R"({"error":{"message":"no such route"}})";
+        respond(std::move(missing));
+        return;
+    }
+    Request routed = request;
+    routed.captures = captures;
+    // The handler either answers now or takes the responder and answers later -
+    // a long poll carried in a tunnel parks exactly as it does on a connection.
+    // A handler that throws is answered for, exactly as the connection loop
+    // answers for one: an unanswered request here is a caller left waiting out
+    // its read timeout with nothing to show for it.
+    std::optional<Response> answered;
+    try {
+        answered = route->handler(routed, respond);
+    } catch (const std::exception& error) {
+        log::warn("handler for {} threw: {}", request.path, error.what());
+        answered = Response{500, "application/json", {},
+            R"({"error":{"code":"DELIVERY_REJECTED","message":"internal error"}})"};
+    }
+    if (answered.has_value()) {
+        respond(std::move(*answered));
+    }
 }
 
 void Server::get(const std::string& pattern, Handler handler)

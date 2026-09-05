@@ -131,24 +131,7 @@ public:
     // that is inside the sealed payload.
     ApiResponse postJson(const std::string& path, const nlohmann::json& body,
         int readTimeoutSeconds = kDefaultReadTimeoutSeconds, const std::string& note = {});
-    ApiResponse postBytes(
-        const std::string& path, const Bytes& body, const std::string& contentType);
-    // Authenticated PUT with extra request headers (e.g. blob retention).
-    ApiResponse putBytes(const std::string& path, const Bytes& body,
-        const std::string& contentType,
-        const std::map<std::string, std::string>& extraHeaders = {});
-    // Authenticated PUT that streams a file as the body without reading it into
-    // memory: the request is signed over the precomputed body digest
-    // (bodySha256Hex) and the file is fed to the connection through a content
-    // provider. Used for large blob upload.
-    ApiResponse putFile(const std::string& path, const std::filesystem::path& filePath,
-        const std::string& bodySha256Hex, const std::string& contentType,
-        const std::map<std::string, std::string>& extraHeaders = {},
-        const UploadProgressFn& onProgress = {});
     ApiResponse del(const std::string& path, const nlohmann::json& body = nlohmann::json());
-
-    // Unauthenticated GET (alias resolution is findable by design).
-    ApiResponse getPublic(const std::string& path, const std::string& query = "");
 
     // Where this transport writes what it did, for the account's connection log.
     // Null (the default) records nothing; the client sets it to its own log.
@@ -167,17 +150,11 @@ public:
     // offline: an account that is not talking should not be holding tunnels open.
     void releaseI2pLink();
 
-    // The session this client authenticates with, when it has one. Opening it
-    // costs one signed request; every request after that carries a MAC instead of
-    // an ~8.3 KB hybrid signature. The caller supplies the sealing key the secret
-    // is sealed to (this user's serving key, whose private half the server holds)
-    // and the key to unseal nothing with - the server only answers with an id.
-    void setSessionSealingKey(Bytes servingSealingKeyDer);
-    // How long a failed session open stops this client from asking again. A
-    // server that answered is arguing about sessions and will answer the same
-    // way next time, so it is asked again only much later; a status of 0 is
-    // nobody answering at all, which is the network and not an argument - that
-    // wait is short, because it is over as soon as the network is back.
+    // How long a failed tunnel open stops this client from asking again. A server
+    // that answered is arguing about tunnels and will answer the same way next
+    // time, so it is asked again only much later; a status of 0 is nobody
+    // answering at all, which is the network and not an argument - that wait is
+    // short, because it is over as soon as the network is back.
     static std::int64_t sessionBackoffSeconds(int httpStatus);
     // What this client's outbound destination is called in the router status
     // view. An account keeps two: the one its session dials with, and the one that
@@ -235,10 +212,16 @@ private:
     // client renews before it lapses rather than after a refusal. sessionBlocked_
     // is the loop guard: a server that refuses a freshly issued session is not
     // arguing about this session, so we stop asking for a while and keep signing.
-    Bytes sessionSealingKeyDer_;
+    // The server's own sealing key, taken from its card. What a tunnel hello is
+    // sealed to, and the reason a client needs nothing of its own before it can
+    // speak in private: the card is public, signed, and verified against the
+    // fingerprint the user already had.
+    Bytes serverSealingKeyDer_;
     std::string sessionId_;
     Bytes sessionSecret_;
     Bytes sessionKey_;
+    // What the frames of this tunnel are encrypted under.
+    Bytes tunnelKey_;
     std::int64_t sessionUntil_ = 0;
     std::uint64_t sessionSeq_ = 0;
     std::int64_t sessionBlockedUntil_ = 0;
@@ -246,9 +229,17 @@ private:
     // sessions and then rejects them is not going to be argued out of it, so the
     // client stops opening them for a while instead of one per request.
     int sessionRefusals_ = 0;
-    // Opens a session if one is due and possible. Returns whether a usable one is
+    // Opens a tunnel if one is due and possible. Returns whether a usable one is
     // in hand. Called with netMutex_ held.
     bool ensureSessionLocked();
+    // Fetches and verifies the server card, so a hello has something to seal to.
+    // Called with netMutex_ held; does nothing once the key is in hand.
+    void ensureServerKeyLocked();
+    // One exchange through the tunnel: seals the request, sends the one request
+    // this program ever sends, and opens what comes back.
+    ApiResponse tunnelledLocked(const std::string& method, const std::string& path,
+        const std::string& query, const Bytes& body, const std::string& contentType,
+        const std::map<std::string, std::string>& headers, int readTimeoutSeconds);
 
     WireLog* wireLog_ = nullptr;
     // A persistent unpublished outbound destination that dials I2P facades; its

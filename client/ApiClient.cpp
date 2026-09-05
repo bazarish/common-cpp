@@ -4,7 +4,9 @@
 #include "I2pRouter.hpp"
 
 #include <bazarish/Auth.hpp>
+#include <bazarish/Certificates.hpp>
 #include <bazarish/Cms.hpp>
+#include <bazarish/Tunnel.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/ServerDescriptor.hpp>
 #include <bazarish/I2pHttp.hpp>
@@ -239,6 +241,26 @@ std::int64_t ApiClient::sessionBackoffSeconds(const int httpStatus)
     return httpStatus == 0 ? kAfterSilenceSeconds : kAfterRefusalSeconds;
 }
 
+void ApiClient::ensureServerKeyLocked()
+{
+    if (!serverSealingKeyDer_.empty()) {
+        return;
+    }
+    // The one thing this client asks for in the open, and the same answer for
+    // everybody who asks: a signed card. A facade can withhold it - then there is
+    // no tunnel and no traffic for it to carry either - but it cannot put its own
+    // in its place, because the signature has to be the fingerprint the user
+    // already had before they ever saw a facade.
+    const ApiResponse response = transmitLocked("GET",
+        std::string(bazarish::tunnel::kServerCardPath), {}, {}, {}, {},
+        kDefaultReadTimeoutSeconds);
+    const ServerCard card = ServerCard::verify(response.body);
+    if (!endpoint_.serverFingerprint.empty() && card.server != endpoint_.serverFingerprint) {
+        throw std::runtime_error("the server card names another server than the one we joined");
+    }
+    serverSealingKeyDer_ = card.sealingPublicKeyDer;
+}
+
 bool ApiClient::ensureSessionLocked()
 {
     // Renewed before it lapses, not after: the server tells us when it expires
@@ -249,77 +271,57 @@ bool ApiClient::ensureSessionLocked()
     if (!sessionId_.empty() && now + kRenewLeadSeconds < sessionUntil_) {
         return true;
     }
-    if (sessionSealingKeyDer_.empty() || now < sessionBlockedUntil_) {
-        return false;  // nothing to seal to, or we are in the cooldown
+    if (now < sessionBlockedUntil_) {
+        return false;
     }
     sessionId_.clear();
     try {
-        // Sealed to this user's serving key: only the server that operates the
-        // destination can open it, so the facade in between carries a blob.
-        const Bytes secret = randomBytes(kSessionSecretBytes);
-        // A one-time key for the answer, carried inside the sealed envelope: the
-        // facade must not learn the session's lifetime any more than its secret.
+        ensureServerKeyLocked();
+        bazarish::tunnel::Hello hello;
+        hello.secret = randomBytes(kSessionSecretBytes);
+        // A one-time key for the answer: what the server says back about this
+        // tunnel is no more the facade's business than what opened it.
         const Key replyKey = Key::generateSealing();
-        const nlohmann::json inner = {
-            {"secret", toBase64(secret)},
-            {"replyKey", toBase64(replyKey.publicDer())},
-        };
-        const std::string innerText = inner.dump();
-        const Key servingKey = Key::fromPublicDer(sessionSealingKeyDer_);
-        const nlohmann::json body = {{"sealed",
-            toBase64(cms::seal(Bytes(innerText.begin(), innerText.end()), servingKey))}};
-        const std::string text = body.dump();
-        const auth::Headers signed_ = auth::signRequest(identity_, now, "POST",
-            "/v1/auth/session", Bytes(text.begin(), text.end()), clientId_);
-        std::map<std::string, std::string> headers(signed_.begin(), signed_.end());
-        headers.emplace("X-Bazarish-Client", clientId_);
-        const ApiResponse response
-            = transmitLocked("POST", "/v1/auth/session", {}, Bytes(text.begin(), text.end()),
-                "application/json", headers, kDefaultReadTimeoutSeconds);
-        const nlohmann::json reply = response.json();
-        const Bytes opened
-            = cms::unseal(fromBase64(reply.at("sealed").get<std::string>()), replyKey);
-        const nlohmann::json answer = nlohmann::json::parse(opened.begin(), opened.end());
+        hello.replyKeyDer = replyKey.publicDer();
+        // The only place this client ever presents its identity. Everything after
+        // it is authenticated by holding the key that came out of this frame.
+        hello.signature = auth::signRequest(identity_, now, bazarish::tunnel::kHelloMethod,
+            bazarish::tunnel::kHelloPath, hello.secret);
+        const Bytes frame
+            = bazarish::tunnel::sealHello(hello, Key::fromPublicDer(serverSealingKeyDer_));
+        const ApiResponse response = transmitLocked("POST",
+            std::string(bazarish::tunnel::kTunnelPath), {}, frame, "application/octet-stream", {},
+            kDefaultReadTimeoutSeconds);
+        const bazarish::tunnel::Welcome welcome
+            = bazarish::tunnel::openWelcome(response.body, replyKey);
         // The id never travels: both sides derive it, and what goes on the wire
         // is a different handle per request.
-        sessionSecret_ = secret;
-        sessionId_ = toHex(sha256(secret)).substr(0, kSessionIdChars);
-        sessionKey_ = auth::deriveSessionKey(secret, sessionId_);
-        sessionUntil_ = answer.at("expiresUnix").get<std::int64_t>();
+        sessionSecret_ = hello.secret;
+        sessionId_ = toHex(sha256(hello.secret)).substr(0, kSessionIdChars);
+        sessionKey_ = auth::deriveSessionKey(hello.secret, sessionId_);
+        tunnelKey_ = bazarish::tunnel::deriveTunnelKey(hello.secret, sessionId_);
+        sessionUntil_ = welcome.expiresUnix;
         sessionSeq_ = 0;
         sessionRefusals_ = 0;
-        bazarish::log::info("session open for {} s", sessionUntil_ - now);
+        bazarish::log::info("tunnel open for {} s", sessionUntil_ - now);
         return true;
     } catch (const ApiError& error) {
-        // A server that answered has said something about sessions - no session
-        // face here, no destination to seal to yet - and it will say the same
-        // thing to the next request. A transport failure said nothing at all.
+        // A server that answered has said something about tunnels and will say
+        // the same to the next request. A transport failure said nothing at all.
         sessionId_.clear();
         sessionBlockedUntil_ = now + sessionBackoffSeconds(error.httpStatus);
-        bazarish::log::info("no session, signing each request: {}", error.what());
+        bazarish::log::info("no tunnel: {}", error.what());
         return false;
     } catch (const std::exception& error) {
-        // An answer that would not open, or anything else unexpected: the far
+        // An answer that would not open, or a card that would not verify: the far
         // side misbehaved rather than went missing, so it is the long wait.
         sessionId_.clear();
         sessionBlockedUntil_ = now + sessionBackoffSeconds(1);
-        bazarish::log::info("no session, signing each request: {}", error.what());
+        bazarish::log::info("no tunnel: {}", error.what());
         return false;
     }
 }
 
-void ApiClient::setSessionSealingKey(Bytes servingSealingKeyDer)
-{
-    const std::lock_guard<std::mutex> lock(netMutex_);
-    if (servingSealingKeyDer == sessionSealingKeyDer_) {
-        return;
-    }
-    // A different serving key means a different destination: the old session was
-    // opened against something that no longer applies.
-    sessionSealingKeyDer_ = std::move(servingSealingKeyDer);
-    sessionId_.clear();
-    sessionBlockedUntil_ = 0;
-}
 
 void ApiClient::setDestinationOwner(std::string owner)
 {
@@ -463,17 +465,7 @@ ApiResponse ApiClient::postJson(const std::string& path, const nlohmann::json& b
         readTimeoutSeconds, note);
 }
 
-ApiResponse ApiClient::postBytes(
-    const std::string& path, const Bytes& body, const std::string& contentType)
-{
-    return send("POST", path, {}, body, contentType, true);
-}
 
-ApiResponse ApiClient::putBytes(const std::string& path, const Bytes& body,
-    const std::string& contentType, const std::map<std::string, std::string>& extraHeaders)
-{
-    return send("PUT", path, {}, body, contentType, true, extraHeaders);
-}
 
 ApiResponse ApiClient::del(const std::string& path, const nlohmann::json& body)
 {
@@ -487,10 +479,6 @@ ApiResponse ApiClient::del(const std::string& path, const nlohmann::json& body)
     return send("DELETE", path, {}, encoded, contentType, true);
 }
 
-ApiResponse ApiClient::getPublic(const std::string& path, const std::string& query)
-{
-    return send("GET", path, query, {}, {}, false);
-}
 
 void ApiClient::setWireLog(WireLog* const log)
 {
@@ -512,38 +500,61 @@ void ApiClient::noteWire(const std::string& method, const std::string& path,
     wireLog_->record(std::move(event));
 }
 
+ApiResponse ApiClient::tunnelledLocked(const std::string& method, const std::string& path,
+    const std::string& query, const Bytes& body, const std::string& contentType,
+    const std::map<std::string, std::string>& headers, const int readTimeoutSeconds)
+{
+    bazarish::tunnel::Request inner;
+    inner.method = method;
+    inner.path = path;
+    inner.query = query;
+    inner.headers = headers;
+    inner.body = body;
+    inner.contentType = contentType;
+    const std::uint64_t seq = ++sessionSeq_;
+    const Bytes frame = bazarish::tunnel::carry(auth::sessionHandle(sessionSecret_, seq),
+        tunnelKey_, bazarish::tunnel::encodeRequest(inner));
+    // One path, one method, one content type, whatever the request inside is.
+    const ApiResponse carried = transmitLocked("POST",
+        std::string(bazarish::tunnel::kTunnelPath), {}, frame, "application/octet-stream", {},
+        readTimeoutSeconds);
+    const bazarish::tunnel::Response answered
+        = bazarish::tunnel::decodeResponse(bazarish::tunnel::open(carried.body, tunnelKey_));
+    ApiResponse response;
+    response.status = answered.status;
+    response.contentType = answered.contentType;
+    response.body = answered.body;
+    return response;
+}
+
 ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     const std::string& query, const Bytes& body, const std::string& contentType,
     const bool authenticate, const std::map<std::string, std::string>& extraHeaders,
     const int readTimeoutSeconds, const std::string& note)
 {
     const std::lock_guard<std::mutex> lock(netMutex_);
-    // The signed canonical path is the server-visible path: no base path and
-    // no query string (the facade strips the base path before forwarding and
-    // the server verifies the query-less path). The signature is therefore the
-    // same across facades, so it is computed once.
-    // A session is held with the messaging server, which issued it against a key
-    // only it has. The service node behind /v1/account/* never saw that exchange,
-    // so those calls keep presenting the signature.
-    const bool sessionRoute = path.rfind("/v1/messaging/", 0) == 0;
+    // The signed canonical path is the server-visible path: no base path and no
+    // query string. It is the same across facades, so it is computed once.
     std::map<std::string, std::string> headers;
     if (authenticate) {
-        // A session MAC when we hold one, the full hybrid signature otherwise -
-        // which is also what opens the session in the first place.
+        // Inside the tunnel the identity is already settled - it was presented
+        // once, when the tunnel opened - so what rides here is the session MAC:
+        // it is what tells this account's devices apart and what stops a frame
+        // being replayed under another sequence number.
         auth::Headers authHeaders;
-        if (sessionRoute && ensureSessionLocked()) {
-            const std::uint64_t seq = ++sessionSeq_;
+        if (ensureSessionLocked()) {
+            const std::uint64_t seq = sessionSeq_ + 1;
             authHeaders = auth::macRequest(auth::sessionHandle(sessionSecret_, seq), sessionKey_,
                 seq, nowSeconds(), method, path, body, clientId_);
         } else {
-            authHeaders = auth::signRequest(identity_, nowSeconds(), method, path, body, clientId_);
+            // No tunnel: there is nothing to send it through. The caller is told
+            // the same way it would be told about any unreachable server.
+            noteWire(method, path, note, "failed: no tunnel", 0, 0);
+            throw ApiError(std::nullopt, 0, "no tunnel to the server");
         }
         headers = std::map<std::string, std::string>(authHeaders.begin(), authHeaders.end());
         headers.emplace("X-Bazarish-Client", clientId_);
     }
-    // Extra headers ride outside the signature (e.g. blob retention, which is
-    // not integrity-critical - end-to-end integrity is the sealed pointer's
-    // sha256).
     for (const auto& [key, value] : extraHeaders) {
         headers.emplace(key, value);
     }
@@ -558,40 +569,51 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
             .count();
     };
     try {
-        const ApiResponse response = transmitLocked(
+        const ApiResponse response = tunnelledLocked(
             method, path, query, body, contentType, headers, readTimeoutSeconds);
+        if (response.status < 200 || response.status >= 300) {
+            raiseFromResponse(response.status, response.body);
+        }
         if (!quietOnSuccess) {
             noteWire(method, path, note, std::to_string(response.status), response.body.size(),
                 elapsedMillis());
         }
         return response;
     } catch (const ApiError& error) {
-        // A refused session is answered by opening a new one and trying once
-        // more, with a signature this time - never by retrying the same way,
-        // which is how a server stuck on 401 would spin a client forever.
-        if (error.code != ErrorCode::eSessionInvalid || sessionId_.empty() || !sessionRoute) {
+        // A refused session is answered by opening a new tunnel and trying once
+        // more - never by retrying the same way, which is how a server stuck on
+        // 401 would spin a client forever.
+        if (error.code != ErrorCode::eSessionInvalid || sessionId_.empty()) {
             noteWire(method, path, note, "failed: " + std::string(error.what()), 0, elapsedMillis());
             throw;
         }
         constexpr int kRefusalsBeforeGivingUp = 3;
-        constexpr std::int64_t kBlockedAfterRefusalsSeconds = 900;
-        bazarish::log::info("session refused mid-request; signing this one");
+        bazarish::log::info("the tunnel was refused mid-request; opening another");
         sessionId_.clear();
         if (++sessionRefusals_ >= kRefusalsBeforeGivingUp) {
             sessionRefusals_ = 0;
-            sessionBlockedUntil_ = nowSeconds() + kBlockedAfterRefusalsSeconds;
-            bazarish::log::warn("sessions keep being refused; signing every request for now");
+            sessionBlockedUntil_ = nowSeconds() + sessionBackoffSeconds(1);
+            bazarish::log::warn("tunnels keep being refused; standing off for a while");
+            noteWire(method, path, note, "failed: " + std::string(error.what()), 0, elapsedMillis());
+            throw;
         }
-        const auth::Headers signedHeaders
-            = auth::signRequest(identity_, nowSeconds(), method, path, body, clientId_);
-        std::map<std::string, std::string> retryHeaders(
-            signedHeaders.begin(), signedHeaders.end());
+        if (!ensureSessionLocked()) {
+            noteWire(method, path, note, "failed: no tunnel", 0, elapsedMillis());
+            throw;
+        }
+        const std::uint64_t seq = sessionSeq_ + 1;
+        const auth::Headers retryAuth = auth::macRequest(auth::sessionHandle(sessionSecret_, seq),
+            sessionKey_, seq, nowSeconds(), method, path, body, clientId_);
+        std::map<std::string, std::string> retryHeaders(retryAuth.begin(), retryAuth.end());
         retryHeaders.emplace("X-Bazarish-Client", clientId_);
         for (const auto& [key, value] : extraHeaders) {
             retryHeaders.emplace(key, value);
         }
-        const ApiResponse response = transmitLocked(method, path, query, body, contentType,
-            retryHeaders, readTimeoutSeconds);
+        const ApiResponse response = tunnelledLocked(
+            method, path, query, body, contentType, retryHeaders, readTimeoutSeconds);
+        if (response.status < 200 || response.status >= 300) {
+            raiseFromResponse(response.status, response.body);
+        }
         if (!quietOnSuccess) {
             noteWire(method, path, note, std::to_string(response.status), response.body.size(),
                 elapsedMillis());
@@ -710,140 +732,5 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
     throw ApiError(std::nullopt, 0, "no facade answered: " + lastError);
 }
 
-ApiResponse ApiClient::putFile(const std::string& path, const std::filesystem::path& filePath,
-    const std::string& bodySha256Hex, const std::string& contentType,
-    const std::map<std::string, std::string>& extraHeaders, const UploadProgressFn& onProgress)
-{
-    const std::lock_guard<std::mutex> lock(netMutex_);
-    const std::uintmax_t length = std::filesystem::file_size(filePath);
-
-    // The body is signed only through its digest, so a multi-gigabyte file is
-    // never materialized to sign or send it.
-    const auth::Headers signedHeaders
-        = auth::signRequestDigest(identity_, nowSeconds(), "PUT", path, bodySha256Hex, clientId_);
-    std::map<std::string, std::string> headers(signedHeaders.begin(), signedHeaders.end());
-    headers["X-Bazarish-Client"] = clientId_;
-    for (const auto& [key, value] : extraHeaders) {
-        headers[key] = value;
-    }
-
-    std::map<std::string, std::string> i2pHeaders = headers;
-    if (!contentType.empty()) {
-        i2pHeaders["Content-Type"] = contentType;
-    }
-
-    const auto clearnetAttempt = [&](const Facade& facade) -> bazarish::http::ClientResponse {
-        // A fresh stream per attempt so a facade failover restarts cleanly from
-        // the beginning of the file.
-        const auto file = std::make_shared<std::ifstream>(filePath, std::ios::binary);
-        if (!*file) {
-            throw ApiError(std::nullopt, 0, "cannot open blob file: " + filePath.string());
-        }
-        const auto produced = std::make_shared<std::uintmax_t>(0);
-        const bazarish::http::BodyProvider provider
-            = [file, produced, length, &onProgress](
-                  char* const chunk, const std::size_t capacity) -> std::size_t {
-            file->read(chunk, static_cast<std::streamsize>(capacity));
-            const std::streamsize got = file->gcount();
-            if (got <= 0) {
-                return 0;
-            }
-            *produced += static_cast<std::uintmax_t>(got);
-            if (onProgress) {
-                onProgress(*produced, static_cast<std::uint64_t>(length));
-            }
-            return static_cast<std::size_t>(got);
-        };
-        bazarish::http::ClientRequest out;
-        out.method = "PUT";
-        out.target = facade.basePath + path;
-        out.headers = headers;
-        out.contentType = contentType;
-        return bazarish::http::upload(facade.host, facade.port, out, length, provider,
-            facadeOptions(facade, kDefaultReadTimeoutSeconds));
-    };
-
-    // Streams the file body onto an I2P stream after the request head (the i2p
-    // counterpart of the clearnet content provider).
-    const auto writeFileBody = [&filePath, length](bazarish::i2p::Stream& stream) {
-        std::ifstream file(filePath, std::ios::binary);
-        if (!file) {
-            throw ApiError(std::nullopt, 0, "cannot open blob file: " + filePath.string());
-        }
-        std::array<char, 64 * 1024> buffer;
-        std::uintmax_t remaining = length;
-        while (remaining > 0) {
-            const std::streamsize chunk = static_cast<std::streamsize>(
-                std::min<std::uintmax_t>(remaining, buffer.size()));
-            file.read(buffer.data(), chunk);
-            const std::streamsize got = file.gcount();
-            if (got <= 0) {
-                break;
-            }
-            stream.writeAll(buffer.data(), static_cast<std::size_t>(got));
-            remaining -= static_cast<std::uintmax_t>(got);
-        }
-    };
-
-    const std::vector<Facade>& facades = endpoint_.facades;
-    std::string lastError = "no facade configured";
-    for (const std::size_t index : facadeOrder()) {
-        const Facade& facade = facades[index];
-
-        if (facadeIsI2p(facade)) {
-            if (!i2pEnabled()) {
-                // I2P turned off in settings: use clearnet facades only. With no
-                // reachable clearnet facade the loop ends in an explicit error.
-                lastError = "i2p is turned off (clearnet only): " + facade.host;
-                continue;
-            }
-            if (i2pDataDir_.empty()) {
-                lastError = "i2p facade without an I2P transport: " + facade.host;
-                continue;
-            }
-            const std::optional<ApiResponse> response = i2pExchange(facade, "PUT",
-                facade.basePath + path, i2pHeaders, static_cast<std::size_t>(length), writeFileBody,
-                kDefaultReadTimeoutSeconds);
-            if (!response) {
-                lastError = "i2p facade unreachable: " + facade.host;
-                continue;
-            }
-            activeFacade_ = index;
-            if (response->status < 200 || response->status >= 300) {
-                raiseFromResponse(response->status, response->body);
-            }
-            return *response;
-        }
-
-        if (!bazarish::allowFacadeWithoutI2pForDevPurposes() && !facadeIsOwnLoopback(facade)) {
-            lastError = "this client speaks to its server over I2P only: " + facade.host;
-            continue;
-        }
-        const bazarish::http::ClientResponse result = clearnetAttempt(facade);
-        if (result.status == 0) {
-            // A read timeout is not an unreachable facade: the request arrived and
-            // the server is still working on it (a federated fetch dials the peer
-            // over I2P, which is slow on a cold router). Say which of the two it
-            // was, or the next reader goes looking at the facade for nothing.
-            lastError = result.readTimedOut
-                ? "no response within " + std::to_string(kDefaultReadTimeoutSeconds)
-                    + "s: " + facade.host
-                : "transport failure: " + result.error;
-            continue;  // try the next facade
-        }
-        activeFacade_ = index;
-
-        ApiResponse response;
-        response.status = result.status;
-        response.body = Bytes(result.body.begin(), result.body.end());
-        response.contentType = result.contentType;
-        response.headers = result.headers;  // the client lowercases the keys
-        if (response.status < 200 || response.status >= 300) {
-            raiseFromResponse(response.status, response.body);
-        }
-        return response;
-    }
-    throw ApiError(std::nullopt, 0, "no facade answered: " + lastError);
-}
 
 }  // namespace bazarish::client

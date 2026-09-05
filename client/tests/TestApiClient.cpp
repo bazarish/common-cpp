@@ -1,11 +1,13 @@
 // Bazarish project (c) 2026
 #include "ApiClient.hpp"
-#include <bazarish/ServerDescriptor.hpp>
+
+#include "TunnelStub.hpp"
 
 #include <bazarish/Auth.hpp>
-#include <bazarish/Cms.hpp>
+#include <bazarish/Certificates.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Errors.hpp>
+#include <bazarish/ServerDescriptor.hpp>
 
 #include <bazarish/HttpServer.hpp>
 #include <nlohmann/json.hpp>
@@ -13,8 +15,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
-#include <stdexcept>
 #include <filesystem>
+#include <stdexcept>
 
 #define CHECK(condition)                                                            \
     do {                                                                            \
@@ -30,23 +32,6 @@ using namespace bazarish::client;
 
 namespace {
 
-std::int64_t nowSeconds()
-{
-    return static_cast<std::int64_t>(std::time(nullptr));
-}
-
-auth::Headers collectAuthHeaders(const http::Request& request)
-{
-    auth::Headers headers;
-    for (const char* const name : {auth::kHeaderKeys, auth::kHeaderTimestamp,
-             auth::kHeaderSignatureClassical, auth::kHeaderSignaturePq}) {
-        if (request.hasHeader(name)) {
-            headers[name] = request.header(name);
-        }
-    }
-    return headers;
-}
-
 http::Server::Options localOptions()
 {
     http::Server::Options options;
@@ -56,69 +41,52 @@ http::Server::Options localOptions()
 
 }  // namespace
 
-// The stub server these tests talk to is a plain HTTP listener on localhost -
-// the same shape as a stand on a LAN, and the reason that switch exists.
+// Everything a client says to its server goes through one sealed tunnel, so this
+// test drives it over that transport rather than a plainer one that would pass
+// while the real path was broken. The stub terminates the frame exactly as the
+// messaging server does, and the routes behind it never learn they are inside
+// one.
 int main()
 {
     bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
     const Identity alice = Identity::generate();
+    const Identity serverIdentity = Identity::generate();
+    const Key serverSealing = Key::generateSealing();
 
     http::Server server(localOptions());
+    teststub::Tunnel stub(server, serverIdentity, serverSealing);
 
-    // Echoes the verified caller fingerprint and the client header, proving
-    // the request was correctly signed against the query-less path.
-    server.get("/v1/account/subscription", [&](const http::Request& request) {
+    // What the carried request looked like when it came out the other side.
+    std::string sawMethod;
+    std::string sawPath;
+    std::string sawQuery;
+    std::string sawDevice;
+    std::string sawBody;
+    server.get("/v1/messaging/storage-usage", [&](const http::Request& request) {
+        sawMethod = request.method;
+        sawPath = request.path;
+        sawQuery = request.query("wait");
+        sawDevice = request.header("X-Bazarish-Client");
         http::Response response;
-        std::string user;
-        try {
-            user = auth::verifyRequest(collectAuthHeaders(request), nowSeconds(), "GET",
-                request.path, Bytes(request.body.begin(), request.body.end()),
-                request.header("X-Bazarish-Client"));
-        } catch (const std::exception& error) {
-            response.status = 401;
-            response.contentType = "text/plain";
-            response.body = error.what();
-            return response;
-        }
-        response.body
-            = nlohmann::json{{"notAfter", 1234}, {"quotaBytes", 10}, {"user", user}}.dump();
+        response.body = nlohmann::json{{"used", 7}}.dump();
         return response;
     });
-
-    // A request signed for a secret base path must verify against the
-    // stripped path, so the route lives under the base path but the auth
-    // check uses the suffix.
-    server.post("/s/secret/v1/messaging/clients", [&](const http::Request& request) {
+    server.post("/v1/messaging/clients", [&](const http::Request& request) {
+        sawBody = request.body;
+        sawDevice = request.header("X-Bazarish-Client");
         http::Response response;
-        std::string user;
-        try {
-            user = auth::verifyRequest(collectAuthHeaders(request), nowSeconds(), "POST",
-                "/v1/messaging/clients", Bytes(request.body.begin(), request.body.end()),
-                request.header("X-Bazarish-Client"));
-        } catch (const std::exception& error) {
-            response.status = 401;
-            response.contentType = "text/plain";
-            response.body = error.what();
-            return response;
-        }
-        CHECK(request.header("X-Bazarish-Client") == "abc123");
-        const nlohmann::json body = nlohmann::json::parse(request.body);
-        CHECK(body.at("clientId") == "abc123");
-        response.body = nlohmann::json{{"ok", true}, {"user", user}}.dump();
+        response.body = nlohmann::json{{"ok", true}}.dump();
         return response;
     });
-
-    // Returns a typed error envelope.
-    server.get("/v1/account/contact", [](const http::Request&) {
+    // A typed refusal, as the real API answers one.
+    server.get("/v1/messaging/pending", [](const http::Request&) {
         http::Response response;
         response.status = 404;
-        response.body
-            = makeErrorEnvelope(ErrorCode::eClientUnregistered, "no account").dump();
+        response.body = makeErrorEnvelope(ErrorCode::eClientUnregistered, "no account").dump();
         return response;
     });
-
-    // Returns a non-envelope error body.
-    server.get("/v1/messaging/pending", [](const http::Request&) {
+    // And one that is not an envelope at all.
+    server.get("/v1/messaging/destination", [](const http::Request&) {
         http::Response response;
         response.status = 500;
         response.contentType = "text/plain";
@@ -126,50 +94,47 @@ int main()
         return response;
     });
 
-    // The private reseed: unauthenticated, and the one call that must stay on
-    // clearnet because it is what bootstraps the I2P transport.
-    server.get("/v1/messaging/reseed", [](const http::Request&) {
-        http::Response response;
-        response.body = R"({"routers":["cm91dGVy"]})";
-        return response;
-    });
-
     const int port = server.start();
     CHECK(port > 0);
 
     ServerEndpoint endpoint;
-    endpoint.serverFingerprint = "unused-here";
+    endpoint.serverFingerprint = serverIdentity.fingerprint();
     endpoint.facades = {Facade{false, "127.0.0.1", port, {}}};
 
-    // A signed GET round-trips and the server derives alice's fingerprint
-    // from the presented keys.
+    // A request rides the tunnel and arrives whole: method, path, query and the
+    // device it speaks for, none of which the facade in between could have read.
     {
         ApiClient api(alice, "abc123", endpoint);
-        const ApiResponse response = api.get("/v1/account/subscription");
+        const ApiResponse response = api.get("/v1/messaging/storage-usage", "wait=30");
         CHECK(response.status == 200);
-        const nlohmann::json body = response.json();
-        CHECK(body.at("notAfter") == 1234);
-        CHECK(body.at("user") == alice.fingerprint());
+        CHECK(response.json().at("used") == 7);
+        CHECK(sawMethod == "GET");
+        CHECK(sawPath == "/v1/messaging/storage-usage");
+        CHECK(sawQuery == "30");
+        CHECK(sawDevice == "abc123");
+        CHECK(stub.opened() == 1);
+
+        // The next request reuses the tunnel: an identity is presented once.
+        const ApiResponse posted
+            = api.postJson("/v1/messaging/clients", {{"clientId", "abc123"}});
+        CHECK(posted.status == 200);
+        CHECK(nlohmann::json::parse(sawBody).at("clientId") == "abc123");
+        CHECK(stub.opened() == 1);
+
+        // A tunnel refused mid-request: the client opens another rather than
+        // retrying the same way, and the request still goes through.
+        stub.refuseNext();
+        CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+        CHECK(stub.opened() == 2);
     }
 
-    // The same client over a secret base path: the URL carries the prefix,
-    // the signature is computed over the stripped path.
-    {
-        ServerEndpoint secret = endpoint;
-        secret.facades[0].basePath = "/s/secret";
-        ApiClient api(alice, "abc123", secret);
-        const ApiResponse response = api.postJson("/v1/messaging/clients",
-            {{"clientId", "abc123"}});
-        CHECK(response.status == 200);
-        CHECK(response.json().at("user") == alice.fingerprint());
-    }
-
-    // A typed error envelope surfaces as ApiError carrying the code.
+    // A typed error envelope from inside the frame surfaces as a typed error out
+    // here: the outer exchange said 200, and the code came from within.
     {
         ApiClient api(alice, "abc123", endpoint);
         bool threw = false;
         try {
-            api.get("/v1/account/contact", "user=ghost");
+            (void)api.get("/v1/messaging/pending");
         } catch (const ApiError& error) {
             threw = true;
             CHECK(error.httpStatus == 404);
@@ -179,12 +144,12 @@ int main()
         CHECK(threw);
     }
 
-    // A non-envelope error keeps the status but carries no typed code.
+    // A refusal that is not an envelope keeps its status and carries no code.
     {
         ApiClient api(alice, "abc123", endpoint);
         bool threw = false;
         try {
-            api.get("/v1/messaging/pending");
+            (void)api.get("/v1/messaging/destination");
         } catch (const ApiError& error) {
             threw = true;
             CHECK(error.httpStatus == 500);
@@ -193,17 +158,33 @@ int main()
         CHECK(threw);
     }
 
+    // A card that names another server is not this server's card. A facade may
+    // withhold the card; one it made up must not be sealed to.
+    {
+        ServerEndpoint impostor = endpoint;
+        impostor.serverFingerprint = Identity::generate().fingerprint();
+        ApiClient api(alice, "abc123", impostor);
+        bool threw = false;
+        try {
+            (void)api.get("/v1/messaging/storage-usage");
+        } catch (const ApiError&) {
+            threw = true;
+        }
+        CHECK(threw);
+    }
+
     server.stop();
 
-    // A transport failure (nothing listening) is an ApiError with no HTTP
-    // status and no typed code.
+    // Nothing listening at all: an ApiError with no HTTP status and no code,
+    // which is what tells a client the network went away rather than that the
+    // server refused it - the difference the tunnel backoff is decided on.
     {
         ServerEndpoint dead = endpoint;
-        dead.facades[0].port = 1;  // Reserved; connection refused.
+        dead.facades[0].port = 1;  // reserved; connection refused
         ApiClient api(alice, "abc123", dead);
         bool threw = false;
         try {
-            api.get("/v1/account/subscription");
+            (void)api.get("/v1/messaging/storage-usage");
         } catch (const ApiError& error) {
             threw = true;
             CHECK(error.httpStatus == 0);
@@ -212,142 +193,11 @@ int main()
         CHECK(threw);
     }
 
-    // --- Sessions ---
-    //
-    // What every request after the first one is supposed to carry. The stub here
-    // is the messaging half: it opens a session against a serving key it holds,
-    // and then answers either scheme, reporting which one it saw.
-    {
-        // How long a failed open stops us asking again, as a policy rather than a
-        // wait a test would have to sit through: a server that answered is
-        // arguing and is left alone for a long time; silence is the network.
-        CHECK(ApiClient::sessionBackoffSeconds(0) < ApiClient::sessionBackoffSeconds(503));
-        CHECK(ApiClient::sessionBackoffSeconds(503) == ApiClient::sessionBackoffSeconds(401));
-
-        const Key serving = Key::generateSealing();
-        http::Server sessionServer(localOptions());
-        // What the stub decides to do next, driven by the test.
-        int refuseOpenWith = 0;       // non-zero: answer the open with this status
-        bool refuseNextMac = false;   // answer one MAC'd request SESSION_INVALID
-        std::string lastScheme;       // "signature" or "session"
-        int opens = 0;
-        Bytes sessionSecret;
-        std::string sessionId;
-        Bytes sessionKey;
-
-        sessionServer.post("/v1/auth/session", [&](const http::Request& request) {
-            http::Response response;
-            if (refuseOpenWith != 0) {
-                response.status = refuseOpenWith;
-                response.body = makeErrorEnvelope(
-                    ErrorCode::eDeliveryRejected, "no sessions here").dump();
-                return response;
-            }
-            // Opening one is the one thing a session may not do (a leaked secret
-            // must not renew itself for ever), so the stub insists on a signature
-            // exactly as the server does.
-            CHECK(!auth::hasSessionHeaders(collectAuthHeaders(request)));
-            (void)auth::verifyRequest(collectAuthHeaders(request), nowSeconds(), "POST",
-                "/v1/auth/session", Bytes(request.body.begin(), request.body.end()),
-                request.header("X-Bazarish-Client"));
-            const nlohmann::json body = nlohmann::json::parse(request.body);
-            const Bytes opened
-                = cms::unseal(fromBase64(body.at("sealed").get<std::string>()), serving);
-            const nlohmann::json inner = nlohmann::json::parse(opened.begin(), opened.end());
-            sessionSecret = fromBase64(inner.at("secret").get<std::string>());
-            sessionId = toHex(sha256(sessionSecret)).substr(0, 32);
-            sessionKey = auth::deriveSessionKey(sessionSecret, sessionId);
-            ++opens;
-            const Key replyKey
-                = Key::fromPublicDer(fromBase64(inner.at("replyKey").get<std::string>()));
-            const std::string answer
-                = nlohmann::json{{"expiresUnix", nowSeconds() + 3600}}.dump();
-            response.body = nlohmann::json{{"sealed",
-                toBase64(cms::seal(Bytes(answer.begin(), answer.end()), replyKey))}}.dump();
-            return response;
-        });
-
-        sessionServer.get("/v1/messaging/storage-usage", [&](const http::Request& request) {
-            http::Response response;
-            auth::Headers headers = collectAuthHeaders(request);
-            for (const char* const name :
-                {auth::kHeaderSession, auth::kHeaderSeq, auth::kHeaderMac}) {
-                if (request.hasHeader(name)) {
-                    headers[name] = request.header(name);
-                }
-            }
-            if (auth::hasSessionHeaders(headers)) {
-                if (refuseNextMac) {
-                    refuseNextMac = false;
-                    response.status = 401;
-                    response.body = makeErrorEnvelope(
-                        ErrorCode::eSessionInvalid, "unknown or expired session").dump();
-                    return response;
-                }
-                // The device is inside the MAC, so verifying needs the header the
-                // request actually arrived with.
-                (void)auth::verifyMac(headers, sessionKey, nowSeconds(), "GET",
-                    "/v1/messaging/storage-usage", Bytes(),
-                    request.header("X-Bazarish-Client"));
-                lastScheme = "session";
-            } else {
-                (void)auth::verifyRequest(headers, nowSeconds(), "GET",
-                    "/v1/messaging/storage-usage", Bytes(),
-                    request.header("X-Bazarish-Client"));
-                lastScheme = "signature";
-            }
-            response.body = nlohmann::json{{"used", 0}}.dump();
-            return response;
-        });
-
-        const int sessionPort = sessionServer.start();
-        CHECK(sessionPort > 0);
-        ServerEndpoint sessionEndpoint;
-        sessionEndpoint.serverFingerprint = "unused-here";
-        sessionEndpoint.facades = {Facade{false, "127.0.0.1", sessionPort, {}}};
-
-        {
-            ApiClient api(alice, "abc123", sessionEndpoint);
-            // Nothing to seal a secret to yet: every request signs.
-            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
-            CHECK(lastScheme == "signature");
-            CHECK(opens == 0);
-
-            // Once the account knows its serving key, the first request opens a
-            // session and every one after it carries a MAC.
-            api.setSessionSealingKey(serving.publicDer());
-            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
-            CHECK(lastScheme == "session");
-            CHECK(opens == 1);
-            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
-            CHECK(lastScheme == "session");
-            CHECK(opens == 1);  // the same session, not one per request
-
-            // A session refused mid-request: the client signs that request rather
-            // than retrying the same way, and opens a fresh session for the next.
-            refuseNextMac = true;
-            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
-            CHECK(lastScheme == "signature");
-            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
-            CHECK(lastScheme == "session");
-            CHECK(opens == 2);
-        }
-
-        // A server that answers the open with a refusal is believed: the client
-        // keeps signing even once the route starts working again.
-        {
-            ApiClient api(alice, "abc123", sessionEndpoint);
-            refuseOpenWith = 503;
-            api.setSessionSealingKey(serving.publicDer());
-            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
-            CHECK(lastScheme == "signature");
-            refuseOpenWith = 0;
-            CHECK(api.get("/v1/messaging/storage-usage").status == 200);
-            CHECK(lastScheme == "signature");  // still inside the long wait
-        }
-
-        sessionServer.stop();
-    }
+    // How long a failed open stops us asking again, as a policy rather than a
+    // wait a test would have to sit through: a server that answered is arguing
+    // and is left alone for a long time; silence is the network.
+    CHECK(ApiClient::sessionBackoffSeconds(0) < ApiClient::sessionBackoffSeconds(503));
+    CHECK(ApiClient::sessionBackoffSeconds(503) == ApiClient::sessionBackoffSeconds(401));
 
     std::fprintf(stderr, "TestApiClient passed\n");
     return 0;

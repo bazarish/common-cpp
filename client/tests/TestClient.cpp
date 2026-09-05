@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "Client.hpp"
 
+#include "TunnelStub.hpp"
+
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Cms.hpp>
@@ -41,26 +43,16 @@ std::int64_t nowSeconds()
     return static_cast<std::int64_t>(std::time(nullptr));
 }
 
-auth::Headers collectAuthHeaders(const http::Request& request)
-{
-    auth::Headers headers;
-    for (const char* const name : {auth::kHeaderKeys, auth::kHeaderTimestamp,
-             auth::kHeaderSignatureClassical, auth::kHeaderSignaturePq}) {
-        if (request.hasHeader(name)) {
-            headers[name] = request.header(name);
-        }
-    }
-    return headers;
-}
-
-// Verifies the request signature against the real path and returns the caller
-// fingerprint, mirroring the server-side authenticated() wrapper - including the
-// device the request speaks for, which is signed with it.
+// Who the tunnel said this is. The transport authenticates the caller once, when
+// it opens; a route behind it is told, exactly as the real server tells one from
+// the session it holds.
 std::string requireCaller(const http::Request& request)
 {
-    return auth::verifyRequest(collectAuthHeaders(request), nowSeconds(), request.method,
-        request.path, Bytes(request.body.begin(), request.body.end()),
-        request.header("X-Bazarish-Client"));
+    const std::string caller = request.header(bazarish::teststub::kCallerHeader);
+    if (caller.empty()) {
+        throw std::runtime_error("no caller: this request did not come through the tunnel");
+    }
+    return caller;
 }
 
 // The tests write handlers the way the stub server used to take them - fill in
@@ -243,11 +235,16 @@ int main()
             respondJson(response, {{"ok", true}});
         }));
 
+    // The stub speaks the tunnel, because that is the only transport a client
+    // has: one sealed path in, sealed frames out, and these routes behind it.
+    const Identity stubServerIdentity = Identity::generate();
+    const Key stubServerSealing = Key::generateSealing();
+    bazarish::teststub::Tunnel tunnelStub(server, stubServerIdentity, stubServerSealing);
     const int port = server.start();
     CHECK(port > 0);
 
     ServerEndpoint endpoint;
-    endpoint.serverFingerprint = serverFp;
+    endpoint.serverFingerprint = stubServerIdentity.fingerprint();
     endpoint.facades = {Facade{false, "127.0.0.1", port, {}}};
 
     Client client(Identity::fromPrivatePem(alice.privatePem()), "client01", endpoint);

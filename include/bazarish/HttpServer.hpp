@@ -87,6 +87,14 @@ public:
     void put(const std::string& pattern, Handler handler);
     void del(const std::string& pattern, Handler handler);
 
+    // Runs a request through this server's own route table as if it had arrived
+    // on a connection, answering through `respond`. It is what lets a transport
+    // that carries requests inside something else - the client tunnel, where the
+    // real method, path and headers are encrypted - reach the same handlers as a
+    // plain request, rather than a second route table drifting beside this one.
+    // An unmatched route answers 404 exactly as it would on the wire.
+    void dispatch(const Request& request, Responder respond);
+
     // Binds and starts serving; returns the bound port (useful with port 0).
     int start();
     void stop();

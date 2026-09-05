@@ -644,7 +644,6 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
         session.myDest_ = card.dest;
         if (!card.servingSealingKeyDer.empty()) {
             session.myServingKeyB64_ = toBase64(card.servingSealingKeyDer);
-            session.client_->setSessionSealingKey(card.servingSealingKeyDer);
         }
     }
     session.encrypted_ = encrypted;
@@ -982,7 +981,6 @@ void Session::storeCard(const PublishResult& result)
         = result.servingSealingKeyDer.empty() ? std::string() : toBase64(result.servingSealingKeyDer);
     // With a serving key in hand the client can open a session and stop signing
     // every request; without one it keeps signing, which still works.
-    client_->setSessionSealingKey(result.servingSealingKeyDer);
     persistMeta();
 }
 
@@ -1967,9 +1965,6 @@ std::unique_ptr<Client> Session::makeEventClient(const ContactFetchContext& cont
         Identity::fromPrivatePem(context.identityPem), context.clientId, context.endpoint,
         context.i2pDataDir);
     waiter->setDestinationOwner(context.destinationOwner);
-    if (!context.servingSealingKeyDer.empty()) {
-        waiter->setSessionSealingKey(context.servingSealingKeyDer);
-    }
     return waiter;
 }
 
@@ -2538,7 +2533,6 @@ void Session::rotateServingKey(const std::function<void(const std::string&)>& on
     cardB64_ = toBase64(card);
     myServingKeyB64_ = toBase64(prepared.servingSealingKeyDer);
     view_ = prepared.view;
-    client_->setSessionSealingKey(prepared.servingSealingKeyDer);
     persistMeta();
     stage("Telling your contacts");
     const RoutingPushResult pushed = pushRoutingToContacts(onStage);

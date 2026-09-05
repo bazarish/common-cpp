@@ -36,6 +36,7 @@ add_library(bazarish_common STATIC
     src/Bytes.cpp
     src/Crypto.cpp
     src/Cms.cpp
+    src/Tunnel.cpp
     src/Certificates.cpp
     src/Tokens.cpp
     src/ConfigFile.cpp
@@ -116,6 +117,7 @@ bazarish_add_test(TestAuth)
 bazarish_add_test(TestBytes)
 bazarish_add_test(TestCrypto)
 bazarish_add_test(TestCms)
+bazarish_add_test(TestTunnel)
 bazarish_add_test(TestReseedSu3)
 bazarish_add_test(TestCertificates)
 bazarish_add_test(TestTokens)
