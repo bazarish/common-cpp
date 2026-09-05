@@ -39,19 +39,27 @@ namespace {
 // The canonical string commits to the body only through its hex SHA-256, so
 // signing and verification can work from a precomputed digest without ever
 // touching the raw body bytes.
+//
+// The device a request speaks for is part of what is signed, because the server
+// picks a device's mail queue by it: unsigned, it was a line anything between
+// the two ends could rewrite, and acknowledging one device's mail as another
+// device drops it before that device ever sees it. Appended only when the
+// request names a device at all, so a request that names none - an operator
+// push, a login blob - signs exactly what it always signed.
 std::string canonicalFromDigest(const std::int64_t timestamp, const std::string& method,
-    const std::string& path, const std::string& bodySha256Hex)
+    const std::string& path, const std::string& bodySha256Hex, const std::string& clientId)
 {
-    return "v1\n" + std::to_string(timestamp) + "\n" + method + "\n" + path + "\n" + bodySha256Hex
-        + "\n";
+    const std::string base = "v1\n" + std::to_string(timestamp) + "\n" + method + "\n" + path
+        + "\n" + bodySha256Hex + "\n";
+    return clientId.empty() ? base : base + clientId + "\n";
 }
 
 }  // namespace
 
 std::string makeCanonicalString(const std::int64_t timestamp, const std::string& method,
-    const std::string& path, const Bytes& body)
+    const std::string& path, const Bytes& body, const std::string& clientId)
 {
-    return canonicalFromDigest(timestamp, method, path, toHex(sha256(body)));
+    return canonicalFromDigest(timestamp, method, path, toHex(sha256(body)), clientId);
 }
 
 namespace {
@@ -59,9 +67,11 @@ namespace {
 // What the MAC covers: the same canonical string the signature covers, plus the
 // sequence number, so a replay with a different counter does not verify.
 std::string macCanonical(const std::int64_t timestamp, const std::string& method,
-    const std::string& path, const Bytes& body, const std::uint64_t seq)
+    const std::string& path, const Bytes& body, const std::uint64_t seq,
+    const std::string& clientId)
 {
-    return makeCanonicalString(timestamp, method, path, body) + std::to_string(seq) + "\n";
+    return makeCanonicalString(timestamp, method, path, body, clientId) + std::to_string(seq)
+        + "\n";
 }
 
 }  // namespace
@@ -83,7 +93,7 @@ std::string sessionHandle(const Bytes& secret, const std::uint64_t seq)
 
 Headers macRequest(const std::string& handle, const Bytes& sessionKey, const std::uint64_t seq,
     const std::int64_t timestamp, const std::string& method, const std::string& path,
-    const Bytes& body)
+    const Bytes& body, const std::string& clientId)
 {
     Headers headers;
     headers[kHeaderSession] = handle;
@@ -91,7 +101,7 @@ Headers macRequest(const std::string& handle, const Bytes& sessionKey, const std
     headers[kHeaderTimestamp] = std::to_string(timestamp);
     headers[kHeaderMac] = bazarish::service::hmacSha256Hex(
         std::string(sessionKey.begin(), sessionKey.end()),
-        macCanonical(timestamp, method, path, body, seq));
+        macCanonical(timestamp, method, path, body, seq, clientId));
     return headers;
 }
 
@@ -102,7 +112,8 @@ bool hasSessionHeaders(const Headers& headers)
 }
 
 std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, const std::int64_t now,
-    const std::string& method, const std::string& path, const Bytes& body)
+    const std::string& method, const std::string& path, const Bytes& body,
+    const std::string& clientId)
 {
     const std::int64_t timestamp = std::strtoll(
         requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
@@ -113,7 +124,7 @@ std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, const s
         = std::strtoull(requireHeader(headers, kHeaderSeq).c_str(), nullptr, 10);
     const std::string expected = bazarish::service::hmacSha256Hex(
         std::string(sessionKey.begin(), sessionKey.end()),
-        macCanonical(timestamp, method, path, body, seq));
+        macCanonical(timestamp, method, path, body, seq, clientId));
     const std::string presented = requireHeader(headers, kHeaderMac);
     // Constant time: a MAC comparison that returns early leaks how much of it was
     // right, one byte at a time.
@@ -125,9 +136,11 @@ std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, const s
 }
 
 Headers signRequestDigest(const Identity& identity, const std::int64_t timestamp,
-    const std::string& method, const std::string& path, const std::string& bodySha256Hex)
+    const std::string& method, const std::string& path, const std::string& bodySha256Hex,
+    const std::string& clientId)
 {
-    const std::string canonical = canonicalFromDigest(timestamp, method, path, bodySha256Hex);
+    const std::string canonical
+        = canonicalFromDigest(timestamp, method, path, bodySha256Hex, clientId);
     const Bytes canonicalBytes(canonical.begin(), canonical.end());
 
     const nlohmann::json keys = {
@@ -145,13 +158,15 @@ Headers signRequestDigest(const Identity& identity, const std::int64_t timestamp
 }
 
 Headers signRequest(const Identity& identity, const std::int64_t timestamp,
-    const std::string& method, const std::string& path, const Bytes& body)
+    const std::string& method, const std::string& path, const Bytes& body,
+    const std::string& clientId)
 {
-    return signRequestDigest(identity, timestamp, method, path, toHex(sha256(body)));
+    return signRequestDigest(identity, timestamp, method, path, toHex(sha256(body)), clientId);
 }
 
 std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
-    const std::string& method, const std::string& path, const std::string& bodySha256Hex)
+    const std::string& method, const std::string& path, const std::string& bodySha256Hex,
+    const std::string& clientId)
 {
     const std::int64_t timestamp = std::strtoll(
         requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
@@ -176,7 +191,8 @@ std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
         throw std::runtime_error("auth pq key is not ML-DSA-65");
     }
 
-    const std::string canonical = canonicalFromDigest(timestamp, method, path, bodySha256Hex);
+    const std::string canonical
+        = canonicalFromDigest(timestamp, method, path, bodySha256Hex, clientId);
     const Bytes canonicalBytes(canonical.begin(), canonical.end());
     if (!verify(classical, canonicalBytes,
             fromBase64(requireHeader(headers, kHeaderSignatureClassical)))) {
@@ -190,9 +206,10 @@ std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
 }
 
 std::string verifyRequest(const Headers& headers, const std::int64_t now,
-    const std::string& method, const std::string& path, const Bytes& body)
+    const std::string& method, const std::string& path, const Bytes& body,
+    const std::string& clientId)
 {
-    return verifyRequestDigest(headers, now, method, path, toHex(sha256(body)));
+    return verifyRequestDigest(headers, now, method, path, toHex(sha256(body)), clientId);
 }
 
 std::string authorizeRequest(const Headers& headers, const std::int64_t now,
@@ -236,10 +253,10 @@ bool ReplayCache::checkAndRecord(
 
 std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
     const std::string& method, const std::string& path, const std::string& bodySha256Hex,
-    ReplayCache& replayCache)
+    ReplayCache& replayCache, const std::string& clientId)
 {
     const std::string fingerprint
-        = verifyRequestDigest(headers, now, method, path, bodySha256Hex);
+        = verifyRequestDigest(headers, now, method, path, bodySha256Hex, clientId);
     // The signatures verified; enforce exactly-once on the classical signature.
     const std::int64_t timestamp
         = std::strtoll(requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
@@ -251,9 +268,11 @@ std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
 }
 
 std::string verifyRequest(const Headers& headers, const std::int64_t now,
-    const std::string& method, const std::string& path, const Bytes& body, ReplayCache& replayCache)
+    const std::string& method, const std::string& path, const Bytes& body,
+    ReplayCache& replayCache, const std::string& clientId)
 {
-    return verifyRequestDigest(headers, now, method, path, toHex(sha256(body)), replayCache);
+    return verifyRequestDigest(
+        headers, now, method, path, toHex(sha256(body)), replayCache, clientId);
 }
 
 }  // namespace bazarish::auth

@@ -20,8 +20,16 @@ namespace bazarish::auth {
 //
 // Canonical string:
 //   "v1\n" + timestamp + "\n" + METHOD + "\n" + path + "\n" + hex(sha256(body)) + "\n"
+//   [+ clientId + "\n", when the request names a device]
+//
+// The device is signed because the server picks a device's mail queue by it: a
+// line only carried in a header is one anything in the middle may rewrite, and
+// acknowledging one device's mail as another device drops it before that device
+// ever sees it. A request that names no device (an operator push, a login blob)
+// signs the string above unchanged.
 //
 // Headers:
+//   X-Bazarish-Client        the device this request speaks for, when it has one
 //   X-Bazarish-Keys          base64 of {"c": b64(EC SPKI), "pq": b64(ML-DSA SPKI)}
 //   X-Bazarish-Timestamp     unix seconds
 //   X-Bazarish-Sig-Classical base64, ECDSA-SHA256 over the canonical string
@@ -85,14 +93,16 @@ std::string sessionHandle(const Bytes& secret, std::uint64_t seq);
 // The three session headers for a request. `seq` must be higher than any seq
 // this session has used before.
 Headers macRequest(const std::string& handle, const Bytes& sessionKey, std::uint64_t seq,
-    std::int64_t timestamp, const std::string& method, const std::string& path, const Bytes& body);
+    std::int64_t timestamp, const std::string& method, const std::string& path, const Bytes& body,
+    const std::string& clientId = {});
 
 // Verifies the MAC of a request against a session key, returning the sequence
 // number it carried. Throws when a header is missing, the MAC does not match, or
 // the timestamp is outside the freshness window - the caller checks the sequence
 // against what this session has already used.
 std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, std::int64_t now,
-    const std::string& method, const std::string& path, const Bytes& body);
+    const std::string& method, const std::string& path, const Bytes& body,
+    const std::string& clientId = {});
 
 // True when a request presents session headers at all (so the verifier knows
 // which of the two schemes to apply).
@@ -100,29 +110,32 @@ bool hasSessionHeaders(const Headers& headers);
 
 
 std::string makeCanonicalString(std::int64_t timestamp, const std::string& method,
-    const std::string& path, const Bytes& body);
+    const std::string& path, const Bytes& body, const std::string& clientId = {});
 
 // Produces the four authentication headers for a request.
 Headers signRequest(const Identity& identity, std::int64_t timestamp,
-    const std::string& method, const std::string& path, const Bytes& body);
+    const std::string& method, const std::string& path, const Bytes& body,
+    const std::string& clientId = {});
 
 // As signRequest, but the body is identified by its precomputed hex SHA-256
 // (the canonical string covers only the digest, never the raw bytes). Lets a
 // large request body be signed and streamed without ever holding it in memory.
 Headers signRequestDigest(const Identity& identity, std::int64_t timestamp,
-    const std::string& method, const std::string& path, const std::string& bodySha256Hex);
+    const std::string& method, const std::string& path, const std::string& bodySha256Hex,
+    const std::string& clientId = {});
 
 // Verifies both signatures, both key types and the freshness window;
 // returns the caller's identity fingerprint. Throws on any failure.
 std::string verifyRequest(const Headers& headers, std::int64_t now, const std::string& method,
-    const std::string& path, const Bytes& body);
+    const std::string& path, const Bytes& body, const std::string& clientId = {});
 
 // As verifyRequest, but against a precomputed hex SHA-256 of the body. The
 // caller must compute it over the bytes it actually received (e.g. while
 // streaming the body to disk) so the digest the signature commits to is the
 // digest of the stored bytes.
 std::string verifyRequestDigest(const Headers& headers, std::int64_t now,
-    const std::string& method, const std::string& path, const std::string& bodySha256Hex);
+    const std::string& method, const std::string& path, const std::string& bodySha256Hex,
+    const std::string& clientId = {});
 
 // Verifies the request signature like verifyRequest, then requires the recovered
 // caller fingerprint to be one of the authorized fingerprints. Returns the caller
@@ -163,10 +176,11 @@ private:
 // cache and recorded. Throws on a replay, or on any signature / freshness
 // failure like the base overloads.
 std::string verifyRequest(const Headers& headers, std::int64_t now, const std::string& method,
-    const std::string& path, const Bytes& body, ReplayCache& replayCache);
+    const std::string& path, const Bytes& body, ReplayCache& replayCache,
+    const std::string& clientId = {});
 
 std::string verifyRequestDigest(const Headers& headers, std::int64_t now,
     const std::string& method, const std::string& path, const std::string& bodySha256Hex,
-    ReplayCache& replayCache);
+    ReplayCache& replayCache, const std::string& clientId = {});
 
 }  // namespace bazarish::auth
