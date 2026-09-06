@@ -92,7 +92,7 @@ private:
                     bazarish::tunnel::kHelloMethod, bazarish::tunnel::kHelloPath, hello.secret);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                secrets_.push_back({hello.secret, user});
+                secrets_.push_back({hello.secret, user, 0});
                 ++opened_;
             }
             sealed(bazarish::tunnel::sealWelcome(
@@ -107,16 +107,24 @@ private:
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             // A handle is HMAC(secret, seq): the server that holds the secret
-            // recognises it, and nobody else can. Walking the counters is what a
-            // real store does with an index.
-            constexpr std::uint64_t kSeqWindow = 4096;
-            for (const Opened& open : secrets_) {
-                for (std::uint64_t seq = 1; seq <= kSeqWindow && key.empty(); ++seq) {
+            // recognises it, and nobody else can. The window moves with the
+            // tunnel, exactly as the server's own store moves it - a fixed range
+            // from the first counter would cost more with every request and then
+            // run out the moment a long-lived tunnel passed its end, which is
+            // what it did.
+            for (Opened& open : secrets_) {
+                for (std::uint64_t seq = open.lastSeq + 1;
+                    seq <= open.lastSeq + kHandleWindow; ++seq) {
                     if (auth::sessionHandle(open.secret, seq) == handle) {
+                        open.lastSeq = seq;
                         key = bazarish::tunnel::deriveTunnelKey(
                             open.secret, toHex(sha256(open.secret)).substr(0, 32));
                         caller = open.user;
+                        break;
                     }
+                }
+                if (!key.empty()) {
+                    break;
                 }
             }
         }
@@ -167,9 +175,15 @@ private:
         });
     }
 
+    // How far ahead of where a tunnel stands its handles are recognised. The
+    // same width the server's session store publishes, and for the same reason:
+    // a client's requests can arrive slightly out of order.
+    static constexpr std::uint64_t kHandleWindow = 64;
+
     struct Opened {
         Bytes secret;
         std::string user;
+        std::uint64_t lastSeq = 0;
     };
 
     Key sealing_;
