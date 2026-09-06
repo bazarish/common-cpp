@@ -31,14 +31,24 @@ void requireSigner(const VerifiedHybridJson& verified, const std::string& expect
 
 }  // namespace
 
+namespace {
+
+// What a contact card calls itself, so no other signed document can be read as
+// one. Checked before any field of the body is used.
+const char* const kContactCardType = "contact-card";
+
+}  // namespace
+
 namespace bazarish {
 
 Bytes ContactCard::issue(const Identity& userIdentity, const std::string& dest,
     const Bytes& sealingPublicKeyDer, const Bytes& servingSealingKeyDer)
 {
+    // No subject field: whoever signs this is its subject, and verify() reads
+    // that from the signature.
     nlohmann::json body = {
         {"v", kCertificateFormatVersion},
-        {"user", userIdentity.fingerprint()},
+        {"t", kContactCardType},
     };
     if (!dest.empty()) {
         body["dest"] = dest;
@@ -55,9 +65,10 @@ Bytes ContactCard::issue(const Identity& userIdentity, const std::string& dest,
 ContactCard ContactCard::verify(const Bytes& der)
 {
     const VerifiedHybridJson verified = verifyVersioned(der);
+    if (verified.body.value("t", std::string()) != kContactCardType) {
+        throw std::runtime_error("this is not a contact card");
+    }
     ContactCard card;
-    card.v = verified.body.at("v").get<int>();
-    card.user = verified.body.at("user").get<std::string>();
     if (verified.body.contains("dest")) {
         card.dest = verified.body.at("dest").get<std::string>();
     }
@@ -68,10 +79,14 @@ ContactCard ContactCard::verify(const Bytes& der)
         card.servingSealingKeyDer
             = fromBase64(verified.body.at("servingKey").get<std::string>());
     }
-    requireSigner(verified, card.user);
     card.identityClassicalDer = verified.signerClassicalDer;
     card.identityPqDer = verified.signerPqDer;
     return card;
+}
+
+std::string ContactCard::fingerprint() const
+{
+    return hybridFingerprint(identityClassicalDer, identityPqDer);
 }
 
 Key ContactCard::sealingKey() const

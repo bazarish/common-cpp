@@ -223,7 +223,7 @@ ContactInfo Client::fetchCard(const Descriptor& descriptor, const FetchTransport
     info.card = ContactCard::verify(outcome.sealed);
     // The fingerprint is the trust anchor: the card is user-signed, so a wrong
     // server can only withhold, never forge a card for someone else's fingerprint.
-    if (info.card.user != descriptor.fingerprint) {
+    if (info.card.fingerprint() != descriptor.fingerprint) {
         throw std::runtime_error("fetched card is for a different fingerprint");
     }
     validateB32I2pHost(info.card.dest);

@@ -25,9 +25,26 @@ inline constexpr int kCertificateFormatVersion = 1;
 // anchor, and a wrong dest or key only makes delivery fail. It carries no
 // validity window either - routing that moved is repaired by the `routing` field
 // every message carries, which needs one message in any direction.
+// What one user hands another so they can be written to: where to deliver, what
+// to seal to, and - from the signature itself - who they are.
+//
+// There is no version member: the format version travels on the wire and a body
+// that does not carry this build's is refused when it is read, so a parsed card
+// can only ever hold the one number. Keeping it would be a field that says
+// nothing and can never be false.
+//
+// Every certificate here says what it is. Without that, one signed document can
+// be read as another whenever the fields it lacks are optional - a subscription
+// certificate parsed as a contact card, say - and the only thing standing in the
+// way is which fields the reader happens to look at. The tag is checked before
+// anything else in the body is believed.
+//
+// There is no subject member either. A card is a statement its signer makes
+// about themselves, so the subject IS the signer: `fingerprint()` below is taken
+// from the keys that signed it. A separate claim beside them would be a second
+// place for the same fact, and the only thing a second place can add is a
+// disagreement between the two.
 struct ContactCard {
-    int v = kCertificateFormatVersion;
-    std::string user;
     // The I2P destination a contact delivers to (dest_U).
     std::string dest;
     // The user's sealing public key (SubjectPublicKeyInfo DER): a prekey that
@@ -44,6 +61,9 @@ struct ContactCard {
     // against these, so the reader keeps them rather than the fingerprint alone.
     Bytes identityClassicalDer;
     Bytes identityPqDer;
+
+    // Whose card this is, derived from the keys that signed it.
+    std::string fingerprint() const;
 
     static Bytes issue(const Identity& userIdentity, const std::string& dest = {},
         const Bytes& sealingPublicKeyDer = {}, const Bytes& servingSealingKeyDer = {});

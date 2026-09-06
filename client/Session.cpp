@@ -2152,7 +2152,7 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     const std::string& text, const ContactInfo& info, const std::string& displayName,
     const std::string& descriptorView)
 {
-    if (info.card.user != peerFingerprint) {
+    if (info.card.fingerprint() != peerFingerprint) {
         throw std::runtime_error("contact lookup returned a different user");
     }
     // A contact request is tokenless, so what a stranger may put in a mailbox is

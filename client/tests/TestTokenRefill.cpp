@@ -272,7 +272,7 @@ int main()
               // Faithful: verify the user-signed card and keep it verbatim to hand
               // back on a card fetch (the routing + prekey a peer needs).
               const ContactCard card = ContactCard::verify(fromBase64(cardB64));
-              CHECK(card.user == caller);
+              CHECK(card.fingerprint() == caller);
               {
                   std::lock_guard<std::mutex> lock(m.mu);
                   m.certFor[caller] = cardB64;

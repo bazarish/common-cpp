@@ -124,7 +124,7 @@ int main()
             const Bytes der
                 = fromBase64(nlohmann::json::parse(request.body).at("card").get<std::string>());
             const ContactCard card = ContactCard::verify(der);
-            CHECK(card.user == user);
+            CHECK(card.fingerprint() == user);
             // The card names its owner and their routing, and nothing else - a
             // contact must not learn which server operates the destination.
             CHECK(!card.sealingPublicKeyDer.empty());
@@ -266,7 +266,7 @@ int main()
     {
         const Descriptor descriptor{bob.fingerprint(), bobDest, bobView};
         const ContactInfo info = client.fetchCard(descriptor, directDial);
-        CHECK(info.card.user == bob.fingerprint());
+        CHECK(info.card.fingerprint() == bob.fingerprint());
         CHECK(info.card.dest == bobDest);
         CHECK(info.card.servingSealingKey().publicDer() == serverSealing.publicDer());
         CHECK(!info.card.sealingPublicKeyDer.empty());

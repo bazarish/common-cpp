@@ -26,8 +26,9 @@ int main()
     // signed statement of who it belongs to.
     const Bytes bareDer = ContactCard::issue(user);
     const ContactCard bare = ContactCard::verify(bareDer);
-    CHECK(bare.v == kCertificateFormatVersion);
-    CHECK(bare.user == user.fingerprint());
+    // Whose card it is comes from the signature, not from a claim standing
+    // beside it: there is nothing in the body left to disagree with the signer.
+    CHECK(bare.fingerprint() == user.fingerprint());
     CHECK(bare.dest.empty());
     CHECK(bare.sealingPublicKeyDer.empty());
     CHECK(bare.servingSealingKeyDer.empty());
@@ -41,19 +42,35 @@ int main()
     const Bytes contactDer
         = ContactCard::issue(user, dest, sealing.publicDer(), servingSealing.publicDer());
     const ContactCard contact = ContactCard::verify(contactDer);
-    CHECK(contact.user == user.fingerprint());
+    CHECK(contact.fingerprint() == user.fingerprint());
     CHECK(contact.dest == dest);
     CHECK(contact.sealingPublicKeyDer == sealing.publicDer());
     CHECK(contact.sealingKey().publicDer() == sealing.publicDer());
     CHECK(contact.servingSealingKeyDer == servingSealing.publicDer());
     CHECK(contact.servingSealingKey().publicDer() == servingSealing.publicDer());
 
-    // A card signed by someone other than the user it names is refused.
+    // A card is its signer's, and a name written into the body is not consulted:
+    // there is nothing there to disagree with the signature. A card somebody else
+    // signed is simply theirs, and it is the reader who says whether that is the
+    // one they asked for - which is where the check belongs, because only the
+    // reader knows whose card they wanted.
     {
         const Identity impostor = Identity::generate();
-        const nlohmann::json body
-            = {{"v", kCertificateFormatVersion}, {"user", user.fingerprint()}};
-        CHECK_THROWS(ContactCard::verify(cms::signJsonHybrid(body, impostor)));
+        const nlohmann::json body = {{"v", kCertificateFormatVersion}, {"t", "contact-card"},
+            {"user", user.fingerprint()}};
+        const ContactCard theirs = ContactCard::verify(cms::signJsonHybrid(body, impostor));
+        CHECK(theirs.fingerprint() == impostor.fingerprint());
+        CHECK(theirs.fingerprint() != user.fingerprint());
+    }
+
+    // A signed document that is not a contact card is not read as one, however
+    // well its fields happen to line up.
+    {
+        const nlohmann::json notACard
+            = {{"v", kCertificateFormatVersion}, {"t", "alias"}, {"alias", "someone"}};
+        CHECK_THROWS(ContactCard::verify(cms::signJsonHybrid(notACard, user)));
+        const nlohmann::json untagged = {{"v", kCertificateFormatVersion}};
+        CHECK_THROWS(ContactCard::verify(cms::signJsonHybrid(untagged, user)));
     }
 
     // Alias certificate round trip, with and without expiry.
