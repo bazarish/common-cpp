@@ -258,6 +258,14 @@ void ApiClient::ensureServerKeyLocked()
     if (!endpoint_.serverFingerprint.empty() && card.server != endpoint_.serverFingerprint) {
         throw std::runtime_error("the server card names another server than the one we joined");
     }
+    // Sealing needs the post-quantum half. A server whose key predates hybrid
+    // sealing keys cannot be talked to, and no amount of waiting changes that -
+    // so it is said in as many words rather than left to read as a network that
+    // is not answering.
+    if (!Key::fromPublicDer(card.sealingPublicKeyDer).hasKem()) {
+        throw std::runtime_error("this server's sealing key has no post-quantum half, so a"
+                                 " tunnel cannot be sealed to it - its key needs replacing");
+    }
     serverSealingKeyDer_ = card.sealingPublicKeyDer;
 }
 
@@ -310,6 +318,7 @@ bool ApiClient::ensureSessionLocked()
         // the same to the next request. A transport failure said nothing at all.
         sessionId_.clear();
         sessionBlockedUntil_ = now + sessionBackoffSeconds(error.httpStatus);
+        lastTunnelError_ = error.what();
         bazarish::log::info("no tunnel: {}", error.what());
         return false;
     } catch (const std::exception& error) {
@@ -317,6 +326,7 @@ bool ApiClient::ensureSessionLocked()
         // side misbehaved rather than went missing, so it is the long wait.
         sessionId_.clear();
         sessionBlockedUntil_ = now + sessionBackoffSeconds(1);
+        lastTunnelError_ = error.what();
         bazarish::log::info("no tunnel: {}", error.what());
         return false;
     }
@@ -548,9 +558,13 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
                 seq, nowSeconds(), method, path, body, clientId_);
         } else {
             // No tunnel: there is nothing to send it through. The caller is told
-            // the same way it would be told about any unreachable server.
-            noteWire(method, path, note, "failed: no tunnel", 0, 0);
-            throw ApiError(std::nullopt, 0, "no tunnel to the server");
+            // why, because the reason is often not the network - a server whose
+            // key cannot be sealed to reads as "connecting" forever otherwise.
+            const std::string reason = lastTunnelError_.empty()
+                ? std::string("no tunnel to the server")
+                : "no tunnel to the server: " + lastTunnelError_;
+            noteWire(method, path, note, "failed: " + reason, 0, 0);
+            throw ApiError(std::nullopt, 0, reason);
         }
         headers = std::map<std::string, std::string>(authHeaders.begin(), authHeaders.end());
         headers.emplace("X-Bazarish-Client", clientId_);

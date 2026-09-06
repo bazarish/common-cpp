@@ -229,6 +229,10 @@ private:
     // sessions and then rejects them is not going to be argued out of it, so the
     // client stops opening them for a while instead of one per request.
     int sessionRefusals_ = 0;
+    // Why the last attempt to open one failed, carried out to whoever asks for a
+    // request: "connecting" with no reason is undiagnosable, and the reason is
+    // often not the network at all.
+    std::string lastTunnelError_;
     // Opens a tunnel if one is due and possible. Returns whether a usable one is
     // in hand. Called with netMutex_ held.
     bool ensureSessionLocked();
