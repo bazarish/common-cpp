@@ -104,12 +104,12 @@ int main()
     CHECK(boundedAlias.notAfter.has_value());
     CHECK(boundedAlias.notAfter.value() == kNow + kThreeDays);
 
-    // Server card round trip.
-    const std::vector<std::string> endpoints = {"i2p:exampledestination"};
-    const Bytes cardDer = ServerCard::issue(serverRoot, endpoints, sealing, kNow);
+    // Server card round trip. It names the server and its sealing key and
+    // nothing else: the server has no address of its own to advertise, users
+    // being reached at their own destinations.
+    const Bytes cardDer = ServerCard::issue(serverRoot, sealing, kNow);
     const ServerCard card = ServerCard::verify(cardDer);
     CHECK(card.server == serverRoot.fingerprint());
-    CHECK(card.endpoints == endpoints);
     CHECK(card.issuedAt == kNow);
     CHECK(card.sealingKey().fingerprint() == sealing.fingerprint());
 

@@ -120,6 +120,8 @@ constexpr std::size_t kEndedCallsRemembered = 32;
 
 // Inner end-to-end payload format version (see docs Messages.md).
 constexpr int kMessageFormatVersion = 1;
+// What an exported account bundle says it is, checked on import.
+constexpr int kBundleFormatVersion = 1;
 
 // How long an offline transient delegated to the serving server stays valid.
 // Kept short so the operator only ever holds a time-boxed capability; the client
@@ -425,7 +427,6 @@ Session Session::create(
                 {"serverFingerprint", endpoint.serverFingerprint},
                 {"facades", nlohmann::json::array()},
             }},
-        {"subscriptionCert", ""},
         {"encrypted", encrypted},
     };
     db->putText("meta", meta.dump(2));
@@ -2331,8 +2332,7 @@ bool Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
             {
                 // Opus at the call format: 48 kHz mono, 20 ms frames, each one
                 // length-prefixed. The receiver needs nothing else to play it.
-                {"codec", "opus"},
-                {"durationMs", durationMs},
+                        {"durationMs", durationMs},
                 {"size", opus.size()},
                 {"data", nlohmann::json::binary(opus)},
             }},
@@ -4255,9 +4255,7 @@ void Session::startCall(const std::string& peerFingerprint)
     const bool delivered = sendCallSignal(peerFingerprint, "call.invite",
         {
             {"callId", callId},
-            {"media", "audio"},
-            {"codec", "opus"},
-            {"dest", dgram->routingHost()},
+                    {"dest", dgram->routingHost()},
             {"key", toBase64(mediaKey)},
         });
     call_.state = CallState::eOutgoing;
@@ -4290,8 +4288,7 @@ void Session::acceptCall(const std::string& callId)
     }
     auto dgram = openCallMediaSession();
     sendCallSignal(call_.peerFingerprint, "call.accept",
-        {{"callId", callId}, {"media", "audio"},
-            {"dest", dgram->routingHost()}});
+        {{"callId", callId}, {"dest", dgram->routingHost()}});
     announceCallTaken(callId);
     call_.dgram = std::move(dgram);
     call_.state = CallState::eActive;
@@ -4748,7 +4745,7 @@ void Session::exportAccount(const fs::path& outFile, const std::string& password
         }
     }
     const nlohmann::json bundle = {
-        {"v", 1},
+        {"v", kBundleFormatVersion},
         {"identityPem", client_->identity().privatePem()},
         {"sealingPem", sealingKey_.privatePem()},
         // The account's I2P routing identity, which is an account's and not a
@@ -4777,6 +4774,12 @@ void Session::importAccount(const fs::path& bundleFile, const fs::path& accountF
         = cms::unsealWithPassword(Bytes(sealedText.begin(), sealedText.end()), password);
     const nlohmann::json bundle = nlohmann::json::parse(plain.begin(), plain.end());
 
+    // What the bundle says it is. Written since the first version and never read,
+    // which made it a promise: a bundle from a newer client would have been taken
+    // apart field by field as though it were this one.
+    if (bundle.value("v", kBundleFormatVersion) > kBundleFormatVersion) {
+        throw std::runtime_error("this backup was written by a newer version of Bazarish");
+    }
     // The new account's database is keyed with the chosen passphrase; the keys go
     // inside it as they are.
     AccountDb db(accountFile, atRestPassphrase);

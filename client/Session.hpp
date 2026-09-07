@@ -185,7 +185,6 @@ struct IncomingMessage {
     // content-store reference and the key to decrypt it. attachmentRef is
     // empty when there is no attachment.
     std::string attachmentRef;
-    std::string attachmentKeyB64;
     std::string attachmentName;
     std::string attachmentMime;
     std::uint64_t attachmentSize = 0;

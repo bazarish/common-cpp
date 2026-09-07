@@ -98,18 +98,17 @@ struct AliasCertificate {
 };
 
 // Server card: signed by the server root key; maps the server fingerprint
-// to transport endpoints and the sealing key.
+// to the sealing key.
 struct ServerCard {
     int v = kCertificateFormatVersion;
     std::string server;
     // Typed entries, e.g. "i2p:<destination>".
-    std::vector<std::string> endpoints;
     // SubjectPublicKeyInfo DER of the sealing key.
     Bytes sealingPublicKeyDer;
     // Newer cards supersede older ones.
     std::int64_t issuedAt = 0;
 
-    static Bytes issue(const Identity& serverRootIdentity, const std::vector<std::string>& endpoints,
+    static Bytes issue(const Identity& serverRootIdentity,
         const Key& sealingPublicKey, std::int64_t issuedAt);
     // Verifies the CMS signature and that the signer is body.server.
     static ServerCard verify(const Bytes& der);

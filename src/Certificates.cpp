@@ -145,13 +145,12 @@ AliasCertificate AliasCertificate::verify(const Bytes& der)
 }
 
 Bytes ServerCard::issue(const Identity& serverRootIdentity,
-    const std::vector<std::string>& endpoints, const Key& sealingPublicKey,
+    const Key& sealingPublicKey,
     const std::int64_t issuedAt)
 {
     const nlohmann::json body = {
         {"v", kCertificateFormatVersion},
         {"server", serverRootIdentity.fingerprint()},
-        {"endpoints", endpoints},
         {"sealingKey", toBase64(sealingPublicKey.publicDer())},
         {"issuedAt", issuedAt},
     };
@@ -164,7 +163,6 @@ ServerCard ServerCard::verify(const Bytes& der)
     ServerCard card;
     card.v = verified.body.at("v").get<int>();
     card.server = verified.body.at("server").get<std::string>();
-    card.endpoints = verified.body.at("endpoints").get<std::vector<std::string>>();
     card.sealingPublicKeyDer = fromBase64(verified.body.at("sealingKey").get<std::string>());
     card.issuedAt = verified.body.at("issuedAt").get<std::int64_t>();
     requireSigner(verified, card.server);

@@ -32,7 +32,7 @@ public:
     Tunnel(bazarish::http::Server& server, const Identity& serverIdentity, const Key& sealing)
         : sealing_(Key::fromPrivatePem(sealing.privatePem()))
     {
-        const Bytes card = ServerCard::issue(serverIdentity, {},
+        const Bytes card = ServerCard::issue(serverIdentity,
             Key::fromPublicDer(sealing.publicDer()), static_cast<std::int64_t>(std::time(nullptr)));
         server.get(std::string(bazarish::tunnel::kServerCardPath),
             [card](const bazarish::http::Request&) {
