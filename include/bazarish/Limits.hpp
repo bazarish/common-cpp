@@ -20,19 +20,27 @@ constexpr std::size_t kMaxMessagePayloadBytes = 512 * 1024;
 // told to come back, the way a rate-limited one is.
 constexpr std::size_t kMaxPendingContactRequests = 30;
 
-// The cap on a tokenless contact request, in delivered (sealed) bytes. It is the
-// one thing a stranger may put in a mailbox, so it is the measured worst case and
-// not a generous number: room above what a request can weigh is room to fill a
-// mailbox with.
+// The cap on a contact request, in delivered (sealed) bytes. It is the one thing
+// a stranger may put in a mailbox, so it is the measured worst case and not a
+// generous number: room above what a request can weigh is room to fill a mailbox
+// with.
 //
-// Measured at 10947 bytes: the two hybrid sealing keys the bootstrap carries, the
-// delivery pass the requester hands over so the peer can answer, the ML-KEM
+// Measured at 17858 bytes. The body is padded to a step of the ladder before it
+// is sealed, so what a request weighs no longer varies with the greeting or the
+// name inside it - the point of padding, and what makes this number a step
+// rather than a sum. Under the step sit the two hybrid sealing keys the
+// bootstrap carries, the delivery pass the requester hands over, the ML-KEM
 // ciphertext of the seal, the authorship block with the sender's keys in it (a
 // request has no card and no pass, so the signature is the only thing that names
 // them), the longest greeting a user may write and the longest name an account
-// may carry. The 32 bytes on top are what the variable-length parts can add: an
-// ECDSA signature is 70 to 72 bytes and a CBOR integer is as wide as its value.
-constexpr std::size_t kMaxContactRequestBytes = 10979;
+// may carry. The 32 bytes on top are what the variable-length parts of the seal
+// can add.
+//
+// It costs more than the 10979 it cost unpadded, and that is the trade: a flood
+// of requests is dearer by half, and in exchange a request stops saying how much
+// was typed into it. What bounds the flood is the rate and the pending count
+// beside it, not this number alone.
+constexpr std::size_t kMaxContactRequestBytes = 17890;
 // What a user may write into a contact request. A line of hello, not a channel.
 constexpr std::size_t kMaxContactGreetingBytes = 100;
 // An account's own display name, in bytes. It rides in a contact request as the

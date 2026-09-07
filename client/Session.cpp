@@ -17,6 +17,7 @@
 #include <bazarish/Errors.hpp>
 #include <bazarish/Hmac.hpp>
 #include <bazarish/Limits.hpp>
+#include <bazarish/Padding.hpp>
 #include <bazarish/Pass.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/Portal.hpp>
@@ -326,14 +327,29 @@ bool echoesToOwnDevices(const std::string& type)
     return kEchoed.find(type) != kEchoed.end();
 }
 
+// The body as it goes inside the seal: CBOR, padded to a step of the ladder.
+//
+// The padding is what stops the recipient's server reading the message off its
+// length. The authorship block is a fixed weight, so without it the remainder is
+// the message itself: a reaction, a receipt, a line of text and a voice note are
+// each their own size, and for text it is the number of bytes that were typed.
+// It sits here rather than at the seal so that every path onto the wire is
+// padded once and unpadded once, and it sits outside the signature - what is
+// signed is the message, not how far it was rounded up.
+//
+// The ceiling leaves room for what the seal adds, so a message just under the
+// protocol's limit is not rounded past it and refused.
+constexpr std::size_t kSealOverheadAllowance = 8 * 1024;
+
 Bytes encodedBody(const nlohmann::json& inner)
 {
-    return nlohmann::json::to_cbor(inner);
+    return padToLadder(
+        nlohmann::json::to_cbor(inner), kMaxMessagePayloadBytes - kSealOverheadAllowance);
 }
 
 nlohmann::json decodedBody(const Bytes& bytes)
 {
-    return nlohmann::json::from_cbor(bytes);
+    return nlohmann::json::from_cbor(unpadFromLadder(bytes));
 }
 
 }  // namespace

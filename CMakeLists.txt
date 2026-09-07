@@ -39,6 +39,7 @@ add_library(bazarish_common STATIC
     src/Tunnel.cpp
     src/Certificates.cpp
     src/Pass.cpp
+    src/Padding.cpp
     src/ConfigFile.cpp
     src/WebAssets.cpp
     src/Errors.cpp
@@ -121,6 +122,7 @@ bazarish_add_test(TestTunnel)
 bazarish_add_test(TestReseedSu3)
 bazarish_add_test(TestCertificates)
 bazarish_add_test(TestPass)
+bazarish_add_test(TestPadding)
 bazarish_add_test(TestErrors)
 bazarish_add_test(TestAddress)
 bazarish_add_test(TestI2pAddress)

@@ -3,6 +3,7 @@
 
 #include "bazarish/Auth.hpp"
 #include "bazarish/Bytes.hpp"
+#include "bazarish/Padding.hpp"
 #include "bazarish/Crypto.hpp"
 
 #include <cstdint>
@@ -61,10 +62,9 @@ inline constexpr const char* kServerCardPath = "/v1/server/card";
 inline constexpr const char* kHelloMethod = "BZ-TUNNEL";
 inline constexpr const char* kHelloPath = "/hello";
 
-// Payloads are padded to one of these before they are encrypted, and to a whole
-// multiple of the last one above that. A list of waiting mail grows by an entry
-// at a time, so without this its length would still count them.
-inline constexpr std::size_t kPaddingLadder[] = {256, 1024, 4096, 16384};
+// A list of waiting mail grows by an entry at a time, so without padding its
+// length would still count them. The ladder itself is shared with the E2E body,
+// which is padded for the same reason against a different observer.
 
 // One HTTP exchange as it travels inside the tunnel.
 struct Request {

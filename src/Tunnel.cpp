@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "bazarish/Tunnel.hpp"
 
+#include "bazarish/Padding.hpp"
+
 #include "bazarish/Cms.hpp"
 
 #include <nlohmann/json.hpp>
@@ -27,7 +29,6 @@ const char* const kCarryType = "c";
 
 // The length prefix in front of a padded payload: four bytes, big-endian, so
 // the padding that follows is not part of what is decoded.
-constexpr std::size_t kLengthPrefixBytes = 4;
 
 Bytes toCbor(const nlohmann::json& value)
 {
@@ -50,47 +51,6 @@ Bytes fromBinary(const nlohmann::json& value)
     return Bytes(binary.begin(), binary.end());
 }
 
-// The size a payload of this length is padded up to.
-std::size_t paddedSize(const std::size_t length)
-{
-    for (const std::size_t step : kPaddingLadder) {
-        if (length <= step) {
-            return step;
-        }
-    }
-    const std::size_t largest = kPaddingLadder[std::size(kPaddingLadder) - 1];
-    return ((length + largest - 1) / largest) * largest;
-}
-
-// Length-prefixed and padded to a step of the ladder, so what the facade
-// measures is the step and not the content.
-Bytes pad(const Bytes& payload)
-{
-    const std::size_t total = paddedSize(payload.size() + kLengthPrefixBytes);
-    Bytes padded(total, 0);
-    const std::uint32_t length = static_cast<std::uint32_t>(payload.size());
-    padded[0] = static_cast<std::uint8_t>((length >> 24) & 0xFF);
-    padded[1] = static_cast<std::uint8_t>((length >> 16) & 0xFF);
-    padded[2] = static_cast<std::uint8_t>((length >> 8) & 0xFF);
-    padded[3] = static_cast<std::uint8_t>(length & 0xFF);
-    std::copy(payload.begin(), payload.end(), padded.begin() + kLengthPrefixBytes);
-    return padded;
-}
-
-Bytes unpad(const Bytes& padded)
-{
-    if (padded.size() < kLengthPrefixBytes) {
-        throw std::runtime_error("tunnel payload is too short to carry its own length");
-    }
-    const std::size_t length = (static_cast<std::size_t>(padded[0]) << 24)
-        | (static_cast<std::size_t>(padded[1]) << 16) | (static_cast<std::size_t>(padded[2]) << 8)
-        | static_cast<std::size_t>(padded[3]);
-    if (length > padded.size() - kLengthPrefixBytes) {
-        throw std::runtime_error("tunnel payload claims to be longer than it is");
-    }
-    return Bytes(padded.begin() + kLengthPrefixBytes,
-        padded.begin() + kLengthPrefixBytes + static_cast<std::ptrdiff_t>(length));
-}
 
 nlohmann::json frameOf(const Bytes& frame)
 {
@@ -139,7 +99,7 @@ Bytes sealHello(const Hello& hello, const Key& serverSealingPublic)
     const nlohmann::json frame = {
         {kVersionField, kFrameVersion},
         {kTypeField, kHelloType},
-        {kSealedField, asBinary(cms::seal(pad(toCbor(inner)), serverSealingPublic))},
+        {kSealedField, asBinary(cms::seal(padToLadder(toCbor(inner)), serverSealingPublic))},
     };
     return toCbor(frame);
 }
@@ -151,7 +111,7 @@ Hello openHello(const Bytes& frame, const Key& serverSealingPrivate)
         throw std::runtime_error("tunnel frame does not open a tunnel");
     }
     const nlohmann::json inner
-        = fromCbor(unpad(cms::unseal(fromBinary(parsed.at(kSealedField)), serverSealingPrivate)));
+        = fromCbor(unpadFromLadder(cms::unseal(fromBinary(parsed.at(kSealedField)), serverSealingPrivate)));
     Hello hello;
     hello.secret = fromBinary(inner.at("secret"));
     hello.replyKeyDer = fromBinary(inner.at("replyKey"));
@@ -162,12 +122,12 @@ Hello openHello(const Bytes& frame, const Key& serverSealingPrivate)
 Bytes sealWelcome(const Welcome& welcome, const Key& replyKeyPublic)
 {
     const nlohmann::json inner = {{"expiresUnix", welcome.expiresUnix}};
-    return cms::seal(pad(toCbor(inner)), replyKeyPublic);
+    return cms::seal(padToLadder(toCbor(inner)), replyKeyPublic);
 }
 
 Welcome openWelcome(const Bytes& sealed, const Key& replyKeyPrivate)
 {
-    const nlohmann::json inner = fromCbor(unpad(cms::unseal(sealed, replyKeyPrivate)));
+    const nlohmann::json inner = fromCbor(unpadFromLadder(cms::unseal(sealed, replyKeyPrivate)));
     Welcome welcome;
     welcome.expiresUnix = inner.at("expiresUnix").get<std::int64_t>();
     return welcome;
@@ -184,7 +144,7 @@ Bytes carry(const std::string& handle, const Bytes& tunnelKey, const Bytes& plai
         {kTypeField, kCarryType},
         {kHandleField, handle},
         {kNonceField, asBinary(nonce)},
-        {kCipherField, asBinary(aeadSeal(tunnelKey, nonce, pad(plaintext)))},
+        {kCipherField, asBinary(aeadSeal(tunnelKey, nonce, padToLadder(plaintext)))},
     };
     return toCbor(frame);
 }
@@ -218,7 +178,7 @@ Bytes open(const Bytes& frame, const Bytes& tunnelKey)
     if (!opened.has_value()) {
         throw std::runtime_error("tunnel frame did not open");
     }
-    return unpad(*opened);
+    return unpadFromLadder(*opened);
 }
 
 Bytes encodeRequest(const Request& request)

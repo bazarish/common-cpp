@@ -14,6 +14,7 @@
 #include <bazarish/Crypto.hpp>
 #include <bazarish/ServerDescriptor.hpp>
 #include <bazarish/Resolve.hpp>
+#include <bazarish/Padding.hpp>
 #include <bazarish/Pass.hpp>
 
 #include <bazarish/FederationFrame.hpp>
@@ -595,6 +596,40 @@ int main()
         alice.sync();
         bob.sync();
 
+        // What the recipient's server measures is a step, not the message. Two
+        // texts of very different length must weigh the same on the wire: the
+        // authorship block is a fixed weight, so without padding the remainder
+        // would be the message itself - and for text, the number of bytes typed.
+        {
+            const auto weighOf = [&](const std::string& text) {
+                const std::size_t before = [&]() {
+                    std::lock_guard<std::mutex> lock(m.mu);
+                    return m.mailbox[bob.fingerprint()].size();
+                }();
+                alice.sendMessage(bob.fingerprint(), text);
+                CHECK(waitFor([&]() {
+                    std::lock_guard<std::mutex> lock(m.mu);
+                    return m.mailbox[bob.fingerprint()].size() > before;
+                }));
+                std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[bob.fingerprint()].back().payload.size();
+            };
+            // What is left is the seal's own DER framing, which wobbles by a
+            // byte or two from one seal to the next whatever is inside it - so
+            // the same text twice spreads as much as two different texts do.
+            // That is the residual, and it carries nothing about the message.
+            constexpr std::size_t kSealFramingWobble = 8;
+            const std::size_t small = weighOf("hi");
+            const std::size_t again = weighOf("hi");
+            const std::size_t large = weighOf(std::string(200, 'x'));
+            const auto near = [](const std::size_t a, const std::size_t b) {
+                return a < b ? b - a <= kSealFramingWobble : a - b <= kSealFramingWobble;
+            };
+            CHECK(near(small, again));
+            CHECK(near(small, large));
+        }
+        bob.sync();
+
         // Every content kind goes out the same way, and none of them has a price
         // to run out of. What used to be checked here - that each kind asks for a
         // refill before its stash empties - is a question that no longer exists.
@@ -670,7 +705,7 @@ int main()
                 // The wire carries CBOR, which is what the reader expects.
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"saved-echo", "device",
-                    cms::seal(nlohmann::json::to_cbor(saved),
+                    cms::seal(padToLadder(nlohmann::json::to_cbor(saved)),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             }
             bool sawSaved = false;
@@ -812,7 +847,7 @@ int main()
             const auto intoAliceMailbox = [&](const std::string& id, nlohmann::json content) {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({id, "content",
-                    cms::seal(nlohmann::json::to_cbor(content),
+                    cms::seal(padToLadder(nlohmann::json::to_cbor(content)),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             };
             const auto text = [](const std::string& from, const std::string& id,
@@ -1103,7 +1138,7 @@ int main()
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"self-" + notice.at("id").get<std::string>(),
                     "device",
-                    cms::seal(nlohmann::json::to_cbor(notice),
+                    cms::seal(padToLadder(nlohmann::json::to_cbor(notice)),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             };
             const auto notice = [&](const std::string& type, nlohmann::json extra) {
@@ -1199,7 +1234,7 @@ int main()
             {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"stranger-blob", "content",
-                    cms::seal(nlohmann::json::to_cbor(inner),
+                    cms::seal(padToLadder(nlohmann::json::to_cbor(inner)),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             }
             for (const IncomingMessage& item : alice.sync()) {
