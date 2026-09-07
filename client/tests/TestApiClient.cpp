@@ -126,6 +126,14 @@ int main()
         stub.refuseNext();
         CHECK(api.get("/v1/messaging/storage-usage").status == 200);
         CHECK(stub.opened() == 2);
+
+        // The same when the refusal says nothing at all: a frame this key cannot
+        // open IS the refusal, because the outer answer is the one every carried
+        // request gets. The client reads it as a lapsed session and opens
+        // another tunnel, exactly as it does for a typed one.
+        stub.refuseNextOpaquely();
+        CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+        CHECK(stub.opened() == 3);
     }
 
     // A typed error envelope from inside the frame surfaces as a typed error out

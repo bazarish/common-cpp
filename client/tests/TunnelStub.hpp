@@ -70,6 +70,12 @@ public:
     // session went away would.
     void refuseNext() { refuseNext_ = true; }
 
+    // Answers the next carried frame the way the real server refuses one: the
+    // same outer status every answer gets, under no key the caller holds. A
+    // status that differed would say to whoever forwards it when a session
+    // lapsed, so the client has nothing to read but the frame itself.
+    void refuseNextOpaquely() { refuseOpaquely_ = true; }
+
 private:
     void serve(bazarish::http::Server& server, const bazarish::http::Request& request,
         bazarish::http::Responder respond)
@@ -136,6 +142,11 @@ private:
             return;
         }
 
+        if (refuseOpaquely_) {
+            refuseOpaquely_ = false;
+            sealed(randomBytes(kOpaqueRefusalBytes));
+            return;
+        }
         if (refuseNext_) {
             refuseNext_ = false;
             bazarish::tunnel::Response inner;
@@ -180,6 +191,9 @@ private:
     // a client's requests can arrive slightly out of order.
     static constexpr std::uint64_t kHandleWindow = 64;
 
+    // Enough to be a plausible frame and not enough to be one.
+    static constexpr std::size_t kOpaqueRefusalBytes = 64;
+
     struct Opened {
         Bytes secret;
         std::string user;
@@ -191,6 +205,7 @@ private:
     std::vector<Opened> secrets_;
     int opened_ = 0;
     std::atomic<bool> refuseNext_{false};
+    std::atomic<bool> refuseOpaquely_{false};
 };
 
 }  // namespace bazarish::teststub

@@ -528,8 +528,20 @@ ApiResponse ApiClient::tunnelledLocked(const std::string& method, const std::str
     const ApiResponse carried = transmitLocked("POST",
         std::string(bazarish::tunnel::kTunnelPath), {}, frame, "application/octet-stream", {},
         readTimeoutSeconds);
-    const bazarish::tunnel::Response answered
-        = bazarish::tunnel::decodeResponse(bazarish::tunnel::open(carried.body, tunnelKey_));
+    // A frame this key cannot open is a tunnel that is no longer there: the
+    // server refuses with a body under a key it did not keep, and says so in no
+    // other way - the outer answer is the same one every carried request gets, or
+    // the status itself would tell whoever forwards it when a session lapsed.
+    // Read as a lapsed session, which the caller above already knows how to
+    // answer: open another tunnel and try once more.
+    bazarish::tunnel::Response answered;
+    try {
+        answered = bazarish::tunnel::decodeResponse(
+            bazarish::tunnel::open(carried.body, tunnelKey_));
+    } catch (const std::exception&) {
+        throw ApiError(ErrorCode::eSessionInvalid, carried.status,
+            "the tunnel did not answer under the key it was opened with");
+    }
     ApiResponse response;
     response.status = answered.status;
     response.contentType = answered.contentType;
