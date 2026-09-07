@@ -46,52 +46,67 @@ int main()
     AccountManager manager(root);
     CHECK(manager.list().empty());
 
-    // Create two accounts, one encrypted. A account is one file named after it,
-    // so the name is the id.
+    // Create two accounts, one encrypted. An account is one file, and the file is
+    // named by nothing: a directory listing is readable without a passphrase, so
+    // a file named after its account would hand over the whole roster. The name
+    // lives inside the keyed database with everything else.
     const AccountInfo a = manager.create("Acetone", "secret");
-    CHECK(a.id == "Acetone");
+    CHECK(a.id != "Acetone");
+    CHECK(!a.id.empty());
     CHECK(a.name == "Acetone");
     CHECK(a.encrypted);
     CHECK(a.fingerprint.size() == kFingerprintTextLength);
 
     const AccountInfo b = manager.create("Work Alias");
-    CHECK(b.id == "Work Alias");
+    CHECK(b.id != a.id);
+    CHECK(b.name == "Work Alias");
     CHECK(!b.encrypted);
 
-    // A repeat of a name is a repeat of a file name, locked or not.
-    CHECK_THROWS(manager.create("Work Alias"));
-    CHECK_THROWS(manager.create("Acetone", "other"));
+    // A name may repeat, because a locked account will not say what it is called
+    // and the only honest check would be to open every one of them. Two accounts
+    // never share a file.
+    const AccountInfo twin = manager.create("Work Alias");
+    CHECK(twin.id != b.id);
+    CHECK(twin.name == "Work Alias");
 
-    // The name is kept as it was typed, Unicode and all; only what a file system
-    // refuses is replaced.
+    // Nothing about the name reaches the file system, so nothing about it has to
+    // be sanitised: what a file name may not hold is not the account's problem.
     const AccountInfo cyrillic = manager.create("клирнет");
-    CHECK(cyrillic.id == "клирнет");
     CHECK(cyrillic.name == "клирнет");
     const AccountInfo slashed = manager.create("home/work: notes");
-    CHECK(slashed.id == "home_work_ notes");
+    CHECK(slashed.name == "home/work: notes");
 
-    // Listing gives up nothing about a account that has a passphrase: everything
-    // it could say lives inside the keyed database. It is listed by its directory
-    // id, marked locked, with no fingerprint. A account without a passphrase opens
-    // with the default key, so its name and fingerprint do show.
-    CHECK(manager.list().size() == 4);
+    // A directory listing gives up nothing about an account that has a
+    // passphrase - not its fingerprint and, now, not its name either. An account
+    // without one opens with the default key, so both do show.
+    CHECK(manager.list().size() == 5);
     for (const AccountInfo& listed : manager.list()) {
-        if (listed.id == "Acetone") {
+        if (listed.id == a.id) {
             CHECK(listed.encrypted);
             CHECK(listed.fingerprint.empty());
+            CHECK(listed.name.empty());
         }
-        if (listed.id == "Work Alias") {
+        if (listed.id == b.id) {
             CHECK(!listed.encrypted);
             CHECK(!listed.fingerprint.empty());
+            CHECK(listed.name == "Work Alias");
         }
+    }
+    // And the folder itself says nothing: no file is named after an account.
+    for (const std::filesystem::directory_entry& entry :
+        std::filesystem::directory_iterator(root)) {
+        const std::string stem = entry.path().stem().string();
+        CHECK(stem.find("Acetone") == std::string::npos);
+        CHECK(stem.find("Work") == std::string::npos);
+        CHECK(stem.find("клирнет") == std::string::npos);
     }
 
     // Encrypted account needs its passphrase to open.
-    CHECK_THROWS(manager.open("Acetone"));
+    CHECK_THROWS(manager.open(a.id));
     // The root goes once every session opened from it is gone, for the same
     // reason.
     {
-        Session sa = manager.open("Acetone", "secret");
+        Session sa = manager.open(a.id, "secret");
         CHECK(sa.fingerprint() == a.fingerprint);
         CHECK(sa.displayName() == "Acetone");
         CHECK(!sa.isConnected());
@@ -109,7 +124,7 @@ int main()
         // everything else is inside a database nobody has opened.
         bool foundLocked = false;
         for (const AccountInfo& info : manager.list()) {
-            if (info.id == "Acetone") {
+            if (info.id == a.id) {
                 CHECK(info.encrypted);
                 CHECK(info.fingerprint.empty());
                 foundLocked = true;
@@ -125,7 +140,7 @@ int main()
         sa.setAcceptCalls(false);
 
         // Reopening preserves the connection and label.
-        const Session reopened = manager.open("Acetone", "secret");
+        const Session reopened = manager.open(a.id, "secret");
         CHECK(reopened.isConnected());
         CHECK(reopened.endpoint().serverFingerprint == "serverfp");
         CHECK(!reopened.sendReceipts());
@@ -174,19 +189,19 @@ int main()
             const Session importedPlain = Session::open(scratch / "imported-plain.db");
             CHECK(importedPlain.fingerprint() == a.fingerprint);
 
-            // Importing through a manager restores the display name from the bundle. With
-            // no explicit name the on-disk id is derived from that restored name; an
-            // explicit name only chooses the id (the display name still comes from the
-            // bundle). Use a fresh root so the derived "acetone" id does not collide.
+            // Importing through a manager restores the display name from the
+            // bundle. The on-disk id is drawn rather than derived from anything,
+            // so the same bundle imported twice is two accounts under two names
+            // nobody can read from the folder.
             const fs::path root2
                 = fs::temp_directory_path() / ("bazarish-accounts-" + toHex(randomBytes(8)));
             AccountManager manager2(root2);
             const AccountInfo imp1 = manager2.import("", bundle, "bundle-pw");
-            CHECK(imp1.id == "Acetone");
+            CHECK(imp1.id != "Acetone");
             CHECK(imp1.name == "Acetone");
             CHECK(imp1.fingerprint == a.fingerprint);
             const AccountInfo imp2 = manager2.import("Other Name", bundle, "bundle-pw");
-            CHECK(imp2.id == "Other Name");
+            CHECK(imp2.id != imp1.id);
             CHECK(imp2.name == "Acetone");
             CHECK(manager2.list().size() == 2);
             CHECK(!fs::exists(root2 / ".import-tmp"));
@@ -238,10 +253,10 @@ int main()
 
         fs::remove_all(scratch);
 
-        // Removal drops the account.
-        manager.remove("Work Alias");
-        CHECK(!manager.exists("Work Alias"));
-        CHECK(manager.list().size() == 3);
+        // Removal drops the account, by its id - the only handle there is.
+        manager.remove(b.id);
+        CHECK(!manager.exists(b.id));
+        CHECK(manager.list().size() == 4);
     }
 
     fs::remove_all(root);

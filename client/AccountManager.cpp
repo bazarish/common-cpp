@@ -43,25 +43,16 @@ void removePair(const fs::path& file)
     fs::remove(accountkey::sidecarFor(file));
 }
 
-// An account is stored under its own name, so the name has to survive as a file
-// name. Only what a file system refuses is replaced - the reserved characters of
-// Windows and macOS included, so a portable copy on a stick stays readable - and
-// everything else, Unicode included, is kept as the user typed it.
-std::string sanitizeFileName(const std::string& name)
+// How an account is named on disk. Not by its own name: a directory listing is
+// readable without any passphrase, so naming the file after the account handed
+// the whole roster to anyone who could see the folder - which is the one thing
+// the comment below promises it does not do. The name lives inside the keyed
+// database with everything else.
+constexpr std::size_t kAccountIdBytes = 8;
+
+std::string newAccountId()
 {
-    static const std::string reserved = "/\\:*?\"<>|";
-    std::string out;
-    for (const char c : name) {
-        const bool control = static_cast<unsigned char>(c) < 0x20;
-        out.push_back(control || reserved.find(c) != std::string::npos ? '_' : c);
-    }
-    // Leading dots hide the file; trailing dots and spaces are dropped by Windows.
-    const std::size_t first = out.find_first_not_of('.');
-    out = first == std::string::npos ? std::string() : out.substr(first);
-    while (!out.empty() && (out.back() == '.' || out.back() == ' ')) {
-        out.pop_back();
-    }
-    return out;
+    return toHex(randomBytes(kAccountIdBytes));
 }
 
 // What can be told about an account without opening it fully. An account with a
@@ -73,7 +64,6 @@ AccountInfo readInfo(const std::string& id, const fs::path& file, const std::str
     AccountInfo info;
     info.id = id;
     info.file = file;
-    info.name = id;
     // One open, not two: unlocking an account database runs its key derivation,
     // which is deliberately expensive.
     std::unique_ptr<AccountDb> db;
@@ -89,13 +79,11 @@ AccountInfo readInfo(const std::string& id, const fs::path& file, const std::str
         return info;
     }
     const nlohmann::json meta = nlohmann::json::parse(db->text("meta"));
-    // For an account in place the name and the file name are the same string; an
-    // imported bundle is read before it has a file name of its own, and there the
-    // name inside is all there is. A blank one is no name at all, so the file
-    // name stands in - the account is stored under it.
+    // The name is inside, so a locked account has none to give - which is what
+    // the caller shows as "locked" rather than as a name it does not have.
     info.name = meta.value("name", std::string{});
     if (info.name.find_first_not_of(" \t\r\n") == std::string::npos) {
-        info.name = id;
+        info.name.clear();
     }
     info.fingerprint = meta.value("fingerprint", std::string{});
     info.encrypted = meta.value("encrypted", false);
@@ -202,7 +190,7 @@ AccountManager::AccountManager(fs::path root)
 
 fs::path AccountManager::fileFor(const std::string& id) const
 {
-    return root_ / (sanitizeFileName(id) + kFileSuffix);
+    return root_ / (id + kFileSuffix);
 }
 
 bool AccountManager::exists(const std::string& id) const
@@ -227,8 +215,7 @@ std::vector<AccountInfo> AccountManager::list() const
 
 AccountInfo AccountManager::create(const std::string& name, const std::string& passphrase)
 {
-    const std::string id = sanitizeFileName(name);
-    if (id.empty()) {
+    if (name.find_first_not_of(" \t\r\n") == std::string::npos) {
         throw std::runtime_error("an account needs a name");
     }
     // The name travels: it is the label a contact request seeds the recipient's
@@ -239,10 +226,14 @@ AccountInfo AccountManager::create(const std::string& name, const std::string& p
         throw std::runtime_error("an account name may be at most "
             + std::to_string(kMaxAccountNameBytes) + " bytes");
     }
-    if (exists(id)) {
-        throw std::runtime_error("an account with this name already exists");
+    // No check for a name already in use: a locked account will not say what it
+    // is called, so the only honest answer would come from opening every one of
+    // them. Two accounts may share a name; they never share a file.
+    std::string id = newAccountId();
+    while (exists(id)) {
+        id = newAccountId();
     }
-    Session::create(fileFor(id), passphrase, id);
+    Session::create(fileFor(id), passphrase, name);
     return readInfo(id, fileFor(id), passphrase);
 }
 
@@ -262,11 +253,14 @@ AccountInfo AccountManager::import(const std::string& name, const fs::path& bund
     removePair(tmp);
     Session::importAccount(bundleFile, tmp, password, atRestPassphrase);
     const std::string restoredName = readInfo(std::string{}, tmp, atRestPassphrase).name;
-    const std::string id = sanitizeFileName(name.empty() ? restoredName : name);
-    if (id.empty() || exists(id)) {
+    if ((name.empty() ? restoredName : name).find_first_not_of(" \t\r\n")
+        == std::string::npos) {
         removePair(tmp);
-        throw std::runtime_error(id.empty() ? "an account needs a name"
-                                            : "an account with this name already exists");
+        throw std::runtime_error("an account needs a name");
+    }
+    std::string id = newAccountId();
+    while (exists(id)) {
+        id = newAccountId();
     }
     movePair(tmp, fileFor(id));
     return readInfo(id, fileFor(id), atRestPassphrase);
