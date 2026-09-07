@@ -101,24 +101,6 @@ fs::path i2pDirFor(const fs::path& accountFile)
     return accountFile.parent_path().parent_path() / "i2p";
 }
 
-// Tokens minted per batch handed to a contact, and the level at which the holder
-// asks for the next batch. The refill rides on an ordinary message, so it can
-// only be asked for while there is something to say - and the answer waits on a
-// correspondent who may be away for days. Half a batch of headroom is what keeps
-// a long conversation, or a peer who is simply offline, from running the sender
-// dry before anybody can answer. A stash that is being spent on nothing good is
-// not what these numbers are for: a flood is ended by removing the contact,
-// which destroys every token it holds of ours.
-// How many refused tokens one message walks through before it gives up. A stale
-// token happens - another device spent it, a copy of it was somewhere else - and
-// another one usually works. Ten refusals of ten tokens drawn at random from the
-// stash is not that: it is a batch the far side no longer knows, and dialling
-// through the remaining two hundred would be a great many minutes of work for a
-// message that is not going to be taken. Each one that is refused is gone from
-// the stash, so a walk never tries the same token twice.
-constexpr int kRefusedTokenRetries = 10;
-constexpr int kTokenBatchSize = 256;
-constexpr std::size_t kRefillThreshold = 128;
 
 // How long a call rings before it self-resolves: an unanswered outgoing call
 // becomes "no answer", an unanswered incoming one "missed" - so a ringing call
@@ -3245,6 +3227,19 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                     client_->ack(entry.id);
                     continue;
                 }
+            }
+
+            // The version the body says it is. Written on every message since
+            // the first one and never looked at until now, which made it a
+            // promise rather than a gate: a future format would have been read
+            // field by field as though it were this one. A message from a
+            // version this client does not know is surfaced as unreadable rather
+            // than half-understood.
+            if (body.value("v", kMessageFormatVersion) > kMessageFormatVersion) {
+                bazarish::log::info("sync: an item from a newer message format was not read");
+                noteWire(false, "item in a newer format", "dropped", {});
+                client_->ack(entry.id);
+                continue;
             }
 
             IncomingMessage message;

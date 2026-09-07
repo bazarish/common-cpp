@@ -7,7 +7,10 @@
 
 namespace {
 
-constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 15> kErrorNames = {{
+// Sized to what is in it. Declared wider, the spare slots were value-initialised
+// to {ErrorCode(0), ""} - so errorCodeFromString("") matched one of them and
+// answered QUOTA_EXCEEDED.
+constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErrorNames = {{
     {bazarish::ErrorCode::eQuotaExceeded, "QUOTA_EXCEEDED"},
     {bazarish::ErrorCode::eStorageFull, "STORAGE_FULL"},
     {bazarish::ErrorCode::eRecipientServerUnreachable, "RECIPIENT_SERVER_UNREACHABLE"},
