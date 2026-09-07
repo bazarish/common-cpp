@@ -132,8 +132,11 @@ namespace {
 // callbacks/commands raised by silent button taps) does not.
 bool warrantsReceipt(const std::string& contentType)
 {
-    return contentType == "text" || contentType == "file" || contentType == "photo"
-        || contentType == "audio" || contentType == "voice";
+    // The names the protocol actually uses. This list carried "photo" and
+    // "audio", which nothing sends, and omitted "image", which is what a picture
+    // is - so the reference bot never acknowledged one.
+    return contentType == "text" || contentType == "file" || contentType == "image"
+        || contentType == "voice";
 }
 
 }  // namespace
