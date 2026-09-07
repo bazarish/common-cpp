@@ -99,7 +99,6 @@ AccountInfo readInfo(const std::string& id, const fs::path& file, const std::str
     }
     info.fingerprint = meta.value("fingerprint", std::string{});
     info.encrypted = meta.value("encrypted", false);
-    info.connected = !meta.at("endpoint").value("facades", nlohmann::json::array()).empty();
     return info;
 }
 

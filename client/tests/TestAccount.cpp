@@ -52,7 +52,6 @@ int main()
     CHECK(a.id == "Acetone");
     CHECK(a.name == "Acetone");
     CHECK(a.encrypted);
-    CHECK(!a.connected);
     CHECK(a.fingerprint.size() == kFingerprintTextLength);
 
     const AccountInfo b = manager.create("Work Alias");
@@ -106,14 +105,13 @@ int main()
         CHECK(sa.isConnected());
         CHECK(sa.endpoint().facades.at(0).port == 18000);
 
-        // Whether a locked account has a server is part of what its database keeps,
-        // so the listing cannot say: it only reports the account as locked. With the
-        // passphrase in hand the full picture is there.
+        // What a listing can say about a locked account is that it is locked:
+        // everything else is inside a database nobody has opened.
         bool foundLocked = false;
         for (const AccountInfo& info : manager.list()) {
             if (info.id == "Acetone") {
                 CHECK(info.encrypted);
-                CHECK(!info.connected);
+                CHECK(info.fingerprint.empty());
                 foundLocked = true;
             }
         }

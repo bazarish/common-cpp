@@ -19,8 +19,6 @@ struct AccountInfo {
     std::filesystem::path file;
     std::string fingerprint;
     bool encrypted = false;
-    // A serving server is configured (the endpoint host is set).
-    bool connected = false;
 };
 
 // Manages the set of local accounts under a root directory. An account is one
