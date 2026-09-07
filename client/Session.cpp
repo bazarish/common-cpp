@@ -1133,8 +1133,8 @@ bool Session::reconcileI2pAddress()
     // The server serves an address this device cannot operate. The account's
     // other devices are asked for it - the one that published it holds the keys -
     // and their answer is looked for where it lands: this account's own mailbox.
-    log::info("this server serves {}, this device holds {}", servedHost,
-        ourHost.empty() ? "no address" : ourHost);
+    log::info("this server serves {}, this device holds {}", log::redact(servedHost),
+        ourHost.empty() ? std::string("no address") : log::redact(ourHost));
     try {
         askDevicesForI2pMaster(servedHost);
     } catch (const std::exception& error) {
@@ -1488,7 +1488,8 @@ void Session::maybeSendAvatarToContact(const std::string& peerFingerprint, const
         // Best effort by design: a peer we cannot reach now gets the avatar on a
         // later establishment or avatar update. The spec surfaces no send error
         // for avatar distribution.
-        bazarish::log::warn("avatar push to {} failed: {}", peerFingerprint, error.what());
+        bazarish::log::warn(
+            "avatar push to {} failed: {}", bazarish::log::redact(peerFingerprint), error.what());
     }
 }
 
@@ -4165,8 +4166,11 @@ void Session::startCallMedia()
             call_.stage.clear();  // talking: no stage to report any more
         }
     });
-    bazarish::log::info("call media: from {} to {}", call_.dgram->routingHost(),
-        call_.peerMediaDest);
+    // Both ends redacted: a call's media addresses are one-time, but a log is
+    // not, and a pair of them written down is a record that these two spoke.
+    bazarish::log::info("call media: from {} to {}",
+        bazarish::log::redact(call_.dgram->routingHost()),
+        bazarish::log::redact(call_.peerMediaDest));
     call_.media->start();
 }
 
