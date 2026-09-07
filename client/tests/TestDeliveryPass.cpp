@@ -14,7 +14,7 @@
 #include <bazarish/Crypto.hpp>
 #include <bazarish/ServerDescriptor.hpp>
 #include <bazarish/Resolve.hpp>
-#include <bazarish/Tokens.hpp>
+#include <bazarish/Pass.hpp>
 
 #include <bazarish/FederationFrame.hpp>
 #include <bazarish/HttpServer.hpp>
@@ -112,18 +112,14 @@ struct Mock {
         Bytes payload;
     };
     std::map<std::string, std::vector<Item>> mailbox;         // recipient fp -> stored items
-    std::map<std::string, std::set<std::string>> registered;  // owner fp -> valid token hashes (b64)
-    std::map<std::string, std::set<std::string>> singletons;  // owner fp -> hashes registered 1-at-a-time
-    std::map<std::string, std::set<std::string>> seenIds;     // recipient fp -> admitted deliveryIds
+    // Owner fp -> the pass handles that mailbox admits. Handles, not passes: the
+    // sender presents the pass and this is what a server holds.
+    std::map<std::string, std::set<std::string>> registered;
+    std::map<std::string, std::set<std::string>> seenIds;  // recipient fp -> admitted deliveryIds
     // The biggest tokenless request this server was ever handed: what the
     // protocol cap has to be, and no more.
     std::size_t largestContactRequest = 0;
     int nextId = 1;
-    // A delivery into this mailbox that spends one of the mailbox owner's OWN
-    // singleton-registered tokens sets the flag: that is exactly the prepaid-token
-    // refill path (a batch token would not be a singleton).
-    std::string watchMailbox;
-    bool refillUsedPrepaid = false;
     // What the far side answers instead of "delivered", when a test wants to see
     // what a client does with a refusal. Empty means it accepts, as before.
     std::string refuseWith;
@@ -145,8 +141,8 @@ bool waitFor(const std::function<bool()>& done)
 }
 
 // The recipient's server at the other end of a delivery, in process. It reads
-// the frame the courier really writes, unseals the envelope, does the token
-// bookkeeping a delivery engine does, and signs the confirmation the same way -
+// the frame the courier really writes, unseals the envelope, checks the pass the
+// way a delivery engine does, and signs the confirmation the same way -
 // so what is exercised here is the delivery, not a stub of one.
 class MockServerStream final : public DeliveryStream {
 public:
@@ -194,27 +190,29 @@ private:
         {
             std::lock_guard<std::mutex> lock(mock_.mu);
             if (!mock_.refuseWith.empty()) {
-                // Refused before anything is spent or stored, the way a server
-                // refuses a token it does not know.
+                // Refused before anything is stored, the way a server refuses a
+                // pass it does not know.
                 const nlohmann::json refusal = {{"delivered", false},
                     {"errorCode", mock_.refuseWith}, {"errorMessage", "refused by the test"}};
                 return refusal.dump() + "\n";
             }
-            const bool fresh = mock_.seenIds[mailbox].insert(deliveryId).second;
+            const bool fresh = mock_.seenIds[mailbox].count(deliveryId) == 0;
             if (cls == "content" && fresh) {
-                // Consume the presented token: it must be one the mailbox owner
-                // registered (else a real server would reject the delivery).
-                // As many as the payload weighs, and every one of them known to
-                // the mailbox owner - a real server consumes exactly the count it
-                // computes for itself.
-                CHECK(inner.at("tokens").size() == bazarish::tokensForPayload(payload.size()));
-                for (const auto& entry : inner.at("tokens")) {
-                    const std::string tokenB64 = entry.get<std::string>();
-                    CHECK(mock_.registered[mailbox].erase(tokenB64) == 1);
-                    if (mailbox == mock_.watchMailbox
-                        && mock_.singletons[mailbox].count(tokenB64) != 0) {
-                        mock_.refillUsedPrepaid = true;
-                    }
+                // The pass presented must be one this mailbox admits - and it is
+                // still admitted afterwards. Nothing is taken here, and that is
+                // the whole change: what used to be a one-time capability is now
+                // a standing one, so the same value carries every message this
+                // test sends.
+                const Bytes presented = fromBase64(inner.at("pass").get<std::string>());
+                if (mock_.registered[mailbox].count(toBase64(deliveryPassHandle(presented)))
+                    != 1) {
+                    // A pass this mailbox does not hold is refused, and nothing
+                    // is written down about the attempt - the way a revoked
+                    // correspondent is turned away.
+                    const nlohmann::json refusal = {{"delivered", false},
+                        {"errorCode", "DELIVERY_REJECTED"},
+                        {"errorMessage", "delivery rejected"}};
+                    return refusal.dump() + "\n";
                 }
             }
             if (cls == "contact") {
@@ -222,6 +220,7 @@ private:
                     = std::max(mock_.largestContactRequest, payload.size());
             }
             if (fresh) {
+                mock_.seenIds[mailbox].insert(deliveryId);
                 mock_.mailbox[mailbox].push_back(
                     {"m" + std::to_string(mock_.nextId++), cls, payload});
             }
@@ -337,20 +336,27 @@ int main()
             respondJson(response, {{"user", user}, {"card", found->second}});
         }));
 
-    server.post("/v1/messaging/tokens",
+    server.post("/v1/messaging/passes",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
-            const nlohmann::json tokens = nlohmann::json::parse(request.body).at("tokens");
+            const nlohmann::json passes = nlohmann::json::parse(request.body).at("passes");
             std::lock_guard<std::mutex> lock(m.mu);
-            for (const nlohmann::json& token : tokens) {
-                m.registered[caller].insert(token.get<std::string>());
+            for (const nlohmann::json& handle : passes) {
+                m.registered[caller].insert(handle.get<std::string>());
             }
-            // A one-token registration is the prepaid token a low-stash request
-            // embeds (issueOneToken); a full batch is 64 of them.
-            if (tokens.size() == 1) {
-                m.singletons[caller].insert(tokens.at(0).get<std::string>());
+            respondJson(response, {{"ok", true}, {"held", m.registered[caller].size()}});
+        }));
+
+    server.post("/v1/messaging/passes/revoke",
+        stub([&](const http::Request& request, http::Response& response) {
+            const std::string caller = requireCaller(request);
+            const nlohmann::json passes = nlohmann::json::parse(request.body).at("passes");
+            std::lock_guard<std::mutex> lock(m.mu);
+            std::size_t dropped = 0;
+            for (const nlohmann::json& handle : passes) {
+                dropped += m.registered[caller].erase(handle.get<std::string>());
             }
-            respondJson(response, {{"ok", true}});
+            respondJson(response, {{"revoked", dropped}});
         }));
 
     server.get("/v1/messaging/pending",
@@ -404,8 +410,8 @@ int main()
     endpoint.serverFingerprint = stubServerIdentity.fingerprint();
     endpoint.facades = {Facade{false, "127.0.0.1", port, {}}};
 
-    const fs::path aDir = fs::temp_directory_path() / "bz-refill-a";
-    const fs::path bDir = fs::temp_directory_path() / "bz-refill-b";
+    const fs::path aDir = fs::temp_directory_path() / "bz-pass-a";
+    const fs::path bDir = fs::temp_directory_path() / "bz-pass-b";
     fs::remove_all(aDir);
     fs::remove_all(bDir);
 
@@ -425,16 +431,13 @@ int main()
         // A backup taken before she had anybody: restored later, it is a device
         // that holds the account and knows nobody, which is the case the address
         // book exists for.
-        const fs::path earlyBundle = fs::temp_directory_path() / "bz-refill-early.bundle";
+        const fs::path earlyBundle = fs::temp_directory_path() / "bz-pass-early.bundle";
         fs::remove(earlyBundle);
         alice.exportAccount(earlyBundle, "bundle-password");
         {
             std::lock_guard<std::mutex> lock(m.mu);
             m.destFor[alice.fingerprint()] = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
             m.destFor[bob.fingerprint()] = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
-            // Watch Alice's mailbox: the prepaid-token refill is a content delivery into
-            // it that spends one of Alice's own single-registered tokens.
-            m.watchMailbox = alice.fingerprint();
         }
 
         alice.registerAccount();
@@ -479,8 +482,7 @@ int main()
 
         // Establish the contact both ways: Alice adds Bob from his invite (the only
         // way in - a bare fingerprint would need a server to say who it hosts), Bob
-        // accepts. Now Alice holds a batch of Bob's tokens and Bob holds a batch of
-        // Alice's.
+        // accepts. Now each holds the other's delivery pass.
         alice.addByInvite(bob.inviteUri(), "hi bob");
         bob.sync();
         bob.acceptContactRequest(alice.fingerprint());
@@ -488,16 +490,20 @@ int main()
         CHECK(alice.hasContact(bob.fingerprint()));
         CHECK(bob.hasContact(alice.fingerprint()));
 
-        // A batch that was addressed to nobody is not kept whole: each device takes
-        // one token out of it and spends that on a batch addressed to itself, so no
-        // two devices of an account hold the same one-time tokens. Two rounds of
-        // sync carry those requests and their answers.
-        for (int round = 0; round < 2; ++round) {
+        // The acceptance leaves on the courier's thread, so this waits for it
+        // rather than assuming it has landed.
+        CHECK(waitFor([&]() {
             alice.sync();
-            bob.sync();
+            return alice.canWriteTo(bob.fingerprint());
+        }));
+        CHECK(bob.canWriteTo(alice.fingerprint()));
+        // One pass each way, and one is all there will ever be: this is the count
+        // that used to grow by 256 on every refill.
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            CHECK(m.registered[alice.fingerprint()].size() == 1);
+            CHECK(m.registered[bob.fingerprint()].size() == 1);
         }
-        CHECK(alice.hasContact(bob.fingerprint()));
-        CHECK(bob.hasContact(alice.fingerprint()));
 
         // The connection log: what the account did on the wire, which is the one
         // place a user can see a delivery nobody signed for. One send has to
@@ -568,110 +574,38 @@ int main()
             CHECK(rows.at(1).at(0).at("command") == "help");
         }
 
-        // Asking to be topped up without a message to carry the ask: what a
-        // service that posts notices does while the other side is about. The ask
-        // is consumed silently and answered with a batch.
+        // Nothing runs a pass down, so there is nothing to ask for and nothing to
+        // wait on. Send far past what a batch of 256 one-time tokens used to buy
+        // and the same value still carries every one of them - and the mailbox
+        // that admits them still holds exactly one.
         {
-            const std::size_t before = alice.sendCapacity(bob.fingerprint());
-            alice.requestTokens(bob.fingerprint());
-            for (int round = 0; round < 3; ++round) {
-                for (const IncomingMessage& item : bob.sync()) {
-                    // Nothing about it is shown: it is not a line of anything.
-                    CHECK(item.contentType != "unsupported");
-                }
-                alice.sync();
+            constexpr int kFarPastABatch = 400;
+            for (int i = 0; i < kFarPastABatch; ++i) {
+                alice.sendMessage(bob.fingerprint(), "a->b " + std::to_string(aliceSent));
+                ++aliceSent;
+                bob.sendMessage(alice.fingerprint(), "b->a " + std::to_string(bobSent));
+                ++bobSent;
             }
-            const std::size_t after = alice.sendCapacity(bob.fingerprint());
-            // One token went on the ask, a batch came back.
-            CHECK(after > before);
-        }
-
-        // Drain Bob's stash of Alice's tokens to EMPTY. Alice does NOT sync in between, so
-        // she never sees Bob's low-stash signal and never refills him: Bob ends holding
-        // none of Alice's tokens.
-        while (bob.sendCapacity(alice.fingerprint()) > 0) {
-            bob.sendMessage(alice.fingerprint(), "b->a " + std::to_string(bobSent));
-            ++bobSent;
-        }
-        CHECK(bobSent > 0);
-        // A send with nothing to carry it does not fail: it is held, and it is
-        // held without taking anything, because there is nothing to take.
-        bob.sendMessage(alice.fingerprint(), "overflow");
-        CHECK(bob.sendCapacity(alice.fingerprint()) == 0);
-
-        // Drain Alice's stash too. Her low-stash sends embed a fresh prepaid token each
-        // (registered one-at-a-time with her own server); she ends empty as well.
-        while (alice.sendCapacity(bob.fingerprint()) > 0) {
-            alice.sendMessage(bob.fingerprint(), "a->b " + std::to_string(aliceSent));
-            ++aliceSent;
-        }
-        CHECK(aliceSent > 0);
-        alice.sendMessage(bob.fingerprint(), "overflow");
-        CHECK(alice.sendCapacity(bob.fingerprint()) == 0);
-
-        // Bob syncs: he processes Alice's stream (the tail carries lowStash + refillToken)
-        // and must reply with a token-refill. He holds NONE of Alice's tokens, so the only
-        // way that reply can be delivered is by spending the prepaid token Alice embedded.
-        // Without the prepaid mechanism sendTokenRefill would bail on the empty stash.
-        bob.sync();
-        CHECK(waitFor([&m]() {
+            CHECK(alice.canWriteTo(bob.fingerprint()));
+            CHECK(bob.canWriteTo(alice.fingerprint()));
             std::lock_guard<std::mutex> lock(m.mu);
-            return m.refillUsedPrepaid;
-        }));
-
-        // Alice syncs: she applies Bob's fresh batch, so her stash is replenished.
-        bool gotRefill = false;
-        for (const IncomingMessage& message : alice.sync()) {
-            if (message.contentType == "token-refill") {
-                gotRefill = true;
-            }
+            CHECK(m.registered[alice.fingerprint()].size() == 1);
+            CHECK(m.registered[bob.fingerprint()].size() == 1);
         }
-        CHECK(gotRefill);
+        alice.sync();
+        bob.sync();
 
-        // Proof the refill actually restored Alice's sending capacity: she was empty, yet
-        // can send again now (this would throw "out of delivery tokens" otherwise).
-        alice.sendMessage(bob.fingerprint(), "after refill");
-
-        // A refill is asked for by whatever is being sent, not by a message the
-        // user typed: the ask rides on the same envelope as the content, and
-        // every kind goes out through one path. Spend down with one kind at a
-        // time and watch the capacity come back up - only that kind can have
-        // asked for it. The bound is well past a batch, so a kind that never
-        // asks runs out instead of looping.
+        // Every content kind goes out the same way, and none of them has a price
+        // to run out of. What used to be checked here - that each kind asks for a
+        // refill before its stash empties - is a question that no longer exists.
         {
-            const auto refillsWith = [&](const std::function<void()>& send) {
-                // Bounded by what is actually in the stash right now, plus room:
-                // a kind that never asks for a refill runs dry inside that, which
-                // is the failure this looks for. Reading the capacity rather than
-                // naming a number keeps this true whatever a batch is worth.
-                constexpr std::size_t kMargin = 32;
-                const std::size_t bounded = alice.sendCapacity(bob.fingerprint()) + kMargin;
-                for (std::size_t i = 0; i < bounded; ++i) {
-                    const std::size_t before = alice.sendCapacity(bob.fingerprint());
-                    try {
-                        send();
-                    } catch (const std::exception& error) {
-                        // Running dry is the failure this checks for: a kind that
-                        // never asks for a refill spends the last token and stops.
-                        std::fprintf(stderr, "send stopped after %zu: %s\n", i, error.what());
-                        return false;
-                    }
-                    bob.sync();
-                    alice.sync();
-                    if (alice.sendCapacity(bob.fingerprint()) > before) {
-                        return true;
-                    }
-                }
-                return false;
-            };
             const std::string ref = toHex(randomBytes(8));
-            // An ordinary content kind that is not text.
-            CHECK(refillsWith([&]() { alice.sendReaction(bob.fingerprint(), ref, "\xf0\x9f\x91\x8d"); }));
-            // The one path that deliberately does not establish a dialog: a
-            // receipt still has to keep its own sending capacity alive.
-            CHECK(refillsWith([&]() { alice.sendReceipt(bob.fingerprint(), ref); }));
-            // A kind with no bubble of its own: it acts on a message already sent.
-            CHECK(refillsWith([&]() { alice.sendDelete(bob.fingerprint(), ref); }));
+            alice.sendReaction(bob.fingerprint(), ref, "\xf0\x9f\x91\x8d");
+            // The one path that deliberately establishes no dialog.
+            alice.sendReceipt(bob.fingerprint(), ref);
+            alice.sendDelete(bob.fingerprint(), ref);
+            bob.sync();
+            CHECK(alice.canWriteTo(bob.fingerprint()));
         }
 
         // Removing an avatar travels like setting one. Bob holds Alice's until she
@@ -691,13 +625,11 @@ int main()
 
         // --- The saved chat ---
         //
-        // Addressed to herself, a message is kept rather than delivered: no token
-        // is spent, nothing is dialled, and it goes to her own mailbox for her
+        // Addressed to herself, a message is kept rather than delivered: nothing
+        // is presented, nothing is dialled, and it goes to her own mailbox for her
         // other devices to pick up.
         {
-            const std::size_t before = alice.sendCapacity(bob.fingerprint());
             alice.sendMessage(alice.fingerprint(), "note to self");
-            CHECK(alice.sendCapacity(bob.fingerprint()) == before);
 
             // It went into her own mailbox as a device notice, for her other
             // devices to pick up.
@@ -784,8 +716,8 @@ int main()
 
         // --- Blocking ---
         //
-        // What a block means where the message is read: Bob still holds tokens and
-        // still delivers, and none of it reaches her.
+        // What a block means where the message is read: Bob still holds the pass
+        // and still delivers, and none of it reaches her.
         {
             bob.sendMessage(alice.fingerprint(), "before the block");
             alice.setBlocked(bob.fingerprint(), true);
@@ -815,39 +747,26 @@ int main()
             }
             CHECK(sendRefused);
 
-            // Lifting the block gives back what it took away: blocking revoked the
-            // tokens Bob held, so the first thing Alice writes to him carries a
-            // fresh batch and he can answer at once.
-            // What a batch looks like from outside the core: many tokens at once,
-            // as against the one a low-stash signal prepays.
-            constexpr std::size_t kBatchAtLeast = 16;
-            const std::size_t bobHeld = bob.sendCapacity(alice.fingerprint());
-            const auto minted = [&]() {
+            // Blocking took the pass out of her mailbox, so his deliveries stop
+            // being admitted at all.
+            const auto held = [&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
                 return m.registered[alice.fingerprint()].size();
             };
-            const std::size_t before = minted();
+            CHECK(held() == 0);
+
+            // Lifting it gives back exactly what it took: the same pass, still in
+            // his hands, registered again. Nothing is sent to him, nothing waits
+            // for a message to ride on, and he can answer at once - which is the
+            // whole of what a block being lifted has to mean.
             alice.setBlocked(bob.fingerprint(), false);
             CHECK(!alice.isBlocked(bob.fingerprint()));
-            alice.sendMessage(bob.fingerprint(), "you can write to me again");
-            // A whole batch was minted and registered for him, and it rode on that
-            // one message rather than on an errand of its own.
-            CHECK(minted() - before >= kBatchAtLeast);
+            CHECK(held() == 1);
+            CHECK(bob.canWriteTo(alice.fingerprint()));
 
-            // The next message is an ordinary one: the batch is not handed out again.
-            const std::size_t afterBatch = minted();
-            alice.sendMessage(bob.fingerprint(), "and this one is just a message");
-            CHECK(minted() - afterBatch < kBatchAtLeast);
-
-            // And what he already held was not thrown away by it.
-            bob.sync();
-            CHECK(bob.sendCapacity(alice.fingerprint()) >= bobHeld);
-
-            // What a client does with a refusal, by the kind of refusal it is. A
-            // capability the far side will not take is not a capability: it goes,
-            // and so does the rest of the batch it came out of - a batch is
-            // cloned and spent as a batch. Anything else says nothing about the
-            // tokens and must leave them alone.
+            // What a client does with a refusal. There is no capability to lose,
+            // so no refusal costs anything: the same pass carries the next
+            // message whatever the far side said about the last one.
             {
                 const auto refuseOnce = [&](const std::string& code) {
                     {
@@ -857,36 +776,19 @@ int main()
                     try {
                         alice.sendMessage(bob.fingerprint(), "into a refusal");
                     } catch (const std::exception&) {
-                        // The send failing is the point; what it did to the stash
+                        // The send failing is the point; what it did to the pass
                         // is what is being checked.
                     }
                     std::lock_guard<std::mutex> lock(m.mu);
                     m.refuseWith.clear();
                 };
-
-                CHECK(alice.sendCapacity(bob.fingerprint()) > 1);
-                refuseOnce("STORAGE_FULL");
-                // One token was spent on the attempt, as every send spends one.
-                // The rest stand: a full mailbox says nothing about them.
-                const std::size_t afterFull = alice.sendCapacity(bob.fingerprint());
-                CHECK(afterFull > 0);
-
-                refuseOnce("RECIPIENT_SERVER_UNREACHABLE");
-                CHECK(alice.sendCapacity(bob.fingerprint()) > 0);
-                CHECK(alice.sendCapacity(bob.fingerprint()) == afterFull - 1);
-
-                const std::size_t beforeRefusal = alice.sendCapacity(bob.fingerprint());
-                refuseOnce("DELIVERY_REJECTED");
-                // The courier answers on its own thread, so the account acts on
-                // the refusal at its next pass - which is where every other
-                // consequence of a delivery is applied too.
-                alice.sync();
-                // A refusal is about the capability that was presented and about
-                // nothing else: the token that was refused is spent, and the next
-                // one is spent trying again. What the batch is worth is not
-                // decided by one of its members.
-                CHECK(alice.sendCapacity(bob.fingerprint()) < beforeRefusal);
-                CHECK(alice.sendCapacity(bob.fingerprint()) > 0);
+                for (const char* code :
+                    {"STORAGE_FULL", "RECIPIENT_SERVER_UNREACHABLE", "DELIVERY_REJECTED"}) {
+                    refuseOnce(code);
+                    alice.sync();
+                    CHECK(alice.canWriteTo(bob.fingerprint()));
+                }
+                alice.sendMessage(bob.fingerprint(), "and this one goes");
             }
 
             bob.sendMessage(alice.fingerprint(), "after the unblock");
@@ -899,8 +801,8 @@ int main()
             CHECK(heardAgain);
         }
 
-        // A contact who holds our tokens can put an envelope in our mailbox -
-        // that is what a token is for - but he cannot put another name on it.
+        // A contact who holds our pass can put an envelope in our mailbox - that
+        // is what a pass is for - but he cannot put another name on it.
         // Admission is not authorship, and the signature is what tells them
         // apart.
         {
@@ -979,7 +881,7 @@ int main()
         // longest name this account may carry and the longest greeting a user may
         // write - and measure it where the server sees it.
         {
-            const fs::path cDir = fs::temp_directory_path() / "bz-refill-c";
+            const fs::path cDir = fs::temp_directory_path() / "bz-pass-c";
             fs::remove(cDir);
             Session carol = Session::create(cDir, endpoint, std::string{});
             {
@@ -1001,7 +903,7 @@ int main()
                 std::lock_guard<std::mutex> lock(m.mu);
                 return m.largestContactRequest;
             }();
-            std::printf("TestTokenRefill: the largest contact request is %zu bytes\n", largest);
+            std::printf("TestDeliveryPass: the largest contact request is %zu bytes\n", largest);
             CHECK(largest <= kMaxContactRequestBytes);
             // And no slack: room above the worst case is room for a stranger to
             // fill a mailbox with. A drift either way has to be noticed here.
@@ -1016,7 +918,7 @@ int main()
         // batch of its own fires at two. That errand carried the bootstrap, so it
         // was an acceptance nobody gave - and the Agree button went with it.
         {
-            const fs::path dDir = fs::temp_directory_path() / "bz-refill-d";
+            const fs::path dDir = fs::temp_directory_path() / "bz-pass-d";
             fs::remove(dDir);
             Session dana = Session::create(dDir, endpoint, std::string{});
             {
@@ -1086,7 +988,7 @@ int main()
             CHECK(alice.contactAvatar(bob.fingerprint()) == face);
             alice.renameContact(bob.fingerprint(), "Bob of the book");
 
-            const fs::path secondDir = fs::temp_directory_path() / "bz-refill-a-second.db";
+            const fs::path secondDir = fs::temp_directory_path() / "bz-pass-a-second.db";
             fs::remove(secondDir);
             Session::importAccount(earlyBundle, secondDir, "bundle-password");
             Session second = Session::open(secondDir, std::string{});
@@ -1106,9 +1008,11 @@ int main()
             CHECK(second.hasContact(bob.fingerprint()));
             CHECK(second.contactDisplayName(bob.fingerprint()) == "Bob of the book");
             CHECK(second.contactAvatar(bob.fingerprint()) == face);
-            // Sending capacity is not transferable: tokens are one-time, and two
-            // devices spending the same one is a message lost.
-            CHECK(second.sendCapacity(bob.fingerprint()) == 0);
+            // The pass travels with the book, so a device that has just learned a
+            // contact can write to them at once. This is the inversion: what was
+            // deliberately withheld - a one-time capability cannot be in two
+            // places - is now the thing that must be carried.
+            CHECK(second.canWriteTo(bob.fingerprint()));
             // What arrived is enough to check what Bob writes: his keys came with
             // the book, so the second device can read him without them on the
             // wire. A message he sends now is verified against exactly those.
@@ -1133,7 +1037,7 @@ int main()
                 }
                 CHECK(alice.contactAvatar(bob.fingerprint()) == huge);
 
-                const fs::path thirdDir = fs::temp_directory_path() / "bz-refill-a-third.db";
+                const fs::path thirdDir = fs::temp_directory_path() / "bz-pass-a-third.db";
                 fs::remove(thirdDir);
                 Session::importAccount(earlyBundle, thirdDir, "bundle-password");
                 Session third = Session::open(thirdDir, std::string{});
@@ -1168,31 +1072,23 @@ int main()
             CHECK(second.hasContact(bob.fingerprint()));
             CHECK(second.contactDisplayName(bob.fingerprint()) == "Bob of the book");
 
-            // A backup taken with contacts in place hands the restored device one
-            // delivery token per conversation, and gives it up here: a one-time
-            // capability cannot be in two places, and one write per contact is
-            // all the restored device needs to buy tokens of its own.
-            const std::size_t held = alice.sendCapacity(bob.fingerprint());
-            CHECK(held > 0);
-            const fs::path laterBundle = fs::temp_directory_path() / "bz-refill-later.bundle";
+            // A backup taken with contacts in place copies each conversation's
+            // pass rather than handing it over: the exporting device keeps
+            // writing and the restored one can write from its first sync.
+            CHECK(alice.canWriteTo(bob.fingerprint()));
+            const fs::path laterBundle = fs::temp_directory_path() / "bz-pass-later.bundle";
             fs::remove(laterBundle);
             alice.exportAccount(laterBundle, "bundle-password");
-            CHECK(alice.sendCapacity(bob.fingerprint()) == held - 1);
+            CHECK(alice.canWriteTo(bob.fingerprint()));
 
-            const fs::path fourthDir = fs::temp_directory_path() / "bz-refill-a-fourth.db";
+            const fs::path fourthDir = fs::temp_directory_path() / "bz-pass-a-fourth.db";
             fs::remove(fourthDir);
             Session::importAccount(laterBundle, fourthDir, "bundle-password");
             Session fourth = Session::open(fourthDir, std::string{});
             CHECK(fourth.hasContact(bob.fingerprint()));
-            CHECK(fourth.sendCapacity(bob.fingerprint()) == 1);
-            // And it keeps that one for whatever the user writes first. The
-            // errand that buys a batch costs a token, and the first real message
-            // carries the same request anyway (low stash, prepaid reply,
-            // addressed to this device) - so spending it here would leave a
-            // restored device unable to write at all, which is the one thing it
-            // must be able to do.
+            CHECK(fourth.canWriteTo(bob.fingerprint()));
             fourth.sync();
-            CHECK(fourth.sendCapacity(bob.fingerprint()) == 1);
+            CHECK(fourth.canWriteTo(bob.fingerprint()));
         }
 
         // --- What another device of ours says, and what this one does with it ---
@@ -1317,6 +1213,6 @@ int main()
     fs::remove_all(aDir);
     fs::remove_all(bDir);
 
-    std::fprintf(stderr, "TestTokenRefill passed (bob sent %d, alice sent %d)\n", bobSent, aliceSent);
+    std::fprintf(stderr, "TestDeliveryPass passed (bob sent %d, alice sent %d)\n", bobSent, aliceSent);
     return 0;
 }

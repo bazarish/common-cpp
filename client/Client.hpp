@@ -118,13 +118,12 @@ using FetchTransport
 
 // Seals a delivery envelope to a destination server. deliveryClass is the
 // server-visible admission selector ("content" or "contact"); mailbox is the
-// recipient's fingerprint, deliveryId deduplicates retries, and tokens are the
-// one-time delivery tokens for "content" - as many as the payload weighs, one
-// per kBytesPerDeliveryToken (empty for "contact", which is tokenless). The
-// result is the opaque sealed blob the send endpoint expects.
+// recipient's fingerprint, deliveryId deduplicates retries, and pass is the
+// delivery pass the recipient issued to us, which admits "content" and is empty
+// for "contact" - the one class that needs none. The result is the opaque sealed
+// blob the send endpoint expects.
 Bytes sealDeliveryEnvelope(const std::string& deliveryClass, const std::string& mailbox,
-    const std::string& deliveryId, const std::vector<Bytes>& tokens,
-    const Key& recipientSealingKey);
+    const std::string& deliveryId, const Bytes& pass, const Key& recipientSealingKey);
 
 // What one envelope is called on the wire, derived rather than drawn fresh: the
 // same message to the same mailbox always gets the same name, so sending it again
@@ -246,12 +245,14 @@ public:
     };
     std::vector<DeviceEntry> listClients();
     void retireClient(const std::string& clientId);
-    // Hands our server the one-time tokens we have just issued to a
-    // correspondent, so a delivery presenting one is admitted into our mailbox.
-    void registerTokens(const std::vector<Bytes>& tokens);
-    // Asks our server to drop every token minted under this mask - one
-    // correspondent's, all of them. The server answers before the sweep runs.
-    void revokeTokens(const Bytes& mask);
+    // Registers the handles of the passes we admit our correspondents by, so a
+    // delivery presenting one of them is let into our mailbox. Registering one
+    // already held is how a block is lifted, and is not an error.
+    void registerPasses(const std::vector<Bytes>& handles);
+    // Takes those passes back, and answers how many were there. Exact and
+    // immediate: this is the only thing that stops a correspondent writing, so a
+    // caller that does not hear the answer must ask again.
+    std::size_t revokePasses(const std::vector<Bytes>& handles);
     std::vector<PendingEntry> listPending();
     // Asks the server to hold the request until something arrives for this client
     // (or waitSeconds passes), and returns what is pending then. Throws with a 404

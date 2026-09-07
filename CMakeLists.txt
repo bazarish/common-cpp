@@ -38,7 +38,7 @@ add_library(bazarish_common STATIC
     src/Cms.cpp
     src/Tunnel.cpp
     src/Certificates.cpp
-    src/Tokens.cpp
+    src/Pass.cpp
     src/ConfigFile.cpp
     src/WebAssets.cpp
     src/Errors.cpp
@@ -120,7 +120,7 @@ bazarish_add_test(TestCms)
 bazarish_add_test(TestTunnel)
 bazarish_add_test(TestReseedSu3)
 bazarish_add_test(TestCertificates)
-bazarish_add_test(TestTokens)
+bazarish_add_test(TestPass)
 bazarish_add_test(TestErrors)
 bazarish_add_test(TestAddress)
 bazarish_add_test(TestI2pAddress)
@@ -227,6 +227,6 @@ if(BAZARISH_WITH_CLIENT)
     bazarish_client_add_test(TestInvite)
     bazarish_client_add_test(TestLogin)
     bazarish_client_add_test(TestOutboundCourier)
-    bazarish_client_add_test(TestTokenRefill)
+    bazarish_client_add_test(TestDeliveryPass)
     bazarish_client_add_test(TestWireLog)
 endif()

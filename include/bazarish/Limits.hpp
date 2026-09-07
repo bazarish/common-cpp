@@ -14,47 +14,25 @@ namespace bazarish {
 // client to client and never sits in a mailbox at all. It also bounds what one
 // sender can put in someone's mailbox in a single delivery.
 constexpr std::size_t kMaxMessagePayloadBytes = 512 * 1024;
-// What one delivery token buys. A message is admitted by as many tokens as it
-// weighs, one per this many bytes and never fewer than one: a conversation of
-// text costs a token a message the way it always did, while filling a mailbox
-// with the largest payload the protocol allows costs the sender eighteen. The
-// sender counts them out and the recipient's server checks the count, so neither
-// side has to trust the other's arithmetic.
-constexpr std::size_t kBytesPerDeliveryToken = 30 * 1024;
-// How many reply tokens a contact request carries. Far fewer than an ordinary
-// batch, because this one rides the only tokenless path into a mailbox and its
-// size is what a flood of requests costs the recipient. Enough for the first
-// exchange; the full batch arrives with the first reply, which is paid for.
-constexpr int kRequestTokenBatchSize = 16;
 // How many contact requests may sit unfetched in one mailbox. The per-minute
 // limit bounds the rate; this bounds the pile, so an address that is being
 // hammered stops taking requests instead of holding a day of them. A sender is
 // told to come back, the way a rate-limited one is.
 constexpr std::size_t kMaxPendingContactRequests = 30;
 
-// How many tokens a payload of this size must be delivered with.
-constexpr std::size_t tokensForPayload(const std::size_t payloadBytes)
-{
-    return payloadBytes == 0 ? 1 : (payloadBytes + kBytesPerDeliveryToken - 1)
-            / kBytesPerDeliveryToken;
-}
-
 // The cap on a tokenless contact request, in delivered (sealed) bytes. It is the
 // one thing a stranger may put in a mailbox, so it is the measured worst case and
 // not a generous number: room above what a request can weigh is room to fill a
 // mailbox with.
 //
-// Measured at 11668 bytes: the two hybrid sealing keys the bootstrap carries, the
-// 16-token reply batch the requester hands over so the peer can answer, the
-// ML-KEM ciphertext of the seal, the authorship block with the sender's keys in
-// it (a request has no card and no token, so the signature is the only thing that
-// names them), the longest greeting a user may write and the longest name an
-// account may carry. The 32 bytes on top are what the variable-length parts can
-// add: an ECDSA signature is 70 to 72 bytes and a CBOR integer is as wide as its
-// value. The batch this carries is deliberately small (kRequestTokenBatchSize):
-// this is the only tokenless path into a mailbox, so what a request weighs is
-// what a flood of them costs the person being asked.
-constexpr std::size_t kMaxContactRequestBytes = 11700;
+// Measured at 10947 bytes: the two hybrid sealing keys the bootstrap carries, the
+// delivery pass the requester hands over so the peer can answer, the ML-KEM
+// ciphertext of the seal, the authorship block with the sender's keys in it (a
+// request has no card and no pass, so the signature is the only thing that names
+// them), the longest greeting a user may write and the longest name an account
+// may carry. The 32 bytes on top are what the variable-length parts can add: an
+// ECDSA signature is 70 to 72 bytes and a CBOR integer is as wide as its value.
+constexpr std::size_t kMaxContactRequestBytes = 10979;
 // What a user may write into a contact request. A line of hello, not a channel.
 constexpr std::size_t kMaxContactGreetingBytes = 100;
 // An account's own display name, in bytes. It rides in a contact request as the
@@ -66,7 +44,7 @@ constexpr std::size_t kMaxAccountNameBytes = 64;
 
 // Delivery classes, as the server sees them. The content type is end to end and
 // never visible here.
-//   content - from a contact, admitted by a one-time token
+//   content - from a contact, admitted by the pass they were given
 //   contact - from a stranger, admitted by nothing (a contact request), and
 //             therefore the only path with a rate limit on the recipient
 //   device  - from the account itself to its own other devices, admitted by the
@@ -100,11 +78,12 @@ inline constexpr std::int64_t kDefaultDelegationDays = 14;
 // it lapses even if the client is only occasionally online.
 inline constexpr double kDelegationRenewAtFraction = 0.5;
 
-// How long a registered but unspent delivery token is kept. A token is a
-// few dozen bytes and a contact may sit unused for years, so the horizon is
-// effectively "as long as the account lives" - it exists so an abandoned
-// mailbox's tokens do not accumulate forever. The account's own idle sweep is
-// what usually takes them first.
-inline constexpr std::int64_t kTokenRetentionDays = 10 * 365;
+// How many delivery passes one request may register, and how many a mailbox may
+// hold at once. A pass is one per correspondent and never expires, so both sit
+// far above any real address book. They are what bounds the capability directory
+// of a mailbox at all: token registration was bounded by nothing, and a single
+// test account accumulated sixty-one thousand of them.
+inline constexpr std::size_t kMaxPassesPerRequest = 256;
+inline constexpr std::size_t kMaxPassesPerMailbox = 4096;
 
 }  // namespace bazarish

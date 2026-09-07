@@ -8,7 +8,7 @@
 #include <bazarish/Cms.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/ServerDescriptor.hpp>
-#include <bazarish/Tokens.hpp>
+#include <bazarish/Pass.hpp>
 #include <bazarish/Errors.hpp>
 #include <bazarish/Resolve.hpp>
 
@@ -198,19 +198,20 @@ int main()
             respondJson(response, {{"ok", true}});
         }));
 
-    server.post("/v1/messaging/tokens",
+    server.post("/v1/messaging/passes",
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
-            CHECK(nlohmann::json::parse(request.body).at("tokens").size() == 2);
-            respondJson(response, {{"ok", true}});
+            const nlohmann::json asked = nlohmann::json::parse(request.body).at("passes");
+            CHECK(asked.size() == 2);
+            CHECK(fromBase64(asked.at(0).get<std::string>()).size() == kDeliveryPassSize);
+            respondJson(response, {{"ok", true}, {"held", asked.size()}});
         }));
 
-    server.post("/v1/messaging/tokens/revoke",
+    server.post("/v1/messaging/passes/revoke",
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
-            CHECK(fromBase64(nlohmann::json::parse(request.body).at("mask")
-                                 .get<std::string>()).size() == kDeliveryTokenSize);
-            respondJson(response, {{"ok", true}});
+            CHECK(nlohmann::json::parse(request.body).at("passes").size() == 1);
+            respondJson(response, {{"revoked", 1}});
         }));
 
     server.get("/v1/messaging/pending",
@@ -303,11 +304,11 @@ int main()
         CHECK(rejects([&]() { (void)client.resolveAlias("swap", resolver, now, directDial); }));
     }
 
-    // Client registry and token registration.
+    // Client registry and pass registration.
     {
         client.registerThisClient();
-        client.registerTokens({Bytes(32, 0x11), Bytes(32, 0x22)});
-        client.revokeTokens(Bytes(32, 0x33));
+        client.registerPasses({Bytes(kDeliveryPassSize, 0x44), Bytes(kDeliveryPassSize, 0x55)});
+        CHECK(client.revokePasses({Bytes(kDeliveryPassSize, 0x44)}) == 1);
     }
 
     // Pending list, blob fetch and ack.
@@ -330,14 +331,15 @@ int main()
     // the recipient destination's serving key and names the delivery.
     {
         const Key recipientSealing = Key::fromPublicDer(serverSealing.publicDer());
-        const Bytes sealed = sealDeliveryEnvelope(
-            "content", bob.fingerprint(), "msg-1", {Bytes(32, 0x33)}, recipientSealing);
+        const Bytes pass = Bytes(kDeliveryPassSize, 0x33);
+        const Bytes sealed
+            = sealDeliveryEnvelope("content", bob.fingerprint(), "msg-1", pass, recipientSealing);
         const Bytes plain = cms::unseal(sealed, serverSealing);
         const nlohmann::json inner = nlohmann::json::parse(plain.begin(), plain.end());
         CHECK(inner.at("class") == "content");
         CHECK(inner.at("mailbox") == bob.fingerprint());
         CHECK(inner.at("deliveryId") == "msg-1");
-        CHECK(inner.at("tokens").size() == 1);
+        CHECK(fromBase64(inner.at("pass").get<std::string>()) == pass);
     }
 
     server.stop();

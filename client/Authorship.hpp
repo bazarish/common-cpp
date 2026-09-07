@@ -13,8 +13,8 @@ namespace bazarish::client {
 
 // Who wrote a message, proved by the message itself.
 //
-// Nothing else in the path can answer that. A delivery token admits a
-// correspondent - it says somebody the recipient issued tokens to put this in
+// Nothing else in the path can answer that. A delivery pass admits a
+// correspondent - it says somebody the recipient issued a pass to put this in
 // their mailbox - and the seal only says who may read it. The sender's own
 // "from" field is a claim until something signs it, so every envelope carries
 // both signatures over its content, hybrid like every other identity statement

@@ -35,20 +35,15 @@ Bytes cardQueryBytes(const CardFetchQuery& query)
 }  // namespace
 
 Bytes sealDeliveryEnvelope(const std::string& deliveryClass, const std::string& mailbox,
-    const std::string& deliveryId, const std::vector<Bytes>& tokens,
-    const Key& recipientSealingKey)
+    const std::string& deliveryId, const Bytes& pass, const Key& recipientSealingKey)
 {
     nlohmann::json inner = {
         {"class", deliveryClass},
         {"mailbox", mailbox},
         {"deliveryId", deliveryId},
     };
-    if (!tokens.empty()) {
-        nlohmann::json list = nlohmann::json::array();
-        for (const Bytes& token : tokens) {
-            list.push_back(toBase64(token));
-        }
-        inner["tokens"] = std::move(list);
+    if (!pass.empty()) {
+        inner["pass"] = toBase64(pass);
     }
     const std::string text = inner.dump();
     return cms::seal(Bytes(text.begin(), text.end()), recipientSealingKey);
@@ -315,23 +310,26 @@ void Client::retireClient(const std::string& clientId)
     api_.del("/v1/messaging/clients/" + clientId);
 }
 
-void Client::registerTokens(const std::vector<Bytes>& tokens)
+void Client::registerPasses(const std::vector<Bytes>& handles)
 {
     nlohmann::json encoded = nlohmann::json::array();
-    for (const Bytes& token : tokens) {
-        encoded.push_back(toBase64(token));
+    for (const Bytes& handle : handles) {
+        encoded.push_back(toBase64(handle));
     }
-    api_.postJson("/v1/messaging/tokens", {{"tokens", encoded}});
+    api_.postJson("/v1/messaging/passes", {{"passes", encoded}});
 }
 
-void Client::revokeTokens(const Bytes& mask)
+std::size_t Client::revokePasses(const std::vector<Bytes>& handles)
 {
-    // The server takes the mask and answers at once; the sweep it schedules runs
-    // on the node's own time, so a correspondent's tokens go away shortly rather
-    // than instantly.
-    api_.postJson("/v1/messaging/tokens/revoke", {{"mask", toBase64(mask)}});
+    nlohmann::json encoded = nlohmann::json::array();
+    for (const Bytes& handle : handles) {
+        encoded.push_back(toBase64(handle));
+    }
+    return api_.postJson("/v1/messaging/passes/revoke", {{"passes", encoded}})
+        .json()
+        .at("revoked")
+        .get<std::size_t>();
 }
-
 
 std::vector<PendingEntry> Client::waitForPending(const int waitSeconds)
 {

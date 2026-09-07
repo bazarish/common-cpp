@@ -57,7 +57,7 @@ using InlineKeyboard = std::vector<std::vector<InlineButton>>;
 // "keyboard" field). Exposed for the bot framework, the CLI and tests.
 std::string inlineKeyboardJson(const InlineKeyboard& keyboard);
 
-// A known contact's routing and token state, persisted by the session.
+// A known contact's routing and admission state, persisted by the session.
 // What the saved-messages chat is called, and therefore the one name a contact
 // may not have: a contact whose name would be this is shown with a mark in front
 // of it, so nothing in the chat list can pretend to be that chat.
@@ -84,27 +84,20 @@ struct Contact {
     // They sent routing with no capability in it: they have turned sharing off,
     // which is a different thing from not having told us yet.
     bool sharingRefused = false;
-    // The device of theirs that asked to be added, from their contact request.
-    // Our first reply addresses its token batch to it, so only that device
-    // adopts the batch and their other devices ask for their own - two devices
-    // holding the same one-time tokens is two devices spending them.
-    std::string requesterDevice;
-    // This device holds one token out of a batch that was addressed to nobody,
-    // and owes itself a batch of its own: it spends that one asking for it.
-    bool needsOwnBatch = false;
-    // Unused one-time delivery tokens (base64) issued by the peer to us:
-    // each authorizes one message into the peer's mailbox.
-    std::vector<std::string> sendTokens;
-    // Whether we have already issued a token batch to this peer (so they
-    // can write to us). Set on the contact request, or - for a request we
-    // agreed to - only once that acceptance is confirmed stored by their
-    // server: until the batch is in their mailbox they cannot answer, so a
-    // contact marked accepted here would be a dialog that exists on one side.
+    // The delivery pass (base64) this peer issued to us: what admits everything
+    // we write into their mailbox. One value, used by every device of ours, for
+    // as long as they let us write.
+    std::string sendPass;
+    // Whether we have already issued our pass to this peer (so they can write to
+    // us). Set on the contact request, or - for a request we agreed to - only
+    // once that acceptance is confirmed stored by their server: until it is in
+    // their mailbox they cannot answer, so a contact marked accepted here would
+    // be a dialog that exists on one side.
     bool issuedToThem = false;
     // An acceptance whose bootstrap is on its way. Not persisted: a client that
-    // closes mid-flight has no proof the batch ever landed, so the request is
-    // pending again on the next run and is agreed to afresh. It keeps a second
-    // Agree from minting a second batch while the first is in the air.
+    // closes mid-flight has no proof it ever landed, so the request is pending
+    // again on the next run and is agreed to afresh. It keeps a second Agree
+    // from acting while the first is in the air.
     bool acceptInFlight = false;
     // Local display name for this contact: the alias used when adding, or the
     // name carried in the invite. Purely local - never sent to the peer and
@@ -125,10 +118,6 @@ struct Contact {
     // once on establishing the dialog (not on every sync). Reset when our avatar
     // changes, so the new one is re-broadcast.
     bool avatarSentToPeer = false;
-    // Set when a block on this contact is lifted: what they held was revoked, so
-    // the next thing written to them carries a fresh batch and they can answer.
-    // Cleared once that batch has gone.
-    bool reissueTokens = false;
     // Whether a message from this contact may announce itself outside the window,
     // and whether they may call. The account's own choice per contact; the global
     // settings still apply on top of both.
@@ -138,7 +127,7 @@ struct Contact {
 
 // A decrypted item pulled from the mailbox during sync.
 struct IncomingMessage {
-    // End-to-end content type: "text", "contact.request", "token-refill",
+    // End-to-end content type: "text", "contact.request",
     // "file", ... or "unsupported" for a type this client cannot render.
     std::string contentType;
     std::string fromFingerprint;
@@ -151,7 +140,7 @@ struct IncomingMessage {
     // to, so it belongs in that conversation as an outgoing line.
     bool sentByUs = false;
     // True when this item carried bootstrap (the peer's sealing key, serving
-    // server and a fresh token batch) - a new or refreshed contact.
+    // server and a fresh pass) - a new or refreshed contact.
     bool establishedContact = false;
     // The original type string when contentType == "unsupported".
     std::string rawType;
@@ -209,7 +198,7 @@ struct IncomingMessage {
     std::string avatarData;
 };
 
-// The stateful client session: a user identity plus contact and token
+// The stateful client session: a user identity plus contact and admission
 // A file this client announced in a message it sent. The bytes were never
 // uploaded anywhere, so serving a later request means reading this path again -
 // which is also why the sender can "unsend" simply by forgetting it.
@@ -253,11 +242,12 @@ using TransferEventFn = std::function<void(const TransferEvent&)>;
 // bookkeeping persisted under an account directory, layered over the stateless
 // Client API wrappers. This is the logic a GUI or CLI front-end drives.
 //
-// Token model (per Contacts.md): to let a peer write to us we generate a
-// batch, register its hashes with our own server and hand the raw tokens to
-// the peer; to write to a peer we spend a token the peer gave us. Contact
-// bootstrap exchanges both directions over a tokenless contact request and
-// its reply.
+// Admission model: to let a peer write to us we register the handle of their
+// delivery pass with our own server and hand them the pass itself; to write to a
+// peer we present the pass they gave us. A pass does not expire and is not
+// spent, so there is one per correspondent and every device of ours presents the
+// same one. Contact bootstrap exchanges both directions over a tokenless contact
+// request and its reply.
 class Session {
 public:
     // Creates a fresh identity and sealing key under accountFile, with no server
@@ -293,9 +283,8 @@ public:
     // Exports the whole session (identity, sealing key, routing meta and
     // contacts) into a single password-encrypted file (CMS PWRI). The bundle
     // holds the keys in plain PEM internally - the password protects the file.
-    // One delivery token per conversation moves into the bundle and leaves this
-    // device's stash: one-time capabilities cannot be in two places, and the
-    // restored device needs one write per contact to buy tokens of its own.
+    // Each conversation's pass is copied into the bundle and stays here too: a
+    // pass is not spent, so a restored device can write from its first sync.
     void exportAccount(const std::filesystem::path& outFile, const std::string& password);
     // Imports an exported bundle into a fresh accountFile. A non-empty
     // atRestPassphrase re-encrypts the imported keys on disk.
@@ -326,7 +315,7 @@ public:
     std::string contactDisplayName(const std::string& peerFingerprint) const;
     Bytes contactAvatar(const std::string& peerFingerprint) const;
     // Whether this contact sent us a request we have not yet accepted (we hold
-    // their tokens but have not issued ours). Drives the "Agree" affordance.
+    // their pass but have not issued ours). Drives the "Agree" affordance.
     bool contactIsPending(const std::string& peerFingerprint) const;
     // Whether an acceptance for this contact is in the air: agreed to here, not
     // yet confirmed by the peer's server. Still pending, and not to be agreed to
@@ -354,7 +343,7 @@ public:
     // avatar blob, and persists. Local only and irreversible - the peer is not
     // told. No-op for an unknown contact. The caller wipes the local transcript.
     void removeContact(const std::string& peerFingerprint);
-    // The same, and the rest of what removing means: the tokens this account
+    // The same, and the rest of what removing means: the pass this account
     // issued to them are revoked at our server, so what they still hold stops
     // working, and the account's other devices are told to drop them too.
     void removeContactEverywhere(const std::string& peerFingerprint);
@@ -370,7 +359,7 @@ public:
     // --- Blocking ---
     //
     // A blocked correspondent's mail and contact requests are dropped as they are
-    // read, their tokens are revoked, and the block reaches the account's other
+    // read, their pass is revoked, and the block reaches the account's other
     // devices. The conversation is left alone: deleting it is its own action.
     bool isBlocked(const std::string& peerFingerprint) const;
     std::vector<std::string> blockedPeers() const;
@@ -597,9 +586,9 @@ public:
     std::string destinationOwner() const;
 
     // Accepts a received contact request: sends a "contact.accept" back, which (as
-    // our first reply) carries our descriptor and a reply-token batch, so the
+    // our first reply) carries our descriptor and our pass, so the
     // requester becomes a fully mutual contact and a one-to-one chat opens. A no-op
-    // if we cannot reach the requester (no contact / tokens) yet.
+    // if we cannot reach the requester (no contact / pass) yet.
     void acceptContactRequest(const std::string& peerFingerprint);
 
     // Adds a contact from an invite descriptor (bazarish://invite?fp&srv&srv_key):
@@ -712,10 +701,10 @@ public:
     // leaves the client. Throws if the user has no serving destination yet.
     std::string aliasBuyArtifacts(const std::string& alias) const;
 
-    // Sends an E2E-encrypted message to an established contact, spending one
-    // of the peer's tokens. Throws if the contact is unknown or out of
-    // tokens. When the contact has no reciprocal tokens from us yet (the
-    // first reply), a fresh batch for the peer is registered and attached.
+    // Sends an E2E-encrypted message to an established contact, presenting the
+    // pass they issued to us. Throws if the contact is unknown or has none.
+    // When the peer holds no pass of ours yet (the first reply), ours is
+    // registered and attached.
     // e2eId, when given, is used as the protocol message id (so a delivery
     // receipt can be matched back). onAcceptedByOwnServer fires once when our
     // own server has accepted the envelope into its buffer (the "grey" state).
@@ -779,7 +768,7 @@ public:
     // Deletes a previously sent message for everyone (content type "delete"): the
     // peer removes the message whose id is refMessageId from its transcript, with
     // no tombstone left behind. Scoped on the receiver to a message the sender
-    // actually sent, exactly like an edit. Costs one delivery token.
+    // actually sent, exactly like an edit.
     void sendDelete(const std::string& peerFingerprint, const std::string& refMessageId);
 
     // Rotates the serving sealing key our server holds and the capability that
@@ -820,7 +809,7 @@ private:
 public:
 
     // Sends a delivery receipt (content type "receipt") acknowledging that we
-    // received the message with id refMessageId. Costs one delivery token.
+    // received the message with id refMessageId.
     void sendReceipt(const std::string& peerFingerprint, const std::string& refMessageId);
 
     // Sets our reaction (an emoji) to a one-to-one message: content type "reaction"
@@ -831,21 +820,12 @@ public:
 
     // Asks the peer to clear the whole conversation with us (content type
     // "chat.clear"): on receipt their client wipes its transcript with us, the
-    // same way it auto-applies a delete-for-everyone. Costs one delivery token.
-    // How many of a contact's one-time delivery tokens this device still holds:
-    // the number of messages it can send them before it has to ask for more.
-    std::size_t sendCapacity(const std::string& peerFingerprint) const;
-
+    // same way it auto-applies a delete-for-everyone.
     void sendChatClear(const std::string& peerFingerprint);
 
-    // Asks a contact for a fresh batch of their one-time tokens, without waiting
-    // for a message to carry the ask. A conversation refills itself on its own
-    // traffic; something that sends far more than it receives - a service posting
-    // notices - runs its stash down between the other side's visits, and this is
-    // how it builds one up while they are about. Costs one token and prepays the
-    // answer with another, so it pays for itself twice over in what it brings
-    // back. The peer's client consumes it silently: nothing is shown to anyone.
-    void requestTokens(const std::string& peerFingerprint);
+    // Whether this device holds the pass that admits it to a contact's mailbox.
+    // Nothing runs it down, so this is a yes or no rather than a count.
+    bool canWriteTo(const std::string& peerFingerprint) const;
 
     // What this account names one envelope to a mailbox: keyed with its own seed
     // and bound to the mailbox, so the same message keeps its name on a resend and
@@ -991,7 +971,7 @@ public:
     // so on every sync tick; a no-op when there is no ringing call.
     void tickCalls();
 
-    // Pulls and decrypts pending items, applies their contact/token side effects,
+    // Pulls and decrypts pending items, applies their contact side effects,
     // and acks items the core consumes itself. autoAckSurfaced (default true) acks a
     // SURFACED item in the loop too - the simple behaviour the CLI and bots want.
     // The GUI passes false so a surfaced item is NOT acked here (it comes back with a
@@ -1035,34 +1015,32 @@ private:
     // This account's own destination as a routing host, empty without a master.
     std::string ownRoutingHost() const;
 
-    // Generates a token batch for ourselves: registers the hashes with our
-    // server and returns the raw tokens (base64) to hand to the peer.
-    // A batch of one-time tokens for one correspondent, minted under their mask
-    // and registered with our server, so they can write to us.
     // Seals one device-to-device notice to ourselves and submits it. What every
-    // device.* self-message is built on: no token is spent, no destination is
+    // device.* self-message is built on: nothing is presented, no destination is
     // dialled, and only our own devices can read it.
     void sendSelf(nlohmann::json inner);
     // Keeps a message in the saved chat on the account's other devices. The
     // device that saved it already has it.
     bool saveToSelf(nlohmann::json message);
     void persistBlocked();
-    // Mints count tokens for this correspondent and registers them with our own
-    // server. An ordinary batch is one size; the one a contact request carries is
-    // another, and much smaller (kRequestTokenBatchSize).
-    std::vector<std::string> issueTokenBatch(const std::string& peerFingerprint, int count);
-    // Mints ONE fresh delivery token (registers its hash with our server) and
-    // returns it (base64). Used to prepay a specific reply - a low-stash request
-    // embeds one so the peer's token-refill reply is always deliverable.
-    std::string issueOneToken(const std::string& peerFingerprint);
-    // The mask every token issued to one correspondent is minted under.
-    Bytes deliveryMaskFor(const std::string& peerFingerprint) const;
-    // Asks our own server to drop every token minted under that mask. What makes
-    // removing a contact take their write access with it.
-    void revokeTokensFor(const std::string& peerFingerprint);
+    void persistPendingRevokes();
+    // Asks our server again for every revocation it has not confirmed. Cheap and
+    // idempotent, so it runs on every sync until the list is empty.
+    void retryPendingRevokes();
+    // The pass this account admits one correspondent by. Derived, so nothing is
+    // stored and every device of ours arrives at the same value.
+    Bytes passIdFor(const std::string& peerFingerprint) const;
+    // Registers that pass with our own server, so the correspondent can write to
+    // us, and returns it (base64) to hand over. Registering one already held is
+    // how a block is lifted.
+    std::string registerPassFor(const std::string& peerFingerprint);
+    // Asks our own server to drop it. What makes blocking or removing a contact
+    // take their write access with it - and the only thing that does, so an
+    // unheard answer is remembered and asked again.
+    void revokePassFor(const std::string& peerFingerprint);
 
     // Sends a contact request to a peer whose verified routing info is
-    // already known (from a lookup or an invite). Mints a reply token batch
+    // already known (from a lookup or an invite). Registers our pass
     // and records the contact, adopting displayName as its local label (the
     // alias used or the name carried in the invite) when non-empty.
     // descriptorView is the capability from the descriptor this contact was
@@ -1080,7 +1058,7 @@ private:
     FetchTransport fetchTransport() const;
 
     // Sends a built inner content envelope to an established contact: handles
-    // the first-reply bootstrap, seals to the peer and spends one token. Returns
+    // the first-reply bootstrap, seals to the peer and presents their pass. Returns
     // whether delivery was confirmed within the poll window (see deliver()).
     // waitForOutcome defaults to false: the call returns as soon as the delivery
     // is handed to the courier (the thread that asked is never blocked on a
@@ -1088,14 +1066,10 @@ private:
     // ended. True runs the whole attempt schedule on the calling thread, for a
     // send whose caller is the one that must answer for it.
     // establishOnFirstReply (default true): on the FIRST content we send to a peer
-    // that wrote to us first, attach our bootstrap (routing + a reply-token batch)
+    // that wrote to us first, attach our bootstrap (routing + our pass)
     // and mark the contact accepted (issuedToThem). A read receipt passes false so
     // it can confirm a read WITHOUT auto-accepting an un-accepted contact request -
     // the request is still accepted explicitly (Agree) or by sending a real message.
-    // overrideToken, when non-empty, is spent to deliver this message INSTEAD of one
-    // from our own stash of the peer's tokens (and our stash is left untouched): used
-    // for a token-refill reply, which the peer's request prepaid with a fresh token,
-    // so the reply is deliverable even when we hold none of their tokens.
     // One line in the connection log, and how a correspondent is named in it:
     // the local name when there is one, and the head of the fingerprint either
     // way - a full one has no business in a window meant to be screenshotted.
@@ -1121,7 +1095,7 @@ private:
 
     bool sendContent(const std::string& peerFingerprint, nlohmann::json inner,
         const DeliveryWatch& watch = {}, bool waitForOutcome = false,
-        bool establishOnFirstReply = true, const std::string& overrideToken = {});
+        bool establishOnFirstReply = true);
 
     // Sends the user-owned I2P master to the account's other devices: a
     // service content message ("device.i2p-master") sealed to our own sealing
@@ -1148,44 +1122,7 @@ private:
     // nobody answered for: the choice is then the user's, and onAddressDecision
     // has been told about it.
 
-    // Mints a fresh token batch for the peer and sends it as a token-refill, in
-    // response to the peer signalling a low stash (Contacts.md). prepaidToken, when
-    // non-empty, is a fresh token the peer embedded in its low-stash request: the
-    // refill is delivered by spending exactly it, so the reply always lands even when
-    // we hold none of the peer's own tokens (the refill round-trip funds itself).
-    // Sends a batch of our tokens to one DEVICE of a peer. A user's devices share
-    // one mailbox, so an unaddressed batch would be taken by all of them and they
-    // would then spend the same one-time tokens against each other; a batch names
-    // the device that asked, and the others leave it alone and ask for their own.
-    void sendTokenRefill(const std::string& peerFingerprint, const std::string& forDevice,
-        const std::string& prepaidToken = {});
-
-    // Asks a contact for a batch of their tokens for THIS device. Rides the
-    // tokenless contact channel, because a device with an empty stash has no
-    // other way to speak to them.
-    // Asks the peer for a batch addressed to this device, spending one of the
-    // tokens we hold. With none left it asks our own devices instead.
-    void sendTokenRequest(const std::string& peerFingerprint);
-    // Asks this account's other devices for one unspent token for a peer: the
-    // way back for a device that has none and therefore cannot ask the peer.
-    // Each device that has one sends exactly one and drops it, so a token is
-    // never in two places.
     void syncDelegationTermToSelf();
-    void askDevicesForToken(const std::string& peerFingerprint);
-    // Takes one delivery token out of a contact's stash and returns it. Which one
-    // is drawn at random: two devices of one account hold stashes that may overlap
-    // (a batch handed to one and copied to another, a restore), and taking from
-    // the same end on both makes them collide on the very same token every time.
-    // Drawing at random turns a certainty into a one-in-the-stash chance. The
-    // token is gone from the stash either way - spent if it is taken, and refused
-    // is also spent.
-    std::string takeSendToken(Contact& contact);
-    // Whether this account has no other device registered. Asked of the server
-    // once per sync and only when it matters (a batch addressed to nobody has
-    // just arrived), because the answer decides whether this device keeps it
-    // whole or trades one token for a batch of its own.
-    bool soleDevice() const;
-    void grantTokenToDevices(const std::string& peerFingerprint, const std::string& toDevice);
 
     // Echoes a message this device just sent to the account's other devices, so
     // the conversation reads the same everywhere. Rides our own mailbox like the
@@ -1264,7 +1201,7 @@ private:
     // message of its own (an ack, a receipt).
     bool deliver(const std::string& toDest, const Key& servingSealingKey,
         const std::string& deliveryClass, const std::string& mailbox,
-        const std::vector<Bytes>& tokens, const Bytes& payload,
+        const Bytes& pass, const Bytes& payload,
         const DeliveryWatch& watch = {}, bool waitForOutcome = true,
         const std::string& e2eId = {});
     // The courier this account delivers through, built on first use (the router
@@ -1437,6 +1374,12 @@ private:
     // Correspondents whose mail is dropped as it is read. Kept apart from the
     // contacts so a block outlives the contact it was made on.
     std::set<std::string> blocked_;
+    // Pass handles (base64) our server has not confirmed dropping. Kept here
+    // rather than on the contact, because removing a contact is one of the two
+    // things that revokes, and a flag on a record being deleted would go with
+    // it - leaving a correspondent writing to a mailbox that thinks it cut them
+    // off. Persisted: an unconfirmed revocation must outlive the process.
+    std::set<std::string> pendingPassRevokes_;
     // The devices of this account that have already asked the others for the
     // address book; each device asks once.
     std::vector<std::string> contactsAskedBy_;
@@ -1474,8 +1417,8 @@ private:
     // Incoming calls are taken unless the user says otherwise; see acceptCalls().
     bool acceptCalls_ = true;
     bool sendReceipts_ = true;
-    // The at-rest passphrase, retained for the session lifetime so contacts
-    // (delivery tokens) can be re-sealed on every change. Empty when the
+    // The at-rest passphrase, retained for the session lifetime so contacts can
+    // be re-sealed on every change. Empty when the
     // account is unencrypted.
     std::string passphrase_;
     // This account's own I2P destination, empty until it is minted (subscribing
@@ -1484,46 +1427,13 @@ private:
     // transient (i2p-transient.dat) is the time-boxed delegation for the
     // current serving server. Both are sealed at rest when the account is
     // encrypted.
-    // Contacts this run has already asked the account's own devices about, so an
-    // unanswerable ask is made once and not on every sync.
-    std::set<std::string> askedOwnDevicesFor_;
-    // Prepaid reply tokens this run has already spent on a refill, so an item
-    // offered twice is not answered twice with a capability that is gone.
-    std::set<std::string> answeredPrepaid_;
     // Echoes waiting for this account's own thread: a send the recipient's server
     // signed for, reported on the courier's thread and written to our own mailbox
     // here. Held behind a pointer because a session moves and a delivery in
     // flight must not be left holding the address it moved from.
-    // A message the user wrote that this device has no capability to carry yet.
-    // Held in memory only, and never written down: an outbound queue on disk
-    // would be a record of who this account writes to. It is sent the moment a
-    // token arrives, and a restart reports it failed like any other send that was
-    // in flight.
-    struct WaitingSend {
-        std::string peer;
-        nlohmann::json inner;
-        DeliveryWatch watch;
-        bool establishOnFirstReply = true;
-    };
-    std::vector<WaitingSend> waitingSends_;
-    // Sends what is waiting for a token, for every peer that now has one.
-    void flushWaitingSends();
-    // Holds a message until there is a capability to carry it, and says so on the
-    // send's own watch so the interface reads "waiting" rather than "sending".
-    void holdForToken(const std::string& peerFingerprint, const nlohmann::json& inner,
-        const DeliveryWatch& watch, bool establishOnFirstReply);
-    // Whether anything the user wrote is waiting on a token for this peer.
-    bool sendWaitingFor(const std::string& peerFingerprint) const;
-
     struct EchoQueue {
         std::mutex mutex;
         std::vector<std::pair<std::string, nlohmann::json>> pending;
-        // Deliveries the recipient's server refused for their token. Each entry
-        // sends the same envelope again with the next token in the stash - the
-        // refusal was about the capability, not about the message - and it runs
-        // on the session's own thread, the only one that may take a token out of
-        // a stash.
-        std::vector<std::shared_ptr<std::function<void()>>> refused;
         // Acceptances whose bootstrap the peer's server confirmed it stored, and
         // ones it never took. Both are decided on the courier's thread and
         // applied on the session's, which is the only one that may touch the

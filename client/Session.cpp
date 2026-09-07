@@ -17,11 +17,11 @@
 #include <bazarish/Errors.hpp>
 #include <bazarish/Hmac.hpp>
 #include <bazarish/Limits.hpp>
+#include <bazarish/Pass.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/Portal.hpp>
 #include <bazarish/Reactions.hpp>
 #include <bazarish/I2pAddress.hpp>
-#include <bazarish/Tokens.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -38,9 +38,9 @@ namespace bazarish::client {
 
 namespace {
 
-// How much of a spent delivery token the connection log names: enough to match
-// against what a server says it refused, not enough to be one.
-constexpr std::size_t kSpentTokenPrefixChars = 12;
+// How much of a delivery pass goes into the connection log: enough to line a
+// refusal up with the recipient server's own record of it, and no more.
+constexpr std::size_t kPassPrefixChars = 12;
 
 }  // namespace
 
@@ -187,16 +187,13 @@ std::string normalizeAlias(const std::string& alias)
 constexpr std::size_t kAvatarMaxBytes = 500 * 1024;
 
 // Applies a bootstrap block (the peer's sealing prekey, serving destination +
-// serving sealing key, and a fresh token batch) carried by a contact request, a
-// first reply or a token refill. Orthogonal to the message's content type.
-// thisDevice is the client id of the device applying the bootstrap. A token batch
-// addressed to another device is left alone: the peer's devices share a mailbox,
-// so every one of them sees this message, and taking a batch meant for one of
-// them is how two devices come to spend the same one-time token.
-// soleDevice: this account has no other device registered, so an unaddressed
-// batch has no one to race with and is simply kept.
-void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap,
-    const std::string& thisDevice, const bool soleDevice)
+// serving sealing key, and the pass that admits us to their mailbox) carried by
+// a contact request or a first reply. Orthogonal to the message's content type.
+//
+// The pass is simply kept. Every device of this account sees this message and
+// every one of them ends up holding the same value, which is the point: nothing
+// is spent, so there is nothing for two devices to race for.
+void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap)
 {
     if (bootstrap.contains("sealing")) {
         contact.sealingPublicB64 = bootstrap.at("sealing").get<std::string>();
@@ -211,65 +208,19 @@ void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap,
     if (bootstrap.contains("view")) {
         contact.view = bootstrap.at("view").get<std::string>();
     }
-    if (!bootstrap.contains("replyTokens")) {
+    if (!bootstrap.contains("pass")) {
         return;
     }
-    std::vector<std::string> offered;
-    for (const nlohmann::json& token : bootstrap.at("replyTokens")) {
-        offered.push_back(token.get<std::string>());
-    }
-    if (offered.empty()) {
+    const std::string offered = bootstrap.at("pass").get<std::string>();
+    if (offered.empty() || offered == contact.sendPass) {
         return;
     }
-    const std::string forDevice = bootstrap.value("forDevice", std::string());
-    if (forDevice.empty() && !soleDevice) {
-        // An unaddressed batch: every device of this account sees it, so keeping
-        // all of it would leave several devices holding the same one-time tokens
-        // and racing to spend them. Take exactly one, at random so two devices
-        // rarely pick the same, and spend it on a batch addressed to this device.
-        // Kept alongside what this device already holds rather than replacing it:
-        // at a first bootstrap there is nothing to replace, and later - when a
-        // contact hands out a fresh batch after lifting a block - throwing the
-        // stash away would take the ability to write with it.
-        const std::size_t pick = static_cast<std::size_t>(randomBytes(1).front()) % offered.size();
-        if (std::find(contact.sendTokens.begin(), contact.sendTokens.end(), offered[pick])
-            == contact.sendTokens.end()) {
-            contact.sendTokens.push_back(offered[pick]);
-        }
-        contact.needsOwnBatch = true;
-        bazarish::log::info("stash for {}: {} after one token out of an unaddressed batch",
-            bazarish::log::redact(contact.dest), contact.sendTokens.size());
-        return;
-    }
-    if (forDevice.empty()) {
-        // The only device on this account: nobody to share with, so there is
-        // nothing to buy and no round trip to spend on it.
-        contact.needsOwnBatch = false;
-        for (const std::string& token : offered) {
-            if (std::find(contact.sendTokens.begin(), contact.sendTokens.end(), token)
-                == contact.sendTokens.end()) {
-                contact.sendTokens.push_back(token);
-            }
-        }
-        return;
-    }
-    if (forDevice != thisDevice) {
-        return;  // somebody else's batch: leaving it alone is the whole point
-    }
-    contact.needsOwnBatch = false;
-    for (const std::string& token : offered) {
-        // Dedup: a pending item may be re-fetched before it is acked (acks are
-        // deferred until the client durably stores the item), so applying the
-        // same bootstrap twice must not double the token stash.
-        if (std::find(contact.sendTokens.begin(), contact.sendTokens.end(), token)
-            == contact.sendTokens.end()) {
-            contact.sendTokens.push_back(token);
-        }
-    }
-    // What a stash is worth is the one number a user can watch changing without
-    // being told why. Every path that grows one says so.
-    bazarish::log::info("stash for {}: {} after a batch of {} addressed to this device",
-        bazarish::log::redact(contact.dest), contact.sendTokens.size(), offered.size());
+    // A pass that differs from the one held replaces it. It should not differ -
+    // a correspondent derives one value and keeps deriving it - so what this
+    // covers is a stale copy rather than a change of theirs.
+    contact.sendPass = offered;
+    bazarish::log::info(
+        "delivery pass for {} accepted", bazarish::log::redact(contact.dest));
 }
 
 std::string readFileText(const fs::path& path)
@@ -455,11 +406,11 @@ Session Session::create(
     // Names every envelope this account will ever send; see deliveryIdFor. Drawn
     // here and never redrawn - it is carried through backup and restore.
     const std::string deliveryIdSeed = toHex(randomBytes(kDeliveryIdSeedBytes));
-    // Every delivery token this account issues is minted under a mask drawn from
-    // this and the correspondent's fingerprint, which is what lets the account
-    // revoke a correspondent's tokens later. Drawn once, carried through backup
-    // and restore, and never sent anywhere but the account's own server, as a
-    // mask, when tokens are being revoked.
+    // Every delivery pass this account issues is derived from this and the
+    // correspondent's fingerprint, so nothing has to be written down about what
+    // was issued to whom. Drawn once, carried through backup and restore, and
+    // never sent anywhere: what reaches the account's own server is the hash of
+    // one pass, and what reaches a correspondent is that one pass.
     const std::string deliverySecret = toHex(randomBytes(kDeliverySecretSize));
     const nlohmann::json meta = {
         {"clientId", clientId},
@@ -571,7 +522,10 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
             contact.servingSealingB64 = entry.at("servingSealingB64").get<std::string>();
             contact.identityClassicalB64 = entry.value("identityClassicalB64", std::string());
             contact.identityPqB64 = entry.value("identityPqB64", std::string());
-            contact.sendTokens = entry.at("sendTokens").get<std::vector<std::string>>();
+            // Read tolerantly: an account written before passes existed has
+            // none of these, and refusing to open it would brick it rather than
+            // degrade it.
+            contact.sendPass = entry.value("sendPass", std::string());
             contact.issuedToThem = entry.at("issuedToThem").get<bool>();
             // Display name and avatar metadata are newer fields: tolerate their
             // absence in accounts written before they existed.
@@ -580,12 +534,16 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
             contact.avatarSentToPeer = entry.value("avatarSentToPeer", false);
             contact.view = entry.value("view", std::string());
             contact.sharingRefused = entry.value("sharingRefused", false);
-            contact.requesterDevice = entry.value("requesterDevice", std::string());
-            contact.needsOwnBatch = entry.value("needsOwnBatch", false);
             contact.notifications = entry.value("notifications", true);
             contact.allowCalls = entry.value("allowCalls", true);
-            contact.reissueTokens = entry.value("reissueTokens", false);
             contacts.emplace(fingerprint, std::move(contact));
+        }
+    }
+
+    std::set<std::string> pendingRevokes;
+    if (db->has("pass-revokes")) {
+        for (const nlohmann::json& entry : nlohmann::json::parse(db->text("pass-revokes"))) {
+            pendingRevokes.insert(entry.get<std::string>());
         }
     }
 
@@ -601,6 +559,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     Session session(accountFile, std::move(client), std::move(sealing), std::move(contacts));
     session.db_ = std::move(db);
     session.blocked_ = std::move(blocked);
+    session.pendingPassRevokes_ = std::move(pendingRevokes);
     session.acceptCalls_ = meta.value("acceptCalls", true);
     session.sendReceipts_ = meta.value("sendReceipts", true);
     // Which devices have already asked the others for the address book. Kept per
@@ -623,17 +582,15 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
             "this account was written before delivery ids were seeded and cannot be read;"
             " create it again");
     }
-    // The delivery secret is different from the seed above: an account written
-    // before tokens were revocable can still be opened, and is given one here.
-    // What it issued before this moment was minted at random, so it carries no
-    // mark and cannot be revoked - said out loud, because "remove contact" would
-    // otherwise quietly leave those tokens working.
+    // An account written before passes existed has no secret to derive them
+    // from, so it is given one now - said out loud, because the passes it issued
+    // under the old scheme are not ours to take back.
     const std::string deliverySecret = meta.value("deliverySecret", std::string());
     if (deliverySecret.empty()) {
         session.deliverySecret_ = randomBytes(kDeliverySecretSize);
         session.persistMeta();
-        bazarish::log::warn("this account predates revocable delivery tokens: the ones it"
-            " issued before now cannot be revoked, only the ones it issues from here");
+        bazarish::log::warn("this account predates derived delivery passes: what it issued"
+            " before now cannot be revoked, only what it issues from here");
     } else {
         session.deliverySecret_ = fromHex(deliverySecret);
     }
@@ -835,18 +792,15 @@ nlohmann::json Session::contactsToJson() const
             {"servingSealingB64", contact.servingSealingB64},
             {"identityClassicalB64", contact.identityClassicalB64},
             {"identityPqB64", contact.identityPqB64},
-            {"sendTokens", contact.sendTokens},
-            {"needsOwnBatch", contact.needsOwnBatch},
+            {"sendPass", contact.sendPass},
             {"issuedToThem", contact.issuedToThem},
             {"displayName", contact.displayName},
             {"avatarMime", contact.avatarMime},
             {"avatarSentToPeer", contact.avatarSentToPeer},
             {"view", contact.view},
             {"sharingRefused", contact.sharingRefused},
-            {"requesterDevice", contact.requesterDevice},
             {"notifications", contact.notifications},
             {"allowCalls", contact.allowCalls},
-            {"reissueTokens", contact.reissueTokens},
         };
     }
     return stored;
@@ -1407,16 +1361,14 @@ void Session::setBlocked(const std::string& peerFingerprint, const bool blocked)
         blocked_.insert(peerFingerprint);
         // Blocking is not only a local filter: what they hold stops working, so
         // their mail stops arriving at all rather than being read and dropped.
-        revokeTokensFor(peerFingerprint);
+        revokePassFor(peerFingerprint);
     } else {
         blocked_.erase(peerFingerprint);
-        // Blocking took away what they held; unblocking has to give it back, or
-        // they are a contact who cannot answer. The batch rides on the next thing
-        // written to them - one delivery, not an errand of its own.
-        const auto known = contacts_.find(peerFingerprint);
-        if (known != contacts_.end()) {
-            known->second.reissueTokens = true;
-            persistContacts();
+        // Blocking took away what they held; unblocking gives it back by simply
+        // registering the same pass again. They still hold it, so nothing has to
+        // be sent to them and nothing has to wait for a message to ride on.
+        if (contacts_.count(peerFingerprint) > 0) {
+            registerPassFor(peerFingerprint);
         }
     }
     persistBlocked();
@@ -1496,7 +1448,7 @@ void Session::maybeSendAvatarToContact(const std::string& peerFingerprint, const
     // Share only once the dialog is mutually established (issuedToThem: we are the
     // requester, or we accepted their request - never an automatic reply to an
     // un-accepted incoming request) and we can actually reach the peer.
-    if (!contact.issuedToThem || contact.avatarSentToPeer || contact.sendTokens.empty()
+    if (!contact.issuedToThem || contact.avatarSentToPeer || contact.sendPass.empty()
         || contact.sealingPublicB64.empty() || contact.servingSealingB64.empty()) {
         return;
     }
@@ -1577,7 +1529,7 @@ void Session::removeContactEverywhere(const std::string& peerFingerprint)
     }
     // What they hold stops working first: after this the removal is local
     // wherever it is applied, and nothing new can arrive from them.
-    revokeTokensFor(peerFingerprint);
+    revokePassFor(peerFingerprint);
     try {
         sendSelf({
             {"type", "device.contact-remove"},
@@ -1715,9 +1667,9 @@ std::shared_ptr<LoginSigner> Session::loginSigner() const
         Identity::fromPrivatePem(client_->identity().privatePem()));
 }
 
-Bytes Session::deliveryMaskFor(const std::string& peerFingerprint) const
+Bytes Session::passIdFor(const std::string& peerFingerprint) const
 {
-    return deliveryTokenMask(deliverySecret_, peerFingerprint);
+    return deliveryPass(deliverySecret_, peerFingerprint);
 }
 
 void Session::submitSignedToSelf(nlohmann::json inner, const std::string& kind) const
@@ -1767,40 +1719,57 @@ void Session::clearConnectionLog()
     client_->wireLog().clear();
 }
 
-std::vector<std::string> Session::issueTokenBatch(const std::string& peerFingerprint,
-    const int count)
+std::string Session::registerPassFor(const std::string& peerFingerprint)
 {
-    const Bytes mask = deliveryMaskFor(peerFingerprint);
-    std::vector<std::string> tokens;
-    std::vector<Bytes> minted;
-    tokens.reserve(static_cast<std::size_t>(count));
-    minted.reserve(static_cast<std::size_t>(count));
-    for (int i = 0; i < count; ++i) {
-        const Bytes token = generateDeliveryToken(mask);
-        tokens.push_back(toBase64(token));
-        minted.push_back(token);
+    const Bytes pass = passIdFor(peerFingerprint);
+    const std::string handle = toBase64(deliveryPassHandle(pass));
+    client_->registerPasses({fromBase64(handle)});
+    // Registering is also how a block is lifted, so it settles any revocation
+    // that was still owed for this correspondent.
+    if (pendingPassRevokes_.erase(handle) > 0) {
+        persistPendingRevokes();
     }
-    client_->registerTokens(minted);
-    return tokens;
+    return toBase64(pass);
 }
 
-std::string Session::issueOneToken(const std::string& peerFingerprint)
+void Session::revokePassFor(const std::string& peerFingerprint)
 {
-    const Bytes token = generateDeliveryToken(deliveryMaskFor(peerFingerprint));
-    client_->registerTokens({token});
-    return toBase64(token);
-}
-
-void Session::revokeTokensFor(const std::string& peerFingerprint)
-{
-    // The mask is all the server needs and all it is given: it drops what was
-    // minted under it and learns nothing about whose it was. Best effort - a
-    // server we cannot reach right now must not stop the removal, which is local
-    // and already done.
+    const std::string handle = toBase64(deliveryPassHandle(passIdFor(peerFingerprint)));
     try {
-        client_->revokeTokens(deliveryMaskFor(peerFingerprint));
+        client_->revokePasses({fromBase64(handle)});
+        if (pendingPassRevokes_.erase(handle) > 0) {
+            persistPendingRevokes();
+        }
     } catch (const std::exception& error) {
-        bazarish::log::warn("tokens for a removed contact were not revoked: {}", error.what());
+        // Nothing else stops a correspondent writing, so an answer we did not
+        // hear is written down and asked again rather than assumed. The removal
+        // itself is local and already done.
+        pendingPassRevokes_.insert(handle);
+        persistPendingRevokes();
+        bazarish::log::warn("a revoked delivery pass was not dropped yet: {}", error.what());
+    }
+}
+
+void Session::persistPendingRevokes()
+{
+    db_->putText("pass-revokes", nlohmann::json(pendingPassRevokes_).dump());
+}
+
+void Session::retryPendingRevokes()
+{
+    if (pendingPassRevokes_.empty()) {
+        return;
+    }
+    std::vector<Bytes> handles;
+    for (const std::string& handle : pendingPassRevokes_) {
+        handles.push_back(fromBase64(handle));
+    }
+    try {
+        client_->revokePasses(handles);
+        pendingPassRevokes_.clear();
+        persistPendingRevokes();
+    } catch (const std::exception& error) {
+        bazarish::log::warn("revocations still owed to our server: {}", error.what());
     }
 }
 
@@ -1822,7 +1791,7 @@ std::string Session::deliveryIdFor(
 }
 
 bool Session::deliver(const std::string& toDest, const Key& servingSealingKey,
-    const std::string& kind, const std::string& mailbox, const std::vector<Bytes>& tokens,
+    const std::string& kind, const std::string& mailbox, const Bytes& pass,
     const Bytes& payload, const DeliveryWatch& watch, const bool waitForOutcome,
     const std::string& e2eId)
 {
@@ -1841,7 +1810,7 @@ bool Session::deliver(const std::string& toDest, const Key& servingSealingKey,
     if (task.peerName.empty() && !mailbox.empty()) {
         task.peerName = mailbox.substr(0, std::min(mailbox.size(), kShortFingerprintChars));
     }
-    task.sealed = sealDeliveryEnvelope(kind, mailbox, deliveryId, tokens, servingSealingKey);
+    task.sealed = sealDeliveryEnvelope(kind, mailbox, deliveryId, pass, servingSealingKey);
     task.payload = payload;
     task.deliveryId = deliveryId;
     task.onPhase = watch.onPhase;
@@ -2168,13 +2137,11 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     const std::string peerDest = info.card.dest;
     validateB32I2pHost(peerDest);
 
-    // Mint a batch the peer will use to write back to us and hand it over, with
-    // our prekey and our routing (dest + serving sealing key), in the bootstrap.
-    // A small one: this rides the tokenless path, and what it weighs is what a
-    // flood of requests costs the person being asked. The full batch follows in
-    // their first reply, which is paid for like any other message.
-    const std::vector<std::string> replyTokens
-        = issueTokenBatch(peerFingerprint, kRequestTokenBatchSize);
+    // Register the pass the peer will write back with and hand it over, with our
+    // prekey and our routing (dest + serving sealing key), in the bootstrap. One
+    // value rather than a batch: this rides the tokenless path, and what it
+    // weighs is what a flood of requests costs the person being asked.
+    const std::string replyPass = registerPassFor(peerFingerprint);
 
     const nlohmann::json payload = {
         {"v", kMessageFormatVersion},
@@ -2185,11 +2152,6 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
         {"id", requestId},
         {"from", fingerprint()},
         {"sentAt", nowMillis()},
-        // Which of our devices is asking: the peer's reply addresses its token
-        // batch to it, so our other devices do not adopt the same one-time
-        // tokens and race to spend them. They ask for their own when they need
-        // to write (token-request).
-        {"device", client_->clientId()},
         {"text", text},
         // Our own self-chosen display name, so the recipient can show a named
         // friend in their contacts from the start - mirroring how we learn their
@@ -2202,7 +2164,7 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
                 {"dest", myDest_},
                 {"servingKey", myServingKeyB64_},
                 {"view", sharedView()},
-                {"replyTokens", replyTokens},
+                {"pass", replyPass},
             }},
     };
     // E2E-encrypted to the peer's prekey: the first message is confidential.
@@ -2215,8 +2177,8 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     deliver(peerDest, peerServingKey, "contact", peerFingerprint, {}, encrypted,
         DeliveryWatch{}, /*waitForOutcome=*/true, requestId);
 
-    // We now know how to reach the peer; reciprocal tokens arrive with the
-    // peer's reply.
+    // We now know how to reach the peer; their pass to us arrives with their
+    // reply.
     Contact& contact = contacts_[peerFingerprint];
     contact.dest = peerDest;
     contact.sealingPublicB64 = toBase64(peerPrekey.publicDer());
@@ -2592,8 +2554,8 @@ void Session::sendReceipt(const std::string& peerFingerprint, const std::string&
     // delivered and never turns read until they are accepted - and it is the
     // cheaper half of the trade.
     const auto found = contacts_.find(peerFingerprint);
-    if (found == contacts_.end() || found->second.sendTokens.empty()) {
-        return;  // unknown contact, or no token to deliver the receipt with
+    if (found == contacts_.end() || found->second.sendPass.empty()) {
+        return;  // unknown contact, or nothing to deliver the receipt with
     }
     if (!found->second.issuedToThem) {
         return;  // their request is unanswered: this account says nothing to them
@@ -2642,23 +2604,6 @@ void Session::sendChatClear(const std::string& peerFingerprint)
         {"id", toHex(randomBytes(8))},
         {"from", fingerprint()},
         {"sentAt", nowMillis()},
-    };
-    sendContent(peerFingerprint, std::move(inner));
-}
-
-void Session::requestTokens(const std::string& peerFingerprint)
-{
-    // The fields the low-stash flag rides on are read before a type is looked at,
-    // so this needs no more than a type the far side consumes without showing.
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "token.request"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
-        {"lowStash", true},
-        {"device", client_->clientId()},
-        {"refillToken", issueOneToken(peerFingerprint)},
     };
     sendContent(peerFingerprint, std::move(inner));
 }
@@ -3004,11 +2949,10 @@ void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& pee
 }
 
 bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inner,
-    const DeliveryWatch& watch, bool waitForOutcome, bool establishOnFirstReply,
-    const std::string& overrideToken)
+    const DeliveryWatch& watch, bool waitForOutcome, bool establishOnFirstReply)
 {
     // Addressed to ourselves: this is the saved chat, and it is kept rather than
-    // delivered. Nothing is dialled, no token is spent, and every device of this
+    // delivered. Nothing is dialled, nothing is presented, and every device of this
     // account gets it - which is the whole of what saving means here.
     if (isSavedChat(peerFingerprint)) {
         const bool kept = saveToSelf(std::move(inner));
@@ -3033,8 +2977,8 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     // other device, and every retry echoed again: one failed send became a column
     // of grey copies over there. The copy is taken here, while the message is
     // still what the user wrote, and sent from the outcome below. Only what
-    // changes the conversation travels: a receipt, a call signal or a token
-    // errand is this device's business alone.
+    // changes the conversation travels: a receipt or a call signal is this
+    // device's business alone.
     const nlohmann::json echoPayload
         = echoesToOwnDevices(inner.value("type", std::string())) ? inner : nlohmann::json();
     const auto found = contacts_.find(peerFingerprint);
@@ -3053,85 +2997,39 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
             + std::to_string(body.size() / 1024) + " KiB; the limit is "
             + std::to_string(kMaxMessagePayloadBytes / 1024) + " KiB) - send it as a file");
     }
-    // A caller-supplied token is spent instead of one from our stash (a prepaid
-    // token-refill reply), so an empty stash is not an error on that path.
-    const bool useOverrideToken = !overrideToken.empty();
-    // Kept only while the stash is thin enough that this send may have to wait:
-    // a message that waits is sent again from what the user wrote, not from the
-    // envelope this function has been adding to. Above the watermark no message
-    // can be short, so nothing is copied.
-    const bool mayWait = !useOverrideToken
-        && contact.sendTokens.size() <= tokensForPayload(kMaxMessagePayloadBytes);
-    const nlohmann::json asWritten = mayWait ? inner : nlohmann::json();
-    if (!useOverrideToken && contact.sendTokens.empty()) {
-        // Nothing to carry it with. The message waits rather than failing, and
-        // this device asks its own devices for a token - the token that arrives
-        // carries this message, which asks the correspondent for a batch on its
-        // way past. Spending it on an errand instead would send nothing and leave
-        // the user's message exactly where it was.
-        holdForToken(peerFingerprint, asWritten, watch, establishOnFirstReply);
-        try {
-            askDevicesForToken(peerFingerprint);
-        } catch (const std::exception& error) {
-            bazarish::log::warn("could not ask this account's devices for a token for {}: {}",
-                bazarish::log::redact(peerFingerprint), error.what());
-        }
-        return false;
+    if (contact.sendPass.empty()) {
+        // They have never given this account a pass, so there is no way into
+        // their mailbox. Nothing runs a pass down, so this is not a shortage to
+        // wait out - it is a dialog that was never established in that direction.
+        throw std::runtime_error("no delivery pass for this contact yet: " + peerFingerprint);
     }
     // What the bootstrap below decides, applied only when the envelope actually
     // leaves: everything between here and the send may still refuse it.
     bool bootstrapIssued = false;
-    bool reissueCleared = false;
     // The caller's watch plus the connection log's own outcome line.
     DeliveryWatch watchWithLog = watch;
 
     // First reply to a peer that wrote to us first: hand them a bootstrap (our
-    // routing + a token batch) so the reverse direction is usable too. A read
-    // receipt (establishOnFirstReply=false) skips this, so confirming a read never
-    // auto-accepts an un-accepted contact request.
-    // Not while one is already in the air: a second message written before the
-    // acceptance is confirmed would mint a second batch of 256 tokens for a peer
-    // who is about to receive the first.
+    // routing + our pass) so the reverse direction is usable too. A read receipt
+    // (establishOnFirstReply=false) skips this, so confirming a read never
+    // auto-accepts an un-accepted contact request. Not while one is already in
+    // the air: a second message written before the acceptance is confirmed would
+    // say the same thing twice.
     if (establishOnFirstReply && !contact.issuedToThem && !contact.acceptInFlight) {
         inner["bootstrap"] = {
             {"sealing", sealingPublicB64()},
             {"dest", myDest_},
             {"servingKey", myServingKeyB64_},
             {"view", sharedView()},
-            {"replyTokens", issueTokenBatch(peerFingerprint, kTokenBatchSize)},
+            {"pass", registerPassFor(peerFingerprint)},
         };
-        // Addressed when we know which device asked: their other devices then
-        // leave this batch alone and ask for their own rather than spending the
-        // same one-time tokens twice.
-        if (!contact.requesterDevice.empty()) {
-            inner["bootstrap"]["forDevice"] = contact.requesterDevice;
-        }
+        // Addressed to nobody, because it does not have to be: every device of
+        // theirs may hold this value and none of them takes it from the others.
+        //
         // Written down only once this send is certain to go out: a message that
-        // is refused for want of tokens must not leave the contact marked as
-        // holding a batch it never got.
+        // is refused must not leave the contact marked as holding a pass it never
+        // got.
         bootstrapIssued = true;
-    } else if (contact.reissueTokens) {
-        // A block was lifted: they hold nothing of ours, so this message carries a
-        // batch. Addressed to nobody - any device of theirs may take it, and the
-        // rest ask for their own, which is the same rule a refill follows.
-        inner["bootstrap"] = {
-            {"sealing", sealingPublicB64()},
-            {"dest", myDest_},
-            {"servingKey", myServingKeyB64_},
-            {"view", sharedView()},
-            {"replyTokens", issueTokenBatch(peerFingerprint, kTokenBatchSize)},
-        };
-        reissueCleared = true;
-    }
-
-    // After spending this token our stash for the peer would be this small; ask
-    // them to refill us before it hits zero (Contacts.md), and prepay their reply
-    // with one fresh token so the refill is deliverable even if they hold none of
-    // ours. Skipped when we spend a caller-supplied token (the refill reply itself).
-    if (!useOverrideToken && contact.sendTokens.size() - 1 <= kRefillThreshold) {
-        inner["lowStash"] = true;
-        inner["device"] = client_->clientId();  // the batch comes back to this device
-        inner["refillToken"] = issueOneToken(peerFingerprint);
     }
 
     // Where to answer us. A destination is not for life: regenerate the key and
@@ -3155,57 +3053,15 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     const Key peerSealing = Key::fromPublicDer(fromBase64(contact.sealingPublicB64));
     const Bytes payload = cms::seal(innerBytes, peerSealing);
     const Key peerServingKey = Key::fromPublicDer(fromBase64(contact.servingSealingB64));
+    const Bytes pass = fromBase64(contact.sendPass);
 
-    // What this send is, in the connection log: the kind, who it is for and the
-    // id the two servers will call it by. The outcome arrives later on a courier
-    // thread, so it rides the same callback the interface watches, and it holds
-    // the log itself - this account may be closed before the last attempt ends.
-    // What this message weighs, in capabilities: one token per
-    // kBytesPerDeliveryToken of the sealed payload, never fewer than one. A line
-    // of text costs one, as it always did; the largest payload the protocol
-    // allows costs eighteen, which is what makes a mailbox expensive to fill and
-    // a conversation no dearer than it was. Counted on what actually goes, since
-    // a bootstrap or a refill ask rides in the same envelope.
-    const std::size_t tokensNeeded = tokensForPayload(payload.size());
-    if (!useOverrideToken && contact.sendTokens.size() < tokensNeeded) {
-        // Not enough for what this one weighs. It waits for the rest the same way
-        // an empty stash waits, and the ask goes out once.
-        holdForToken(peerFingerprint, asWritten, watch, establishOnFirstReply);
-        try {
-            askDevicesForToken(peerFingerprint);
-        } catch (const std::exception& error) {
-            bazarish::log::warn("could not ask this account's devices for a token for {}: {}",
-                bazarish::log::redact(peerFingerprint), error.what());
-        }
-        return false;
-    }
     if (bootstrapIssued) {
         // Not accepted yet: this send IS the acceptance, and what makes it one is
-        // the batch it carries reaching the peer's mailbox. Until their server
+        // the pass it carries reaching the peer's mailbox. Until their server
         // confirms it stored, the request stands unanswered and the Agree button
         // stays where it is - a contact marked accepted on the strength of a send
         // that never landed is a dialog that exists on one side only.
         contact.acceptInFlight = true;
-    }
-    if (reissueCleared) {
-        contact.reissueTokens = false;
-    }
-    // Taken here, before anything says which token this send spends. Spent before
-    // the envelope leaves, not after it lands: a send this client gives up on may
-    // still have been stored by the recipient - only its confirmation was lost -
-    // and a token that may already have been consumed there must never be offered
-    // to a second message, or that message is the one that fails. Resending THIS
-    // message is free either way: the delivery id is derived from the message, so
-    // the recipient's server recognises the repeat and spends nothing for it.
-    // A caller-supplied token is not from our stash, so the stash is left untouched.
-    std::vector<Bytes> tokens;
-    if (useOverrideToken) {
-        tokens.push_back(fromBase64(overrideToken));
-    } else {
-        for (std::size_t i = 0; i < tokensNeeded; ++i) {
-            tokens.push_back(fromBase64(takeSendToken(contact)));
-        }
-        persistContacts();
     }
     {
         const std::string kind = inner.value("type", std::string("?"));
@@ -3213,24 +3069,16 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
         const std::string shortId
             = deliveryIdFor(inner.value("id", std::string()), peerFingerprint)
                   .substr(0, kShortFingerprintChars);
-        // The capability this send spends, by its first bytes. A refused delivery
-        // is refused for one of three reasons and the server names the token in
-        // its own log; without the same handle on this side the two accounts of
-        // one failure cannot be put next to each other.
-        const std::string tokenLabel = useOverrideToken
-            ? std::string()
-            : ", " + std::to_string(tokens.size()) + " token(s) from "
-                + toHex(tokens.front()).substr(0, kSpentTokenPrefixChars);
-        noteWire(true, kind + " to " + peerLabel, "sending", "id " + shortId + tokenLabel);
-        // Filled in below, once there is a watch to send it through. A send that
-        // may not spend a token of its own - a refill reply paying with the
-        // token it was handed - has nothing to try again with, so it gets none.
-        const std::shared_ptr<std::function<void()>> resend
-            = useOverrideToken ? nullptr : std::make_shared<std::function<void()>>();
+        // The capability this send presents, by its first bytes. A refused
+        // delivery names the pass in the server's own log; without the same
+        // handle on this side the two accounts of one failure cannot be put next
+        // to each other.
+        noteWire(true, kind + " to " + peerLabel, "sending",
+            "id " + shortId + ", pass " + toHex(pass).substr(0, kPassPrefixChars));
         DeliveryWatch logged = watch;
         const std::shared_ptr<WireLog> log = client_->wireLogHandle();
         logged.onOutcome = [log, kind, peerLabel, shortId, peerFingerprint, echoPayload,
-                               echoQueue = echoQueue_, onOutcome = watch.onOutcome, resend,
+                               echoQueue = echoQueue_, onOutcome = watch.onOutcome,
                                bootstrapIssued](const OutboundCourier::Outcome& outcome) {
             const std::string status = outcome.stored
                 ? std::string("stored")
@@ -3243,29 +3091,9 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
                 const std::lock_guard<std::mutex> lock(echoQueue->mutex);
                 echoQueue->pending.push_back({peerFingerprint, echoPayload});
             }
-            // A refusal is the recipient's server saying that capability was not
-            // one. It says that about the token that was presented and about
-            // nothing else: the rest of the stash has not been shown to anybody.
-            // So the message is offered again with the next token, and the user
-            // is told which attempt it is on rather than that it failed.
-            //
-            // Only this refusal. STORAGE_FULL says the mailbox is full and the
-            // token untouched (the far side even re-registers it),
-            // RECIPIENT_SERVER_UNREACHABLE says nothing was presented at all, and
-            // MESSAGE_TOO_LARGE is about the message. None of them is about the
-            // capability, and none is worth a second token.
-            if (!outcome.stored && resend
-                && outcome.errorCode
-                    == std::string(bazarish::toString(ErrorCode::eDeliveryRejected))) {
-                const std::lock_guard<std::mutex> lock(echoQueue->mutex);
-                echoQueue->refused.push_back(resend);
-                return;  // the outcome is not final: the next token decides
-            }
-            // Below the refusal above, which is not an outcome yet: an acceptance
-            // is an acceptance once the batch it carries is in their mailbox, and
-            // a token the far side would not take says nothing about that.
-            // Queued rather than applied - this runs on the courier's thread, and
-            // the contact book is the session's.
+            // An acceptance is an acceptance once the pass it carries is in their
+            // mailbox. Queued rather than applied - this runs on the courier's
+            // thread, and the contact book is the session's.
             if (bootstrapIssued) {
                 const std::lock_guard<std::mutex> lock(echoQueue->mutex);
                 if (outcome.stored) {
@@ -3279,67 +3107,12 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
             }
         };
         watchWithLog = std::move(logged);
-        if (resend) {
-            // The same envelope, with the next token in the stash. A refusal is
-            // about the capability that was presented and about nothing else, so
-            // the message is offered again rather than failed - and the user is
-            // told which try it is on. It gives up after a few: a batch that
-            // refuses this many times running is a batch, not a stale token, and
-            // walking the rest of it would be minutes of dialling for nothing.
-            *resend = [this, peerFingerprint, dest = contact.dest,
-                          contentKind = inner.value("type", std::string()), payload,
-                          e2eId = inner.value("id", std::string()),
-                          servingB64 = contact.servingSealingB64, wrapped = watchWithLog,
-                          report = watch.onOutcome,
-                          left = std::make_shared<int>(kRefusedTokenRetries)]() {
-                const auto peer = contacts_.find(peerFingerprint);
-                const std::size_t weight = tokensForPayload(payload.size());
-                if (*left > 0 && peer != contacts_.end()
-                    && peer->second.sendTokens.size() >= weight) {
-                    --*left;
-                    std::vector<Bytes> again;
-                    for (std::size_t i = 0; i < weight; ++i) {
-                        again.push_back(fromBase64(takeSendToken(peer->second)));
-                    }
-                    persistContacts();
-                    if (wrapped.onPhase) {
-                        wrapped.onPhase(std::string(kPhaseTokenRefused) + ":"
-                            + std::to_string(peer->second.sendTokens.size()));
-                    }
-                    deliver(dest, Key::fromPublicDer(fromBase64(servingB64)), "content",
-                        peerFingerprint, again, payload, wrapped, false, e2eId);
-                    return;
-                }
-                (void)contentKind;
-                // Nothing left to try with. The message failed, and the ask for a
-                // fresh batch goes to this account's own devices - the peer is
-                // never asked, a contact request being the only tokenless door.
-                bazarish::log::warn("every token tried for {} was refused",
-                    bazarish::log::redact(peerFingerprint));
-                OutboundCourier::Outcome spent;
-                spent.stored = false;
-                spent.errorCode = std::string(bazarish::toString(ErrorCode::eDeliveryRejected));
-                spent.errorMessage = "the recipient's server refused the delivery tokens this"
-                                     " device tried";
-                if (report) {
-                    report(spent);
-                }
-                try {
-                    askDevicesForToken(peerFingerprint);
-                } catch (const std::exception& error) {
-                    bazarish::log::warn("could not ask for fresh tokens after a refusal: {}",
-                        error.what());
-                }
-            };
-        }
     }
-
 
     // The message's own id goes down with it: the envelope is named after it, so
     // sending this message again is the same delivery rather than a second one.
     const bool delivered = deliver(contact.dest, peerServingKey, "content", peerFingerprint,
-        tokens, payload, watchWithLog, waitForOutcome,
-        inner.value("id", std::string()));
+        pass, payload, watchWithLog, waitForOutcome, inner.value("id", std::string()));
     return delivered;
 }
 
@@ -3378,13 +3151,6 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
     // devices hear about a message once it is somewhere, not before.
     flushPendingEchoes();
     std::vector<IncomingMessage> result;
-    // Peers whose stash of our tokens is running low and who asked for a
-    // refill; topped up after the fetch loop so we never write mid-iteration.
-    std::set<std::pair<std::string, std::string>> refillPeers;  // peer, device
-    // A fresh token each low-stash requester embedded to prepay our refill reply, by
-    // peer fingerprint: we spend exactly it to deliver the batch (so the reply lands
-    // even when we hold none of their tokens) and never fold it into our stash.
-    std::map<std::string, std::string> prepaidRefillTokens;
     // Peers that carried a bootstrap this sync (a contact request, or - for one we
     // requested - their acceptance): we push our avatar to the established ones
     // after the loop, same "never write mid-iteration" rule.
@@ -3534,7 +3300,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 // The keys ride with the bootstrap, and this is where a contact
                 // is made: from here on their messages are checked against them.
                 rememberKeys(peer, keysIn(body));
-                applyBootstrap(peer, body.at("bootstrap"), client_->clientId(), soleDevice());
+                applyBootstrap(peer, body.at("bootstrap"));
                 message.establishedContact = true;
                 establishedPeers.insert(message.fromFingerprint);
             }
@@ -3553,20 +3319,6 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                     // Their own choice of name, and the one name it may not be.
                     peer.displayName = safeContactName(dn);
                 }
-                if (type == "contact.request") {
-                    // Whoever asked gets our batch by name.
-                    peer.requesterDevice = body.value("device", std::string());
-                }
-            }
-
-            // The peer is low on our tokens and asked to be refilled; their request
-            // prepays our reply with a fresh token, held only for that refill.
-            if (body.value("lowStash", false)) {
-                refillPeers.insert({message.fromFingerprint, body.value("device", std::string())});
-            }
-            if (body.contains("refillToken")) {
-                prepaidRefillTokens[message.fromFingerprint]
-                    = body.at("refillToken").get<std::string>();
             }
 
             // Content dispatch. An unknown type is still acked and surfaced (not
@@ -3706,22 +3458,6 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 // Audio-call signalling: update call state and start/stop media. The
                 // media itself never touches the server (it rides I2P datagrams).
                 handleCallSignal(type, message.fromFingerprint, body, message);
-            } else if (type == "token-request") {
-                // One of their devices has no capacity to write to us. Answer it
-                // by name; the reply rides the contact channel when we hold none
-                // of their tokens either, which is the usual case right after a
-                // new device appears.
-                message.contentType = type;
-                refillPeers.insert({message.fromFingerprint, body.value("device", std::string())});
-            } else if (type == "token-refill") {
-                // The fresh tokens already arrived via the bootstrap block.
-                message.contentType = type;
-            } else if (type == "token.request") {
-                // A contact asking to be topped up. Everything it carries - the
-                // ask, the device to answer, the token that prepays the answer -
-                // was taken above; there is nothing to show and nothing else to
-                // do here.
-                message.contentType = type;
             } else if (type.rfind("device.", 0) == 0
                 && message.fromFingerprint != fingerprint()) {
                 // The device channel is this account talking to itself. A message
@@ -3761,45 +3497,6 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 if (body.value("forDevice", std::string()) == client_->clientId()
                     && body.contains("contacts")) {
                     applyContactBook(body.at("contacts"));
-                }
-            } else if (type == "device.token-request") {
-                // Another of our devices has nothing left to write to this peer
-                // with. Give it one of ours if we have any; every device that
-                // does answers, and the asker keeps what arrives.
-                message.contentType = type;
-                if (body.value("device", std::string()) != client_->clientId()) {
-                    grantTokenToDevices(body.value("peer", std::string()),
-                        body.value("device", std::string()));
-                }
-            } else if (type == "device.token-grant") {
-                // A token another of our devices gave up for us. The first one
-                // buys a batch of our own; the rest are ours to keep, and they
-                // are gone from the device that sent them.
-                message.contentType = type;
-                if (body.value("forDevice", std::string()) == client_->clientId()) {
-                    const std::string peer = body.value("peer", std::string());
-                    const std::string token = body.value("token", std::string());
-                    const auto known = contacts_.find(peer);
-                    if (known != contacts_.end() && !token.empty()) {
-                        Contact& contact = known->second;
-                        if (std::find(contact.sendTokens.begin(), contact.sendTokens.end(), token)
-                            == contact.sendTokens.end()) {
-                            contact.sendTokens.push_back(token);
-                            bazarish::log::info("stash for {}: {} after a token from {}",
-                                bazarish::log::redact(peer), contact.sendTokens.size(),
-                                body.value("device", std::string()).substr(0, kShortFingerprintChars));
-                        }
-                        persistContacts();
-                        // The errand that buys a batch is worth a token only when
-                        // there is nothing better to spend it on. A message the
-                        // user wrote and is waiting to send is better: it carries
-                        // the same ask on its way past.
-                        if (contact.issuedToThem
-                            && (contact.needsOwnBatch || contact.sendTokens.size() == 1)
-                            && !sendWaitingFor(peer)) {
-                            sendTokenRequest(peer);
-                        }
-                    }
                 }
             } else if (type == "device.i2p-master-request") {
                 // Another of our devices has no keys for the address this account
@@ -4060,59 +3757,15 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
     // A peer accepted our request (or we just learned their routing): push our
     // avatar to any now-established contact we have engaged with. maybeSend... is
     // gated on issuedToThem, so an un-accepted incoming request never triggers an
-    // automatic avatar reply. Best effort, after the loop like the refills below.
+    // automatic avatar reply. Best effort, after the loop.
     for (const std::string& peer : establishedPeers) {
         maybeSendAvatarToContact(peer);
     }
 
-    // Refill peers that ran low (a fresh token batch, sent as a token-refill).
-    // Done after the loop so the outbound send never races the fetch loop.
-    // Whatever the pass brought in - a refill, a batch on a message, a token from
-    // another device - may be exactly what a held message was waiting for.
-    flushWaitingSends();
-    // A device that owes itself an addressed batch of tokens.
-    //
-    // The errand that buys one costs a token, and a device with exactly one has
-    // something better to do with it: whatever the user writes next carries the
-    // same request (`lowStash` and a prepaid reply token, addressed to this
-    // device), so the message goes out AND the batch comes back. Spending the
-    // last one here instead left a restored device unable to write at all until
-    // the correspondent answered - the one thing a restored device must be able
-    // to do. With none at all there is nothing to spend, and the only way out is
-    // a token from one of this account's own devices; asked once per run, so a
-    // contact that is simply unreachable does not fill the mailbox.
-    for (auto& [peerFingerprint, contact] : contacts_) {
-        // Nothing is bought on the strength of a request nobody answered. Until
-        // this account agrees - the Agree button, or a reply, which is the same
-        // decision - a requester is sent nothing at all, and this errand would be
-        // an acceptance the user never gave: it carries the bootstrap.
-        if (!contact.needsOwnBatch || !contact.issuedToThem) {
-            continue;
-        }
-        try {
-            if (contact.sendTokens.empty()) {
-                if (askedOwnDevicesFor_.insert(peerFingerprint).second) {
-                    askDevicesForToken(peerFingerprint);
-                }
-            } else if (contact.sendTokens.size() > 1 && !sendWaitingFor(peerFingerprint)) {
-                sendTokenRequest(peerFingerprint);
-            }
-        } catch (const std::exception& error) {
-            bazarish::log::warn("sync: could not ask for this device's own tokens for {}: {}",
-                bazarish::log::redact(peerFingerprint), error.what());
-        }
-    }
-    for (const auto& [peer, device] : refillPeers) {
-        // Best-effort: a peer we cannot route to right now must not fail the
-        // whole sync (which would read as "server unreachable"); retry next tick.
-        try {
-            const auto pre = prepaidRefillTokens.find(peer);
-            sendTokenRefill(peer, device,
-                pre != prepaidRefillTokens.end() ? pre->second : std::string());
-        } catch (const std::exception& error) {
-            bazarish::log::warn("sync: token refill failed: {}", error.what());
-        }
-    }
+    // Anything our server has not confirmed dropping is asked again: a
+    // correspondent who was blocked or removed must not still be writing because
+    // one request went missing.
+    retryPendingRevokes();
     // Once per device, on the first sync that reached the server: ask the other
     // devices of this account for the address book. A device that is the only
     // one gets no answer, and the question costs it one self-addressed message.
@@ -4138,63 +3791,10 @@ void Session::ackPending(const std::string& pendingId)
     client_->ack(pendingId);
 }
 
-void Session::sendTokenRefill(const std::string& peerFingerprint, const std::string& forDevice,
-    const std::string& prepaidToken)
+bool Session::canWriteTo(const std::string& peerFingerprint) const
 {
-    // A prepaid token pays for exactly one reply. An item in the mailbox can be
-    // offered again - an ack that did not stick, a fetch that ran twice - and
-    // answering it again spends a capability that was consumed the first time:
-    // the recipient's server refuses it, this device learns nothing, and the
-    // pair goes round again on the next pass. Answered once per token, then.
-    if (!prepaidToken.empty() && !answeredPrepaid_.insert(prepaidToken).second) {
-        bazarish::log::debug("refill for {} already answered with this token",
-            bazarish::log::redact(peerFingerprint));
-        return;
-    }
-    const auto found = contacts_.find(peerFingerprint);
-    if (found == contacts_.end()) {
-        return;
-    }
-    const Contact& contact = found->second;
-    // Never auto-refill a peer whose incoming request we have not accepted yet
-    // (issuedToThem still false): that would attach our bootstrap and silently
-    // establish the contact. We also need the peer's descriptor. With a prepaidToken
-    // (embedded in their low-stash request) the reply spends exactly it, so it lands
-    // even when we hold none of their tokens; without one we spend one of ours, so an
-    // empty stash means the peer's own refill of us must arrive first.
-    if (!contact.issuedToThem || contact.sealingPublicB64.empty()
-        || contact.servingSealingB64.empty()) {
-        return;
-    }
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "token-refill"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
-        {"bootstrap", {{"replyTokens", issueTokenBatch(peerFingerprint, kTokenBatchSize)}, {"forDevice", forDevice}}},
-        {"routing",
-            {{"dest", myDest_}, {"servingKey", myServingKeyB64_}, {"view", sharedView()}}},
-    };
-    if (!prepaidToken.empty() || !contact.sendTokens.empty()) {
-        sendContent(peerFingerprint, std::move(inner), {}, false, true, prepaidToken);
-        return;
-    }
-    // Neither side has capacity for the other: their device asked because it had
-    // nothing, and we have nothing of theirs to spend on the answer. The tokenless
-    // contact channel exists for exactly this - otherwise the two of them would
-    // wait on each other forever.
-    const Bytes innerBytes = encodedBody(inner);
-    const Key peerSealing = Key::fromPublicDer(fromBase64(contact.sealingPublicB64));
-    const Bytes payload = cms::seal(innerBytes, peerSealing);
-    const Key peerServingKey = Key::fromPublicDer(fromBase64(contact.servingSealingB64));
-    deliver(contact.dest, peerServingKey, "contact", peerFingerprint, {}, payload);
-}
-
-std::size_t Session::sendCapacity(const std::string& peerFingerprint) const
-{
-    const auto found = contacts_.find(peerFingerprint);
-    return found == contacts_.end() ? 0 : found->second.sendTokens.size();
+    const auto known = contacts_.find(peerFingerprint);
+    return known != contacts_.end() && !known->second.sendPass.empty();
 }
 
 namespace {
@@ -4257,75 +3857,18 @@ void Session::closeAccountOnServer()
     client_->closeAccount();
 }
 
-void Session::holdForToken(const std::string& peerFingerprint, const nlohmann::json& inner,
-    const DeliveryWatch& watch, const bool establishOnFirstReply)
-{
-    if (inner.is_null()) {
-        // Above the watermark, so this cannot be a message that merely has to
-        // wait: something is wrong with the stash rather than short of it.
-        throw std::runtime_error("Out of delivery tokens for this contact.");
-    }
-    bazarish::log::info("a message for {} waits for a delivery token",
-        bazarish::log::redact(peerFingerprint));
-    waitingSends_.push_back({peerFingerprint, inner, watch, establishOnFirstReply});
-    if (watch.onPhase) {
-        watch.onPhase(kPhaseWaitingForToken);
-    }
-}
-
-bool Session::sendWaitingFor(const std::string& peerFingerprint) const
-{
-    return std::any_of(waitingSends_.begin(), waitingSends_.end(),
-        [&peerFingerprint](const WaitingSend& held) { return held.peer == peerFingerprint; });
-}
-
-void Session::flushWaitingSends()
-{
-    if (waitingSends_.empty()) {
-        return;
-    }
-    // Taken out first: a send that has to wait again is put back by sendContent,
-    // and a list that is walked while it grows is a list that never ends.
-    std::vector<WaitingSend> held;
-    held.swap(waitingSends_);
-    for (WaitingSend& send : held) {
-        const auto contact = contacts_.find(send.peer);
-        if (contact == contacts_.end()) {
-            continue;  // the contact went away while its message waited
-        }
-        if (contact->second.sendTokens.empty()) {
-            waitingSends_.push_back(std::move(send));  // still nothing to carry it
-            continue;
-        }
-        try {
-            sendContent(send.peer, send.inner, send.watch, false, send.establishOnFirstReply);
-        } catch (const std::exception& error) {
-            bazarish::log::warn("a message that waited for a token could not go: {}",
-                error.what());
-            if (send.watch.onOutcome) {
-                OutboundCourier::Outcome failed;
-                failed.stored = false;
-                failed.errorMessage = error.what();
-                send.watch.onOutcome(failed);
-            }
-        }
-    }
-}
-
 void Session::flushPendingEchoes()
 {
     std::vector<std::pair<std::string, nlohmann::json>> ready;
-    std::vector<std::shared_ptr<std::function<void()>>> refused;
     std::vector<std::string> established;
     std::vector<std::string> notEstablished;
     {
         const std::lock_guard<std::mutex> lock(echoQueue_->mutex);
         ready.swap(echoQueue_->pending);
-        refused.swap(echoQueue_->refused);
         established.swap(echoQueue_->established);
         notEstablished.swap(echoQueue_->notEstablished);
     }
-    // An acceptance the peer's server took: the batch is in their mailbox, so the
+    // An acceptance the peer's server took: our pass is in their mailbox, so the
     // reverse direction exists and the contact is answered. Only here does the
     // request stop being one.
     for (const std::string& peerFingerprint : established) {
@@ -4335,8 +3878,6 @@ void Session::flushPendingEchoes()
         }
         found->second.issuedToThem = true;
         found->second.acceptInFlight = false;
-        // The batch that landed is a fresh one, so nothing more is owed.
-        found->second.reissueTokens = false;
         persistContacts();
         // The decision belongs to the account, not to the device that made it:
         // the others hold the same request and would go on offering an Agree that
@@ -4372,17 +3913,6 @@ void Session::flushPendingEchoes()
                 "could not echo what was sent to our own devices: {}", error.what());
         }
     }
-    // Each of these sends the same envelope again with the next token in the
-    // stash, on this thread - taking a token out of a stash is this thread's
-    // work. A refusal is about the capability that was presented and about
-    // nothing else, so the rest of the batch stands.
-    for (const std::shared_ptr<std::function<void()>>& again : refused) {
-        try {
-            (*again)();
-        } catch (const std::exception& error) {
-            bazarish::log::warn("a refused delivery could not be tried again: {}", error.what());
-        }
-    }
 }
 
 void Session::echoSentToSelf(const std::string& peerFingerprint, const nlohmann::json& inner)
@@ -4404,68 +3934,6 @@ void Session::echoSentToSelf(const std::string& peerFingerprint, const nlohmann:
 }
 
 
-void Session::sendTokenRequest(const std::string& peerFingerprint)
-{
-    const auto found = contacts_.find(peerFingerprint);
-    if (found == contacts_.end()) {
-        return;
-    }
-    Contact& contact = found->second;
-    if (!contact.issuedToThem) {
-        // Their request stands unanswered, so this account has nothing to say to
-        // them - least of all an errand that would hand them our routing and a
-        // batch of our tokens.
-        return;
-    }
-    if (contact.sealingPublicB64.empty() || contact.servingSealingB64.empty()) {
-        return;  // no descriptor yet: nothing to ask, and nowhere to ask it
-    }
-    if (contact.sendTokens.empty()) {
-        // Nothing to spend, so the only way out is a token from one of this
-        // account's own devices - which costs the peer nothing and is instant
-        // while one of them is online. The peer is not asked: a contact request is
-        // the only tokenless path into a mailbox, and a top-up over it would turn
-        // that one narrow door into a channel anybody could knock on.
-        askDevicesForToken(peerFingerprint);
-        return;
-    }
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "token-request"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
-        {"device", client_->clientId()},
-        {"routing",
-            {{"dest", myDest_}, {"servingKey", myServingKeyB64_}, {"view", sharedView()}}},
-    };
-    // Spends one of our tokens like any other message: the peer answers with a
-    // batch addressed to this device, and no other device of ours holds it. It
-    // never establishes anything on its own (the guard above is what decides
-    // that), so an errand can carry no bootstrap.
-    if (!sendContent(peerFingerprint, std::move(inner), {}, false,
-            /*establishOnFirstReply=*/false)) {
-        return;  // held for want of a token; it goes out when one arrives
-    }
-    contact.needsOwnBatch = false;
-    persistContacts();
-}
-
-bool Session::soleDevice() const
-{
-    try {
-        const std::vector<Client::DeviceEntry> devices = client_->listClients();
-        return devices.size() <= 1;
-    } catch (const std::exception& error) {
-        // Unknown means "assume there are others": taking one token and asking
-        // for a batch costs a round trip, while wrongly keeping a shared batch
-        // costs another device its tokens.
-        bazarish::log::info("device list unavailable, treating this as one of several: {}",
-            error.what());
-        return false;
-    }
-}
-
 void Session::askDevicesForContacts()
 {
     // The one thing a fresh device cannot get from the network: a contact is
@@ -4486,11 +3954,13 @@ nlohmann::json Session::contactBookEntry(
     const std::string& peerFingerprint, const Contact& contact) const
 {
     // What a contact IS: who they are, where they are reached and what this
-    // account decided about them. Nothing that belongs to one device or to one
-    // exchange in flight - above all no delivery tokens, which are one-time and
-    // spending one twice is losing a message.
+    // account decided about them - including the pass that admits this account to
+    // their mailbox. It is not spent, so every device of ours holds the same one
+    // and a device that learns a contact this way can write to them at once.
+    // Nothing that belongs to one device or to one exchange in flight.
     nlohmann::json entry = {
         {"peer", peerFingerprint},
+        {"pass", contact.sendPass},
         {"sealing", contact.sealingPublicB64},
         {"dest", contact.dest},
         {"servingKey", contact.servingSealingB64},
@@ -4589,9 +4059,10 @@ void Session::applyContactBook(const nlohmann::json& entries)
             contact.notifications = entry.value("notifications", true);
             contact.allowCalls = entry.value("allowCalls", true);
             contact.issuedToThem = entry.value("issuedToThem", false);
-            // No tokens travel, so this device has nothing to write with yet: it
-            // asks the others for one, which is the path that already exists.
-            contact.needsOwnBatch = true;
+            // The pass travels with the entry: it is not spent, so every device
+            // of this account holds the same one and a device that has just
+            // learned a contact can write to them at once.
+            contact.sendPass = entry.value("pass", std::string());
             if (entry.value("blocked", false)) {
                 blocked_.insert(peerFingerprint);
             }
@@ -4606,67 +4077,6 @@ void Session::applyContactBook(const nlohmann::json& entries)
         persistContacts();
         db_->putText("blocked", nlohmann::json(blocked_).dump());
     }
-}
-
-std::string Session::takeSendToken(Contact& contact)
-{
-    if (contact.sendTokens.empty()) {
-        throw std::runtime_error("no delivery token to take");
-    }
-    // Four random bytes over the stash size. The stash is at most a batch, so what
-    // modulo leaves of uniformity here is far below anything that matters: what
-    // this is for is not being predictable to the other device, not being a
-    // generator.
-    const Bytes draw = randomBytes(4);
-    std::uint32_t index = 0;
-    for (const std::uint8_t byte : draw) {
-        index = (index << 8) | byte;
-    }
-    const std::size_t at = index % contact.sendTokens.size();
-    const std::string token = contact.sendTokens.at(at);
-    contact.sendTokens.erase(contact.sendTokens.begin() + static_cast<std::ptrdiff_t>(at));
-    return token;
-}
-
-void Session::askDevicesForToken(const std::string& peerFingerprint)
-{
-    const nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "device.token-request"},
-        {"id", toHex(randomBytes(16))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
-        {"device", client_->clientId()},
-        {"peer", peerFingerprint},
-    };
-    submitSignedToSelf(inner, "device.token-request");
-}
-
-void Session::grantTokenToDevices(
-    const std::string& peerFingerprint, const std::string& toDevice)
-{
-    const auto found = contacts_.find(peerFingerprint);
-    if (found == contacts_.end() || found->second.sendTokens.empty()) {
-        return;  // nothing to give: another device may still have one
-    }
-    Contact& contact = found->second;
-    // Exactly one, and it leaves this device with it: a one-time token in two
-    // places is a token one of them will be refused for.
-    const std::string token = takeSendToken(contact);
-    persistContacts();
-
-    const nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "device.token-grant"},
-        {"id", toHex(randomBytes(16))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
-        {"device", client_->clientId()},
-        {"forDevice", toDevice},
-        {"peer", peerFingerprint},
-        {"token", token},
-    };
-    submitSignedToSelf(inner, "device.token-grant");
 }
 
 // ============================ Audio calls ============================
@@ -5282,30 +4692,10 @@ void Session::exportAccount(const fs::path& outFile, const std::string& password
     // Use the in-memory contacts; the bundle carries them in the clear (the
     // bundle password is the protection).
     nlohmann::json contacts = contactsToJson();
-    // Delivery tokens are one-time write capabilities, so a copy in the bundle is
-    // a second device spending what this one already spent - refused by the
-    // recipient's server, which is what a restored device that "cannot send to
-    // anybody" was. One token per conversation is therefore handed over rather
-    // than copied: it leaves this device's stash and goes into the bundle, so the
-    // restored device can write once to each contact. That one write is the
-    // token-request that buys it a batch of its own, which is what needsOwnBatch
-    // makes it spend the token on.
-    bool tokensMoved = false;
-    for (auto& [contactFp, entry] : contacts.items()) {
-        const auto held = contacts_.find(contactFp);
-        nlohmann::json handed = nlohmann::json::array();
-        if (held != contacts_.end() && !held->second.sendTokens.empty()) {
-            handed.push_back(takeSendToken(held->second));
-            tokensMoved = true;
-        }
-        entry["sendTokens"] = handed;
-        entry["needsOwnBatch"] = true;
-    }
-    if (tokensMoved) {
-        // The tokens are gone from here the moment the bundle is written, so this
-        // device never spends what it has given away.
-        persistContacts();
-    }
+    // The pass of each conversation is copied rather than handed over: it is not
+    // spent, so this device keeps writing and the restored one can write from its
+    // first sync. A one-time token could not be in two places, and a restored
+    // device that "cannot send to anybody" was exactly that.
 
     // The keys are re-serialized unencrypted inside the bundle; the password
     // protects the bundle as a whole, decoupling the export from whatever
