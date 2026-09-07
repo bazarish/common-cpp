@@ -43,6 +43,10 @@ namespace {
 // refusal up with the recipient server's own record of it, and no more.
 constexpr std::size_t kPassPrefixChars = 12;
 
+// How long the name of one file request is. It has to be unguessable only for
+// the length of the transfer, and it is drawn afresh for each.
+constexpr std::size_t kTransferAskBytes = 8;
+
 }  // namespace
 
 namespace {
@@ -2648,10 +2652,13 @@ void Session::requestFile(
     const std::string& peerFingerprint, const std::string& e2eId, const fs::path& dest)
 {
 
+    // What this one request is called on the wire. Drawn here and kept, so the
+    // offer that comes back can be matched to it.
+    const std::string ask = toHex(randomBytes(kTransferAskBytes));
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
-        transfers_->pending[e2eId]
-            = PendingTransfer{dest, std::make_shared<std::atomic<bool>>(false), peerFingerprint};
+        transfers_->pending[e2eId] = PendingTransfer{
+            dest, std::make_shared<std::atomic<bool>>(false), peerFingerprint, ask};
     }
     emitTransfer(e2eId, TransferState::eRequested, 0, 0, {}, "Asking the sender",
         peerFingerprint);
@@ -2662,10 +2669,13 @@ void Session::requestFile(
         {"from", fingerprint()},
         {"sentAt", nowMillis()},
         {"fileId", e2eId},
-        // Which of our devices is waiting. Their devices all see the answer, and
-        // the one-time address in it belongs to this one; the others leave it and
-        // ask for their own copy if they want the file.
-        {"device", client_->clientId()},
+        // Which request is waiting. Their devices all see the answer, and the
+        // one-time address in it belongs to this request; the others leave it
+        // and ask for their own copy if they want the file. Named by a value
+        // drawn for this transfer rather than by the device, because a client id
+        // is stable: naming it here told a correspondent which devices this
+        // account writes from, and over a few files how many there are.
+        {"ask", ask},
     };
     sendContent(peerFingerprint, std::move(inner));
 }
@@ -2683,20 +2693,33 @@ void Session::dropServe(
     }
 }
 
+bool Session::awaitingAsk(const std::string& ask) const
+{
+    const std::lock_guard<std::mutex> lock(transfers_->mutex);
+    for (const auto& [fileId, pending] : transfers_->pending) {
+        if (pending.ask == ask) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::vector<Session::StoppedHalf> Session::stopTransfer(
-    const std::string& fileId, const std::string& fromPeer, const std::string& forDevice)
+    const std::string& fileId, const std::string& fromPeer, const std::string& forAsk)
 {
     std::vector<StoppedHalf> stopped;
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
         const auto found = transfers_->pending.find(fileId);
-        // Our own fetch of this file. `forDevice` names the device that asked, so
-        // a stop meant for another device of ours leaves this one pulling.
+        // Our own fetch of this file. `forAsk` names the request that started it,
+        // so a stop meant for another device of ours leaves this one pulling -
+        // and it names it with a value drawn for that one transfer, which is why
+        // the correspondent never learns which device is asking.
         if (found != transfers_->pending.end()
             && (fromPeer.empty() || found->second.peer == fromPeer)
-            && (forDevice.empty() || forDevice == client_->clientId())) {
+            && (forAsk.empty() || forAsk == found->second.ask)) {
             found->second.cancel->store(true);
-            stopped.push_back(StoppedHalf{found->second.peer, client_->clientId()});
+            stopped.push_back(StoppedHalf{found->second.peer, found->second.ask});
             transfers_->pending.erase(found);
         }
         // Every serve of the same file: one contact may be pulling it onto two
@@ -2705,13 +2728,13 @@ std::vector<Session::StoppedHalf> Session::stopTransfer(
             const ServingTransfer& serve = it->second;
             const bool stops = serve.fileId == fileId
                 && (fromPeer.empty() || serve.peer == fromPeer)
-                && (forDevice.empty() || serve.forDevice == forDevice);
+                && (forAsk.empty() || serve.forAsk == forAsk);
             if (!stops) {
                 ++it;
                 continue;
             }
             serve.cancel->store(true);
-            stopped.push_back(StoppedHalf{serve.peer, serve.forDevice});
+            stopped.push_back(StoppedHalf{serve.peer, serve.forAsk});
             it = transfers_->serving.erase(it);
         }
     }
@@ -2770,7 +2793,7 @@ void Session::setTransferPrivacy(const bazarish::i2p::Privacy privacy)
 }
 
 void Session::serveRequestedFile(const std::string& peerFingerprint, const std::string& fileId,
-    const std::string& forDevice)
+    const std::string& forAsk)
 {
     const auto found = sentFiles_.find(fileId);
     if (found == sentFiles_.end()) {
@@ -2819,14 +2842,14 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
     // message's row - so progress is reported under fileId and nothing else. The
     // two were the same name once, and a serve to a named device then reported
     // under a name no conversation held: the sender's progress bar disappeared.
-    const std::string serveId = forDevice.empty() ? fileId : fileId + "@" + forDevice;
+    const std::string serveId = forAsk.empty() ? fileId : fileId + "@" + forAsk;
     const std::shared_ptr<std::atomic<bool>> cancel = std::make_shared<std::atomic<bool>>(false);
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
         transfers_->serving[serveId]
-            = ServingTransfer{cancel, fileId, peerFingerprint, forDevice};
+            = ServingTransfer{cancel, fileId, peerFingerprint, forAsk};
     }
-    std::thread([this, peerFingerprint, fileId, serveId, forDevice, source, ciphertextPath,
+    std::thread([this, peerFingerprint, fileId, serveId, forAsk, source, ciphertextPath,
                     cancel]() {
         try {
             // Every stage of one serve is keyed by the message's own id, which is
@@ -2872,7 +2895,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                 {"from", fingerprint()},
                 {"sentAt", nowMillis()},
                 {"offer", fileOfferToJson(offer)},
-                {"forDevice", forDevice},
+                {"forAsk", forAsk},
             };
             sendContent(peerFingerprint, std::move(inner));
             emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, "Waiting for them",
@@ -3383,8 +3406,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                         bazarish::log::redact(message.fromFingerprint));
                 } else {
                     serveRequestedFile(message.fromFingerprint,
-                        body.value("fileId", std::string()),
-                        body.value("device", std::string()));
+                        body.value("fileId", std::string()), body.value("ask", std::string()));
                 }
             } else if (type == "file.offer") {
                 // Silent: the sender is up and serving; start pulling.
@@ -3392,8 +3414,8 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 // The one-time address in it may have been raised for another
                 // device of ours: then it is theirs to pull, and this device
                 // asks for its own copy if the user wants the file here too.
-                const std::string offerFor = body.value("forDevice", std::string());
-                if (!offerFor.empty() && offerFor != client_->clientId()) {
+                const std::string offerFor = body.value("forAsk", std::string());
+                if (!offerFor.empty() && !awaitingAsk(offerFor)) {
                     client_->ack(entry.id);
                     continue;
                 }
