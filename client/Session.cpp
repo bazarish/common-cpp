@@ -1554,6 +1554,10 @@ void Session::removeContact(const std::string& peerFingerprint)
     }
     // Drop the avatar too, so nothing of the contact lingers in the account.
     db_->erase("avatar-" + peerFingerprint);
+    // And what was announced to them: a sent-file record names a path on this
+    // machine and the contact it was offered to, so one kept after the contact is
+    // gone is a record of a conversation that is not there any more.
+    forgetSentFilesFor(peerFingerprint);
     persistContacts();
 }
 
@@ -2748,6 +2752,22 @@ void Session::cancelTransfer(const std::string& e2eId)
             bazarish::log::warn("could not tell {} the transfer was stopped: {}",
                 bazarish::log::redact(half.peer), error.what());
         }
+    }
+}
+
+void Session::forgetSentFilesFor(const std::string& peerFingerprint)
+{
+    bool dropped = false;
+    for (auto it = sentFiles_.begin(); it != sentFiles_.end();) {
+        if (it->second.peer == peerFingerprint) {
+            it = sentFiles_.erase(it);
+            dropped = true;
+        } else {
+            ++it;
+        }
+    }
+    if (dropped) {
+        persistSentFiles();
     }
 }
 

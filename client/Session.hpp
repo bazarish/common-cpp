@@ -849,6 +849,10 @@ public:
     // whole session; events carry the message id they belong to.
     void setTransferHandler(TransferEventFn handler);
 
+    // Forgets every file announced to one contact. What a record holds - a path
+    // on this machine and who it was offered to - is about a conversation, so it
+    // goes when the conversation does.
+    void forgetSentFilesFor(const std::string& peerFingerprint);
     // Sender unsend: forgets the file announced for a message we sent, so a later
     // request from the recipient is answered "no longer available". Nothing has
     // to be deleted anywhere else - the bytes were never copied off this machine.
