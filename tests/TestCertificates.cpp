@@ -24,7 +24,7 @@ int main()
 
     // Contact card round trip: a card with nothing published yet is still a
     // signed statement of who it belongs to.
-    const Bytes bareDer = ContactCard::issue(user);
+    const Bytes bareDer = ContactCard::issue(user, kNow);
     const ContactCard bare = ContactCard::verify(bareDer);
     // Whose card it is comes from the signature, not from a claim standing
     // beside it: there is nothing in the body left to disagree with the signer.
@@ -39,10 +39,11 @@ int main()
     // nothing in it names the server that operates the destination.
     const Key servingSealing = Key::generateSealing();
     const std::string dest = "exampledestination.b32.i2p";
-    const Bytes contactDer
-        = ContactCard::issue(user, dest, sealing.publicDer(), servingSealing.publicDer());
+    const Bytes contactDer = ContactCard::issue(
+        user, kNow, dest, sealing.publicDer(), servingSealing.publicDer());
     const ContactCard contact = ContactCard::verify(contactDer);
     CHECK(contact.fingerprint() == user.fingerprint());
+    CHECK(contact.issuedAt == kNow);
     CHECK(contact.dest == dest);
     CHECK(contact.sealingPublicKeyDer == sealing.publicDer());
     CHECK(contact.sealingKey().publicDer() == sealing.publicDer());
@@ -57,7 +58,7 @@ int main()
     {
         const Identity impostor = Identity::generate();
         const nlohmann::json body = {{"v", kCertificateFormatVersion}, {"t", "contact-card"},
-            {"user", user.fingerprint()}};
+            {"issuedAt", kNow}, {"user", user.fingerprint()}};
         const ContactCard theirs = ContactCard::verify(cms::signJsonHybrid(body, impostor));
         CHECK(theirs.fingerprint() == impostor.fingerprint());
         CHECK(theirs.fingerprint() != user.fingerprint());
@@ -66,11 +67,29 @@ int main()
     // A signed document that is not a contact card is not read as one, however
     // well its fields happen to line up.
     {
-        const nlohmann::json notACard
-            = {{"v", kCertificateFormatVersion}, {"t", "alias"}, {"alias", "someone"}};
+        const nlohmann::json notACard = {{"v", kCertificateFormatVersion}, {"t", "alias"},
+            {"issuedAt", kNow}, {"alias", "someone"}};
         CHECK_THROWS(ContactCard::verify(cms::signJsonHybrid(notACard, user)));
         const nlohmann::json untagged = {{"v", kCertificateFormatVersion}};
         CHECK_THROWS(ContactCard::verify(cms::signJsonHybrid(untagged, user)));
+    }
+
+    // A card that cannot be placed in time is refused: it could not be compared
+    // with the one already held, which is the only reason the stamp is there.
+    {
+        const nlohmann::json undated
+            = {{"v", kCertificateFormatVersion}, {"t", "contact-card"}};
+        CHECK_THROWS(ContactCard::verify(cms::signJsonHybrid(undated, user)));
+    }
+
+    // Two cards of one person are ordered by the stamp and by nothing else.
+    {
+        const Bytes olderDer = ContactCard::issue(user, kNow, "old.b32.i2p",
+            sealing.publicDer(), servingSealing.publicDer());
+        const Bytes newerDer = ContactCard::issue(user, kNow + 1, "new.b32.i2p",
+            sealing.publicDer(), servingSealing.publicDer());
+        CHECK(ContactCard::verify(olderDer).issuedAt
+            < ContactCard::verify(newerDer).issuedAt);
     }
 
     // Alias certificate round trip, with and without expiry.

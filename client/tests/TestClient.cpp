@@ -157,8 +157,8 @@ int main()
             CHECK(query.view == bobView);
             const Key bobSealing = Key::generateSealing();
             outcome.ok = true;
-            outcome.sealed = ContactCard::issue(
-                bob, bobDest, bobSealing.publicDer(), serverSealing.publicDer());
+            outcome.sealed = ContactCard::issue(bob, static_cast<std::int64_t>(std::time(nullptr)),
+                bobDest, bobSealing.publicDer(), serverSealing.publicDer());
             return outcome;
         }
 

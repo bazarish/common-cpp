@@ -41,14 +41,16 @@ const char* const kContactCardType = "contact-card";
 
 namespace bazarish {
 
-Bytes ContactCard::issue(const Identity& userIdentity, const std::string& dest,
-    const Bytes& sealingPublicKeyDer, const Bytes& servingSealingKeyDer)
+Bytes ContactCard::issue(const Identity& userIdentity, const std::int64_t issuedAt,
+    const std::string& dest, const Bytes& sealingPublicKeyDer,
+    const Bytes& servingSealingKeyDer)
 {
     // No subject field: whoever signs this is its subject, and verify() reads
     // that from the signature.
     nlohmann::json body = {
         {"v", kCertificateFormatVersion},
         {"t", kContactCardType},
+        {"issuedAt", issuedAt},
     };
     if (!dest.empty()) {
         body["dest"] = dest;
@@ -69,6 +71,13 @@ ContactCard ContactCard::verify(const Bytes& der)
         throw std::runtime_error("this is not a contact card");
     }
     ContactCard card;
+    // Required, unlike everything below it: a card that cannot be placed in time
+    // cannot be compared with the one already held, which is the whole reason it
+    // is here. Said in the protocol's own words rather than as a missing key.
+    if (!verified.body.contains("issuedAt")) {
+        throw std::runtime_error("a contact card must say when it was signed");
+    }
+    card.issuedAt = verified.body.at("issuedAt").get<std::int64_t>();
     if (verified.body.contains("dest")) {
         card.dest = verified.body.at("dest").get<std::string>();
     }

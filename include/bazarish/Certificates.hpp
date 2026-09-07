@@ -51,6 +51,11 @@ struct ContactCard {
     // contacts use to E2E-encrypt the first message before any token exchange.
     // Empty when not published yet.
     Bytes sealingPublicKeyDer;
+    // When this card was signed. Two cards of one person are ordered by it and
+    // by nothing else: without it the newest card is whichever was published
+    // last, so a device that kept an old copy could republish it and quietly put
+    // the account's routing back to what it used to be.
+    std::int64_t issuedAt = 0;
     // SubjectPublicKeyInfo DER of the serving sealing key (sealingKey_U): the
     // public key the delivery envelope's admission header (mailbox + token) is
     // sealed to, whose private half the user's server holds. NOT a signature.
@@ -65,8 +70,9 @@ struct ContactCard {
     // Whose card this is, derived from the keys that signed it.
     std::string fingerprint() const;
 
-    static Bytes issue(const Identity& userIdentity, const std::string& dest = {},
-        const Bytes& sealingPublicKeyDer = {}, const Bytes& servingSealingKeyDer = {});
+    static Bytes issue(const Identity& userIdentity, std::int64_t issuedAt,
+        const std::string& dest = {}, const Bytes& sealingPublicKeyDer = {},
+        const Bytes& servingSealingKeyDer = {});
     // Verifies the CMS signature and that the signer is body.user.
     static ContactCard verify(const Bytes& der);
 

@@ -2524,8 +2524,8 @@ void Session::rotateServingKey(const std::function<void(const std::string&)>& on
     stage("Asking your server for a new serving key");
     const Client::PreparedServingKey prepared = client_->prepareServingKey();
     stage("Signing a card over the new key");
-    const Bytes card = ContactCard::issue(
-        client_->identity(), myDest_, sealingKey_.publicDer(), prepared.servingSealingKeyDer);
+    const Bytes card = ContactCard::issue(client_->identity(), nowSeconds(), myDest_,
+        sealingKey_.publicDer(), prepared.servingSealingKeyDer);
     // The point of no return: before it, the old key still serves and nothing has
     // changed; after it, the old one is refused and the contacts have to be told.
     stage("Putting the new key in force");

@@ -9,7 +9,18 @@
 
 #include <nlohmann/json.hpp>
 
+#include <ctime>
+
 namespace bazarish::client {
+
+namespace {
+
+std::int64_t nowSeconds()
+{
+    return static_cast<std::int64_t>(std::time(nullptr));
+}
+
+}  // namespace
 
 namespace {
 
@@ -101,8 +112,8 @@ PublishResult Client::publishCard(const Bytes& sealingPrekeyDer, const std::stri
     // master b32 we already hold.
     const DestinationInfo destination = myDestination();
     const std::string dest = destination.dest.empty() ? ownDest : destination.dest;
-    const Bytes card
-        = ContactCard::issue(identity_, dest, sealingPrekeyDer, destination.servingSealingKeyDer);
+    const Bytes card = ContactCard::issue(
+        identity_, nowSeconds(), dest, sealingPrekeyDer, destination.servingSealingKeyDer);
     const ApiResponse response = api_.postJson("/v1/account/card", {{"card", toBase64(card)}});
     const nlohmann::json body = response.json();
 
