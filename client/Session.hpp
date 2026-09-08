@@ -1254,7 +1254,11 @@ private:
     // side of it, and which device was pulling the file.
     struct StoppedHalf {
         std::string peer;
-        std::string device;
+        // Which request this half belongs to, by the name that request drew for
+        // itself. Not a device id: naming the device would tell a correspondent
+        // which of this account's devices is pulling a file, and over a few
+        // transfers how many there are.
+        std::string ask;
     };
     // Stops every part of one transfer this device runs - the fetch we asked for
     // and each serve of the same file - and reports it as stopped. fromPeer, when

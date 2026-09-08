@@ -2744,10 +2744,10 @@ void Session::cancelTransfer(const std::string& e2eId)
                 nlohmann::json{{"v", kMessageFormatVersion}, {"type", "file.cancel"},
                     {"id", toHex(randomBytes(8))}, {"from", fingerprint()},
                     {"sentAt", nowMillis()}, {"fileId", e2eId},
-                    // Whose half is stopped: the device that asked for the file.
-                    // Their other devices may be pulling it over addresses of
-                    // their own, and this does not touch those.
-                    {"device", half.device}});
+                    // Which half is stopped, by the name the request drew for
+                    // itself. Their other devices may be pulling the same file
+                    // under requests of their own, and this does not touch those.
+                    {"ask", half.ask}});
         } catch (const std::exception& error) {
             bazarish::log::warn("could not tell {} the transfer was stopped: {}",
                 bazarish::log::redact(half.peer), error.what());
@@ -3448,7 +3448,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 // neither of us keeps a one-time destination up for nothing.
                 message.contentType = type;
                 stopTransfer(body.value("fileId", std::string()), message.fromFingerprint,
-                    body.value("device", std::string()));
+                    body.value("ask", std::string()));
             } else if (type == "file.unavailable") {
                 message.contentType = type;
                 const std::string fileId = body.value("fileId", std::string());
