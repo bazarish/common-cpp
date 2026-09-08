@@ -2515,8 +2515,8 @@ Session::RoutingPushResult Session::pushRoutingToContacts(
     const std::function<void(const std::string&)>& onStage)
 {
     RoutingPushResult result;
-    // A copy of the names: sending writes to contacts_ (tokens are spent), and
-    // iterating the map while it is being written to is not a thing to do.
+    // A copy of the names: sending writes to contacts_, and iterating the map
+    // while it is being written to is not a thing to do.
     std::vector<std::string> peers;
     for (const auto& [fingerprint, contact] : contacts_) {
         if (contact.issuedToThem && !contact.sealingPublicB64.empty()
@@ -3756,9 +3756,16 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 // wipes its transcript on receipt. No core state changes here.
                 message.contentType = type;
             } else if (type == "contact.accept") {
-                // The peer agreed to our contact request: their descriptor + reply
-                // tokens already rode in the bootstrap block above, so we are now a
-                // mutual contact. Surfaced as a system note by the UI.
+                // The peer agreed to our contact request: their descriptor and
+                // their pass already rode in the bootstrap block above, so we are
+                // now a mutual contact. Surfaced as a system note by the UI.
+                message.contentType = type;
+            } else if (type == "contact.routing") {
+                // A routing update and nothing else: the block it carries was
+                // applied above, like the one on any other message. There is
+                // nothing to show, and nothing more to do here - but it has to be
+                // named, or it falls through to "unsupported" and a silent update
+                // is drawn as a message this client cannot read.
                 message.contentType = type;
             } else {
                 message.contentType = "unsupported";

@@ -630,6 +630,22 @@ int main()
         }
         bob.sync();
 
+        // A routing push carries a routing block and nothing else. It is applied
+        // like the one on any other message and shows nothing - but it has to be
+        // named on arrival, or it falls through to "unsupported", which is what a
+        // client says about a message it cannot read.
+        {
+            CHECK(alice.pushRoutingToContacts({}).told > 0);
+            bool sawRouting = false;
+            for (const IncomingMessage& item : bob.sync()) {
+                CHECK(item.contentType != "unsupported");
+                if (item.contentType == "contact.routing") {
+                    sawRouting = true;
+                }
+            }
+            CHECK(sawRouting);
+        }
+
         // Every content kind goes out the same way, and none of them has a price
         // to run out of. What used to be checked here - that each kind asks for a
         // refill before its stash empties - is a question that no longer exists.
