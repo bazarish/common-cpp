@@ -17,6 +17,8 @@
 #endif
 
 #include <cstdlib>
+#include <algorithm>
+#include <map>
 #include <stdexcept>
 
 namespace bazarish::client {
@@ -53,6 +55,17 @@ constexpr std::size_t kAccountIdBytes = 8;
 std::string newAccountId()
 {
     return toHex(randomBytes(kAccountIdBytes));
+}
+
+// Whether a file name is one of ours rather than an account's own name. Accounts
+// used to be stored under their names, and a build that did that may have left
+// files behind; they are renamed rather than left to say who they belong to.
+bool isAccountId(const std::string& stem)
+{
+    return stem.size() == kAccountIdBytes * 2
+        && std::all_of(stem.begin(), stem.end(), [](const unsigned char c) {
+               return std::isxdigit(c) != 0 && (std::isdigit(c) != 0 || std::islower(c) != 0);
+           });
 }
 
 // What can be told about an account without opening it fully. An account with a
@@ -186,6 +199,34 @@ AccountManager::AccountManager(fs::path root)
     : root_(std::move(root))
 {
     fs::create_directories(root_);
+}
+
+std::map<std::string, std::string> AccountManager::adoptOpaqueNames()
+{
+    std::map<std::string, std::string> renamed;
+    if (!fs::exists(root_)) {
+        return renamed;
+    }
+    for (const fs::directory_entry& entry : fs::directory_iterator(root_)) {
+        if (!entry.is_regular_file() || entry.path().extension() != kFileSuffix) {
+            continue;
+        }
+        const std::string stem = entry.path().stem().string();
+        if (isAccountId(stem)) {
+            continue;
+        }
+        std::string fresh = newAccountId();
+        while (exists(fresh)) {
+            fresh = newAccountId();
+        }
+        // Nothing is open yet - this runs before any account is unlocked - so the
+        // file and its key sidecar move together and the name is gone from the
+        // directory for good.
+        movePair(entry.path(), fileFor(fresh));
+        renamed.emplace(stem, fresh);
+        bazarish::log::info("an account file named after its account was renamed");
+    }
+    return renamed;
 }
 
 fs::path AccountManager::fileFor(const std::string& id) const

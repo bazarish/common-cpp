@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <map>
 #include <string>
 
 #define CHECK(condition)                                                            \
@@ -99,6 +100,27 @@ int main()
         CHECK(stem.find("Acetone") == std::string::npos);
         CHECK(stem.find("Work") == std::string::npos);
         CHECK(stem.find("клирнет") == std::string::npos);
+    }
+
+    // A file left named after its account by an earlier build is renamed on the
+    // next start, whatever put it there. The name is the whole point: a listing
+    // of the directory is readable without any passphrase.
+    {
+        const fs::path legacy = root / "Old Name.db";
+        std::ofstream(legacy, std::ios::binary) << "not a real database";
+        std::ofstream(root / "Old Name.key", std::ios::binary) << "key";
+        const std::map<std::string, std::string> moved = manager.adoptOpaqueNames();
+        CHECK(moved.size() == 1);
+        CHECK(moved.begin()->first == "Old Name");
+        CHECK(moved.begin()->second != "Old Name");
+        CHECK(!fs::exists(legacy));
+        CHECK(fs::exists(root / (moved.begin()->second + ".db")));
+        // The key file travels with it, or the account is unopenable.
+        CHECK(fs::exists(root / (moved.begin()->second + ".key")));
+        // Files already named opaquely are left alone.
+        CHECK(manager.adoptOpaqueNames().empty());
+        fs::remove(root / (moved.begin()->second + ".db"));
+        fs::remove(root / (moved.begin()->second + ".key"));
     }
 
     // Encrypted account needs its passphrase to open.

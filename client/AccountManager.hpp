@@ -4,6 +4,7 @@
 #include "Session.hpp"
 
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,13 @@ public:
     static std::filesystem::path defaultRoot();
 
     explicit AccountManager(std::filesystem::path root);
+
+    // Renames any account file still named after its account, and answers what
+    // moved where (old id -> new). A directory listing is readable without any
+    // passphrase, so a file named after the account hands over the roster; this
+    // catches what an earlier build left behind. Call it before anything is
+    // opened - it moves files.
+    std::map<std::string, std::string> adoptOpaqueNames();
 
     std::vector<AccountInfo> list() const;
     bool exists(const std::string& id) const;
