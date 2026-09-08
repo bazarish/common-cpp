@@ -1265,8 +1265,16 @@ std::string safeContactName(const std::string& proposed)
     return trimmed == reserved ? kContactNamePrefix + proposed : proposed;
 }
 
+void Session::requireSwitchedOn() const
+{
+    if (switchedOff_) {
+        throw std::runtime_error("this account is switched off; switch it on to write");
+    }
+}
+
 void Session::sendSelf(nlohmann::json inner)
 {
+    requireSwitchedOn();
     inner["v"] = kMessageFormatVersion;
     inner["id"] = toHex(randomBytes(16));
     inner["from"] = fingerprint();
@@ -2959,6 +2967,15 @@ void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& pee
         if (found == transfers_->pending.end()) {
             return;  // an offer for something we never asked for
         }
+        if (found->second.fetching) {
+            // The same offer twice - a redelivered mailbox item, or a sender
+            // that announced again. One request pulls once: two fetches share a
+            // partial file, and each of them truncates and deletes what the
+            // other is writing.
+            bazarish::log::info("a second offer for a file already being fetched: ignored");
+            return;
+        }
+        found->second.fetching = true;
         dest = found->second.dest;
         cancel = found->second.cancel;
     }
@@ -2993,6 +3010,7 @@ void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& pee
 bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inner,
     const DeliveryWatch& watch, bool waitForOutcome, bool establishOnFirstReply)
 {
+    requireSwitchedOn();
     // Addressed to ourselves: this is the saved chat, and it is kept rather than
     // delivered. Nothing is dialled, nothing is presented, and every device of this
     // account gets it - which is the whole of what saving means here.

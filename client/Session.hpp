@@ -989,6 +989,17 @@ public:
     // What such a caller passes, and what it asks afterwards. Each item is a
     // fetch over I2P, so a handful is the most a user should ever wait behind.
     static constexpr std::size_t kPendingItemsPerPass = 5;
+    // An account the user has switched off is opened to be read and nothing
+    // else: it fetches no mail, syncs nothing to its own other devices, and -
+    // because half of that would be worse than none - writes nothing either. A
+    // send while off reached the correspondent and left this account's other
+    // devices with no record of it.
+    void setSwitchedOff(bool off) { switchedOff_ = off; }
+    bool switchedOff() const { return switchedOff_; }
+    // Throws when it is off, in the words the interface shows. Every path that
+    // writes - to a correspondent or to this account's own devices - passes
+    // through here, so a new one cannot forget the rule.
+    void requireSwitchedOn() const;
     // Whether the last pass left items in the mailbox.
     bool morePending() const { return morePending_; }
     // Writes whatever the courier has confirmed since the last call to the
@@ -1291,6 +1302,9 @@ private:
     std::unique_ptr<Client> client_;
     // The central alias resolver this account resolves usernames against.
     ResolverCoordinate resolverCoordinate_ = defaultResolverCoordinate();
+    // Set while the user has this account switched off. Nothing outgoing leaves
+    // it in that state.
+    bool switchedOff_ = false;
     // The account in force for a transfer: the override if one was set, else the
     // process-wide account.
     bazarish::i2p::Privacy transferPrivacy() const;
@@ -1354,6 +1368,13 @@ private:
         // and a contact who exchanged a few files would otherwise learn the set
         // of devices this account writes from.
         std::string ask;
+        // A fetch is already running for this file. The mailbox is at-least-once
+        // and a sender may announce twice, so an offer can arrive more than once
+        // for one request; a second fetch would write the same partial file as
+        // the first, truncate it under it, and delete it when either of them
+        // ended - which reads to the user as the download failing on a file that
+        // "cannot be opened".
+        bool fetching = false;
     };
     // One file this side is serving, under the per-device key it was registered
     // with: the flag that stops it, and whose transfer it is. The file's own id
