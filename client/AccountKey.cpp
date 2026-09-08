@@ -62,6 +62,12 @@ constexpr std::uint32_t kMaxPasses = 16;
 // What an account with no passphrase is wrapped under. It is not a secret - it is
 // right here - so it protects nothing; it keeps one code path and stops the file
 // from being readable by accident.
+//
+// That an account may be made without a passphrase at all is a decision, not an
+// omission: the cost of a forgotten one is an account nobody can open ever again,
+// and for most people that is the likelier loss. Anyone who wants the file itself
+// protected sets a passphrase, and then the key is derived from it. Do not
+// "fix" this into a requirement without deciding that trade afresh.
 constexpr const char* kOpenSecret = "bazarish";
 
 struct Sidecar {
