@@ -448,9 +448,15 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
                     facade.host.substr(0, 12), readTimeoutSeconds, error.what());
                 return std::nullopt;  // the caller reports it and decides on a retry
             }
+            // A reply that did not frame is a transport failure, not a server
+            // saying something about tunnels: the head was truncated, so nothing
+            // was answered at all. Told apart by carrying no status, which is
+            // what the caller reads to decide how long to wait before asking
+            // again - one hiccup used to buy the quarter-hour meant for a server
+            // that refuses sessions, and every sync in between reported it.
             bazarish::log::warn("i2p facade {} answered unframed: {}",
                 facade.host.substr(0, 12), error.what());
-            throw;
+            throw ApiError(std::nullopt, 0, error.what());
         }
     }
     return std::nullopt;
