@@ -991,6 +991,16 @@ public:
     static constexpr std::size_t kPendingItemsPerPass = 5;
     // Whether the last pass left items in the mailbox.
     bool morePending() const { return morePending_; }
+    // Writes whatever the courier has confirmed since the last call to the
+    // account's other devices. A delivery that finished on the courier's own
+    // thread leaves its echo here, so a caller that reads its mailbox only when
+    // there is mail calls this on its own upkeep - otherwise a quiet account
+    // would hold its own sends back from its other devices.
+    void flushPendingEchoes();
+    // Items surfaced to the caller that it has not acked yet. They stay in the
+    // mailbox until it does, so a caller that watches for new mail can tell
+    // "the server still holds what I am carrying" from "there is more to take".
+    std::size_t awaitingAcks() const { return awaitingAck_.size(); }
 
     // Acks a pending mailbox item by its server-side blob id (IncomingMessage's
     // pendingId), removing it from the mailbox. Called after the item has been
@@ -1131,9 +1141,6 @@ private:
     // the conversation reads the same everywhere. Rides our own mailbox like the
     // other device.* service messages; best effort, and never a chat bubble on
     // the device that sent it.
-    // Writes whatever the courier has confirmed since the last call to the
-    // account's other devices.
-    void flushPendingEchoes();
     void echoSentToSelf(const std::string& peerFingerprint, const nlohmann::json& inner);
 
     // Pushes our own avatar to a contact as an "avatar" service message, once,
