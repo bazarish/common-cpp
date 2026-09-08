@@ -181,6 +181,56 @@ int main()
         CHECK(outcome.errorCode == "RECIPIENT_SERVER_UNREACHABLE");
     }
 
+    // A run whose budget cannot pay for every try makes fewer of them - and says
+    // so, instead of announcing tries it then skips. A dial that spends its
+    // whole timeout is what eats the budget, which is exactly what an
+    // unreachable destination does.
+    {
+        int dials = 0;
+        std::vector<std::string> retries;
+        DeliverySchedule schedule = quickSchedule();
+        // Two dials fit and a third does not, with a second of slack either way
+        // so the boundary is never a race with the clock.
+        schedule.dial = std::chrono::seconds{2};
+        schedule.run = std::chrono::seconds{5};
+        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
+            [&](const std::string&, const std::chrono::seconds forHowLong)
+                -> std::shared_ptr<DeliveryStream> {
+                ++dials;
+                std::this_thread::sleep_for(forHowLong);
+                return nullptr;
+            },
+            schedule);
+        OutboundCourier::Task task = taskTo(dest, "d-budget");
+        task.onPhase = [&retries](const std::string& phase) {
+            if (phase.rfind(kPhaseRetryPrefix, 0) == 0) {
+                retries.push_back(phase);
+            }
+        };
+        const OutboundCourier::Outcome outcome = courier.deliverNow(task);
+        CHECK(!outcome.stored);
+        CHECK(dials == 2);
+        // One retry announced, because one retry was made.
+        CHECK(static_cast<int>(retries.size()) == dials - 1);
+        CHECK(outcome.errorCode == "RECIPIENT_SERVER_UNREACHABLE");
+        CHECK(outcome.errorMessage.find("2 of 4 tries") != std::string::npos);
+    }
+
+    // A far side that takes the envelope and then says nothing is a different
+    // failure from one that never answered a dial, and is reported as one.
+    {
+        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
+            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                // Opens, takes the write, and says nothing back.
+                return std::make_shared<ScriptedStream>(std::string(), false);
+            },
+            quickSchedule());
+        const OutboundCourier::Outcome outcome = courier.deliverNow(taskTo(dest, "d-quiet"));
+        CHECK(!outcome.stored);
+        CHECK(outcome.errorCode == "RECIPIENT_SERVER_UNREACHABLE");
+        CHECK(outcome.errorMessage.find("did not answer") != std::string::npos);
+    }
+
     // A refusal is an answer: it is not repeated, and it carries its own reason.
     {
         int dials = 0;

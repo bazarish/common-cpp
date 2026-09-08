@@ -186,23 +186,37 @@ OutboundCourier::Outcome OutboundCourier::deliverNow(const Task& task)
     const std::chrono::steady_clock::time_point deadline
         = std::chrono::steady_clock::now() + schedule_.run;
     Outcome outcome;
+    // What the user is told at the end has to match what was actually done: a
+    // try that was announced and then skipped is how a run that ended two tries
+    // early read as one that had made them all.
+    int made = 0;
+    bool sentWithoutReply = false;
     for (int number = 1; number <= schedule_.attempts; ++number) {
+        const std::chrono::seconds gap = number > 1
+            ? schedule_.retryDelays.at(std::min<std::size_t>(
+                  static_cast<std::size_t>(number) - 2, schedule_.retryDelays.size() - 1))
+            : std::chrono::seconds{0};
+        // An attempt is made only if the budget can pay for its wait and for the
+        // whole of its dial. One that cannot is not announced either: a dial
+        // with a second left in it reaches nobody, and saying "retry 2/4" before
+        // finding that out told the user about a try that never happened.
+        if (std::chrono::steady_clock::now() + gap + schedule_.dial > deadline) {
+            break;
+        }
         if (number > 1) {
             if (task.onPhase) {
                 task.onPhase(retryPhase(number, schedule_.attempts));
             }
             std::unique_lock<std::mutex> lock(mutex_);
-            const std::size_t gap = std::min<std::size_t>(
-                static_cast<std::size_t>(number) - 2, schedule_.retryDelays.size() - 1);
-            if (cv_.wait_for(lock, schedule_.retryDelays.at(gap), [this]() { return !running_; })) {
+            if (cv_.wait_for(lock, gap, [this]() { return !running_; })) {
                 break;  // shutting down: the message stays unsent, and says so
             }
         }
-        if (std::chrono::steady_clock::now() >= deadline) {
-            break;
-        }
+        ++made;
         bool reachable = false;
-        outcome = attempt(task, deadline, reachable);
+        bool sent = false;
+        outcome = attempt(task, deadline, reachable, sent);
+        sentWithoutReply = sentWithoutReply || (sent && !reachable);
         if (reachable) {
             // The far side answered. Stored or refused, that is the answer:
             // repeating a refusal only spends the minute the user is waiting.
@@ -211,14 +225,24 @@ OutboundCourier::Outcome OutboundCourier::deliverNow(const Task& task)
     }
     outcome.stored = false;
     outcome.errorCode = std::string(bazarish::toString(ErrorCode::eRecipientServerUnreachable));
-    outcome.errorMessage = "the recipient's server could not be reached";
+    // Two different failures, said apart. One is a destination that never
+    // answered a dial; the other is one that took the envelope and then went
+    // quiet - where the message may well be delivered and only the confirmation
+    // is missing. Both carry the number of tries actually made, because a run
+    // that ended on its budget made fewer than it set out to.
+    outcome.errorMessage = (sentWithoutReply
+                                   ? "the recipient's server took the message and did not answer"
+                                   : "the recipient's server could not be reached")
+        + std::string(" (") + std::to_string(made) + " of "
+        + std::to_string(schedule_.attempts) + " tries)";
     return outcome;
 }
 
-OutboundCourier::Outcome OutboundCourier::attempt(
-    const Task& task, const std::chrono::steady_clock::time_point deadline, bool& outReachable)
+OutboundCourier::Outcome OutboundCourier::attempt(const Task& task,
+    const std::chrono::steady_clock::time_point deadline, bool& outReachable, bool& outSent)
 {
     outReachable = false;
+    outSent = false;
     Outcome outcome;
     const std::chrono::seconds left = std::chrono::duration_cast<std::chrono::seconds>(
         deadline - std::chrono::steady_clock::now());
@@ -244,6 +268,7 @@ OutboundCourier::Outcome OutboundCourier::attempt(
         std::max(deadline,
             std::chrono::steady_clock::now() + std::chrono::seconds(kReplyGraceSeconds)));
     FederationDeliverResult reply;
+    outSent = true;
     const std::chrono::steady_clock::time_point wroteAt = std::chrono::steady_clock::now();
     try {
         reply = federationSendDeliver(*stream, task.sealed, task.payload);

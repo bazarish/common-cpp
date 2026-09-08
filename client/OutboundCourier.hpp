@@ -46,15 +46,23 @@ inline constexpr int kDeliveryRetryDelaysSeconds[kDeliveryAttempts - 1] = {2, 4,
 // destination it dials from already has its tunnels: what is left is a leaseset
 // lookup and a stream handshake, not a tunnel build.
 inline constexpr int kDeliveryDialSeconds = 15;
-// The whole run, dials and waits together: 4 * 15 + 2 + 4 + 8 = 74. Enforced as
-// a deadline so a peer that accepts the stream and then says nothing cannot
-// stretch one send past the minute the user was promised.
-inline constexpr int kDeliveryRunSeconds = 75;
 // Once the envelope has been written, the far side is going to answer or not -
 // and cutting that answer off at the run deadline is how a delivery the
 // recipient's server accepted gets reported as one that never arrived. So the
 // wait for the reply, and only that wait, may outlive the run by this much.
 inline constexpr int kReplyGraceSeconds = 30;
+// The whole run: every attempt's dial, every wait between them, and the grace
+// one reply may take. Derived from the schedule rather than chosen, because an
+// attempt that cannot spend its whole dial is not made at all - a bound one
+// second short of its own schedule spent the last try on a dial with no time in
+// it, and a single quiet peer took the budget of the three tries after it.
+inline constexpr int kDeliveryRunSeconds = []() {
+    int total = kDeliveryAttempts * kDeliveryDialSeconds + kReplyGraceSeconds;
+    for (const int gap : kDeliveryRetryDelaysSeconds) {
+        total += gap;
+    }
+    return total;
+}();
 
 // Phases of one send, in the transport's words. The chip and the activity row
 // both read from these, so they cannot disagree about where a message is.
@@ -142,9 +150,11 @@ private:
     // released - the callback belongs to the caller, not to this queue.
     void reportDropped(const std::deque<Task>& tasks);
     // One dial and one frame exchange. reachable says whether the far side
-    // answered at all - not answering is the only thing worth a second attempt.
+    // answered at all - not answering is the only thing worth a second attempt -
+    // and sent says the envelope was written to it, which is a different failure
+    // from never having reached it and is reported as one.
     Outcome attempt(const Task& task, std::chrono::steady_clock::time_point deadline,
-        bool& outReachable);
+        bool& outReachable, bool& outSent);
     // Closes a stream that is still waiting for a reply past its deadline.
     void watch(const std::shared_ptr<DeliveryStream>& stream,
         std::chrono::steady_clock::time_point deadline);
