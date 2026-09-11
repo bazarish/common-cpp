@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include "bazarish/HttpServer.hpp"
+
 #include <filesystem>
 #include <map>
 #include <mutex>
@@ -21,6 +23,9 @@ public:
     struct File {
         std::string body;
         std::string contentType;
+        // The file's content hash, quoted, as its HTTP entity tag: it names this
+        // body and changes exactly when the body does.
+        std::string etag;
     };
 
     // Loads every template at once: a service that cannot draw its own pages must
@@ -47,5 +52,12 @@ private:
     mutable std::mutex mutex_;
     std::map<std::string, File> cache_;
 };
+
+// Answers a request for one of those files: the body, or 304 when the caller's
+// If-None-Match already names the tag we hold. These are the only responses in
+// the fleet that repeat byte for byte, so they are the only ones worth
+// revalidating - and the round trip a browser spends on it costs a header
+// instead of a font.
+http::Response serveWebAsset(const WebAssets::File& file, const http::Request& request);
 
 }  // namespace bazarish

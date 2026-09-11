@@ -146,6 +146,7 @@ bazarish_add_test(TestHttpClient)
 bazarish_add_test(TestLoginChallenge)
 bazarish_add_test(TestCaptcha)
 bazarish_add_test(TestConfigFile)
+bazarish_add_test(TestWebAssets)
 
 # These three play the far end over POSIX sockets of their own - socketpair,
 # read and write on a descriptor. What they cover is portable; the harness is
