@@ -441,6 +441,17 @@ int main()
             m.destFor[bob.fingerprint()] = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
         }
 
+        // A switched-off account announces nothing, itself included.
+        alice.setSwitchedOff(true);
+        bool announceRefused = false;
+        try {
+            alice.registerAccount();
+        } catch (const std::exception&) {
+            announceRefused = true;
+        }
+        CHECK(announceRefused);
+        alice.setSwitchedOff(false);
+
         alice.registerAccount();
         bob.registerAccount();
 

@@ -823,6 +823,9 @@ PortalInfo Session::serverPortalInfo()
 
 void Session::registerAccount()
 {
+    // Announcing this account to a server is a write like any other, and an
+    // account the user has switched off makes none - not even about itself.
+    requireSwitchedOn();
     // Publishing our card is what turns the registration into an account, and it
     // publishes our sealing key as a prekey so contacts can encrypt their very
     // first message to us before any token exchange. A server that asks for no
