@@ -54,8 +54,12 @@ WebAssets::File loadFile(const std::filesystem::path& path, const std::string& c
     const Bytes bytes(body.begin(), body.end());
     // The tag is the content itself, hashed: two servers handed the same file
     // answer with the same tag, and a redeploy that does not change a file does
-    // not invalidate anybody's copy of it.
-    std::string etag = "\"" + toHex(sha256(bytes)) + "\"";
+    // not invalidate anybody's copy of it. Appended rather than concatenated with
+    // operator+, which GCC 12 - the compiler of the oldest base this project
+    // builds on - reports a false -Wrestrict overlap for.
+    std::string etag = "\"";
+    etag += toHex(sha256(bytes));
+    etag += '"';
     return {std::move(body), contentType, std::move(etag)};
 }
 
