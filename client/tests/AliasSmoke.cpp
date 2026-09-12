@@ -64,6 +64,11 @@ ResolverCoordinate coordinate()
 
 int main(const int argc, const char** argv)
 {
+    // Redirected output is block-buffered, and everything below waits on a router
+    // and then on tunnels: unbuffered, a run that is working looks like one that
+    // has hung for minutes.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     const std::string alias = argc > 1 ? argv[1] : "nobodyhasthis";
     const ResolverCoordinate resolver = coordinate();
     if (!resolver.configured()) {
