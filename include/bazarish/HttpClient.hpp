@@ -51,6 +51,12 @@ struct ClientOptions {
     // a 401 comes back to the caller as it stands.
     std::string digestUser;
     std::string digestPassword;
+    // HTTP Basic credentials (RFC 7617), for a backend that takes only those -
+    // bitcoind does, and its cookie file is a user and password like any other.
+    // Sent with the first request rather than after a challenge, which is what
+    // bitcoind expects and what saves a round trip on every call.
+    std::string basicUser;
+    std::string basicPassword;
 };
 
 struct ClientResponse {

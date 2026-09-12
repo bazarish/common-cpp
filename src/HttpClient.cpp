@@ -333,7 +333,15 @@ asio::awaitable<Response> fetch(asio::any_io_executor executor, const std::strin
 ClientResponse request(const std::string& host, const int port, const ClientRequest& request,
     const ClientOptions& options)
 {
-    const ClientResponse first = runOnce(host, port, request, options, 0, nullptr);
+    ClientRequest outgoing = request;
+    if (!options.basicUser.empty()) {
+        // Basic is sent unasked: a backend that takes it does not challenge for
+        // it, and waiting to be challenged would only cost a round trip.
+        const std::string pair = options.basicUser + ":" + options.basicPassword;
+        outgoing.headers["Authorization"]
+            = "Basic " + toBase64(Bytes(pair.begin(), pair.end()));
+    }
+    const ClientResponse first = runOnce(host, port, outgoing, options, 0, nullptr);
     if (first.status != kUnauthorizedStatus || options.digestUser.empty()) {
         return first;
     }
@@ -343,7 +351,7 @@ ClientResponse request(const std::string& host, const int port, const ClientRequ
     }
     // The challenge is what the credentials are computed against, so this second
     // attempt is the first one that could carry them.
-    ClientRequest authorized = request;
+    ClientRequest authorized = outgoing;
     authorized.headers["Authorization"] = digestAuthorization(options, request.method,
         request.target, challengeFields(challenge->second));
     return runOnce(host, port, authorized, options, 0, nullptr);

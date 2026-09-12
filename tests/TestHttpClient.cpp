@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "bazarish/HttpClient.hpp"
 
+#include "bazarish/Bytes.hpp"
+
 #include "bazarish/HttpServer.hpp"
 
 #include "TestUtil.hpp"
@@ -210,6 +212,46 @@ int main()
     CHECK(late.readTimedOut);
 
     server.stop();
+    // --- Basic, sent unasked ---
+    // bitcoind takes only Basic and does not challenge for it, so a client that
+    // waits to be asked never gets in at all.
+    {
+        std::string sawAuthorization;
+        http::Server::Options options;
+        options.port = 0;
+        http::Server server(options);
+        server.get("/basic", [&sawAuthorization](const http::Request& request) {
+            const auto found = request.headers.find("authorization");
+            sawAuthorization = found == request.headers.end() ? std::string() : found->second;
+            http::Response response;
+            response.status = sawAuthorization.empty() ? 401 : 200;
+            response.body = "{}";
+            return response;
+        });
+        const int port = server.start();
+        CHECK(port > 0);
+
+        http::ClientRequest ask;
+        ask.method = "GET";
+        ask.target = "/basic";
+        http::ClientOptions withBasic;
+        withBasic.basicUser = "rpcuser";
+        withBasic.basicPassword = "s3cret";
+        const http::ClientResponse answered = http::request("127.0.0.1", port, ask, withBasic);
+        CHECK(answered.status == 200);
+        const std::string pair = "rpcuser:s3cret";
+        CHECK(sawAuthorization
+            == "Basic " + bazarish::toBase64(bazarish::Bytes(pair.begin(), pair.end())));
+
+        // Without credentials nothing is sent, and the refusal comes back as it
+        // stands rather than being retried blindly.
+        sawAuthorization.clear();
+        const http::ClientResponse bare = http::request("127.0.0.1", port, ask, {});
+        CHECK(bare.status == 401);
+        CHECK(sawAuthorization.empty());
+        server.stop();
+    }
+
     std::printf("TestHttpClient: all checks passed\n");
     return 0;
 }
