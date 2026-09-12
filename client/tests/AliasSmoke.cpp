@@ -9,9 +9,10 @@
 // transport, and that what comes back verifies against the root the client was
 // built with rather than against a root the test handed itself.
 //
-// Run:  alias_smoke [alias-to-resolve]
+// Run:  alias_smoke [alias-to-resolve] [router-data-dir]
 // The coordinate is the compiled-in one unless BAZARISH_RESOLVER_ROOT and
-// BAZARISH_RESOLVER_DEST are set.
+// BAZARISH_RESOLVER_DEST are set. The router keeps its netDb under the data
+// directory, so a second run starts from peers it already knows.
 
 #include "Client.hpp"
 #include "FederationFetch.hpp"
@@ -72,16 +73,16 @@ int main(const int argc, const char** argv)
     std::printf("[alias] root=%s\n[alias] dest=%s\n", resolver.rootFingerprint.c_str(),
         resolver.dest.c_str());
 
-    bazarish::i2p::Router router({});
-    router.start();
-    for (int waited = 0; waited < kRouterWaitSeconds && !router.ready(); ++waited) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
+    const std::string dataDir = argc > 2 ? argv[2] : "/tmp/baz-alias-smoke";
+    bazarish::i2p::Router router(
+        bazarish::i2p::RouterConfig{dataDir, bazarish::i2p::Role::eClient});
+    std::printf("[alias] waiting for router in %s...\n", dataDir.c_str());
+    router.waitReady(std::chrono::seconds(kRouterWaitSeconds));
     if (!router.ready()) {
         std::printf("[alias] router never became ready\n");
         return 1;
     }
-    std::printf("[alias] router ready\n");
+    std::printf("[alias] router ready, knownRouters=%d\n", router.knownRouters());
 
     // The transport a client really uses: a throwaway destination per exchange,
     // dialled straight at the resolver, with our own server nowhere in it.
