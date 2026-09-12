@@ -7,8 +7,9 @@
 namespace bazarish {
 
 // Aliases are short enough to never collide with the 52-character
-// fingerprint form.
-inline constexpr std::size_t kAliasMaxLength = 32;
+// fingerprint form. The upper bound is also the longest name the central
+// registry sells, and its cheapest tier.
+inline constexpr std::size_t kAliasMaxLength = 16;
 inline constexpr std::size_t kAliasMinLength = 1;
 
 // Address forms:
@@ -36,8 +37,9 @@ std::string formatAddress(const Address& address);
 
 // True for a well-formed key fingerprint (52 chars of base32).
 bool isFingerprint(const std::string& text);
-// True for a well-formed alias: [a-z0-9_.-], length limits, must not
-// start or end with a separator.
+// True for a well-formed alias: [a-z0-9] within the length limits. Separators
+// are deliberately absent - they would let two names differ only by a character
+// nobody reads, and the price of a name follows its length alone.
 bool isAlias(const std::string& text);
 
 }  // namespace bazarish

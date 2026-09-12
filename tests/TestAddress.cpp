@@ -18,7 +18,12 @@ int main()
 
     CHECK(isAlias("alice"));
     CHECK(isAlias("a"));
-    CHECK(isAlias("alice.bob-42_x"));
+    CHECK(isAlias("alice42"));
+    // Separators are not name characters any more, so a name carrying one is
+    // not a name at all rather than a name that merely may not start with it.
+    CHECK(!isAlias("alice.bob"));
+    CHECK(!isAlias("alice_bob"));
+    CHECK(!isAlias("alice-bob"));
     CHECK(!isAlias(""));
     CHECK(!isAlias("Alice"));
     CHECK(!isAlias(".alice"));

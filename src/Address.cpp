@@ -12,12 +12,7 @@ bool isBase32Char(const char c)
 
 bool isAliasChar(const char c)
 {
-    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-';
-}
-
-bool isAliasSeparator(const char c)
-{
-    return c == '_' || c == '.' || c == '-';
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
 }
 
 }  // namespace
@@ -46,9 +41,6 @@ bool isAlias(const std::string& text)
         if (!isAliasChar(c)) {
             return false;
         }
-    }
-    if (isAliasSeparator(text.front()) || isAliasSeparator(text.back())) {
-        return false;
     }
     return true;
 }
