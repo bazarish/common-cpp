@@ -47,12 +47,18 @@ int main()
 
     // --- Request: round trip, and the signature is what names the owner ---
     const Identity alice = Identity::generate();
-    const AliasMaintenanceRequest update{kAliasUpdateOp, "alice", descriptor, false, now};
+    AliasMaintenanceRequest update;
+    update.op = kAliasUpdateOp;
+    update.alias = "alice";
+    update.descriptor = descriptor;
+    update.aliasCertDer = Bytes{0x30, 0x31};
+    update.issuedAt = now;
     const AliasMaintenanceRequest back = aliasMaintenanceRequestFromJson(toJson(update));
     CHECK(back.op == update.op);
     CHECK(back.alias == update.alias);
     CHECK(back.descriptor.view == descriptor.view);
     CHECK(back.issuedAt == update.issuedAt);
+    CHECK(back.aliasCertDer == update.aliasCertDer);
 
     const Bytes signed_ = signAliasMaintenanceRequest(update, alice);
     const VerifiedAliasRequest verified = verifyAliasMaintenanceRequest(signed_, now);

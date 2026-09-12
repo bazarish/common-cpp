@@ -32,6 +32,7 @@ nlohmann::json toJson(const AliasMaintenanceRequest& request)
         {"alias", request.alias},
         {"descriptor", descriptorToJson(request.descriptor)},
         {"flag", request.flag},
+        {"aliasCert", toBase64(request.aliasCertDer)},
         {"issuedAt", request.issuedAt},
     };
 }
@@ -44,6 +45,7 @@ AliasMaintenanceRequest aliasMaintenanceRequestFromJson(const nlohmann::json& bo
     request.alias = body.at("alias").get<std::string>();
     request.descriptor = descriptorFromJson(body.at("descriptor"));
     request.flag = body.value("flag", false);
+    request.aliasCertDer = fromBase64(body.value("aliasCert", std::string()));
     request.issuedAt = body.at("issuedAt").get<std::int64_t>();
     return request;
 }

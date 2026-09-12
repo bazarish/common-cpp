@@ -4895,8 +4895,10 @@ bool Session::refreshAliasStatus()
         return false;
     }
     const std::int64_t now = nowSeconds();
-    const Bytes request = signAliasMaintenanceRequest(
-        AliasMaintenanceRequest{kAliasStatusOp, {}, Descriptor{}, false, now}, client_->identity());
+    AliasMaintenanceRequest asking;
+    asking.op = kAliasStatusOp;
+    asking.issuedAt = now;
+    const Bytes request = signAliasMaintenanceRequest(asking, client_->identity());
     const FetchOutcome outcome = askResolver(kAliasStatusOp, request);
     if (!outcome.ok) {
         throw std::runtime_error("the name service refused: "
@@ -4941,9 +4943,12 @@ bool Session::pushAliasDescriptor()
 
     std::size_t accepted = 0;
     for (const AliasHolding& holding : aliasNames_) {
-        const Bytes request = signAliasMaintenanceRequest(
-            AliasMaintenanceRequest{kAliasUpdateOp, holding.alias, descriptor, false, now},
-            client_->identity());
+        AliasMaintenanceRequest asking;
+        asking.op = kAliasUpdateOp;
+        asking.alias = holding.alias;
+        asking.descriptor = descriptor;
+        asking.issuedAt = now;
+        const Bytes request = signAliasMaintenanceRequest(asking, client_->identity());
         try {
             const FetchOutcome outcome = askResolver(kAliasUpdateOp, request);
             if (!outcome.ok) {

@@ -41,6 +41,9 @@ inline constexpr const char* kAliasStatusOp = "alias.status";
 inline constexpr const char* kAliasUpdateOp = "alias.update";
 inline constexpr const char* kAliasRenewOp = "alias.renew";
 inline constexpr const char* kAliasAutoRenewOp = "alias.autorenew";
+// The recipient's half of a transfer: their own certificate over the name,
+// and their own descriptor. The offer itself is made by the owner.
+inline constexpr const char* kAliasTransferAcceptOp = "alias.transfer.accept";
 
 // One maintenance request. `alias` and `descriptor` belong to alias.update;
 // alias.status leaves them empty and asks about every name the signer owns.
@@ -50,6 +53,9 @@ struct AliasMaintenanceRequest {
     Descriptor descriptor;
     // What alias.autorenew is asking for; ignored by every other op.
     bool flag = false;
+    // The certificate the signer has made over this name, for the op that needs
+    // the signer to prove the name is theirs to hold.
+    Bytes aliasCertDer;
     std::int64_t issuedAt = 0;
 };
 
