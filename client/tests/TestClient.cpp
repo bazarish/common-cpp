@@ -105,7 +105,6 @@ int main()
     // sealing key + .b32.i2p destination.
     const Identity resolverRoot = Identity::generate();
     const Identity resolverDelegated = Identity::generate();
-    const Key resolverSealing = Key::generateSealing();
     const std::string resolverDest = "flkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
     const std::int64_t resolverWeek = 7 * 24 * 3600;
     const Bytes resolverDelegationDer
@@ -162,14 +161,12 @@ int main()
             return outcome;
         }
 
-        // op == "resolve": the central resolver unseals the query with its
-        // serving key, signs a self-verifying record (delegated key) and seals it
-        // to the response key. An unknown alias answers ALIAS_UNKNOWN.
+        // op == "resolve": the central resolver reads the query as it arrives and
+        // signs a self-verifying record with its delegated key. Nothing is
+        // encrypted either way. An unknown alias answers ALIAS_UNKNOWN.
         CHECK(op == "resolve");
         CHECK(toDest == resolverDest);
-        const Bytes queryBytes
-            = cms::unseal(sealed, Key::fromPrivatePem(resolverSealing.privatePem()));
-        const ResolveQuery query = resolveQueryFromJson(nlohmann::json::parse(queryBytes));
+        const ResolveQuery query = resolveQueryFromJson(nlohmann::json::parse(sealed));
         if (query.alias == "ghost") {
             outcome.errorCode = "ALIAS_UNKNOWN";
             return outcome;
@@ -183,8 +180,7 @@ int main()
             signResolveRecord(record, resolverDelegated), resolverDelegationDer};
         const std::string respJson = toJson(resp).dump();
         outcome.ok = true;
-        outcome.sealed = cms::seal(
-            Bytes(respJson.begin(), respJson.end()), Key::fromPublicDer(query.responseKeyDer));
+        outcome.sealed = Bytes(respJson.begin(), respJson.end());
         return outcome;
     };
 
@@ -275,8 +271,7 @@ int main()
 
     // Central alias resolve: the signed, self-verifying record maps the alias to a
     // descriptor; the chain is verified against the resolver root fingerprint.
-    const ResolverCoordinate resolver{
-        resolverRoot.fingerprint(), resolverDest, resolverSealing.publicDer()};
+    const ResolverCoordinate resolver{resolverRoot.fingerprint(), resolverDest};
     const auto rejects = [&](const auto& fn) {
         try {
             fn();
@@ -296,8 +291,7 @@ int main()
 
         // A record anchored to a different root is rejected (anti-MITM): even a
         // correctly-formed reply fails the chain check against our root.
-        const ResolverCoordinate wrongRoot{
-            Identity::generate().fingerprint(), resolverDest, resolverSealing.publicDer()};
+        const ResolverCoordinate wrongRoot{Identity::generate().fingerprint(), resolverDest};
         CHECK(rejects([&]() { (void)client.resolveAlias("bob", wrongRoot, now, directDial); }));
 
         // A record whose alias differs from the one queried is rejected.

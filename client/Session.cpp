@@ -356,14 +356,13 @@ Session::Session(fs::path accountFile, std::unique_ptr<Client> client, Key seali
 {
     // The compiled-in resolver coordinate is empty until a developer-run resolver
     // is deployed and baked in. It can be overridden from the environment so a
-    // freshly-built test or local resolver is exercised without a rebuild; all
-    // three parts must be present or the alias path stays unconfigured.
+    // freshly-built test or local resolver is exercised without a rebuild; both
+    // parts must be present or the alias path stays unconfigured.
     if (const char* const root = std::getenv("BAZARISH_RESOLVER_ROOT");
         root != nullptr && root[0] != '\0') {
         const char* const dest = std::getenv("BAZARISH_RESOLVER_DEST");
-        const char* const key = std::getenv("BAZARISH_RESOLVER_KEY");
-        if (dest != nullptr && dest[0] != '\0' && key != nullptr && key[0] != '\0') {
-            resolverCoordinate_ = ResolverCoordinate{root, dest, fromBase64(key)};
+        if (dest != nullptr && dest[0] != '\0') {
+            resolverCoordinate_ = ResolverCoordinate{root, dest};
         }
     }
 }

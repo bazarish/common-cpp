@@ -76,7 +76,6 @@ nlohmann::json toJson(const ResolveQuery& query)
     return {
         {"v", 1},
         {"alias", query.alias},
-        {"responseKey", toBase64(query.responseKeyDer)},
     };
 }
 
@@ -85,7 +84,6 @@ ResolveQuery resolveQueryFromJson(const nlohmann::json& body)
     requireVersion(body, "resolve query");
     ResolveQuery query;
     query.alias = body.at("alias").get<std::string>();
-    query.responseKeyDer = fromBase64(body.at("responseKey").get<std::string>());
     return query;
 }
 

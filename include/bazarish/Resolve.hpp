@@ -43,15 +43,17 @@ CardFetchResponse cardFetchResponseFromJson(const nlohmann::json& body);
 
 // --- Alias resolution (alias -> descriptor) -----------------------------
 
-// Query to the central resolver, sealed to its serving sealing key (so the relay
-// on the proxy path cannot read which alias is looked up).
+// Query to the central resolver. Both directions travel in the clear: the client
+// dials the resolver's destination directly over I2P, whose stream is already
+// encrypted and authenticated to it, and no relayed path exists to hide the name
+// from. The resolver holds no encryption key at all - what a record is worth
+// rests on its signature, not on who could read the question.
 struct ResolveQuery {
-    std::string alias;     // the name to resolve (normalized: a-z0-9, lowercase)
-    Bytes responseKeyDer;  // ephemeral SPKI the response is sealed to
+    std::string alias;  // the name to resolve (normalized: a-z0-9, lowercase)
 };
 
-// Response from the resolver, sealed to the query's responseKey. Carries the
-// signed record and the delegation certificate that anchors it to the root.
+// Response from the resolver. Carries the signed record and the delegation
+// certificate that anchors it to the root.
 struct ResolveResponse {
     Bytes recordDer;      // signResolveRecord(...) output (hybrid-signed record)
     Bytes delegationDer;  // the delegation certificate (delegated key <- root)

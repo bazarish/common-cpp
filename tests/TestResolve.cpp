@@ -46,11 +46,12 @@ int main()
     const CardFetchResponse r2 = cardFetchResponseFromJson(toJson(response));
     CHECK(r2.cardDer == response.cardDer);
 
-    // Resolve query round-trip (alias + ephemeral response key).
-    const ResolveQuery rq{"alice", Bytes{0x11, 0x22, 0x33, 0x44}};
+    // Resolve query round-trip. It names the alias and nothing else: the resolver
+    // reads it in the clear, so there is no response key to carry.
+    const ResolveQuery rq{"alice"};
     const ResolveQuery rq2 = resolveQueryFromJson(toJson(rq));
     CHECK(rq2.alias == rq.alias);
-    CHECK(rq2.responseKeyDer == rq.responseKeyDer);
+    CHECK(!toJson(rq).contains("responseKey"));
 
     // Resolve response round-trip (signed record + delegation certificate).
     const ResolveResponse rr{Bytes{0xAA, 0xBB, 0xCC}, Bytes{0xDD, 0xEE, 0xFF, 0x01}};

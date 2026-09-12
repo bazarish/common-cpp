@@ -239,23 +239,19 @@ ContactInfo Client::fetchCard(const Descriptor& descriptor, const FetchTransport
 Descriptor Client::resolveAlias(const std::string& alias, const ResolverCoordinate& resolver,
     const std::int64_t now, const FetchTransport& transport)
 {
-    // Seal the query (which alias) to the resolver's serving key so a relay on
-    // the proxy path cannot read it; the response is sealed to a fresh ephemeral
-    // key only we hold.
-    const Key ephemeral = Key::generateSealing();
-    const ResolveQuery query{alias, ephemeral.publicDer()};
-    const std::string queryJson = toJson(query).dump();
-    const Bytes sealedQuery = cms::seal(
-        Bytes(queryJson.begin(), queryJson.end()), Key::fromPublicDer(resolver.sealingKeyDer));
-
-    const FetchOutcome outcome = transport(resolver.dest, "resolve", sealedQuery);
+    // The query names the alias and travels in the clear: the transport dials the
+    // resolver's destination directly over I2P, whose stream is already encrypted
+    // and authenticated to it, and there is no relayed path to hide the name from.
+    // What comes back is trusted for its signature, not for its secrecy.
+    const std::string queryJson = toJson(ResolveQuery{alias}).dump();
+    const FetchOutcome outcome
+        = transport(resolver.dest, "resolve", Bytes(queryJson.begin(), queryJson.end()));
     if (!outcome.ok) {
         throw std::runtime_error("alias resolve failed: "
             + (outcome.errorCode.empty() ? std::string("ALIAS_UNKNOWN") : outcome.errorCode));
     }
-    const Bytes responseBytes = cms::unseal(outcome.sealed, ephemeral);
     const ResolveResponse fetched
-        = resolveResponseFromJson(nlohmann::json::parse(responseBytes));
+        = resolveResponseFromJson(nlohmann::json::parse(outcome.sealed));
 
     // Verify the signature chain (record -> delegated key -> hardcoded root) and
     // that the record is for the alias we asked for. This is the integrity
