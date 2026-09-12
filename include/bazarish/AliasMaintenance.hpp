@@ -39,6 +39,8 @@ inline constexpr std::int64_t kAliasStatusValiditySeconds = 36 * 3600;
 // The ops a maintenance frame may carry.
 inline constexpr const char* kAliasStatusOp = "alias.status";
 inline constexpr const char* kAliasUpdateOp = "alias.update";
+inline constexpr const char* kAliasRenewOp = "alias.renew";
+inline constexpr const char* kAliasAutoRenewOp = "alias.autorenew";
 
 // One maintenance request. `alias` and `descriptor` belong to alias.update;
 // alias.status leaves them empty and asks about every name the signer owns.
@@ -46,6 +48,8 @@ struct AliasMaintenanceRequest {
     std::string op;
     std::string alias;
     Descriptor descriptor;
+    // What alias.autorenew is asking for; ignored by every other op.
+    bool flag = false;
     std::int64_t issuedAt = 0;
 };
 
@@ -53,6 +57,7 @@ struct AliasMaintenanceRequest {
 struct AliasStatusEntry {
     std::string alias;
     std::int64_t notAfter = 0;
+    bool autoRenew = true;
 };
 
 // The resolver's answer to alias.status. `owner` says whose names these are, so a
@@ -61,6 +66,11 @@ struct AliasStatusEntry {
 struct AliasStatus {
     std::string owner;
     std::vector<AliasStatusEntry> names;
+    // Whether the deposit covers everything of this account's falling due soon.
+    // Per account, not per name: several names renewing in the same week can each
+    // look affordable while their sum is not, and a flag that reads "fine" there
+    // is worse than no flag. The balance itself never leaves the service.
+    bool depositCoversRenewals = true;
     std::int64_t issuedAt = 0;
     std::int64_t notAfter = 0;
 };

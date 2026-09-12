@@ -47,7 +47,7 @@ int main()
 
     // --- Request: round trip, and the signature is what names the owner ---
     const Identity alice = Identity::generate();
-    const AliasMaintenanceRequest update{kAliasUpdateOp, "alice", descriptor, now};
+    const AliasMaintenanceRequest update{kAliasUpdateOp, "alice", descriptor, false, now};
     const AliasMaintenanceRequest back = aliasMaintenanceRequestFromJson(toJson(update));
     CHECK(back.op == update.op);
     CHECK(back.alias == update.alias);
@@ -90,8 +90,8 @@ int main()
 
     AliasStatus status;
     status.owner = alice.fingerprint();
-    status.names.push_back(AliasStatusEntry{"alice", now + week});
-    status.names.push_back(AliasStatusEntry{"al", now + 2 * week});
+    status.names.push_back(AliasStatusEntry{"alice", now + week, true});
+    status.names.push_back(AliasStatusEntry{"al", now + 2 * week, false});
     status.issuedAt = now;
     status.notAfter = now + 3600;
 
@@ -106,6 +106,12 @@ int main()
         = verifyAliasStatus(statusDer, delegationDer, root.fingerprint(), now);
     CHECK(checked.owner == alice.fingerprint());
     CHECK(checked.names.size() == 2);
+    // Whether a name pays for itself, and whether the deposit covers what falls
+    // due, both survive the round trip - the balance itself never does.
+    CHECK(checked.names[0].autoRenew);
+    CHECK(!checked.names[1].autoRenew);
+    CHECK(checked.depositCoversRenewals);
+    CHECK(!toJson(status).contains("balance"));
 
     // Another root does not vouch for it: this is what lets one device accept an
     // answer relayed by a sibling without taking the sibling's word for it.
