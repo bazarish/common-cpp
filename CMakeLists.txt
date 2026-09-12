@@ -52,6 +52,7 @@ add_library(bazarish_common STATIC
     src/Descriptor.cpp
     src/ServerDescriptor.cpp
     src/Resolve.cpp
+    src/AliasMaintenance.cpp
     src/I2pHttp.cpp
     src/Reactions.cpp
     src/Log.cpp
@@ -139,6 +140,7 @@ target_compile_options(sam_smoke PRIVATE -Wall -Wextra -Werror)
 bazarish_add_test(TestDescriptor)
 bazarish_add_test(TestServerDescriptor)
 bazarish_add_test(TestResolve)
+bazarish_add_test(TestAliasMaintenance)
 bazarish_add_test(TestLog)
 bazarish_add_test(TestHealth)
 bazarish_add_test(TestRestart)
