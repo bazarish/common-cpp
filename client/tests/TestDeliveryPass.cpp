@@ -8,6 +8,7 @@
 
 #include "TunnelStub.hpp"
 
+#include <bazarish/AliasMaintenance.hpp>
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Cms.hpp>
@@ -100,6 +101,11 @@ void respondJson(http::Response& response, const nlohmann::json& body)
 // token), and hands back each user's self-signed subscription certificate. Every
 // handler runs on the server's own thread while the test drives the sessions on
 // the main thread, so all state is guarded by one mutex.
+// Where the name service answers in this test, standing in for the address baked
+// into a release build.
+constexpr const char* kResolverDest
+    = "flkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+
 struct Mock {
     std::mutex mu;
     std::string serverFp;
@@ -124,6 +130,15 @@ struct Mock {
     // What the far side answers instead of "delivered", when a test wants to see
     // what a client does with a refusal. Empty means it accepts, as before.
     std::string refuseWith;
+    // A serving-key rotation in two steps: the server mints the pair, the client
+    // signs a card over it, and only the commit puts it in force.
+    std::map<std::string, std::string> pendingView;  // fingerprint -> view minted, not yet in force
+    // The central name registry, as far as this test is concerned: who owns a
+    // name, and where it currently says that name is answered.
+    std::map<std::string, std::string> aliasOwner;       // alias -> owner fingerprint
+    std::map<std::string, Descriptor> aliasDescriptor;   // alias -> binding
+    int resolverStatusCalls = 0;
+    int resolverUpdateCalls = 0;
 };
 
 // A send leaves on the courier's own thread, so a test that wants to see the far
@@ -289,6 +304,35 @@ int main()
           };
     server.post("/v1/account/card", stub(handlePublishCard));
 
+    // Rotating the serving key: the server mints a fresh pair and holds the new
+    // capability aside until the client commits a card signed over it.
+    server.post("/v1/account/serving-key",
+        stub([&](const http::Request& request, http::Response& response) {
+            const std::string caller = requireCaller(request);
+            // A fresh capability of the full width, as a real server mints: a
+            // short one is not a capability at all and the client would refuse to
+            // publish it, which would make the check below pass for nothing.
+            const std::string view = toHex(randomBytes(bazarish::kViewCapabilityBytes));
+            CHECK(isViewCapability(view));
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.pendingView[caller] = view;
+            }
+            respondJson(response,
+                {{"servingKey", toBase64(m.serverSealing.publicDer())}, {"view", view}});
+        }));
+    server.post("/v1/account/serving-key/commit",
+        stub([&](const http::Request& request, http::Response& response) {
+            const std::string caller = requireCaller(request);
+            const std::string cardB64
+                = nlohmann::json::parse(request.body).at("card").get<std::string>();
+            CHECK(ContactCard::verify(fromBase64(cardB64)).fingerprint() == caller);
+            std::lock_guard<std::mutex> lock(m.mu);
+            m.certFor[caller] = cardB64;
+            m.viewFor[caller] = m.pendingView[caller];
+            respondJson(response, {{"ok", true}});
+        }));
+
     // Registering delegates this account's offline transient before republishing
     // the card with its routing, so the account API must take one.
     server.post("/v1/account/i2p-dest",
@@ -411,6 +455,18 @@ int main()
     endpoint.serverFingerprint = stubServerIdentity.fingerprint();
     endpoint.facades = {Facade{false, "127.0.0.1", port, {}}};
 
+    // The name service this build talks to: an offline root, a delegated signing
+    // key under it, and an address. A release bakes the first and third in; a test
+    // hands them over the environment, which is read when a session is opened, so
+    // this has to happen before any account exists.
+    const Identity resolverRoot = Identity::generate();
+    const Identity resolverDelegated = Identity::generate();
+    const Bytes resolverDelegationDer = DelegationCertificate::issue(resolverRoot,
+        resolverDelegated, static_cast<std::int64_t>(std::time(nullptr)) - 60,
+        static_cast<std::int64_t>(std::time(nullptr)) + 30 * 24 * 3600);
+    ::setenv("BAZARISH_RESOLVER_ROOT", resolverRoot.fingerprint().c_str(), 1);
+    ::setenv("BAZARISH_RESOLVER_DEST", kResolverDest, 1);
+
     const fs::path aDir = fs::temp_directory_path() / "bz-pass-a";
     const fs::path bDir = fs::temp_directory_path() / "bz-pass-b";
     fs::remove_all(aDir);
@@ -459,10 +515,51 @@ int main()
         // router here, so the harness stands in for that dial. It answers exactly as
         // a serving destination does: the card when the query brings back the view
         // capability, and the same nothing otherwise.
-        const auto directDial = [&m](const std::string& toDest, const std::string& op,
+        const auto directDial = [&m, &resolverRoot, &resolverDelegated, &resolverDelegationDer](
+                                    const std::string& toDest, const std::string& op,
                                     const Bytes& query) {
+            // The central resolver answers on the same dial. Its ops are signed by
+            // the owner, and its answers are signed by its delegated key.
+            if (op == kAliasStatusOp || op == kAliasUpdateOp) {
+                CHECK(toDest == kResolverDest);
+                FetchOutcome outcome;
+                const VerifiedAliasRequest asked = verifyAliasMaintenanceRequest(
+                    query, static_cast<std::int64_t>(std::time(nullptr)));
+                CHECK(asked.request.op == op);
+                std::lock_guard<std::mutex> lock(m.mu);
+                const std::int64_t now = static_cast<std::int64_t>(std::time(nullptr));
+                if (op == kAliasUpdateOp) {
+                    ++m.resolverUpdateCalls;
+                    const auto owner = m.aliasOwner.find(asked.request.alias);
+                    if (owner == m.aliasOwner.end() || owner->second != asked.owner) {
+                        outcome.errorCode = "NOT_OWNER";
+                        return outcome;
+                    }
+                    CHECK(asked.request.descriptor.fingerprint == asked.owner);
+                    m.aliasDescriptor[asked.request.alias] = asked.request.descriptor;
+                    outcome.ok = true;
+                    return outcome;
+                }
+                ++m.resolverStatusCalls;
+                AliasStatus status;
+                status.owner = asked.owner;
+                for (const auto& [alias, owner] : m.aliasOwner) {
+                    if (owner == asked.owner) {
+                        status.names.push_back(AliasStatusEntry{alias, now + 365 * 24 * 3600});
+                    }
+                }
+                status.issuedAt = now;
+                status.notAfter = now + kAliasStatusValiditySeconds;
+                const ResolveResponse answer{
+                    signAliasStatus(status, resolverDelegated), resolverDelegationDer};
+                const std::string json = toJson(answer).dump();
+                outcome.ok = true;
+                outcome.sealed = Bytes(json.begin(), json.end());
+                return outcome;
+            }
             CHECK(op == "card");
             (void)toDest;
+            (void)resolverRoot;
             const CardFetchQuery asked = cardFetchQueryFromJson(nlohmann::json::parse(query));
             std::lock_guard<std::mutex> lock(m.mu);
             const auto found = m.certFor.find(asked.fingerprint);
@@ -508,6 +605,70 @@ int main()
             alice.sync();
             return alice.canWriteTo(bob.fingerprint());
         }));
+
+        // --- The account's own name in the central registry -------------------
+        // A client that knows of no name of its own tells the name service
+        // nothing, on any schedule: this is the whole of the quiet case.
+        CHECK(alice.aliasNames().empty());
+        alice.serviceAliases();
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            CHECK(m.resolverStatusCalls == 0);
+            CHECK(m.resolverUpdateCalls == 0);
+        }
+
+        // Alice bought a name in the browser; the registry knows it, this client
+        // does not. Activation is the one way in.
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            m.aliasOwner["alice"] = alice.fingerprint();
+        }
+        CHECK(alice.refreshAliasStatus());
+        CHECK(alice.aliasNames().size() == 1);
+        CHECK(alice.aliasNames().front().alias == "alice");
+
+        // Knowing the name, it repoints the registry at where this account
+        // actually answers.
+        CHECK(alice.aliasUpdatePending());
+        alice.serviceAliases();
+        CHECK(!alice.aliasUpdatePending());
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            CHECK(m.aliasDescriptor.at("alice").fingerprint == alice.fingerprint());
+            CHECK(m.aliasDescriptor.at("alice").view == m.viewFor[alice.fingerprint()]);
+        }
+
+        // THE REGRESSION THIS WHOLE PATH EXISTS FOR: rotating the serving key
+        // retires the capability the registry holds. Before, the name went on
+        // pointing at a capability the server had stopped honouring and simply
+        // stopped working, silently. Now the rotation tells the registry.
+        const std::string viewBefore = m.viewFor[alice.fingerprint()];
+        alice.rotateServingKey(nullptr);
+        const std::string viewAfter = m.viewFor[alice.fingerprint()];
+        CHECK(viewAfter != viewBefore);
+        CHECK(!alice.aliasUpdatePending());
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            CHECK(m.aliasDescriptor.at("alice").view == viewAfter);
+        }
+
+        // A name somebody else owns is not repointed by asking nicely.
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            m.aliasOwner["bob"] = bob.fingerprint();
+        }
+        CHECK(bob.aliasNames().empty());
+        // Bob never activated, so his rotation asks once - the safety net - and
+        // finds the name he did buy, then points it at himself.
+        const int statusBefore = m.resolverStatusCalls;
+        bob.rotateServingKey(nullptr);
+        CHECK(m.resolverStatusCalls == statusBefore + 1);
+        CHECK(bob.aliasNames().size() == 1);
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            CHECK(m.aliasDescriptor.at("bob").fingerprint == bob.fingerprint());
+            CHECK(m.aliasDescriptor.at("alice").fingerprint == alice.fingerprint());
+        }
         CHECK(bob.canWriteTo(alice.fingerprint()));
         // One pass each way, and one is all there will ever be: this is the count
         // that used to grow by 256 on every refill.

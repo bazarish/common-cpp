@@ -14,6 +14,7 @@
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Cms.hpp>
 #include <bazarish/Descriptor.hpp>
+#include <bazarish/Resolve.hpp>
 #include <bazarish/Errors.hpp>
 #include <bazarish/Hmac.hpp>
 #include <bazarish/Limits.hpp>
@@ -76,6 +77,32 @@ constexpr std::size_t kContactBookChunkBytes = 128 * 1024;
 // A contact request names itself with this many random bytes; the name is what
 // makes sending the same request again the same delivery.
 constexpr std::size_t kRequestIdBytes = 8;
+
+// How often a device asks the name service after its own names, and how widely
+// that ask is spread. Several devices of one account must not all wake to it at
+// the same instant: the first one there hands the answer to the rest, and they
+// count that as their own check. The spread has to stay inside the window a
+// signed answer stays good for, or a relayed one would arrive already expired.
+constexpr std::int64_t kAliasStatusIntervalSeconds = 24 * 3600;
+constexpr std::int64_t kAliasStatusJitterSeconds = 6 * 3600;
+static_assert(kAliasStatusIntervalSeconds + kAliasStatusJitterSeconds
+        < bazarish::kAliasStatusValiditySeconds,
+    "a relayed status must still be valid when the slowest device wakes");
+
+// A value below bound, for spreading wake-ups. The modulo bias over a 64-bit
+// draw is far below anything that matters to when a device wakes up.
+std::uint64_t randomBelow(const std::uint64_t bound)
+{
+    if (bound == 0) {
+        return 0;
+    }
+    const bazarish::Bytes bytes = bazarish::randomBytes(sizeof(std::uint64_t));
+    std::uint64_t value = 0;
+    for (const std::uint8_t byte : bytes) {
+        value = (value << 8) | byte;
+    }
+    return value % bound;
+}
 // How much of a fingerprint stands in for a contact with no local name, where
 // one has to be named: enough to tell two apart at a glance.
 constexpr std::size_t kShortFingerprintChars = 8;
@@ -571,6 +598,16 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
         = meta.value("contactsAskedBy", std::vector<std::string>());
     session.cardB64_ = meta.value("card", std::string{});
     session.view_ = meta.value("view", std::string{});
+    // The names this account holds, and the binding the registry last accepted.
+    // Absent in a profile that never activated name servicing, which is the
+    // ordinary case and means this client asks the resolver nothing.
+    for (const nlohmann::json& held : meta.value("aliasNames", nlohmann::json::array())) {
+        session.aliasNames_.push_back(Session::AliasHolding{
+            held.value("alias", std::string()), held.value("notAfter", std::int64_t{0})});
+    }
+    session.aliasCheckAfter_ = meta.value("aliasCheckAfter", std::int64_t{0});
+    session.aliasPushedDest_ = meta.value("aliasPushedDest", std::string{});
+    session.aliasPushedView_ = meta.value("aliasPushedView", std::string{});
     session.sharingAllowed_ = meta.value("sharingAllowed", true);
     session.delegationDays_ = meta.value("delegationDays", kDefaultDelegationDays);
     // Written once when the account is made and never again: every envelope this
@@ -780,8 +817,21 @@ void Session::persistMeta() const
         {"acceptCalls", acceptCalls_},
         {"sendReceipts", sendReceipts_},
         {"contactsAskedBy", contactsAskedBy_},
+        {"aliasNames", aliasNamesToJson()},
+        {"aliasCheckAfter", aliasCheckAfter_},
+        {"aliasPushedDest", aliasPushedDest_},
+        {"aliasPushedView", aliasPushedView_},
     };
     db_->putText("meta", meta.dump(2));
+}
+
+nlohmann::json Session::aliasNamesToJson() const
+{
+    nlohmann::json held = nlohmann::json::array();
+    for (const AliasHolding& holding : aliasNames_) {
+        held.push_back({{"alias", holding.alias}, {"notAfter", holding.notAfter}});
+    }
+    return held;
 }
 
 nlohmann::json Session::contactsToJson() const
@@ -924,6 +974,10 @@ void Session::publishRouting()
     } catch (const std::exception& error) {
         bazarish::log::info("master not synced to this account's other devices: {}", error.what());
     }
+    // The account may have just arrived at a different destination, and a name
+    // pointing at the old one resolves to nothing.
+    reportConnectProgress(98, "Telling the name service where you are");
+    serviceAliasesAfterMove();
     // Routing published means the server serves this account: whatever wait it
     // was under is over.
     approval_ = {};
@@ -2513,6 +2567,10 @@ void Session::rotateServingKey(const std::function<void(const std::string&)>& on
     myServingKeyB64_ = toBase64(prepared.servingSealingKeyDer);
     view_ = prepared.view;
     persistMeta();
+    // The registry points at the capability just retired, so it is told here, by
+    // the device that did the rotation and by no other.
+    stage("Telling the name service");
+    serviceAliasesAfterMove();
     stage("Telling your contacts");
     const RoutingPushResult pushed = pushRoutingToContacts(onStage);
     stage(pushed.failed == 0
@@ -3586,6 +3644,27 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                     } catch (const std::exception& error) {
                         log::info("could not answer a device asking for our address: {}",
                             error.what());
+                    }
+                }
+            } else if (type == "device.alias-status") {
+                // Another of our devices asked the name service and is handing the
+                // answer round so the rest of us need not ask. It is signed by the
+                // resolver and checked against the same baked-in root a resolve
+                // record is checked against: what carries it is that signature,
+                // not the word of the device that forwarded it.
+                message.contentType = type;
+                if (message.fromFingerprint == fingerprint()
+                    && resolverCoordinate_.configured()) {
+                    try {
+                        const AliasStatus status
+                            = verifyAliasStatus(fromBase64(body.at("status").get<std::string>()),
+                                fromBase64(body.at("delegation").get<std::string>()),
+                                resolverCoordinate_.rootFingerprint, nowSeconds());
+                        if (status.owner == fingerprint()) {
+                            adoptAliasStatus(status);
+                        }
+                    } catch (const std::exception& error) {
+                        log::info("a device's name answer was not accepted: {}", error.what());
                     }
                 }
             } else if (type == "device.i2p-master") {
@@ -4758,6 +4837,166 @@ std::string Session::inviteUri() const
     // Advertise our account name so the contact can adopt it as our display name.
     descriptor.name = name_;
     return encodeDescriptor(descriptor);
+}
+
+
+// --- The names this account holds in the central registry -------------------
+
+FetchOutcome Session::askResolver(const std::string& op, const Bytes& body)
+{
+    if (!resolverCoordinate_.configured()) {
+        throw std::runtime_error("this build has no name service configured");
+    }
+    // The same throwaway-destination path a card fetch takes: our own server is
+    // never in it, and the resolver learns a destination we will not use again.
+    return fetchTransport()(resolverCoordinate_.dest, op, body);
+}
+
+void Session::scheduleNextAliasCheck(const std::int64_t from)
+{
+    aliasCheckAfter_ = from + kAliasStatusIntervalSeconds
+        + static_cast<std::int64_t>(randomBelow(kAliasStatusJitterSeconds));
+}
+
+void Session::adoptAliasStatus(const AliasStatus& status)
+{
+    // The answer is the whole truth about this account, not an addition to it: a
+    // name transferred away or released stops being serviced here.
+    aliasNames_.clear();
+    for (const AliasStatusEntry& entry : status.names) {
+        aliasNames_.push_back(AliasHolding{entry.alias, entry.notAfter});
+    }
+    scheduleNextAliasCheck(status.issuedAt);
+    persistMeta();
+}
+
+void Session::relayAliasStatus(const Bytes& statusDer, const Bytes& delegationDer)
+{
+    const nlohmann::json inner = {
+        {"v", kMessageFormatVersion},
+        {"type", "device.alias-status"},
+        {"id", toHex(randomBytes(kRequestIdBytes))},
+        {"from", fingerprint()},
+        {"sentAt", nowMillis()},
+        {"status", toBase64(statusDer)},
+        {"delegation", toBase64(delegationDer)},
+    };
+    submitSignedToSelf(inner, "device.alias-status");
+}
+
+bool Session::refreshAliasStatus()
+{
+    if (!resolverCoordinate_.configured()) {
+        return false;
+    }
+    const std::int64_t now = nowSeconds();
+    const Bytes request = signAliasMaintenanceRequest(
+        AliasMaintenanceRequest{kAliasStatusOp, {}, Descriptor{}, now}, client_->identity());
+    const FetchOutcome outcome = askResolver(kAliasStatusOp, request);
+    if (!outcome.ok) {
+        throw std::runtime_error("the name service refused: "
+            + (outcome.errorCode.empty() ? std::string("no answer") : outcome.errorCode));
+    }
+    const ResolveResponse answer = resolveResponseFromJson(nlohmann::json::parse(outcome.sealed));
+    // Checked against the baked-in root, exactly as a resolve record is - which is
+    // what lets the same bytes be handed to another device below.
+    const AliasStatus status = verifyAliasStatus(
+        answer.recordDer, answer.delegationDer, resolverCoordinate_.rootFingerprint, now);
+    if (status.owner != fingerprint()) {
+        throw std::runtime_error("the name service answered about another account");
+    }
+    adoptAliasStatus(status);
+    try {
+        relayAliasStatus(answer.recordDer, answer.delegationDer);
+    } catch (const std::exception& error) {
+        // Our own devices will ask for themselves when their window comes; the
+        // answer this device got is already in force here.
+        log::info("could not hand the name answer to this account's other devices: {}",
+            error.what());
+    }
+    return true;
+}
+
+bool Session::aliasUpdatePending() const
+{
+    return !aliasNames_.empty() && !myDest_.empty() && isViewCapability(view_)
+        && (aliasPushedDest_ != myDest_ || aliasPushedView_ != view_);
+}
+
+bool Session::pushAliasDescriptor()
+{
+    if (!aliasUpdatePending()) {
+        return false;
+    }
+    const std::int64_t now = nowSeconds();
+    Descriptor descriptor;
+    descriptor.fingerprint = fingerprint();
+    descriptor.dest = myDest_;
+    descriptor.view = view_;
+
+    std::size_t accepted = 0;
+    for (const AliasHolding& holding : aliasNames_) {
+        const Bytes request = signAliasMaintenanceRequest(
+            AliasMaintenanceRequest{kAliasUpdateOp, holding.alias, descriptor, now},
+            client_->identity());
+        try {
+            const FetchOutcome outcome = askResolver(kAliasUpdateOp, request);
+            if (!outcome.ok) {
+                log::info("name {} not repointed yet: {}", holding.alias,
+                    outcome.errorCode.empty() ? std::string("no answer") : outcome.errorCode);
+                continue;
+            }
+            ++accepted;
+        } catch (const std::exception& error) {
+            log::info("name {} not repointed yet: {}", holding.alias, error.what());
+        }
+    }
+    // Only a clean sweep counts. Recording the new binding while one name still
+    // points at the old one would retire the very thing that makes us try again.
+    if (accepted != aliasNames_.size()) {
+        return false;
+    }
+    aliasPushedDest_ = descriptor.dest;
+    aliasPushedView_ = descriptor.view;
+    persistMeta();
+    return true;
+}
+
+void Session::serviceAliases()
+{
+    // A client that knows of no name of its own says nothing to the resolver, on
+    // any schedule. The only way in is the activation button, or the one ask made
+    // by the device that has just moved the account.
+    if (!resolverCoordinate_.configured() || aliasNames_.empty()) {
+        return;
+    }
+    try {
+        if (aliasUpdatePending()) {
+            pushAliasDescriptor();
+        }
+        if (nowSeconds() >= aliasCheckAfter_) {
+            refreshAliasStatus();
+        }
+    } catch (const std::exception& error) {
+        log::info("name servicing will try again: {}", error.what());
+    }
+}
+
+void Session::serviceAliasesAfterMove()
+{
+    if (!resolverCoordinate_.configured()) {
+        return;
+    }
+    try {
+        if (aliasNames_.empty()) {
+            refreshAliasStatus();
+        }
+        if (aliasUpdatePending()) {
+            pushAliasDescriptor();
+        }
+    } catch (const std::exception& error) {
+        log::info("the name service was not reached after this account moved: {}", error.what());
+    }
 }
 
 void Session::changePassphrase(const std::string& passphrase)

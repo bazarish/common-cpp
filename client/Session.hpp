@@ -10,6 +10,7 @@
 #include "FileTransfer.hpp"
 #include "OutboundLeases.hpp"
 
+#include <bazarish/AliasMaintenance.hpp>
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/I2p.hpp>
@@ -770,6 +771,36 @@ public:
     // actually sent, exactly like an edit.
     void sendDelete(const std::string& peerFingerprint, const std::string& refMessageId);
 
+    // --- The names this account holds in the central registry ---
+
+    // One held name, as the resolver last reported it.
+    struct AliasHolding {
+        std::string alias;
+        std::int64_t notAfter = 0;
+    };
+
+    // The names this account is known to hold. Empty until the user activates
+    // name servicing: a client that knows of no name of its own sends the
+    // resolver nothing at all, on any schedule.
+    std::vector<AliasHolding> aliasNames() const { return aliasNames_; }
+
+    // Asks the resolver which names this account holds, adopts the answer and
+    // hands it to this account's other devices so they need not ask. This is what
+    // the activation button runs; from then on the client services the name by
+    // itself. False when no resolver is compiled into this build.
+    bool refreshAliasStatus();
+
+    // Keeps the registry pointing where this account is actually reachable:
+    // pushes the current descriptor when it has moved since the last accepted
+    // push, and refreshes the status once this device's own window has elapsed.
+    // Silent and cheap when there is nothing to do, and silent entirely when no
+    // name is known.
+    void serviceAliases();
+
+    // Whether the registry is known to point somewhere this account no longer
+    // answers, so a settings page can say so instead of looking healthy.
+    bool aliasUpdatePending() const;
+
     // Rotates the serving sealing key our server holds and the capability that
     // reads our card, then hands the new pair to every contact. Nothing is in
     // force until the server acks the commit, so a failure anywhere before that
@@ -1302,6 +1333,27 @@ private:
     std::unique_ptr<Client> client_;
     // The central alias resolver this account resolves usernames against.
     ResolverCoordinate resolverCoordinate_ = defaultResolverCoordinate();
+
+    // What this account holds in the name registry, and what the registry was
+    // last told. An update is owed exactly when the pushed pair no longer matches
+    // where this account answers - which survives a restart without a queue of
+    // its own, because both halves live in the profile.
+    std::vector<AliasHolding> aliasNames_;
+    std::int64_t aliasCheckAfter_ = 0;
+    std::string aliasPushedDest_;
+    std::string aliasPushedView_;
+
+    nlohmann::json aliasNamesToJson() const;
+    bool pushAliasDescriptor();
+    void adoptAliasStatus(const AliasStatus& status);
+    void relayAliasStatus(const Bytes& statusDer, const Bytes& delegationDer);
+    void scheduleNextAliasCheck(std::int64_t from);
+    // One maintenance exchange with the resolver over a throwaway destination.
+    FetchOutcome askResolver(const std::string& op, const Bytes& body);
+    // The one ask a device makes because it just moved the account, never on a
+    // timer: without it a name bought in the browser and never activated here
+    // would be broken silently by this very move.
+    void serviceAliasesAfterMove();
     // Set while the user has this account switched off. Nothing outgoing leaves
     // it in that state.
     bool switchedOff_ = false;
