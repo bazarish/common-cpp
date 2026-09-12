@@ -103,7 +103,7 @@ void respondJson(http::Response& response, const nlohmann::json& body)
 // the main thread, so all state is guarded by one mutex.
 // Where the name service answers in this test, standing in for the address baked
 // into a release build.
-constexpr const char* kResolverDest
+constexpr const char* kTestResolverDest
     = "flkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
 
 struct Mock {
@@ -465,7 +465,7 @@ int main()
         resolverDelegated, static_cast<std::int64_t>(std::time(nullptr)) - 60,
         static_cast<std::int64_t>(std::time(nullptr)) + 30 * 24 * 3600);
     ::setenv("BAZARISH_RESOLVER_ROOT", resolverRoot.fingerprint().c_str(), 1);
-    ::setenv("BAZARISH_RESOLVER_DEST", kResolverDest, 1);
+    ::setenv("BAZARISH_RESOLVER_DEST", kTestResolverDest, 1);
 
     const fs::path aDir = fs::temp_directory_path() / "bz-pass-a";
     const fs::path bDir = fs::temp_directory_path() / "bz-pass-b";
@@ -521,7 +521,7 @@ int main()
             // The central resolver answers on the same dial. Its ops are signed by
             // the owner, and its answers are signed by its delegated key.
             if (op == kAliasStatusOp || op == kAliasUpdateOp) {
-                CHECK(toDest == kResolverDest);
+                CHECK(toDest == kTestResolverDest);
                 FetchOutcome outcome;
                 const VerifiedAliasRequest asked = verifyAliasMaintenanceRequest(
                     query, static_cast<std::int64_t>(std::time(nullptr)));

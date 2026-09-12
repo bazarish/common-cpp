@@ -24,11 +24,21 @@ struct ResolverCoordinate {
     bool configured() const { return !rootFingerprint.empty() && !dest.empty(); }
 };
 
-// The compiled-in resolver coordinate. Empty until the developer-run resolver's
-// address and keys are baked in (a deliberate placeholder, not a default route).
+// The two values a build is shipped with. They are the developer-run resolver's,
+// and a release replaces exactly these two lines with the deployed one's - which
+// the daemon prints on its first line at start-up. Nothing else in the client
+// needs changing for that, because the resolver signs rather than encrypts and
+// can rotate its signing material behind the same root.
+//
+// These are the development resolver's. A release must not ship them.
+inline constexpr const char* kResolverRootFingerprint
+    = "fvzbq5ajedljkzfbxqwcd6atqoli6x332pqb52xm7zpzrlvck2ra";
+inline constexpr const char* kResolverDest
+    = "4vt2bmxd3hczvjrk6yzj3qdoj6jiwmvvsr24fupihnisaeidqyda.b32.i2p";
+
 inline ResolverCoordinate defaultResolverCoordinate()
 {
-    return ResolverCoordinate{};
+    return ResolverCoordinate{kResolverRootFingerprint, kResolverDest};
 }
 
 }  // namespace bazarish::client

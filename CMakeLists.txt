@@ -225,6 +225,14 @@ if(BAZARISH_WITH_CLIENT)
     bazarish_client_add_test(TestBot)
     bazarish_client_add_test(TestCallMedia)
     bazarish_client_add_test(TestClient)
+
+    # Live end-to-end against a running resolver over real I2P: the coordinate a
+    # build ships with, the frame on the real transport, and the chain checked
+    # against the root this binary was built with. Needs the network and a
+    # resolver that is up, so it is run by hand rather than by ctest.
+    add_executable(alias_smoke client/tests/AliasSmoke.cpp)
+    target_link_libraries(alias_smoke PRIVATE bazarish_client)
+    target_compile_options(alias_smoke PRIVATE -Wall -Wextra -Werror)
     bazarish_client_add_test(TestClientFacade)
     bazarish_client_add_test(TestFileTransfer)
     bazarish_client_add_test(TestI2pKeys)

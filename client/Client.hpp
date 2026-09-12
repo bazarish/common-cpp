@@ -219,13 +219,15 @@ public:
     // transient-I2P dial). Verifies the card and that it is
     // for the descriptor's fingerprint (see docs-main api/FederatedResolve.md).
     ContactInfo fetchCard(const Descriptor& descriptor, const FetchTransport& transport);
-    // Resolves an alias to a descriptor via the central resolver: seals the query
-    // (alias + ephemeral response key) to the resolver's serving key, moves it
-    // with `transport` (op "resolve") to the resolver's destination, unseals the
-    // reply, and verifies the signed record's chain against the resolver's root
-    // fingerprint and `now`. Asserts the record is for the requested alias.
-    // Throws on a transport error, ALIAS_UNKNOWN, or any verification failure.
-    Descriptor resolveAlias(const std::string& alias, const ResolverCoordinate& resolver,
+    // Resolves an alias to a descriptor via the central resolver: moves the query
+    // with `transport` (op "resolve") to the resolver's destination and verifies
+    // the signed record's chain against the resolver's root fingerprint and
+    // `now`. Asserts the record is for the requested alias. Throws on a transport
+    // error, ALIAS_UNKNOWN, or any verification failure.
+    //
+    // Static: resolving a name needs a resolver and a transport and nothing of
+    // this account, which is also what lets it be exercised without one.
+    static Descriptor resolveAlias(const std::string& alias, const ResolverCoordinate& resolver,
         std::int64_t now, const FetchTransport& transport);
     // This user's assigned serving destination + serving sealing key, from the
     // messaging server (GET /v1/messaging/destination).
