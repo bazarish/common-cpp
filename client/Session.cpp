@@ -602,10 +602,12 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     // Absent in a profile that never activated name servicing, which is the
     // ordinary case and means this client asks the resolver nothing.
     for (const nlohmann::json& held : meta.value("aliasNames", nlohmann::json::array())) {
-        session.aliasNames_.push_back(Session::AliasHolding{
-            held.value("alias", std::string()), held.value("notAfter", std::int64_t{0})});
+        session.aliasNames_.push_back(
+            Session::AliasHolding{held.value("alias", std::string()),
+                held.value("notAfter", std::int64_t{0}), held.value("autoRenew", true)});
     }
     session.aliasCheckAfter_ = meta.value("aliasCheckAfter", std::int64_t{0});
+    session.aliasDepositCovers_ = meta.value("aliasDepositCovers", true);
     session.aliasPushedDest_ = meta.value("aliasPushedDest", std::string{});
     session.aliasPushedView_ = meta.value("aliasPushedView", std::string{});
     session.sharingAllowed_ = meta.value("sharingAllowed", true);
@@ -819,6 +821,7 @@ void Session::persistMeta() const
         {"contactsAskedBy", contactsAskedBy_},
         {"aliasNames", aliasNamesToJson()},
         {"aliasCheckAfter", aliasCheckAfter_},
+        {"aliasDepositCovers", aliasDepositCovers_},
         {"aliasPushedDest", aliasPushedDest_},
         {"aliasPushedView", aliasPushedView_},
     };
@@ -829,7 +832,8 @@ nlohmann::json Session::aliasNamesToJson() const
 {
     nlohmann::json held = nlohmann::json::array();
     for (const AliasHolding& holding : aliasNames_) {
-        held.push_back({{"alias", holding.alias}, {"notAfter", holding.notAfter}});
+        held.push_back({{"alias", holding.alias}, {"notAfter", holding.notAfter},
+            {"autoRenew", holding.autoRenew}});
     }
     return held;
 }
@@ -4864,8 +4868,9 @@ void Session::adoptAliasStatus(const AliasStatus& status)
     // name transferred away or released stops being serviced here.
     aliasNames_.clear();
     for (const AliasStatusEntry& entry : status.names) {
-        aliasNames_.push_back(AliasHolding{entry.alias, entry.notAfter});
+        aliasNames_.push_back(AliasHolding{entry.alias, entry.notAfter, entry.autoRenew});
     }
+    aliasDepositCovers_ = status.depositCoversRenewals;
     scheduleNextAliasCheck(status.issuedAt);
     persistMeta();
 }

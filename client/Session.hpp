@@ -777,6 +777,7 @@ public:
     struct AliasHolding {
         std::string alias;
         std::int64_t notAfter = 0;
+        bool autoRenew = true;
     };
 
     // The names this account is known to hold. Empty until the user activates
@@ -800,6 +801,11 @@ public:
     // Whether the registry is known to point somewhere this account no longer
     // answers, so a settings page can say so instead of looking healthy.
     bool aliasUpdatePending() const;
+
+    // Whether the name service last said this account's deposit covers what is
+    // about to fall due. A flag, not a figure: the balance stays on the service.
+    // True when nothing is known, so an unactivated client warns about nothing.
+    bool aliasDepositCovers() const { return aliasDepositCovers_; }
 
     // Rotates the serving sealing key our server holds and the capability that
     // reads our card, then hands the new pair to every contact. Nothing is in
@@ -1340,6 +1346,7 @@ private:
     // its own, because both halves live in the profile.
     std::vector<AliasHolding> aliasNames_;
     std::int64_t aliasCheckAfter_ = 0;
+    bool aliasDepositCovers_ = true;
     std::string aliasPushedDest_;
     std::string aliasPushedView_;
 

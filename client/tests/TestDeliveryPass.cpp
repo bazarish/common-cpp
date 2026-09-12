@@ -808,14 +808,18 @@ int main()
         // client says about a message it cannot read.
         {
             CHECK(alice.pushRoutingToContacts({}).told > 0);
+            // The push leaves on the courier's thread, so this waits for it
+            // rather than assuming one sync is late enough to see it.
             bool sawRouting = false;
-            for (const IncomingMessage& item : bob.sync()) {
-                CHECK(item.contentType != "unsupported");
-                if (item.contentType == "contact.routing") {
-                    sawRouting = true;
+            CHECK(waitFor([&]() {
+                for (const IncomingMessage& item : bob.sync()) {
+                    CHECK(item.contentType != "unsupported");
+                    if (item.contentType == "contact.routing") {
+                        sawRouting = true;
+                    }
                 }
-            }
-            CHECK(sawRouting);
+                return sawRouting;
+            }));
         }
 
         // Every content kind goes out the same way, and none of them has a price
