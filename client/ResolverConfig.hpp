@@ -32,9 +32,9 @@ struct ResolverCoordinate {
 //
 // These are the development resolver's. A release must not ship them.
 inline constexpr const char* kResolverRootFingerprint
-    = "fvzbq5ajedljkzfbxqwcd6atqoli6x332pqb52xm7zpzrlvck2ra";
+    = "fknq2ve6o3iuqzqu3ucllh7ozsxvsei457pe4rxsbwpm5lwdxrra";
 inline constexpr const char* kResolverDest
-    = "4vt2bmxd3hczvjrk6yzj3qdoj6jiwmvvsr24fupihnisaeidqyda.b32.i2p";
+    = "pnjw6yr32fvc6w3t26cki2huh4s32gulkziylckirqnhenpudlca.b32.i2p";
 
 inline ResolverCoordinate defaultResolverCoordinate()
 {
