@@ -64,6 +64,13 @@ struct AliasStatusEntry {
     std::string alias;
     std::int64_t notAfter = 0;
     bool autoRenew = true;
+    // Whether the owner has asked this name to point at their descriptor. A name
+    // is bought without one, so a client must be told which of an account's names
+    // it has any business publishing. Off means leave it alone.
+    bool bindingWanted = false;
+    // Whether it currently points anywhere. With bindingWanted on and this off,
+    // the resolver is waiting for this client to supply a descriptor.
+    bool bound = false;
 };
 
 // The resolver's answer to alias.status. `owner` says whose names these are, so a

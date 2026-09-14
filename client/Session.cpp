@@ -604,7 +604,8 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     for (const nlohmann::json& held : meta.value("aliasNames", nlohmann::json::array())) {
         session.aliasNames_.push_back(
             Session::AliasHolding{held.value("alias", std::string()),
-                held.value("notAfter", std::int64_t{0}), held.value("autoRenew", true)});
+                held.value("notAfter", std::int64_t{0}), held.value("autoRenew", true),
+                held.value("bindingWanted", false)});
     }
     session.aliasCheckAfter_ = meta.value("aliasCheckAfter", std::int64_t{0});
     session.aliasDepositCovers_ = meta.value("aliasDepositCovers", true);
@@ -833,7 +834,7 @@ nlohmann::json Session::aliasNamesToJson() const
     nlohmann::json held = nlohmann::json::array();
     for (const AliasHolding& holding : aliasNames_) {
         held.push_back({{"alias", holding.alias}, {"notAfter", holding.notAfter},
-            {"autoRenew", holding.autoRenew}});
+            {"autoRenew", holding.autoRenew}, {"bindingWanted", holding.bindingWanted}});
     }
     return held;
 }
@@ -2051,7 +2052,7 @@ Session::ContactCardResolved Session::resolveContactCard(
             .count();
     };
     bazarish::log::info(
-        "contact-add: resolving card off-thread (byUsername={})...", request.byUsername);
+        "contact-add: resolving card off-thread (byAlias={})...", request.byAlias);
     try {
         // A private throwaway client with its OWN connection (and its own request
         // mutex), so this slow federated fetch never contends with the session's
@@ -2076,7 +2077,7 @@ Session::ContactCardResolved Session::resolveContactCard(
                 *router, toDest, op, sealed, context.blobFetchPrivacy, context.destinationOwner);
         };
 
-        if (request.byUsername) {
+        if (request.byAlias) {
             const Descriptor descriptor = fetchClient.resolveAlias(
                 normalizeAlias(request.uriOrAlias), context.resolver, nowSeconds(), transport);
             out.info = fetchClient.fetchCard(descriptor, transport);
@@ -2124,7 +2125,10 @@ std::vector<Session::PendingContactAdd> Session::pendingContactAdds() const
     for (const auto& [opId, entry] : stored.items()) {
         PendingContactAdd add;
         add.opId = opId;
-        add.request.byUsername = entry.value("byUsername", false);
+        // A file written before the rename spells it the old way; both are read
+        // so that an add queued across an upgrade is not silently turned into an
+        // invite parse.
+        add.request.byAlias = entry.value("byAlias", entry.value("byUsername", false));
         add.request.uriOrAlias = entry.value("uriOrAlias", std::string());
         add.request.introText = entry.value("intro", std::string());
         add.request.requestId = entry.value("requestId", std::string());
@@ -2138,7 +2142,7 @@ void Session::notePendingContactAdd(const PendingContactAdd& pending)
     nlohmann::json stored = db_->has(kPendingAddsKey)
         ? nlohmann::json::parse(db_->text(kPendingAddsKey))
         : nlohmann::json::object();
-    stored[pending.opId] = {{"byUsername", pending.request.byUsername},
+    stored[pending.opId] = {{"byAlias", pending.request.byAlias},
         {"uriOrAlias", pending.request.uriOrAlias}, {"intro", pending.request.introText},
         {"requestId", pending.request.requestId}};
     db_->putText(kPendingAddsKey, stored.dump());
@@ -2186,7 +2190,7 @@ std::string Session::aliasBuyArtifacts(const std::string& alias) const
     return artifacts.dump();
 }
 
-std::string Session::addByUsername(const std::string& alias, const std::string& text)
+std::string Session::addByAlias(const std::string& alias, const std::string& text)
 {
     if (!resolverCoordinate_.configured()) {
         throw std::runtime_error("no alias resolver is configured in this build");
@@ -4886,7 +4890,8 @@ void Session::adoptAliasStatus(const AliasStatus& status)
     // name transferred away or released stops being serviced here.
     aliasNames_.clear();
     for (const AliasStatusEntry& entry : status.names) {
-        aliasNames_.push_back(AliasHolding{entry.alias, entry.notAfter, entry.autoRenew});
+        aliasNames_.push_back(
+            AliasHolding{entry.alias, entry.notAfter, entry.autoRenew, entry.bindingWanted});
     }
     aliasDepositCovers_ = status.depositCoversRenewals;
     scheduleNextAliasCheck(status.issuedAt);
@@ -4942,9 +4947,20 @@ bool Session::refreshAliasStatus()
     return true;
 }
 
+std::size_t Session::aliasesToBind() const
+{
+    std::size_t count = 0;
+    for (const AliasHolding& holding : aliasNames_) {
+        if (holding.bindingWanted) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 bool Session::aliasUpdatePending() const
 {
-    return !aliasNames_.empty() && !myDest_.empty() && isViewCapability(view_)
+    return aliasesToBind() != 0 && !myDest_.empty() && isViewCapability(view_)
         && (aliasPushedDest_ != myDest_ || aliasPushedView_ != view_);
 }
 
@@ -4961,10 +4977,17 @@ bool Session::pushAliasDescriptor()
 
     std::size_t accepted = 0;
     for (const AliasHolding& holding : aliasNames_) {
+        if (!holding.bindingWanted) {
+            continue;
+        }
         AliasMaintenanceRequest asking;
         asking.op = kAliasUpdateOp;
         asking.alias = holding.alias;
         asking.descriptor = descriptor;
+        // The owner's own claim over this alias travels with the binding: the
+        // registry keeps it as the proof that this key asked for this name.
+        asking.aliasCertDer
+            = AliasCertificate::issue(client_->identity(), holding.alias, now, std::nullopt);
         asking.issuedAt = now;
         const Bytes request = signAliasMaintenanceRequest(asking, client_->identity());
         try {
@@ -4981,7 +5004,7 @@ bool Session::pushAliasDescriptor()
     }
     // Only a clean sweep counts. Recording the new binding while one name still
     // points at the old one would retire the very thing that makes us try again.
-    if (accepted != aliasNames_.size()) {
+    if (accepted != aliasesToBind()) {
         return false;
     }
     aliasPushedDest_ = descriptor.dest;

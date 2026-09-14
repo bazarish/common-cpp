@@ -597,7 +597,7 @@ public:
     // contact's fingerprint so the UI can surface it for out-of-band verification.
     std::string addByInvite(const std::string& inviteUri, const std::string& text);
 
-    // Adds a contact by username (alias) on the central resolver. The resolver
+    // Adds a contact by their alias on the central resolver. The resolver
     // maps the alias to a descriptor over a signed, self-verifying record (chain:
     // record -> delegated key -> hardcoded resolver root); the alias->fingerprint
     // binding is the one residual trust of the name path. Everything after it -
@@ -605,10 +605,10 @@ public:
     // resolved fingerprint so the UI can surface it for out-of-band verification
     // (the only defense against a hostile resolver). Throws if no resolver is
     // configured in this build.
-    std::string addByUsername(const std::string& alias, const std::string& text);
+    std::string addByAlias(const std::string& alias, const std::string& text);
 
     // --- Asynchronous contact add ------------------------------------------------
-    // addByInvite / addByUsername above are synchronous: they block on a federated
+    // addByInvite / addByAlias above are synchronous: they block on a federated
     // card fetch (the serving server dials the peer over I2P, tens of seconds when
     // the peer is slow or unreachable). A GUI must never run that on the thread that
     // also drives sync and the connection, or the whole account freezes until the
@@ -629,9 +629,9 @@ public:
         std::string destinationOwner;   // account name, for the router status view
         Bytes servingSealingKeyDer;     // what a session secret is sealed to
     };
-    // An add to resolve: an invite URI (byUsername=false) or an alias.
+    // An add to resolve: an invite URI (byAlias=false) or an alias.
     struct ContactCardRequest {
-        bool byUsername = false;
+        bool byAlias = false;
         std::string uriOrAlias;
         std::string introText;
         // Names the request itself, so the same one sent again is recognised by
@@ -778,6 +778,11 @@ public:
         std::string alias;
         std::int64_t notAfter = 0;
         bool autoRenew = true;
+        // Whether the owner has asked this alias to point at this account. An
+        // alias is bought without one, and publishing a descriptor for an alias
+        // nobody asked to publish would be this client deciding on the owner's
+        // behalf. Off means the client leaves it alone entirely.
+        bool bindingWanted = false;
     };
 
     // The names this account is known to hold. Empty until the user activates
@@ -800,6 +805,8 @@ public:
 
     // Whether the registry is known to point somewhere this account no longer
     // answers, so a settings page can say so instead of looking healthy.
+    // How many of this account's aliases their owner has asked to point here.
+    std::size_t aliasesToBind() const;
     bool aliasUpdatePending() const;
 
     // Whether the name service last said this account's deposit covers what is
@@ -1338,7 +1345,7 @@ private:
     void persistSentFiles() const;
 
     std::unique_ptr<Client> client_;
-    // The central alias resolver this account resolves usernames against.
+    // The central alias resolver this account resolves aliases against.
     ResolverCoordinate resolverCoordinate_ = defaultResolverCoordinate();
 
     // What this account holds in the name registry, and what the registry was

@@ -55,7 +55,8 @@ nlohmann::json toJson(const AliasStatus& status)
     nlohmann::json names = nlohmann::json::array();
     for (const AliasStatusEntry& entry : status.names) {
         names.push_back({{"alias", entry.alias}, {"notAfter", entry.notAfter},
-            {"autoRenew", entry.autoRenew}});
+            {"autoRenew", entry.autoRenew}, {"bindingWanted", entry.bindingWanted},
+            {"bound", entry.bound}});
     }
     return {
         {"v", kAliasMaintenanceVersion},
@@ -73,8 +74,13 @@ AliasStatus aliasStatusFromJson(const nlohmann::json& body)
     AliasStatus status;
     status.owner = body.at("owner").get<std::string>();
     for (const nlohmann::json& entry : body.at("names")) {
-        status.names.push_back(AliasStatusEntry{entry.at("alias").get<std::string>(),
-            entry.at("notAfter").get<std::int64_t>(), entry.value("autoRenew", true)});
+        AliasStatusEntry one;
+        one.alias = entry.at("alias").get<std::string>();
+        one.notAfter = entry.at("notAfter").get<std::int64_t>();
+        one.autoRenew = entry.value("autoRenew", true);
+        one.bindingWanted = entry.value("bindingWanted", false);
+        one.bound = entry.value("bound", false);
+        status.names.push_back(std::move(one));
     }
     status.depositCoversRenewals = body.value("depositCoversRenewals", true);
     status.issuedAt = body.at("issuedAt").get<std::int64_t>();
