@@ -113,6 +113,7 @@ struct Mock {
     std::map<std::string, std::string> destFor;  // fingerprint -> serving destination
     std::map<std::string, std::string> certFor;  // fingerprint -> contact card (base64 DER)
     std::map<std::string, std::string> viewFor;  // fingerprint -> card-read capability
+    std::set<std::string> delegated;             // accounts that have handed over a transient
     struct Item {
         std::string id;
         std::string cls;
@@ -275,8 +276,15 @@ int main()
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
             std::lock_guard<std::mutex> lock(m.mu);
+            // A server has no address for an account until that account has
+            // delegated one to it - which is what makes registering circular: the
+            // first card is published before there is any address to put in it,
+            // and only the second one carries the routing. A stub that answered
+            // with an address straight away hid that whole sequence.
+            const bool delegated = m.delegated.count(caller) > 0;
             respondJson(response,
-                {{"dest", m.destFor[caller]}, {"servingKey", toBase64(m.serverSealing.publicDer())}});
+                {{"dest", delegated ? m.destFor[caller] : std::string()},
+                    {"servingKey", toBase64(m.serverSealing.publicDer())}});
         }));
 
     const auto handlePublishCard
@@ -290,6 +298,25 @@ int main()
               CHECK(card.fingerprint() == caller);
               {
                   std::lock_guard<std::mutex> lock(m.mu);
+                  // Faithful in the way that matters most here: a card is only
+                  // published forwards, and "forwards" is counted in whole
+                  // seconds. A stub that accepted anything let a client publish
+                  // its routing card in the same second as its first one and
+                  // never notice that a real server refuses exactly that.
+                  const auto held = m.certFor.find(caller);
+                  if (held != m.certFor.end() && !held->second.empty()) {
+                      const ContactCard previous = ContactCard::verify(fromBase64(held->second));
+                      if (card.issuedAt <= previous.issuedAt) {
+                          response.status = 409;
+                          respondJson(response,
+                              {{"error",
+                                  {{"code", "DELIVERY_REJECTED"},
+                                      {"message",
+                                          "this card is not newer than the one already "
+                                          "published"}}}});
+                          return;
+                      }
+                  }
                   m.certFor[caller] = cardB64;
               }
               // Hex, and different per user: the descriptor codec insists on
@@ -337,8 +364,12 @@ int main()
     // the card with its routing, so the account API must take one.
     server.post("/v1/account/i2p-dest",
         stub([&](const http::Request& request, http::Response& response) {
-            (void)requireCaller(request);
+            const std::string caller = requireCaller(request);
             CHECK(!nlohmann::json::parse(request.body).at("transient").get<std::string>().empty());
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.delegated.insert(caller);
+            }
             respondJson(response, {{"ok", true}});
         }));
 
@@ -510,6 +541,17 @@ int main()
 
         alice.registerAccount();
         bob.registerAccount();
+
+        // Registering has to leave an account reachable. It publishes its card
+        // twice in a row - once to exist, once to carry the routing it only has
+        // by then - and a card is ordered against its predecessor in whole
+        // seconds, so the second one lands in the same second as the first. When
+        // that second card was refused, the account kept the first: no address in
+        // it, no invite to give out, no way for anyone to route to it, and
+        // nothing anywhere that tried again.
+        CHECK(!alice.inviteUri().empty());
+        CHECK(alice.inviteUri().find(m.destFor[alice.fingerprint()]) != std::string::npos);
+        CHECK(!bob.inviteUri().empty());
 
         // A card fetch dials the peer's destination directly over I2P; there is no
         // router here, so the harness stands in for that dial. It answers exactly as

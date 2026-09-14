@@ -886,14 +886,14 @@ void Session::registerAccount()
     // is no page to visit; one that does asks for a portal visit, and says so.
     PublishResult result;
     try {
-        result = client_->publishCard(sealingKey_.publicDer(), ownRoutingHost());
+        result = client_->publishCard(sealingKey_.publicDer(), ownRoutingHost(), currentCardIssuedAt());
     } catch (const ApiError& error) {
         if (error.code != ErrorCode::eDeliveryRejected || client_->fetchPortalInfo().captcha) {
             throw;
         }
         reportConnectProgress(60, "Registering with this server");
         client_->registerHere();
-        result = client_->publishCard(sealingKey_.publicDer(), ownRoutingHost());
+        result = client_->publishCard(sealingKey_.publicDer(), ownRoutingHost(), currentCardIssuedAt());
     }
     // Reported here, not on entry: the call above is what brings the transport
     // up, so its own milestones (reseed, router, dial) come first.
@@ -938,13 +938,13 @@ void Session::registerSelfHosted()
     // delegating it - has no meaning when the server is this process.
     PublishResult result;
     try {
-        result = client_->publishCard(sealingKey_.publicDer(), {});
+        result = client_->publishCard(sealingKey_.publicDer(), {}, currentCardIssuedAt());
     } catch (const ApiError& error) {
         if (error.code != ErrorCode::eDeliveryRejected) {
             throw;
         }
         client_->registerHere();
-        result = client_->publishCard(sealingKey_.publicDer(), {});
+        result = client_->publishCard(sealingKey_.publicDer(), {}, currentCardIssuedAt());
     }
     storeCard(result);
     client_->registerThisClient();
@@ -968,7 +968,7 @@ void Session::publishRouting()
     reportConnectProgress(92, "Publishing your contact card");
     // Re-publish the card, now carrying the routing. The node grants nothing for
     // it - the account already exists.
-    storeCard(client_->publishCard(sealingKey_.publicDer(), ownRoutingHost()));
+    storeCard(client_->publishCard(sealingKey_.publicDer(), ownRoutingHost(), currentCardIssuedAt()));
     // Hand the master to this account's other devices so they keep the same
     // address and can re-issue transients. Best effort: our own routing is
     // published either way, and the sync needs it to be.
@@ -999,6 +999,24 @@ void Session::storeCard(const PublishResult& result)
     // With a serving key in hand the client can open a session and stop signing
     // every request; without one it keeps signing, which still works.
     persistMeta();
+}
+
+// The instant the card this account currently holds was issued. A replacement
+// has to be newer than it, and the ordinary path publishes twice inside one
+// second - registering, then publishing routing - so without this the second
+// card is refused and the account keeps the first one, which names no
+// destination at all: no invite, no routing, and nothing that retries.
+std::int64_t Session::currentCardIssuedAt() const
+{
+    if (cardB64_.empty()) {
+        return 0;
+    }
+    try {
+        return ContactCard::verify(fromBase64(cardB64_)).issuedAt;
+    } catch (const std::exception& error) {
+        log::warn("this account's own card will not read back: {}", error.what());
+        return 0;
+    }
 }
 
 std::string Session::ownRoutingHost() const
@@ -4795,7 +4813,7 @@ void Session::refreshOwnCard()
     }
     // A re-publish grants nothing; the point is the routing the server now has
     // and our card does not.
-    storeCard(client_->publishCard(sealingKey_.publicDer(), ownRoutingHost()));
+    storeCard(client_->publishCard(sealingKey_.publicDer(), ownRoutingHost(), currentCardIssuedAt()));
 }
 
 std::string Session::contactInviteUri(const std::string& peerFingerprint) const

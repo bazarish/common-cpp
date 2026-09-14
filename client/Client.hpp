@@ -176,7 +176,14 @@ public:
     // host: the card carries it while the server has not published the
     // destination yet (tunnels take minutes), since the address is the user's
     // master b32 either way.
-    PublishResult publishCard(const Bytes& sealingPrekeyDer = {}, const std::string& ownDest = {});
+    // `notBefore` is the instant a card this one supersedes was issued. A card is
+    // ordered against its predecessor in whole seconds, so one published in the
+    // same second as the card it replaces is refused as "not newer" - and the
+    // ordinary path publishes twice in a row, once to register and once to carry
+    // the routing. The caller passes what it is superseding and this issues
+    // strictly after it.
+    PublishResult publishCard(const Bytes& sealingPrekeyDer = {}, const std::string& ownDest = {},
+        std::int64_t notBefore = 0);
 
     // Rotating the serving sealing key our server holds for our destination, and
     // the capability that reads our card, in the two phases the switch needs.

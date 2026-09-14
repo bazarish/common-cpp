@@ -1074,6 +1074,7 @@ private:
     // it carries.
     void storeCard(const PublishResult& result);
     // This account's own destination as a routing host, empty without a master.
+    std::int64_t currentCardIssuedAt() const;
     std::string ownRoutingHost() const;
 
     // Seals one device-to-device notice to ourselves and submits it. What every

@@ -9,6 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <ctime>
 
 namespace bazarish::client {
@@ -98,7 +99,8 @@ void Client::releaseI2pLink()
 }
 
 
-PublishResult Client::publishCard(const Bytes& sealingPrekeyDer, const std::string& ownDest)
+PublishResult Client::publishCard(const Bytes& sealingPrekeyDer, const std::string& ownDest,
+    const std::int64_t notBefore)
 {
     // Ask the messaging server which destination + serving sealing key it has
     // assigned us, then sign both into the card alongside the sealing prekey.
@@ -107,8 +109,11 @@ PublishResult Client::publishCard(const Bytes& sealingPrekeyDer, const std::stri
     // master b32 we already hold.
     const DestinationInfo destination = myDestination();
     const std::string dest = destination.dest.empty() ? ownDest : destination.dest;
+    // Strictly after whatever this card replaces: the server orders cards by the
+    // second, and refuses one that is not newer than the card it already holds.
+    const std::int64_t issuedAt = std::max(nowSeconds(), notBefore + 1);
     const Bytes card = ContactCard::issue(
-        identity_, nowSeconds(), dest, sealingPrekeyDer, destination.servingSealingKeyDer);
+        identity_, issuedAt, dest, sealingPrekeyDer, destination.servingSealingKeyDer);
     const ApiResponse response = api_.postJson("/v1/account/card", {{"card", toBase64(card)}});
     const nlohmann::json body = response.json();
 
