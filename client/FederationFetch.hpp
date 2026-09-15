@@ -24,4 +24,15 @@ FetchOutcome federationFetchOverI2p(bazarish::i2p::Router& router, const std::st
     bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax,
     const std::string& owner = {});
 
+// The same thing for an errand that speaks to one peer several times: the
+// throwaway destination is built (or taken warm) once and held for as long as
+// the returned transport lives, so the tunnels and the leaseset lookup are paid
+// for once instead of per call. The frame is still one request per stream - this
+// changes what is dialled, not what is spoken. Unlinkability is unchanged: the
+// destination is dropped with the transport, so no two errands share one, and
+// the calls inside one errand are signed by the same identity anyway.
+FetchTransport federationHeldDest(bazarish::i2p::Router& router,
+    bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax,
+    const std::string& owner = {});
+
 }  // namespace bazarish::client

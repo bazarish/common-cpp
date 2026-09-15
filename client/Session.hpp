@@ -629,6 +629,53 @@ public:
         std::string destinationOwner;   // account name, for the router status view
         Bytes servingSealingKeyDer;     // what a session secret is sealed to
     };
+    // Everything the alias errand needs, snapshotted so the whole exchange can run
+    // on a thread of its own. Like ContactFetchContext it touches no session
+    // state, which is what makes that safe: an errand is two or more I2P round
+    // trips and used to hold the worker thread for all of them.
+    struct AliasErrandContext {
+        std::string identityPem;        // unencrypted in-memory private PEM
+        ResolverCoordinate resolver;
+        bool i2pEnabled = false;
+        bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax;
+        std::string destinationOwner;   // account name, for the router status view
+        std::string fingerprint;
+        // Where this account answers. Empty either one means there is nothing to
+        // publish for a name that asks to point here.
+        std::string dest;
+        std::string view;
+        // What the registry last accepted, so an unchanged descriptor is not sent
+        // again.
+        std::string pushedDest;
+        std::string pushedView;
+        // Set only by a test harness (see setFetchTransport). Empty means the
+        // errand takes one throwaway destination and holds it for its whole run.
+        FetchTransport transport;
+    };
+
+    // What the registry answered, still in the bytes it was signed in: the same
+    // bytes are handed to this account's other devices, so they check the chain
+    // for themselves rather than trusting this one.
+    struct AliasStatusAnswer {
+        AliasStatus status;
+        Bytes recordDer;
+        Bytes delegationDer;
+    };
+
+    // One run of the errand, ready to be applied to the session on its own thread.
+    struct AliasErrandResult {
+        bool ok = false;
+        // Readable, already a sentence: this reaches a person.
+        std::string error;
+        bool haveStatus = false;
+        AliasStatusAnswer answer;
+        // True when every name that asked to point here was accepted. A partial
+        // sweep is no sweep: see pushAliasDescriptor.
+        bool pointed = false;
+        std::string pushedDest;
+        std::string pushedView;
+    };
+
     // An add to resolve: an invite URI (byAlias=false) or an alias.
     struct ContactCardRequest {
         bool byAlias = false;
@@ -791,10 +838,10 @@ public:
     std::vector<AliasHolding> aliasNames() const { return aliasNames_; }
 
     // Asks the resolver which names this account holds, adopts the answer and
-    // hands it to this account's other devices so they need not ask. This is what
-    // the activation button runs; from then on the client services the name by
-    // itself. False when no resolver is compiled into this build.
-    bool refreshAliasStatus();
+    // hands it to this account's other devices so they need not ask. False when
+    // no resolver is compiled into this build. `over` lets a caller supply the
+    // transport - an errand passes one held destination to every call it makes.
+    bool refreshAliasStatus(const FetchTransport& over = {});
 
     // Keeps the registry pointing where this account is actually reachable:
     // pushes the current descriptor when it has moved since the last accepted
@@ -807,13 +854,25 @@ public:
     // be reached. True only when every one of them was accepted: until that has
     // run, an alias is held and answers nobody. Does nothing, and answers false,
     // when there is nothing new to push.
-    bool pushAliasDescriptor();
+    bool pushAliasDescriptor(const FetchTransport& over = {});
+
+    // The whole errand - ask, then point - over one held destination, off any
+    // thread, touching nothing. Build the context here, run it there, hand the
+    // result back to applyAliasErrand on the thread that owns the session.
+    AliasErrandContext aliasErrandContext() const;
+    static AliasErrandResult runAliasErrand(const AliasErrandContext& context);
+    void applyAliasErrand(const AliasErrandResult& result);
 
     // Whether the registry is known to point somewhere this account no longer
     // answers, so a settings page can say so instead of looking healthy.
     // How many of this account's aliases their owner has asked to point here.
     std::size_t aliasesToBind() const;
     bool aliasUpdatePending() const;
+
+    // Whether anything is owed to the registry at all: a descriptor that has
+    // moved since the last accepted push, or this device's own asking window
+    // having elapsed. Cheap and local, so an upkeep tick can ask it often.
+    bool aliasServicingDue() const;
 
     // Whether the name service last said this account's deposit covers what is
     // about to fall due. A flag, not a figure: the balance stays on the service.
@@ -1366,10 +1425,11 @@ private:
 
     nlohmann::json aliasNamesToJson() const;
     void adoptAliasStatus(const AliasStatus& status);
+    // One throwaway destination held for a run of calls to the resolver, so an
+    // errand pays for tunnels and the leaseset lookup once.
+    FetchTransport heldTransport() const;
     void relayAliasStatus(const Bytes& statusDer, const Bytes& delegationDer);
     void scheduleNextAliasCheck(std::int64_t from);
-    // One maintenance exchange with the resolver over a throwaway destination.
-    FetchOutcome askResolver(const std::string& op, const Bytes& body);
     // The one ask a device makes because it just moved the account, never on a
     // timer: without it a name bought in the browser and never activated here
     // would be broken silently by this very move.

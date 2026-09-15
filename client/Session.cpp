@@ -4908,16 +4908,6 @@ std::string Session::inviteUri() const
 
 // --- The names this account holds in the central registry -------------------
 
-FetchOutcome Session::askResolver(const std::string& op, const Bytes& body)
-{
-    if (!resolverCoordinate_.configured()) {
-        throw std::runtime_error("this build has no name service configured");
-    }
-    // The same throwaway-destination path a card fetch takes: our own server is
-    // never in it, and the resolver learns a destination we will not use again.
-    return fetchTransport()(resolverCoordinate_.dest, op, body);
-}
-
 void Session::scheduleNextAliasCheck(const std::int64_t from)
 {
     aliasCheckAfter_ = from + kAliasStatusIntervalSeconds
@@ -4952,17 +4942,19 @@ void Session::relayAliasStatus(const Bytes& statusDer, const Bytes& delegationDe
     submitSignedToSelf(inner, "device.alias-status");
 }
 
-bool Session::refreshAliasStatus()
+namespace {
+
+// The registry's answer to "what does this account hold", verified against the
+// root this binary was built with. No session state: the caller hands in what it
+// knows, which is what lets the errand run on a thread of its own.
+Session::AliasStatusAnswer askAliasStatus(const Session::AliasErrandContext& context,
+    const Identity& identity, const FetchTransport& over, const std::int64_t now)
 {
-    if (!resolverCoordinate_.configured()) {
-        return false;
-    }
-    const std::int64_t now = nowSeconds();
     AliasMaintenanceRequest asking;
     asking.op = kAliasStatusOp;
     asking.issuedAt = now;
-    const Bytes request = signAliasMaintenanceRequest(asking, client_->identity());
-    const FetchOutcome outcome = askResolver(kAliasStatusOp, request);
+    const Bytes request = signAliasMaintenanceRequest(asking, identity);
+    const FetchOutcome outcome = over(context.resolver.dest, kAliasStatusOp, request);
     if (!outcome.ok) {
         log::info("the alias registry refused a status ask: {}",
             outcome.errorCode.empty() ? std::string("no answer") : outcome.errorCode);
@@ -4972,13 +4964,97 @@ bool Session::refreshAliasStatus()
     }
     const ResolveResponse answer = resolveResponseFromJson(nlohmann::json::parse(outcome.sealed));
     // Checked against the baked-in root, exactly as a resolve record is - which is
-    // what lets the same bytes be handed to another device below.
-    const AliasStatus status = verifyAliasStatus(
-        answer.recordDer, answer.delegationDer, resolverCoordinate_.rootFingerprint, now);
-    if (status.owner != fingerprint()) {
+    // what lets the same bytes be handed to another device.
+    Session::AliasStatusAnswer out;
+    out.status = verifyAliasStatus(
+        answer.recordDer, answer.delegationDer, context.resolver.rootFingerprint, now);
+    if (out.status.owner != context.fingerprint) {
         throw std::runtime_error("the name service answered about another account");
     }
-    adoptAliasStatus(status);
+    out.recordDer = answer.recordDer;
+    out.delegationDer = answer.delegationDer;
+    return out;
+}
+
+// Tells the registry where each name that asked to point here can be reached.
+// True only on a clean sweep: recording the new binding while one name still
+// points at the old one would retire the very thing that makes us try again.
+bool tellAliasesWhereWeAre(const Session::AliasErrandContext& context, const Identity& identity,
+    const FetchTransport& over, const std::vector<Session::AliasHolding>& names,
+    const std::int64_t now)
+{
+    Descriptor descriptor;
+    descriptor.fingerprint = context.fingerprint;
+    descriptor.dest = context.dest;
+    descriptor.view = context.view;
+
+    std::size_t wanted = 0;
+    std::size_t accepted = 0;
+    for (const Session::AliasHolding& holding : names) {
+        if (!holding.bindingWanted) {
+            continue;
+        }
+        ++wanted;
+        AliasMaintenanceRequest asking;
+        asking.op = kAliasUpdateOp;
+        asking.alias = holding.alias;
+        asking.descriptor = descriptor;
+        // The owner's own claim over this alias travels with the binding: the
+        // registry keeps it as the proof that this key asked for this name.
+        asking.aliasCertDer
+            = AliasCertificate::issue(identity, holding.alias, now, std::nullopt);
+        asking.issuedAt = now;
+        const Bytes request = signAliasMaintenanceRequest(asking, identity);
+        try {
+            const FetchOutcome outcome = over(context.resolver.dest, kAliasUpdateOp, request);
+            if (!outcome.ok) {
+                log::info("name {} not repointed yet: {}", holding.alias,
+                    outcome.errorCode.empty() ? std::string("no answer") : outcome.errorCode);
+                continue;
+            }
+            ++accepted;
+        } catch (const std::exception& error) {
+            log::info("name {} not repointed yet: {}", holding.alias, error.what());
+        }
+    }
+    return wanted != 0 && accepted == wanted;
+}
+
+// One throwaway destination held for a run of calls, or the reason there can be
+// no destination at all. Said plainly rather than quietly downgraded: the
+// registry is reached over I2P and nothing else.
+FetchTransport heldDestFor(
+    const bool i2pEnabled, const bazarish::i2p::Privacy privacy, const std::string& owner)
+{
+    if (!i2pEnabled) {
+        throw std::runtime_error("The alias registry is reached over I2P, and I2P is "
+                                 "switched off.");
+    }
+    bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
+    if (router == nullptr || !router->ready()) {
+        throw std::runtime_error("The I2P router is still building tunnels.");
+    }
+    return federationHeldDest(*router, privacy, owner);
+}
+
+}  // namespace
+
+FetchTransport Session::heldTransport() const
+{
+    if (fetchTransportOverride_) {
+        return fetchTransportOverride_;
+    }
+    return heldDestFor(i2pEnabled(), transferPrivacy(), destinationOwner());
+}
+
+bool Session::refreshAliasStatus(const FetchTransport& over)
+{
+    if (!resolverCoordinate_.configured()) {
+        return false;
+    }
+    const AliasStatusAnswer answer = askAliasStatus(aliasErrandContext(), client_->identity(),
+        over ? over : fetchTransport(), nowSeconds());
+    adoptAliasStatus(answer.status);
     try {
         relayAliasStatus(answer.recordDer, answer.delegationDer);
     } catch (const std::exception& error) {
@@ -5007,53 +5083,110 @@ bool Session::aliasUpdatePending() const
         && (aliasPushedDest_ != myDest_ || aliasPushedView_ != view_);
 }
 
-bool Session::pushAliasDescriptor()
+bool Session::aliasServicingDue() const
+{
+    if (!resolverCoordinate_.configured() || aliasNames_.empty()) {
+        return false;
+    }
+    return aliasUpdatePending() || nowSeconds() >= aliasCheckAfter_;
+}
+
+bool Session::pushAliasDescriptor(const FetchTransport& over)
 {
     if (!aliasUpdatePending()) {
         return false;
     }
-    const std::int64_t now = nowSeconds();
-    Descriptor descriptor;
-    descriptor.fingerprint = fingerprint();
-    descriptor.dest = myDest_;
-    descriptor.view = view_;
-
-    std::size_t accepted = 0;
-    for (const AliasHolding& holding : aliasNames_) {
-        if (!holding.bindingWanted) {
-            continue;
-        }
-        AliasMaintenanceRequest asking;
-        asking.op = kAliasUpdateOp;
-        asking.alias = holding.alias;
-        asking.descriptor = descriptor;
-        // The owner's own claim over this alias travels with the binding: the
-        // registry keeps it as the proof that this key asked for this name.
-        asking.aliasCertDer
-            = AliasCertificate::issue(client_->identity(), holding.alias, now, std::nullopt);
-        asking.issuedAt = now;
-        const Bytes request = signAliasMaintenanceRequest(asking, client_->identity());
-        try {
-            const FetchOutcome outcome = askResolver(kAliasUpdateOp, request);
-            if (!outcome.ok) {
-                log::info("name {} not repointed yet: {}", holding.alias,
-                    outcome.errorCode.empty() ? std::string("no answer") : outcome.errorCode);
-                continue;
-            }
-            ++accepted;
-        } catch (const std::exception& error) {
-            log::info("name {} not repointed yet: {}", holding.alias, error.what());
-        }
-    }
-    // Only a clean sweep counts. Recording the new binding while one name still
-    // points at the old one would retire the very thing that makes us try again.
-    if (accepted != aliasesToBind()) {
+    if (!tellAliasesWhereWeAre(aliasErrandContext(), client_->identity(),
+            over ? over : fetchTransport(), aliasNames_, nowSeconds())) {
         return false;
     }
-    aliasPushedDest_ = descriptor.dest;
-    aliasPushedView_ = descriptor.view;
+    aliasPushedDest_ = myDest_;
+    aliasPushedView_ = view_;
     persistMeta();
     return true;
+}
+
+Session::AliasErrandContext Session::aliasErrandContext() const
+{
+    AliasErrandContext context;
+    context.identityPem = client_->identity().privatePem();
+    context.resolver = resolverCoordinate_;
+    context.i2pEnabled = i2pEnabled();
+    context.privacy = transferPrivacy();
+    context.destinationOwner = destinationOwner();
+    context.fingerprint = fingerprint();
+    context.dest = myDest_;
+    context.view = view_;
+    context.pushedDest = aliasPushedDest_;
+    context.pushedView = aliasPushedView_;
+    context.transport = fetchTransportOverride_;
+    return context;
+}
+
+Session::AliasErrandResult Session::runAliasErrand(const AliasErrandContext& context)
+{
+    AliasErrandResult out;
+    if (!context.resolver.configured()) {
+        out.error = "This build has no alias registry configured.";
+        return out;
+    }
+    try {
+        // One destination for the whole errand: the ask and every repointing that
+        // follows it share the tunnels and the leaseset lookup, instead of paying
+        // for both once per call.
+        const FetchTransport over = context.transport
+            ? context.transport
+            : heldDestFor(context.i2pEnabled, context.privacy, context.destinationOwner);
+        const std::int64_t now = nowSeconds();
+        out.answer = askAliasStatus(context, Identity::fromPrivatePem(context.identityPem),
+            over, now);
+        out.haveStatus = true;
+
+        // What the names the ask just returned say about themselves, read through
+        // the same rule the session uses: nothing is published for a name whose
+        // owner did not ask for it, and nothing is sent when the registry already
+        // holds this descriptor.
+        std::vector<AliasHolding> names;
+        for (const AliasStatusEntry& entry : out.answer.status.names) {
+            names.push_back(
+                AliasHolding{entry.alias, entry.notAfter, entry.autoRenew, entry.bindingWanted});
+        }
+        const bool anyWanted = std::any_of(names.begin(), names.end(),
+            [](const AliasHolding& holding) { return holding.bindingWanted; });
+        const bool canPublish = !context.dest.empty() && isViewCapability(context.view);
+        const bool moved
+            = context.pushedDest != context.dest || context.pushedView != context.view;
+        if (anyWanted && canPublish && moved) {
+            out.pointed = tellAliasesWhereWeAre(
+                context, Identity::fromPrivatePem(context.identityPem), over, names, now);
+            if (out.pointed) {
+                out.pushedDest = context.dest;
+                out.pushedView = context.view;
+            }
+        }
+        out.ok = true;
+    } catch (const std::exception& error) {
+        out.error = error.what();
+    }
+    return out;
+}
+
+void Session::applyAliasErrand(const AliasErrandResult& result)
+{
+    if (result.haveStatus) {
+        adoptAliasStatus(result.answer.status);
+        try {
+            relayAliasStatus(result.answer.recordDer, result.answer.delegationDer);
+        } catch (const std::exception& error) {
+            log::info("could not hand the name answer to this account's other devices: {}",
+                error.what());
+        }
+    }
+    if (result.pointed) {
+        aliasPushedDest_ = result.pushedDest;
+        aliasPushedView_ = result.pushedView;
+        persistMeta();
+    }
 }
 
 void Session::serviceAliases()
@@ -5065,11 +5198,19 @@ void Session::serviceAliases()
         return;
     }
     try {
-        if (aliasUpdatePending()) {
-            pushAliasDescriptor();
+        const bool pushing = aliasUpdatePending();
+        const bool asking = nowSeconds() >= aliasCheckAfter_;
+        if (!pushing && !asking) {
+            return;
         }
-        if (nowSeconds() >= aliasCheckAfter_) {
-            refreshAliasStatus();
+        // One destination for whichever of the two runs, and for both when both
+        // do: the tunnels and the leaseset lookup are the expensive part.
+        const FetchTransport over = heldTransport();
+        if (pushing) {
+            pushAliasDescriptor(over);
+        }
+        if (asking) {
+            refreshAliasStatus(over);
         }
     } catch (const std::exception& error) {
         log::info("name servicing will try again: {}", error.what());

@@ -774,8 +774,20 @@ int main()
             std::lock_guard<std::mutex> lock(m.mu);
             m.aliasBindingWanted.insert("bob");
         }
-        CHECK(bob.refreshAliasStatus());
-        bob.serviceAliases();
+        // Run the way the app runs it: a snapshot taken on the thread that owns
+        // the session, the whole exchange - the ask and every repointing after it
+        // - run somewhere else over one destination, and the answer applied back
+        // here. Nothing in between touches the session.
+        const int bobStatusBefore = m.resolverStatusCalls;
+        const Session::AliasErrandResult errand
+            = Session::runAliasErrand(bob.aliasErrandContext());
+        CHECK(errand.ok);
+        CHECK(errand.haveStatus);
+        CHECK(errand.pointed);
+        CHECK(m.resolverStatusCalls == bobStatusBefore + 1);
+        bob.applyAliasErrand(errand);
+        CHECK(bob.aliasNames().size() == 1);
+        CHECK(!bob.aliasUpdatePending());
         {
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.aliasDescriptor.at("bob").fingerprint == bob.fingerprint());
