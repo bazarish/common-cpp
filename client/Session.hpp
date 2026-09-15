@@ -830,6 +830,12 @@ public:
         // nobody asked to publish would be this client deciding on the owner's
         // behalf. Off means the client leaves it alone entirely.
         bool bindingWanted = false;
+        // Whether the registry currently holds a descriptor for it, as of the
+        // last answer. With bindingWanted on and this off, the registry is
+        // waiting for this client - which is a thing it can be even after a
+        // successful push, because withdrawing the binding on the website drops
+        // the descriptor and turning it back on does not bring one back.
+        bool bound = false;
     };
 
     // The names this account is known to hold. Empty until the user activates
@@ -865,8 +871,6 @@ public:
 
     // Whether the registry is known to point somewhere this account no longer
     // answers, so a settings page can say so instead of looking healthy.
-    // How many of this account's aliases their owner has asked to point here.
-    std::size_t aliasesToBind() const;
     bool aliasUpdatePending() const;
 
     // Whether anything is owed to the registry at all: a descriptor that has
@@ -1425,6 +1429,10 @@ private:
 
     nlohmann::json aliasNamesToJson() const;
     void adoptAliasStatus(const AliasStatus& status);
+    // Records that the registry has taken our descriptor for every name that
+    // asked for one, so an accepted push is not repeated until the next answer
+    // says the registry holds nothing again.
+    void noteAliasesBound();
     // One throwaway destination held for a run of calls to the resolver, so an
     // errand pays for tunnels and the leaseset lookup once.
     FetchTransport heldTransport() const;

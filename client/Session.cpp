@@ -610,7 +610,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
         session.aliasNames_.push_back(
             Session::AliasHolding{held.value("alias", std::string()),
                 held.value("notAfter", std::int64_t{0}), held.value("autoRenew", true),
-                held.value("bindingWanted", false)});
+                held.value("bindingWanted", false), held.value("bound", false)});
     }
     session.aliasCheckAfter_ = meta.value("aliasCheckAfter", std::int64_t{0});
     session.aliasDepositCovers_ = meta.value("aliasDepositCovers", true);
@@ -839,7 +839,8 @@ nlohmann::json Session::aliasNamesToJson() const
     nlohmann::json held = nlohmann::json::array();
     for (const AliasHolding& holding : aliasNames_) {
         held.push_back({{"alias", holding.alias}, {"notAfter", holding.notAfter},
-            {"autoRenew", holding.autoRenew}, {"bindingWanted", holding.bindingWanted}});
+            {"autoRenew", holding.autoRenew}, {"bindingWanted", holding.bindingWanted},
+            {"bound", holding.bound}});
     }
     return held;
 }
@@ -4920,8 +4921,8 @@ void Session::adoptAliasStatus(const AliasStatus& status)
     // name transferred away or released stops being serviced here.
     aliasNames_.clear();
     for (const AliasStatusEntry& entry : status.names) {
-        aliasNames_.push_back(
-            AliasHolding{entry.alias, entry.notAfter, entry.autoRenew, entry.bindingWanted});
+        aliasNames_.push_back(AliasHolding{
+            entry.alias, entry.notAfter, entry.autoRenew, entry.bindingWanted, entry.bound});
     }
     aliasDepositCovers_ = status.depositCoversRenewals;
     scheduleNextAliasCheck(status.issuedAt);
@@ -4988,13 +4989,17 @@ bool tellAliasesWhereWeAre(const Session::AliasErrandContext& context, const Ide
     descriptor.dest = context.dest;
     descriptor.view = context.view;
 
-    std::size_t wanted = 0;
+    // A name is told where we are when the registry holds nothing for it, and
+    // when what it holds is no longer where we answer. One that is already bound
+    // to this very descriptor is left alone.
+    const bool moved = context.pushedDest != context.dest || context.pushedView != context.view;
+    std::size_t needed = 0;
     std::size_t accepted = 0;
     for (const Session::AliasHolding& holding : names) {
-        if (!holding.bindingWanted) {
+        if (!holding.bindingWanted || (holding.bound && !moved)) {
             continue;
         }
-        ++wanted;
+        ++needed;
         AliasMaintenanceRequest asking;
         asking.op = kAliasUpdateOp;
         asking.alias = holding.alias;
@@ -5017,7 +5022,7 @@ bool tellAliasesWhereWeAre(const Session::AliasErrandContext& context, const Ide
             log::info("name {} not repointed yet: {}", holding.alias, error.what());
         }
     }
-    return wanted != 0 && accepted == wanted;
+    return needed != 0 && accepted == needed;
 }
 
 // One throwaway destination held for a run of calls, or the reason there can be
@@ -5066,21 +5071,24 @@ bool Session::refreshAliasStatus(const FetchTransport& over)
     return true;
 }
 
-std::size_t Session::aliasesToBind() const
-{
-    std::size_t count = 0;
-    for (const AliasHolding& holding : aliasNames_) {
-        if (holding.bindingWanted) {
-            ++count;
-        }
-    }
-    return count;
-}
-
 bool Session::aliasUpdatePending() const
 {
-    return aliasesToBind() != 0 && !myDest_.empty() && isViewCapability(view_)
-        && (aliasPushedDest_ != myDest_ || aliasPushedView_ != view_);
+    if (myDest_.empty() || !isViewCapability(view_)) {
+        return false;
+    }
+    // Two reasons to speak up, and the second one is not about us at all: our
+    // descriptor has moved since the registry last took it, or the registry says
+    // it holds none. Only the first was checked once, and a binding withdrawn and
+    // asked for again on the website is exactly the case that falls through it -
+    // the descriptor there is gone, ours has not changed, and the name goes on
+    // answering nobody however many times the button is pressed.
+    const bool moved = aliasPushedDest_ != myDest_ || aliasPushedView_ != view_;
+    for (const AliasHolding& holding : aliasNames_) {
+        if (holding.bindingWanted && (moved || !holding.bound)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool Session::aliasServicingDue() const
@@ -5102,6 +5110,7 @@ bool Session::pushAliasDescriptor(const FetchTransport& over)
     }
     aliasPushedDest_ = myDest_;
     aliasPushedView_ = view_;
+    noteAliasesBound();
     persistMeta();
     return true;
 }
@@ -5148,15 +5157,17 @@ Session::AliasErrandResult Session::runAliasErrand(const AliasErrandContext& con
         // holds this descriptor.
         std::vector<AliasHolding> names;
         for (const AliasStatusEntry& entry : out.answer.status.names) {
-            names.push_back(
-                AliasHolding{entry.alias, entry.notAfter, entry.autoRenew, entry.bindingWanted});
+            names.push_back(AliasHolding{
+                entry.alias, entry.notAfter, entry.autoRenew, entry.bindingWanted, entry.bound});
         }
-        const bool anyWanted = std::any_of(names.begin(), names.end(),
-            [](const AliasHolding& holding) { return holding.bindingWanted; });
         const bool canPublish = !context.dest.empty() && isViewCapability(context.view);
         const bool moved
             = context.pushedDest != context.dest || context.pushedView != context.view;
-        if (anyWanted && canPublish && moved) {
+        const bool anyNeeded = std::any_of(names.begin(), names.end(),
+            [moved](const AliasHolding& holding) {
+                return holding.bindingWanted && (moved || !holding.bound);
+            });
+        if (anyNeeded && canPublish) {
             out.pointed = tellAliasesWhereWeAre(
                 context, Identity::fromPrivatePem(context.identityPem), over, names, now);
             if (out.pointed) {
@@ -5185,7 +5196,20 @@ void Session::applyAliasErrand(const AliasErrandResult& result)
     if (result.pointed) {
         aliasPushedDest_ = result.pushedDest;
         aliasPushedView_ = result.pushedView;
+        // The status adopted just above was taken before the push; the registry
+        // has accepted a descriptor since, so nothing is owed until it says
+        // otherwise. Without this the next tick would say it all again.
+        noteAliasesBound();
         persistMeta();
+    }
+}
+
+void Session::noteAliasesBound()
+{
+    for (AliasHolding& holding : aliasNames_) {
+        if (holding.bindingWanted) {
+            holding.bound = true;
+        }
     }
 }
 

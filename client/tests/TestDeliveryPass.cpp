@@ -750,6 +750,35 @@ int main()
             CHECK(m.aliasDescriptor.at("alice").view == viewAfter);
         }
 
+        // The website's own switch, thrown twice. Withdrawing the binding drops
+        // the descriptor at the registry, and asking for it again does not bring
+        // one back - while this client's own descriptor has not moved at all.
+        // Nothing here used to notice: the name sat answering nobody and pressing
+        // the button changed nothing, because the only question asked was whether
+        // WE had moved.
+        {
+            const std::lock_guard<std::mutex> lock(m.mu);
+            m.aliasBindingWanted.erase("alice");
+            m.aliasDescriptor.erase("alice");
+        }
+        CHECK(alice.refreshAliasStatus());
+        CHECK(!alice.aliasNames().front().bindingWanted);
+        CHECK(!alice.aliasUpdatePending());  // nothing is asked for, so nothing is owed
+        {
+            const std::lock_guard<std::mutex> lock(m.mu);
+            m.aliasBindingWanted.insert("alice");
+        }
+        CHECK(alice.refreshAliasStatus());
+        CHECK(alice.aliasNames().front().bindingWanted);
+        CHECK(!alice.aliasNames().front().bound);
+        CHECK(alice.aliasUpdatePending());
+        CHECK(alice.pushAliasDescriptor());
+        CHECK(!alice.aliasUpdatePending());
+        {
+            const std::lock_guard<std::mutex> lock(m.mu);
+            CHECK(m.aliasDescriptor.at("alice").fingerprint == alice.fingerprint());
+        }
+
         // A name somebody else owns is not repointed by asking nicely.
         {
             std::lock_guard<std::mutex> lock(m.mu);
