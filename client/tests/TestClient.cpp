@@ -176,8 +176,11 @@ int main()
         const std::string recordAlias = query.alias == "swap" ? "other" : query.alias;
         const Descriptor descriptor{bob.fingerprint(), bobDest, bobView};
         const ResolveRecord record{recordAlias, descriptor, now, now + resolverWeek};
-        const ResolveResponse resp{
-            signResolveRecord(record, resolverDelegated), resolverDelegationDer};
+        // Bob's own claim over the name, which is what lets the asker see that
+        // the descriptor's owner asked for this alias rather than being handed it
+        // by the registry.
+        const ResolveResponse resp{signResolveRecord(record, resolverDelegated),
+            resolverDelegationDer, AliasCertificate::issue(bob, recordAlias, now)};
         const std::string respJson = toJson(resp).dump();
         outcome.ok = true;
         outcome.sealed = Bytes(respJson.begin(), respJson.end());

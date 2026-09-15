@@ -57,6 +57,12 @@ struct ResolveQuery {
 struct ResolveResponse {
     Bytes recordDer;      // signResolveRecord(...) output (hybrid-signed record)
     Bytes delegationDer;  // the delegation certificate (delegated key <- root)
+    // The owner's own certificate over the name (AliasCertificate). Without it a
+    // resolve rests entirely on the registry's word, and the registry could point
+    // a name at somebody who never asked for it. With it, the asker sees the
+    // owner's signature saying "I am this alias" and checks for themselves that
+    // the descriptor they are about to use belongs to that same owner.
+    Bytes aliasCertDer;
 };
 
 nlohmann::json toJson(const ResolveQuery& query);
@@ -90,7 +96,14 @@ Bytes signResolveRecord(const ResolveRecord& record, const Identity& delegatedId
 // record must be signed by the identity that delegation authorizes, and the
 // record itself must be unexpired. Returns the verified record; throws on any
 // failure (DelegationCertificate is the chain link, api/FederatedResolve.md).
+//
+// Two signatures, and they answer different questions. The registry's says "this
+// name resolves here"; the owner's alias certificate says "I am this name", and
+// is checked to be over the same name and by the same identity the descriptor
+// names. The second is what the registry cannot forge: it may refuse to answer,
+// and it decides who holds a name, but it cannot bind one to a person who never
+// signed for it. An answer without the owner's certificate is refused.
 ResolveRecord verifyResolveRecord(const Bytes& recordDer, const Bytes& delegationDer,
-    const std::string& trustedRootFingerprint, std::int64_t now);
+    const Bytes& aliasCertDer, const std::string& trustedRootFingerprint, std::int64_t now);
 
 }  // namespace bazarish

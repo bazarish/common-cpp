@@ -93,6 +93,7 @@ nlohmann::json toJson(const ResolveResponse& response)
         {"v", 1},
         {"record", toBase64(response.recordDer)},
         {"delegation", toBase64(response.delegationDer)},
+        {"aliasCert", toBase64(response.aliasCertDer)},
     };
 }
 
@@ -102,6 +103,7 @@ ResolveResponse resolveResponseFromJson(const nlohmann::json& body)
     ResolveResponse response;
     response.recordDer = fromBase64(body.at("record").get<std::string>());
     response.delegationDer = fromBase64(body.at("delegation").get<std::string>());
+    response.aliasCertDer = fromBase64(body.value("aliasCert", std::string()));
     return response;
 }
 
@@ -132,8 +134,22 @@ Bytes signResolveRecord(const ResolveRecord& record, const Identity& delegatedId
     return cms::signJsonHybrid(toJson(record), delegatedIdentity);
 }
 
+namespace {
+
+std::string foldAlias(const std::string& alias)
+{
+    std::string folded;
+    folded.reserve(alias.size());
+    for (const char c : alias) {
+        folded.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c);
+    }
+    return folded;
+}
+
+}  // namespace
+
 ResolveRecord verifyResolveRecord(const Bytes& recordDer, const Bytes& delegationDer,
-    const std::string& trustedRootFingerprint, const std::int64_t now)
+    const Bytes& aliasCertDer, const std::string& trustedRootFingerprint, const std::int64_t now)
 {
     const DelegationCertificate delegation = DelegationCertificate::verify(delegationDer);
     if (delegation.root != trustedRootFingerprint) {
@@ -151,6 +167,18 @@ ResolveRecord verifyResolveRecord(const Bytes& recordDer, const Bytes& delegatio
     ResolveRecord record = resolveRecordFromJson(verified.body);
     if (now > record.notAfter) {
         throw std::runtime_error("resolve record: record has expired");
+    }
+
+    // The owner's half. Folded rather than compared byte for byte: the registry
+    // canonicalizes a name before it accepts a certificate over it, so a
+    // certificate that differs only in case is one it would have taken.
+    const AliasCertificate claim = AliasCertificate::verify(aliasCertDer);
+    if (foldAlias(claim.alias) != foldAlias(record.alias)) {
+        throw std::runtime_error("resolve record: the owner's certificate is over another alias");
+    }
+    if (claim.user != record.descriptor.fingerprint) {
+        throw std::runtime_error("resolve record: the alias is claimed by somebody other than "
+                                 "the descriptor's owner");
     }
     return record;
 }

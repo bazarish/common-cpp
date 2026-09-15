@@ -271,8 +271,8 @@ Descriptor Client::resolveAlias(const std::string& alias, const ResolverCoordina
     // Verify the signature chain (record -> delegated key -> hardcoded root) and
     // that the record is for the alias we asked for. This is the integrity
     // anchor: even a malicious relay can only withhold, never forge a binding.
-    const ResolveRecord record = verifyResolveRecord(
-        fetched.recordDer, fetched.delegationDer, resolver.rootFingerprint, now);
+    const ResolveRecord record = verifyResolveRecord(fetched.recordDer, fetched.delegationDer,
+        fetched.aliasCertDer, resolver.rootFingerprint, now);
     if (record.alias != alias) {
         throw std::runtime_error("resolver returned a record for a different alias");
     }

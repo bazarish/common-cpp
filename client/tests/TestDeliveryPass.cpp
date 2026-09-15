@@ -613,8 +613,11 @@ int main()
                 }
                 status.issuedAt = now;
                 status.notAfter = now + kAliasStatusValiditySeconds;
+                // No alias certificate: a status is about every name an account
+                // holds, and the owner's claim belongs to a resolve, which is
+                // about one.
                 const ResolveResponse answer{
-                    signAliasStatus(status, resolverDelegated), resolverDelegationDer};
+                    signAliasStatus(status, resolverDelegated), resolverDelegationDer, Bytes{}};
                 const std::string json = toJson(answer).dump();
                 outcome.ok = true;
                 outcome.sealed = Bytes(json.begin(), json.end());

@@ -53,11 +53,14 @@ int main()
     CHECK(rq2.alias == rq.alias);
     CHECK(!toJson(rq).contains("responseKey"));
 
-    // Resolve response round-trip (signed record + delegation certificate).
-    const ResolveResponse rr{Bytes{0xAA, 0xBB, 0xCC}, Bytes{0xDD, 0xEE, 0xFF, 0x01}};
+    // Resolve response round-trip: the signed record, the delegation certificate
+    // and the owner's own claim over the name.
+    const ResolveResponse rr{
+        Bytes{0xAA, 0xBB, 0xCC}, Bytes{0xDD, 0xEE, 0xFF, 0x01}, Bytes{0x11, 0x22}};
     const ResolveResponse rr2 = resolveResponseFromJson(toJson(rr));
     CHECK(rr2.recordDer == rr.recordDer);
     CHECK(rr2.delegationDer == rr.delegationDer);
+    CHECK(rr2.aliasCertDer == rr.aliasCertDer);
 
     // Resolve record round-trip.
     const ResolveRecord record{"alice", descriptor, 1718600000, 1750136000};
@@ -93,34 +96,60 @@ int main()
     CHECK(del.root == root.fingerprint());
     CHECK(del.delegatedFingerprint() == delegated.fingerprint());
 
-    const ResolveRecord signedRec{"alice", descriptor, now, now + week};
+    // The name's owner, and their own claim over it. The descriptor in the record
+    // is theirs, which is the thing the claim is checked against.
+    const Identity owner = Identity::generate();
+    const Descriptor owned{owner.fingerprint(), descriptor.dest, descriptor.view};
+    const Bytes ownerCert = AliasCertificate::issue(owner, "alice", now);
+
+    const ResolveRecord signedRec{"alice", owned, now, now + week};
     const Bytes recordDer = signResolveRecord(signedRec, delegated);
-    const ResolveRecord okRec = verifyResolveRecord(recordDer, delegationDer, root.fingerprint(), now);
+    const ResolveRecord okRec
+        = verifyResolveRecord(recordDer, delegationDer, ownerCert, root.fingerprint(), now);
     CHECK(okRec.alias == "alice");
-    CHECK(okRec.descriptor.fingerprint == descriptor.fingerprint);
+    CHECK(okRec.descriptor.fingerprint == owner.fingerprint());
     CHECK(okRec.descriptor.view == descriptor.view);
 
-    const auto chainRejects = [&](const Bytes& rDer, const Bytes& dDer, const std::string& rootFp,
-                                  std::int64_t t) {
+    const auto chainRejects = [&](const Bytes& rDer, const Bytes& dDer, const Bytes& certDer,
+                                  const std::string& rootFp, std::int64_t t) {
         try {
-            (void)verifyResolveRecord(rDer, dDer, rootFp, t);
+            (void)verifyResolveRecord(rDer, dDer, certDer, rootFp, t);
         } catch (const std::exception&) {
             return true;
         }
         return false;
     };
-    CHECK(chainRejects(recordDer, delegationDer, delegated.fingerprint(), now));        // wrong root
-    CHECK(chainRejects(recordDer, delegationDer, root.fingerprint(), now + week + 1));   // delegation expired
+    CHECK(chainRejects(recordDer, delegationDer, ownerCert, delegated.fingerprint(), now));
+    CHECK(chainRejects(recordDer, delegationDer, ownerCert, root.fingerprint(), now + week + 1));
 
     // A record signed by an identity the delegation does not authorize.
     const Identity impostor = Identity::generate();
     const Bytes forged = signResolveRecord(signedRec, impostor);
-    CHECK(chainRejects(forged, delegationDer, root.fingerprint(), now));
+    CHECK(chainRejects(forged, delegationDer, ownerCert, root.fingerprint(), now));
 
     // The delegation is still valid but the record itself has expired.
-    const ResolveRecord shortRec{"bob", descriptor, now, now + 10};
+    const ResolveRecord shortRec{"bob", owned, now, now + 10};
     const Bytes shortDer = signResolveRecord(shortRec, delegated);
-    CHECK(chainRejects(shortDer, delegationDer, root.fingerprint(), now + 100));
+    CHECK(chainRejects(
+        shortDer, delegationDer, AliasCertificate::issue(owner, "bob", now),
+        root.fingerprint(), now + 100));
+
+    // The owner's half, which the registry cannot forge. A perfectly good record
+    // is still refused when the claim beside it is over another name, was made by
+    // somebody other than the descriptor's owner, or is missing entirely - the
+    // last being what a registry that simply declined to carry one would send.
+    CHECK(chainRejects(recordDer, delegationDer, AliasCertificate::issue(owner, "elsewhere", now),
+        root.fingerprint(), now));
+    const Identity stranger = Identity::generate();
+    CHECK(chainRejects(recordDer, delegationDer, AliasCertificate::issue(stranger, "alice", now),
+        root.fingerprint(), now));
+    CHECK(chainRejects(recordDer, delegationDer, Bytes{}, root.fingerprint(), now));
+
+    // Case is the registry's to settle, not a reason to refuse: it canonicalizes
+    // a name before taking a certificate over it, so one that differs only in
+    // case is one it would have accepted.
+    CHECK(!chainRejects(recordDer, delegationDer, AliasCertificate::issue(owner, "Alice", now),
+        root.fingerprint(), now));
 
     std::printf("TestResolve: all checks passed\n");
     return 0;
