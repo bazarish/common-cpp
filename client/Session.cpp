@@ -2230,6 +2230,15 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     if (info.card.fingerprint() != peerFingerprint) {
         throw std::runtime_error("contact lookup returned a different user");
     }
+    // Somebody already in the book is not asked again. A second request is a
+    // fresh plate in their mailbox for a conversation this side already holds,
+    // and it costs them a tokenless delivery to be told nothing new. Checked
+    // here, at the one funnel every way of adding runs through, rather than at
+    // each of them. A request refused earlier leaves no contact behind - the
+    // entry is written after the delivery - so this never blocks a retry.
+    if (contacts_.find(peerFingerprint) != contacts_.end()) {
+        throw std::runtime_error("they are already in your contacts");
+    }
     // A contact request is tokenless, so what a stranger may put in a mailbox is
     // capped by the protocol. Hold the greeting to what the cap leaves room for
     // here, where the user can still be told, rather than letting the recipient's

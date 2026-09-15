@@ -1317,9 +1317,18 @@ int main()
                 return m.mailbox[alice.fingerprint()].size();
             };
             const std::size_t beforeRequests = heldForAlice();
-            // Asked twice, the way a resend asks: two requests, two batches.
             alice.addByInvite(dana.inviteUri(), "let me in");
-            alice.addByInvite(dana.inviteUri(), "let me in again");
+            // Pressed again, Dana is not asked again: she is in the book now, and
+            // a second request would be a fresh plate in her mailbox saying
+            // nothing the first did not.
+            bool askedTwice = true;
+            try {
+                alice.addByInvite(dana.inviteUri(), "let me in again");
+            } catch (const std::exception&) {
+                askedTwice = false;
+            }
+            CHECK(!askedTwice);
+            CHECK(alice.hasContact(dana.fingerprint()));
             for (int round = 0; round < 3; ++round) {
                 dana.sync();
             }
