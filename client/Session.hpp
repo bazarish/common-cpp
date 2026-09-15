@@ -803,6 +803,12 @@ public:
     // name is known.
     void serviceAliases();
 
+    // Tells the registry where the aliases their owner asked to point here can
+    // be reached. True only when every one of them was accepted: until that has
+    // run, an alias is held and answers nobody. Does nothing, and answers false,
+    // when there is nothing new to push.
+    bool pushAliasDescriptor();
+
     // Whether the registry is known to point somewhere this account no longer
     // answers, so a settings page can say so instead of looking healthy.
     // How many of this account's aliases their owner has asked to point here.
@@ -1359,7 +1365,6 @@ private:
     std::string aliasPushedView_;
 
     nlohmann::json aliasNamesToJson() const;
-    bool pushAliasDescriptor();
     void adoptAliasStatus(const AliasStatus& status);
     void relayAliasStatus(const Bytes& statusDer, const Bytes& delegationDer);
     void scheduleNextAliasCheck(std::int64_t from);

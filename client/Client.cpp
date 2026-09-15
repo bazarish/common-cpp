@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "Client.hpp"
 
+#include <bazarish/Errors.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/Cms.hpp>
 #include <bazarish/Hmac.hpp>
@@ -252,8 +253,17 @@ Descriptor Client::resolveAlias(const std::string& alias, const ResolverCoordina
     const FetchOutcome outcome
         = transport(resolver.dest, "resolve", Bytes(queryJson.begin(), queryJson.end()));
     if (!outcome.ok) {
-        throw std::runtime_error("alias resolve failed: "
-            + (outcome.errorCode.empty() ? std::string("ALIAS_UNKNOWN") : outcome.errorCode));
+        // The code is what the registry answered and what a log needs; what is
+        // thrown is the sentence, because this lands in front of whoever typed
+        // the alias. A registry that says nothing is read as ALIAS_UNKNOWN: it
+        // is the only negative a resolve has.
+        const std::string code
+            = outcome.errorCode.empty() ? std::string(toString(ErrorCode::eAliasUnknown))
+                                        : outcome.errorCode;
+        log::info("alias {} did not resolve: {}", alias, code);
+        const std::optional<ErrorCode> known = errorCodeFromString(code);
+        throw std::runtime_error(known ? std::string(readable(*known))
+                                       : "The alias registry refused to answer.");
     }
     const ResolveResponse fetched
         = resolveResponseFromJson(nlohmann::json::parse(outcome.sealed));

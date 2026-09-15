@@ -21,6 +21,7 @@
 #include <bazarish/AliasMaintenance.hpp>
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Crypto.hpp>
+#include <bazarish/Errors.hpp>
 #include <bazarish/I2p.hpp>
 #include <bazarish/Resolve.hpp>
 
@@ -100,8 +101,9 @@ int main(const int argc, const char** argv)
     int failures = 0;
 
     // --- A resolve, over the real thing ---
-    // A name nobody holds is the useful negative here: a typed ALIAS_UNKNOWN can
-    // only come from a daemon that received the frame, parsed it and answered.
+    // A name nobody holds is the useful negative here: the sentence a resolve
+    // throws for an unknown alias can only come from a daemon that received the
+    // frame, parsed it and answered with that code.
     try {
         const Descriptor descriptor
             = Client::resolveAlias(alias, resolver, nowSeconds(), transport);
@@ -109,7 +111,7 @@ int main(const int argc, const char** argv)
             descriptor.fingerprint.c_str(), descriptor.dest.c_str());
     } catch (const std::exception& error) {
         const std::string what = error.what();
-        if (what.find("ALIAS_UNKNOWN") != std::string::npos) {
+        if (what == readable(ErrorCode::eAliasUnknown)) {
             std::printf("[alias] RESOLVE reached the daemon: %s is not registered\n",
                 alias.c_str());
         } else {

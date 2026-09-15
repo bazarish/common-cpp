@@ -34,6 +34,7 @@
 #include <fstream>
 #include <set>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 
 namespace bazarish::client {
@@ -179,12 +180,16 @@ std::int64_t nowMillis()
 // a malformed query never reaches the resolver.
 std::string normalizeAlias(const std::string& alias)
 {
-    if (alias.empty() || alias.size() > 32) {
+    // The sigil is how an alias is written everywhere a person sees one, so it
+    // is accepted where one is typed; the name itself never contains it.
+    const std::string_view typed
+        = (!alias.empty() && alias.front() == '!') ? std::string_view(alias).substr(1) : alias;
+    if (typed.empty() || typed.size() > 32) {
         throw std::runtime_error("alias must be 1-32 characters");
     }
     std::string normalized;
-    normalized.reserve(alias.size());
-    for (const char c : alias) {
+    normalized.reserve(typed.size());
+    for (const char c : typed) {
         char lower = c;
         if (c >= 'A' && c <= 'Z') {
             lower = static_cast<char>(c - 'A' + 'a');
@@ -2078,14 +2083,16 @@ Session::ContactCardResolved Session::resolveContactCard(
         };
 
         if (request.byAlias) {
-            const Descriptor descriptor = fetchClient.resolveAlias(
-                normalizeAlias(request.uriOrAlias), context.resolver, nowSeconds(), transport);
+            const std::string alias = normalizeAlias(request.uriOrAlias);
+            const Descriptor descriptor
+                = fetchClient.resolveAlias(alias, context.resolver, nowSeconds(), transport);
             out.info = fetchClient.fetchCard(descriptor, transport);
             out.fingerprint = descriptor.fingerprint;
             out.view = descriptor.view;
-            // The alias typed becomes the label - unless it claims the saved
-            // chat's name, which no contact may carry.
-            out.displayName = safeContactName(request.uriOrAlias);
+            // The alias becomes the label, in its canonical form rather than as
+            // typed - unless it claims the saved chat's name, which no contact
+            // may carry.
+            out.displayName = safeContactName(alias);
         } else {
             const Descriptor descriptor = parseDescriptor(request.uriOrAlias);
             out.info = fetchClient.fetchCard(descriptor, transport);
@@ -4924,8 +4931,11 @@ bool Session::refreshAliasStatus()
     const Bytes request = signAliasMaintenanceRequest(asking, client_->identity());
     const FetchOutcome outcome = askResolver(kAliasStatusOp, request);
     if (!outcome.ok) {
-        throw std::runtime_error("the name service refused: "
-            + (outcome.errorCode.empty() ? std::string("no answer") : outcome.errorCode));
+        log::info("the alias registry refused a status ask: {}",
+            outcome.errorCode.empty() ? std::string("no answer") : outcome.errorCode);
+        const std::optional<ErrorCode> known = errorCodeFromString(outcome.errorCode);
+        throw std::runtime_error(known ? std::string(readable(*known))
+                                       : "The alias registry did not answer.");
     }
     const ResolveResponse answer = resolveResponseFromJson(nlohmann::json::parse(outcome.sealed));
     // Checked against the baked-in root, exactly as a resolve record is - which is

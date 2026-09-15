@@ -15,10 +15,13 @@ int main()
         ErrorCode::eDeliveryRejected,
         ErrorCode::eContactRequestTooLarge,
         ErrorCode::eContactRateLimited,
+        ErrorCode::eMessageTooLarge,
         ErrorCode::eAliasTaken,
         ErrorCode::eAliasUnknown,
         ErrorCode::eClientUnregistered,
+        ErrorCode::eSessionInvalid,
         ErrorCode::eI2pUnavailable,
+        ErrorCode::eAccountPendingApproval,
     };
     for (const ErrorCode code : codes) {
         const std::optional<ErrorCode> back = errorCodeFromString(toString(code));
@@ -27,6 +30,17 @@ int main()
     }
     CHECK(toString(ErrorCode::eQuotaExceeded) == "QUOTA_EXCEEDED");
     CHECK(!errorCodeFromString("NO_SUCH_CODE").has_value());
+
+    // Every code has a sentence for a person, and no sentence is a wire name in
+    // disguise: a code that reaches a screen is the bug this guards against.
+    for (const ErrorCode code : codes) {
+        const std::string_view text = readable(code);
+        CHECK(!text.empty());
+        CHECK(text != toString(code));
+        CHECK(text.find('_') == std::string_view::npos);
+        CHECK(text.back() == '.');
+    }
+    CHECK(readable(ErrorCode::eAliasUnknown).find("Nobody answers") == 0);
 
     // Envelope round trip with details.
     const nlohmann::json details = {{"limit", 10485760}, {"size", 12582912}};

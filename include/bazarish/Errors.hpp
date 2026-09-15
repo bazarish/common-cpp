@@ -33,6 +33,10 @@ enum class ErrorCode {
 std::string_view toString(ErrorCode code);
 std::optional<ErrorCode> errorCodeFromString(std::string_view text);
 
+// The same fault said to a person. A code is for a log and for another
+// program; what reaches a screen is this.
+std::string_view readable(ErrorCode code);
+
 // The standard error envelope:
 // { "error": { "code": "...", "message": "...", "details": {...} } }
 nlohmann::json makeErrorEnvelope(

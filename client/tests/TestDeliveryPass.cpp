@@ -138,6 +138,10 @@ struct Mock {
     // name, and where it currently says that name is answered.
     std::map<std::string, std::string> aliasOwner;       // alias -> owner fingerprint
     std::map<std::string, Descriptor> aliasDescriptor;   // alias -> binding
+    // Which aliases their owner has asked to point at their client. Bought is
+    // not bound: the registry refuses a binding nobody asked for, and a client
+    // that has not been told to publish one must not try.
+    std::set<std::string> aliasBindingWanted;
     int resolverStatusCalls = 0;
     int resolverUpdateCalls = 0;
 };
@@ -577,7 +581,18 @@ int main()
                         outcome.errorCode = "NOT_OWNER";
                         return outcome;
                     }
+                    if (m.aliasBindingWanted.count(asked.request.alias) == 0) {
+                        outcome.errorCode = "NOT_OWNER";
+                        return outcome;
+                    }
                     CHECK(asked.request.descriptor.fingerprint == asked.owner);
+                    // The owner's own claim over the alias travels with the
+                    // binding; the registry stores it as the proof.
+                    CHECK(!asked.request.aliasCertDer.empty());
+                    const AliasCertificate claim
+                        = AliasCertificate::verify(asked.request.aliasCertDer);
+                    CHECK(claim.user == asked.owner);
+                    CHECK(claim.alias == asked.request.alias);
                     m.aliasDescriptor[asked.request.alias] = asked.request.descriptor;
                     outcome.ok = true;
                     return outcome;
@@ -586,9 +601,15 @@ int main()
                 AliasStatus status;
                 status.owner = asked.owner;
                 for (const auto& [alias, owner] : m.aliasOwner) {
-                    if (owner == asked.owner) {
-                        status.names.push_back(AliasStatusEntry{alias, now + 365 * 24 * 3600});
+                    if (owner != asked.owner) {
+                        continue;
                     }
+                    AliasStatusEntry one;
+                    one.alias = alias;
+                    one.notAfter = now + 365 * 24 * 3600;
+                    one.bindingWanted = m.aliasBindingWanted.count(alias) != 0;
+                    one.bound = m.aliasDescriptor.count(alias) != 0;
+                    status.names.push_back(std::move(one));
                 }
                 status.issuedAt = now;
                 status.notAfter = now + kAliasStatusValiditySeconds;
@@ -659,8 +680,8 @@ int main()
             CHECK(m.resolverUpdateCalls == 0);
         }
 
-        // Alice bought a name in the browser; the registry knows it, this client
-        // does not. Activation is the one way in.
+        // Alice bought an alias in the browser; the registry knows it, this
+        // client does not. Activation is the one way in.
         {
             std::lock_guard<std::mutex> lock(m.mu);
             m.aliasOwner["alice"] = alice.fingerprint();
@@ -669,13 +690,48 @@ int main()
         CHECK(alice.aliasNames().size() == 1);
         CHECK(alice.aliasNames().front().alias == "alice");
 
-        // Knowing the name, it repoints the registry at where this account
-        // actually answers.
-        CHECK(alice.aliasUpdatePending());
-        alice.serviceAliases();
+        // The sigil is how an alias is written wherever a person reads one, so
+        // it is taken where one is typed and never travels with the name.
+        CHECK(nlohmann::json::parse(alice.aliasBuyArtifacts("!Alice")).at("alias") == "alice");
+
+        // Bought is not bound. Knowing of an alias whose owner has not asked it
+        // to point here, the client publishes nothing at all - deciding that on
+        // the owner's behalf is exactly what this flag exists to prevent.
+        CHECK(!alice.aliasNames().front().bindingWanted);
         CHECK(!alice.aliasUpdatePending());
+        const int updatesBeforeAsking = m.resolverUpdateCalls;
+        alice.serviceAliases();
         {
             std::lock_guard<std::mutex> lock(m.mu);
+            CHECK(m.resolverUpdateCalls == updatesBeforeAsking);
+            CHECK(m.aliasDescriptor.count("alice") == 0);
+        }
+
+        // The owner asks on the website, and the next status says so. Only then
+        // does the client have an alias of its own to keep pointing here.
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            m.aliasBindingWanted.insert("alice");
+        }
+        CHECK(alice.refreshAliasStatus());
+        CHECK(alice.aliasNames().front().bindingWanted);
+        CHECK(alice.aliasUpdatePending());
+        // Reading the status binds nothing. The activation button used to stop
+        // here, and the alias went on answering nobody while the client happily
+        // listed it - which is what the website meant by "still waiting".
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            CHECK(m.aliasDescriptor.count("alice") == 0);
+        }
+        CHECK(alice.pushAliasDescriptor());
+        CHECK(!alice.aliasUpdatePending());
+        // And a second press asks the registry nothing: there is nothing new to
+        // say, so there is nothing to send.
+        const int updatesBeforePressingAgain = m.resolverUpdateCalls;
+        CHECK(!alice.pushAliasDescriptor());
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            CHECK(m.resolverUpdateCalls == updatesBeforePressingAgain);
             CHECK(m.aliasDescriptor.at("alice").fingerprint == alice.fingerprint());
             CHECK(m.aliasDescriptor.at("alice").view == m.viewFor[alice.fingerprint()]);
         }
@@ -701,15 +757,28 @@ int main()
         }
         CHECK(bob.aliasNames().empty());
         // Bob never activated, so his rotation asks once - the safety net - and
-        // finds the name he did buy, then points it at himself.
+        // finds the alias he did buy. Finding it is as far as it goes: he has not
+        // asked it to point at him, so nothing is published.
         const int statusBefore = m.resolverStatusCalls;
         bob.rotateServingKey(nullptr);
         CHECK(m.resolverStatusCalls == statusBefore + 1);
         CHECK(bob.aliasNames().size() == 1);
         {
             std::lock_guard<std::mutex> lock(m.mu);
-            CHECK(m.aliasDescriptor.at("bob").fingerprint == bob.fingerprint());
+            CHECK(m.aliasDescriptor.count("bob") == 0);
             CHECK(m.aliasDescriptor.at("alice").fingerprint == alice.fingerprint());
+        }
+
+        // Once he asks for it on the website, the next pass publishes it.
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            m.aliasBindingWanted.insert("bob");
+        }
+        CHECK(bob.refreshAliasStatus());
+        bob.serviceAliases();
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            CHECK(m.aliasDescriptor.at("bob").fingerprint == bob.fingerprint());
         }
         CHECK(bob.canWriteTo(alice.fingerprint()));
         // One pass each way, and one is all there will ever be: this is the count

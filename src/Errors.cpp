@@ -26,6 +26,30 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErro
     {bazarish::ErrorCode::eAccountPendingApproval, "ACCOUNT_PENDING_APPROVAL"},
 }};
 
+// What each fault reads as on a screen, kept beside the wire names so the two
+// are edited together. A code with no sentence here throws, the same way an
+// unmapped name does, rather than reaching a person as SCREAMING_SNAKE_CASE.
+constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErrorTexts = {{
+    {bazarish::ErrorCode::eQuotaExceeded, "There is no room left for this on the server."},
+    {bazarish::ErrorCode::eStorageFull, "The server has run out of storage."},
+    {bazarish::ErrorCode::eRecipientServerUnreachable, "Their server did not answer."},
+    {bazarish::ErrorCode::eDeliveryRejected, "Their server refused to take this."},
+    {bazarish::ErrorCode::eContactRequestTooLarge, "The contact request is too long."},
+    {bazarish::ErrorCode::eContactRateLimited,
+        "Too many contact requests at once. Wait a little and try again."},
+    {bazarish::ErrorCode::eMessageTooLarge, "The message is too large to send."},
+    {bazarish::ErrorCode::eAliasTaken, "That alias is already held by somebody else."},
+    {bazarish::ErrorCode::eAliasUnknown,
+        "Nobody answers to that alias. Either it is not registered, or its owner has not "
+        "pointed it at an identity yet."},
+    {bazarish::ErrorCode::eClientUnregistered, "This account is not registered on the server."},
+    {bazarish::ErrorCode::eSessionInvalid,
+        "The session with the server has lapsed; it will be opened again."},
+    {bazarish::ErrorCode::eI2pUnavailable, "I2P is not ready yet."},
+    {bazarish::ErrorCode::eAccountPendingApproval,
+        "This account is waiting for the server's operator to let it in."},
+}};
+
 }  // namespace
 
 namespace bazarish {
@@ -38,6 +62,16 @@ std::string_view toString(const ErrorCode code)
         }
     }
     // All enumerators are present in the table; reaching here is a bug.
+    throw std::logic_error("unmapped error code");
+}
+
+std::string_view readable(const ErrorCode code)
+{
+    for (const auto& [knownCode, text] : kErrorTexts) {
+        if (knownCode == code) {
+            return text;
+        }
+    }
     throw std::logic_error("unmapped error code");
 }
 
