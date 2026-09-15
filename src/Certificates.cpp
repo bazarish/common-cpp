@@ -11,11 +11,16 @@ namespace {
 
 using bazarish::cms::VerifiedHybridJson;
 
-// Verifies the hybrid container and checks that the body claims the format
-// version this implementation understands.
-VerifiedHybridJson verifyVersioned(const bazarish::Bytes& der)
+// Verifies the hybrid container, then reads what the body says it is - before
+// any other field of it is touched. Without the tag one signed document parses
+// as another whenever the fields it lacks are optional, and the only thing
+// standing in the way is which fields the reader happens to look at.
+VerifiedHybridJson verifyTagged(const bazarish::Bytes& der, const char* const type)
 {
     VerifiedHybridJson verified = bazarish::cms::verifyJsonHybrid(der);
+    if (verified.body.value("t", std::string()) != type) {
+        throw std::runtime_error(std::string("this is not a ") + type);
+    }
     if (verified.body.at("v").get<int>() != bazarish::kCertificateFormatVersion) {
         throw std::runtime_error("unsupported certificate format version");
     }
@@ -33,9 +38,12 @@ void requireSigner(const VerifiedHybridJson& verified, const std::string& expect
 
 namespace {
 
-// What a contact card calls itself, so no other signed document can be read as
-// one. Checked before any field of the body is used.
+// What each document calls itself, so no signed thing here can be read as
+// another. Checked before any field of the body is used.
 const char* const kContactCardType = "contact-card";
+const char* const kAliasCertificateType = "alias-certificate";
+const char* const kServerCardType = "server-card";
+const char* const kDelegationCertificateType = "delegation-certificate";
 
 }  // namespace
 
@@ -66,10 +74,7 @@ Bytes ContactCard::issue(const Identity& userIdentity, const std::int64_t issued
 
 ContactCard ContactCard::verify(const Bytes& der)
 {
-    const VerifiedHybridJson verified = verifyVersioned(der);
-    if (verified.body.value("t", std::string()) != kContactCardType) {
-        throw std::runtime_error("this is not a contact card");
-    }
+    const VerifiedHybridJson verified = verifyTagged(der, kContactCardType);
     ContactCard card;
     // Required, unlike everything below it: a card that cannot be placed in time
     // cannot be compared with the one already held, which is the whole reason it
@@ -119,6 +124,7 @@ Bytes AliasCertificate::issue(
 {
     const nlohmann::json body = {
         {"v", kCertificateFormatVersion},
+        {"t", kAliasCertificateType},
         {"alias", alias},
         {"user", userIdentity.fingerprint()},
         {"issuedAt", issuedAt},
@@ -128,7 +134,7 @@ Bytes AliasCertificate::issue(
 
 AliasCertificate AliasCertificate::verify(const Bytes& der)
 {
-    const VerifiedHybridJson verified = verifyVersioned(der);
+    const VerifiedHybridJson verified = verifyTagged(der, kAliasCertificateType);
     AliasCertificate cert;
     cert.v = verified.body.at("v").get<int>();
     cert.alias = verified.body.at("alias").get<std::string>();
@@ -144,6 +150,7 @@ Bytes ServerCard::issue(const Identity& serverRootIdentity,
 {
     const nlohmann::json body = {
         {"v", kCertificateFormatVersion},
+        {"t", kServerCardType},
         {"server", serverRootIdentity.fingerprint()},
         {"sealingKey", toBase64(sealingPublicKey.publicDer())},
         {"issuedAt", issuedAt},
@@ -153,7 +160,7 @@ Bytes ServerCard::issue(const Identity& serverRootIdentity,
 
 ServerCard ServerCard::verify(const Bytes& der)
 {
-    const VerifiedHybridJson verified = verifyVersioned(der);
+    const VerifiedHybridJson verified = verifyTagged(der, kServerCardType);
     ServerCard card;
     card.v = verified.body.at("v").get<int>();
     card.server = verified.body.at("server").get<std::string>();
@@ -173,6 +180,7 @@ Bytes DelegationCertificate::issue(const Identity& rootIdentity,
 {
     const nlohmann::json body = {
         {"v", kCertificateFormatVersion},
+        {"t", kDelegationCertificateType},
         {"root", rootIdentity.fingerprint()},
         {"delegatedClassical", toBase64(delegatedIdentity.classical().publicDer())},
         {"delegatedPq", toBase64(delegatedIdentity.pq().publicDer())},
@@ -184,7 +192,7 @@ Bytes DelegationCertificate::issue(const Identity& rootIdentity,
 
 DelegationCertificate DelegationCertificate::verify(const Bytes& der)
 {
-    const VerifiedHybridJson verified = verifyVersioned(der);
+    const VerifiedHybridJson verified = verifyTagged(der, kDelegationCertificateType);
     DelegationCertificate cert;
     cert.v = verified.body.at("v").get<int>();
     cert.root = verified.body.at("root").get<std::string>();

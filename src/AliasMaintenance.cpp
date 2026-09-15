@@ -13,8 +13,16 @@ namespace {
 // The one wire version these frames speak.
 constexpr int kAliasMaintenanceVersion = 1;
 
-void requireVersion(const nlohmann::json& body, const char* what)
+// What each signed body here calls itself. Read before any other field of it, so
+// no signed document can be parsed as a different one.
+const char* const kAliasRequestType = "alias-request";
+const char* const kAliasStatusType = "alias-status";
+
+void requireTypeAndVersion(const nlohmann::json& body, const char* type, const char* what)
 {
+    if (body.value("t", std::string()) != type) {
+        throw std::invalid_argument(std::string("this is not an ") + what);
+    }
     if (body.at("v").get<int>() != kAliasMaintenanceVersion) {
         throw std::invalid_argument(std::string("unsupported ") + what + " version");
     }
@@ -28,6 +36,7 @@ nlohmann::json toJson(const AliasMaintenanceRequest& request)
 {
     return {
         {"v", kAliasMaintenanceVersion},
+        {"t", kAliasRequestType},
         {"op", request.op},
         {"alias", request.alias},
         {"descriptor", descriptorToJson(request.descriptor)},
@@ -39,7 +48,7 @@ nlohmann::json toJson(const AliasMaintenanceRequest& request)
 
 AliasMaintenanceRequest aliasMaintenanceRequestFromJson(const nlohmann::json& body)
 {
-    requireVersion(body, "alias maintenance request");
+    requireTypeAndVersion(body, kAliasRequestType, "alias maintenance request");
     AliasMaintenanceRequest request;
     request.op = body.at("op").get<std::string>();
     request.alias = body.at("alias").get<std::string>();
@@ -60,6 +69,7 @@ nlohmann::json toJson(const AliasStatus& status)
     }
     return {
         {"v", kAliasMaintenanceVersion},
+        {"t", kAliasStatusType},
         {"owner", status.owner},
         {"names", names},
         {"depositCoversRenewals", status.depositCoversRenewals},
@@ -70,7 +80,7 @@ nlohmann::json toJson(const AliasStatus& status)
 
 AliasStatus aliasStatusFromJson(const nlohmann::json& body)
 {
-    requireVersion(body, "alias status");
+    requireTypeAndVersion(body, kAliasStatusType, "alias status");
     AliasStatus status;
     status.owner = body.at("owner").get<std::string>();
     for (const nlohmann::json& entry : body.at("names")) {
@@ -118,6 +128,9 @@ AliasStatus verifyAliasStatus(const Bytes& statusDer, const Bytes& delegationDer
     if (delegation.root != trustedRootFingerprint) {
         throw std::runtime_error("alias status: delegation is not from the trusted root");
     }
+    if (delegation.issuedAt > now + kClockSkewSeconds) {
+        throw std::runtime_error("alias status: delegation is dated in the future");
+    }
     if (now > delegation.notAfter) {
         throw std::runtime_error("alias status: delegation has expired");
     }
@@ -128,6 +141,9 @@ AliasStatus verifyAliasStatus(const Bytes& statusDer, const Bytes& delegationDer
     }
 
     AliasStatus status = aliasStatusFromJson(verified.body);
+    if (status.issuedAt > now + kClockSkewSeconds) {
+        throw std::runtime_error("alias status: answer is dated in the future");
+    }
     if (now > status.notAfter) {
         throw std::runtime_error("alias status: answer has expired");
     }

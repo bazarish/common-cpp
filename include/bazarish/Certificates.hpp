@@ -15,6 +15,13 @@ inline constexpr int kCertificateFormatVersion = 1;
 
 // All times are unix seconds, UTC.
 
+// How far ahead of the reader's clock a signed document may claim to have been
+// issued. Nothing legitimate is signed in the future, but two machines never
+// agree to the second, and a window of nothing at all would refuse honest
+// documents on a clock a minute fast. Anything beyond this is refused: a
+// statement dated forward outlives every window meant to bound it.
+inline constexpr std::int64_t kClockSkewSeconds = 300;
+
 // Contact card: signed by the user, saying "this is where you reach me". It is
 // what a contact fetches and what an invite points at, so it names nothing but
 // the user's own routing - never the server that operates the destination, which

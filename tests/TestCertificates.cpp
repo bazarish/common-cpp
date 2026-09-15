@@ -122,6 +122,41 @@ int main()
     const Bytes forgedDer = cms::signJsonHybrid(forgedBody, mallory);
     CHECK_THROWS(ContactCard::verify(forgedDer));
 
+    // Every signed document here says what it is, and says it before anything
+    // else in it is believed. One body carrying the fields of two is the case
+    // that makes the point: without the tag each reader would find everything it
+    // looks for and take it.
+    {
+        const nlohmann::json bothShapes = {
+            {"v", kCertificateFormatVersion},
+            {"t", "alias-certificate"},
+            {"alias", "alice"},
+            {"user", user.fingerprint()},
+            {"server", user.fingerprint()},
+            {"sealingKey", toBase64(sealing.publicDer())},
+            {"issuedAt", kNow},
+        };
+        const Bytes bothDer = cms::signJsonHybrid(bothShapes, user);
+        CHECK(AliasCertificate::verify(bothDer).alias == "alice");
+        CHECK_THROWS(ServerCard::verify(bothDer));
+        CHECK_THROWS(ContactCard::verify(bothDer));
+
+        // And an untagged body of the right shape is refused outright.
+        const nlohmann::json untaggedAlias = {{"v", kCertificateFormatVersion},
+            {"alias", "alice"}, {"user", user.fingerprint()}, {"issuedAt", kNow}};
+        CHECK_THROWS(AliasCertificate::verify(cms::signJsonHybrid(untaggedAlias, user)));
+        const nlohmann::json untaggedServer = {{"v", kCertificateFormatVersion},
+            {"server", user.fingerprint()}, {"sealingKey", toBase64(sealing.publicDer())},
+            {"issuedAt", kNow}};
+        CHECK_THROWS(ServerCard::verify(cms::signJsonHybrid(untaggedServer, user)));
+        const nlohmann::json untaggedDelegation = {{"v", kCertificateFormatVersion},
+            {"root", user.fingerprint()},
+            {"delegatedClassical", toBase64(sealing.publicDer())},
+            {"delegatedPq", toBase64(sealing.publicDer())}, {"issuedAt", kNow},
+            {"notAfter", kNow + kThreeDays}};
+        CHECK_THROWS(DelegationCertificate::verify(cms::signJsonHybrid(untaggedDelegation, user)));
+    }
+
     // An unsupported format version must be rejected.
     const nlohmann::json futureBody = {
         {"v", kCertificateFormatVersion + 1},

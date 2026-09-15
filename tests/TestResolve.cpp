@@ -145,6 +145,44 @@ int main()
         root.fingerprint(), now));
     CHECK(chainRejects(recordDer, delegationDer, Bytes{}, root.fingerprint(), now));
 
+    // Nothing legitimate is signed in the future, and a statement dated forward
+    // outlives every window meant to bound it. A clock a minute out is another
+    // matter, so the allowance is the skew window and not a day.
+    const Bytes aheadDelegation
+        = DelegationCertificate::issue(root, delegated, now + 2 * kClockSkewSeconds, now + week);
+    CHECK(chainRejects(recordDer, aheadDelegation, ownerCert, root.fingerprint(), now));
+    const ResolveRecord aheadRec{
+        "alice", owned, now + 2 * kClockSkewSeconds, now + week};
+    CHECK(chainRejects(signResolveRecord(aheadRec, delegated), delegationDer, ownerCert,
+        root.fingerprint(), now));
+    CHECK(chainRejects(recordDer, delegationDer,
+        AliasCertificate::issue(owner, "alice", now + 2 * kClockSkewSeconds),
+        root.fingerprint(), now));
+    // Inside the allowance the same documents are taken.
+    const ResolveRecord skewedRec{"alice", owned, now + kClockSkewSeconds / 2, now + week};
+    CHECK(!chainRejects(signResolveRecord(skewedRec, delegated), delegationDer, ownerCert,
+        root.fingerprint(), now));
+
+    // A descriptor is checked where it is read, not where it is first dialled.
+    const auto descriptorRejects = [](const nlohmann::json& body) {
+        try {
+            (void)descriptorFromJson(body);
+        } catch (const std::exception&) {
+            return true;
+        }
+        return false;
+    };
+    CHECK(descriptorRejects({{"fp", "not-a-fingerprint"}, {"dest", descriptor.dest},
+        {"view", descriptor.view}}));
+    CHECK(descriptorRejects({{"fp", descriptor.fingerprint}, {"dest", "nowhere.example"},
+        {"view", descriptor.view}}));
+    CHECK(descriptorRejects(
+        {{"fp", descriptor.fingerprint}, {"dest", descriptor.dest}, {"view", "short"}}));
+    // Half a descriptor is not half checked: it is refused like any other.
+    CHECK(descriptorRejects({{"fp", descriptor.fingerprint}, {"dest", ""}, {"view", ""}}));
+    // Wholly empty is a descriptor that is not there - what alias.status sends.
+    CHECK(!descriptorRejects({{"fp", ""}, {"dest", ""}, {"view", ""}}));
+
     // Case is the registry's to settle, not a reason to refuse: it canonicalizes
     // a name before taking a certificate over it, so one that differs only in
     // case is one it would have accepted.

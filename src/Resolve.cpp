@@ -1,12 +1,28 @@
 // Bazarish project (c) 2026
 #include "bazarish/Resolve.hpp"
 
+#include "bazarish/Address.hpp"
 #include "bazarish/Certificates.hpp"
 #include "bazarish/Cms.hpp"
+#include "bazarish/I2pAddress.hpp"
 
 #include <stdexcept>
 
 namespace {
+
+// What each signed body here calls itself. Read before any other field of it,
+// so no signed document can be parsed as a different one.
+const char* const kResolveRecordType = "resolve-record";
+
+void requireTypeAndVersion(const nlohmann::json& body, const char* type, const char* what)
+{
+    if (body.value("t", std::string()) != type) {
+        throw std::invalid_argument(std::string("this is not a ") + what);
+    }
+    if (body.at("v").get<int>() != 1) {
+        throw std::invalid_argument(std::string("unsupported ") + what + " version");
+    }
+}
 
 void requireVersion(const nlohmann::json& body, const char* what)
 {
@@ -34,6 +50,22 @@ Descriptor descriptorFromJson(const nlohmann::json& body)
     descriptor.fingerprint = body.at("fp").get<std::string>();
     descriptor.dest = body.at("dest").get<std::string>();
     descriptor.view = body.at("view").get<std::string>();
+    // Wholly empty is a descriptor that is not there: an alias.status request
+    // carries the field and nothing in it. Anything else is checked here rather
+    // than by whoever happens to use it first - a malformed destination that
+    // merely fails to dial is a refusal arriving minutes late and in the wrong
+    // words.
+    if (descriptor.fingerprint.empty() && descriptor.dest.empty()
+        && descriptor.view.empty()) {
+        return descriptor;
+    }
+    if (!isFingerprint(descriptor.fingerprint)) {
+        throw std::invalid_argument("descriptor: that is not a fingerprint");
+    }
+    validateB32I2pHost(descriptor.dest);
+    if (!isViewCapability(descriptor.view)) {
+        throw std::invalid_argument("descriptor: that is not a card-read capability");
+    }
     return descriptor;
 }
 
@@ -111,6 +143,7 @@ nlohmann::json toJson(const ResolveRecord& record)
 {
     return {
         {"v", 1},
+        {"t", kResolveRecordType},
         {"alias", record.alias},
         {"descriptor", descriptorToJson(record.descriptor)},
         {"issuedAt", record.issuedAt},
@@ -120,7 +153,7 @@ nlohmann::json toJson(const ResolveRecord& record)
 
 ResolveRecord resolveRecordFromJson(const nlohmann::json& body)
 {
-    requireVersion(body, "resolve record");
+    requireTypeAndVersion(body, kResolveRecordType, "resolve record");
     ResolveRecord record;
     record.alias = body.at("alias").get<std::string>();
     record.descriptor = descriptorFromJson(body.at("descriptor"));
@@ -155,6 +188,9 @@ ResolveRecord verifyResolveRecord(const Bytes& recordDer, const Bytes& delegatio
     if (delegation.root != trustedRootFingerprint) {
         throw std::runtime_error("resolve record: delegation is not from the trusted root");
     }
+    if (delegation.issuedAt > now + kClockSkewSeconds) {
+        throw std::runtime_error("resolve record: delegation is dated in the future");
+    }
     if (now > delegation.notAfter) {
         throw std::runtime_error("resolve record: delegation has expired");
     }
@@ -165,6 +201,9 @@ ResolveRecord verifyResolveRecord(const Bytes& recordDer, const Bytes& delegatio
     }
 
     ResolveRecord record = resolveRecordFromJson(verified.body);
+    if (record.issuedAt > now + kClockSkewSeconds) {
+        throw std::runtime_error("resolve record: record is dated in the future");
+    }
     if (now > record.notAfter) {
         throw std::runtime_error("resolve record: record has expired");
     }
@@ -173,6 +212,9 @@ ResolveRecord verifyResolveRecord(const Bytes& recordDer, const Bytes& delegatio
     // canonicalizes a name before it accepts a certificate over it, so a
     // certificate that differs only in case is one it would have taken.
     const AliasCertificate claim = AliasCertificate::verify(aliasCertDer);
+    if (claim.issuedAt > now + kClockSkewSeconds) {
+        throw std::runtime_error("resolve record: the owner's certificate is dated in the future");
+    }
     if (foldAlias(claim.alias) != foldAlias(record.alias)) {
         throw std::runtime_error("resolve record: the owner's certificate is over another alias");
     }
