@@ -2188,7 +2188,7 @@ std::string Session::aliasBuyArtifacts(const std::string& alias) const
     }
     const std::string normalized = normalizeAlias(alias);
     const Bytes aliasCert
-        = AliasCertificate::issue(client_->identity(), normalized, nowSeconds(), std::nullopt);
+        = AliasCertificate::issue(client_->identity(), normalized, nowSeconds());
     const nlohmann::json artifacts = {
         {"alias", normalized},
         {"srv", myDest_},
@@ -5007,7 +5007,7 @@ bool tellAliasesWhereWeAre(const Session::AliasErrandContext& context, const Ide
         // The owner's own claim over this alias travels with the binding: the
         // registry keeps it as the proof that this key asked for this name.
         asking.aliasCertDer
-            = AliasCertificate::issue(identity, holding.alias, now, std::nullopt);
+            = AliasCertificate::issue(identity, holding.alias, now);
         asking.issuedAt = now;
         const Bytes request = signAliasMaintenanceRequest(asking, identity);
         try {

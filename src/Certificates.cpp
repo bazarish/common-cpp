@@ -114,18 +114,15 @@ Key ContactCard::servingSealingKey() const
     return Key::fromPublicDer(servingSealingKeyDer);
 }
 
-Bytes AliasCertificate::issue(const Identity& userIdentity, const std::string& alias,
-    const std::int64_t issuedAt, const std::optional<std::int64_t> notAfter)
+Bytes AliasCertificate::issue(
+    const Identity& userIdentity, const std::string& alias, const std::int64_t issuedAt)
 {
-    nlohmann::json body = {
+    const nlohmann::json body = {
         {"v", kCertificateFormatVersion},
         {"alias", alias},
         {"user", userIdentity.fingerprint()},
         {"issuedAt", issuedAt},
     };
-    if (notAfter.has_value()) {
-        body["notAfter"] = notAfter.value();
-    }
     return cms::signJsonHybrid(body, userIdentity);
 }
 
@@ -137,9 +134,6 @@ AliasCertificate AliasCertificate::verify(const Bytes& der)
     cert.alias = verified.body.at("alias").get<std::string>();
     cert.user = verified.body.at("user").get<std::string>();
     cert.issuedAt = verified.body.at("issuedAt").get<std::int64_t>();
-    if (verified.body.contains("notAfter")) {
-        cert.notAfter = verified.body.at("notAfter").get<std::int64_t>();
-    }
     requireSigner(verified, cert.user);
     return cert;
 }

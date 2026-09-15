@@ -92,17 +92,13 @@ int main()
             < ContactCard::verify(newerDer).issuedAt);
     }
 
-    // Alias certificate round trip, with and without expiry.
-    const Bytes aliasDer = AliasCertificate::issue(user, "alice", kNow, std::nullopt);
+    // Alias certificate round trip. It says who and which name, and the signer is
+    // the subject: a certificate naming somebody else does not verify.
+    const Bytes aliasDer = AliasCertificate::issue(user, "alice", kNow);
     const AliasCertificate alias = AliasCertificate::verify(aliasDer);
     CHECK(alias.alias == "alice");
     CHECK(alias.user == user.fingerprint());
-    CHECK(!alias.notAfter.has_value());
-
-    const Bytes boundedAliasDer = AliasCertificate::issue(user, "bob", kNow, kNow + kThreeDays);
-    const AliasCertificate boundedAlias = AliasCertificate::verify(boundedAliasDer);
-    CHECK(boundedAlias.notAfter.has_value());
-    CHECK(boundedAlias.notAfter.value() == kNow + kThreeDays);
+    CHECK(alias.issuedAt == kNow);
 
     // Server card round trip. It names the server and its sealing key and
     // nothing else: the server has no address of its own to advertise, users

@@ -82,17 +82,22 @@ struct ContactCard {
     Key servingSealingKey() const;
 };
 
-// Alias certificate: signed by the user, asserts "I am alias X".
+// Alias certificate: signed by the user, asserts "I am alias X". It is what
+// makes an alias more than the registry's word: a resolve answer carries it, so
+// the party doing the adding sees the owner's own signature over the name and
+// not only the registry's statement about them.
+//
+// It carries no validity window. How long a name is held is the registry's to
+// say and it says so in the record it signs; a second, owner-set expiry would be
+// a date nothing reads - which is what it was.
 struct AliasCertificate {
     int v = kCertificateFormatVersion;
     std::string alias;
     std::string user;
     std::int64_t issuedAt = 0;
-    // Absent means unlimited (the default per server policy).
-    std::optional<std::int64_t> notAfter;
 
-    static Bytes issue(const Identity& userIdentity, const std::string& alias, std::int64_t issuedAt,
-        std::optional<std::int64_t> notAfter);
+    static Bytes issue(
+        const Identity& userIdentity, const std::string& alias, std::int64_t issuedAt);
     // Verifies the CMS signature and that the signer is body.user.
     static AliasCertificate verify(const Bytes& der);
 };
