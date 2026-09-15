@@ -19,7 +19,7 @@ VerifiedHybridJson verifyTagged(const bazarish::Bytes& der, const char* const ty
 {
     VerifiedHybridJson verified = bazarish::cms::verifyJsonHybrid(der);
     if (verified.body.value("t", std::string()) != type) {
-        throw std::runtime_error(std::string("this is not a ") + type);
+        throw std::runtime_error(std::string("wrong document type: expected ") + type);
     }
     if (verified.body.at("v").get<int>() != bazarish::kCertificateFormatVersion) {
         throw std::runtime_error("unsupported certificate format version");
