@@ -3308,6 +3308,10 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
     // requested - their acceptance): we push our avatar to the established ones
     // after the loop, same "never write mid-iteration" rule.
     std::set<std::string> establishedPeers;
+    // Contacts we already hold who have asked to be added again - they deleted us
+    // and came back, and the pass we issued them went with the contact they
+    // removed.
+    std::set<std::string> reaskedPeers;
     const std::vector<PendingEntry> waiting = client_->listPending();
     morePending_ = false;
     std::size_t handled = 0;
@@ -3485,6 +3489,22 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                     // Their own choice of name, and the one name it may not be.
                     peer.displayName = safeContactName(dn);
                 }
+            }
+
+            // A request from somebody we have already issued a pass to says they
+            // hold nothing of ours any more: a request is tokenless, so what we
+            // issued went with the contact they deleted. Answering is not a
+            // question to put to the user - they agreed to this correspondent
+            // when they issued that pass - but the pass has to be minted again,
+            // or every reply of ours would carry no bootstrap (issuedToThem is
+            // still set) and only their direction would work.
+            //
+            // `issuedToThem` and not merely "already in the book": a stranger's
+            // first request puts them in the book, and a second one must not
+            // thereby answer itself. Nothing but our own agreement sets this.
+            if (asking && known && contacts_[message.fromFingerprint].issuedToThem) {
+                contacts_[message.fromFingerprint].issuedToThem = false;
+                reaskedPeers.insert(message.fromFingerprint);
             }
 
             // Content dispatch. An unknown type is still acked and surfaced (not
@@ -3946,6 +3966,19 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
         }
     }
     persistContacts();
+
+    // Agreed to after the loop, with the book already written down: agreeing is a
+    // send, and a send that throws must not cost the sync the progress it made.
+    // acceptContactRequest still refuses while an acceptance is in the air, so a
+    // request delivered twice mints one batch, not two.
+    for (const std::string& peer : reaskedPeers) {
+        try {
+            acceptContactRequest(peer);
+        } catch (const std::exception& error) {
+            bazarish::log::warn("could not agree again to {}: {}",
+                bazarish::log::redact(peer), error.what());
+        }
+    }
 
     // A peer accepted our request (or we just learned their routing): push our
     // avatar to any now-established contact we have engaged with. maybeSend... is

@@ -1305,6 +1305,33 @@ int main()
             }
             CHECK(!dana.contactIsPending(alice.fingerprint()));
             CHECK(!dana.contactAcceptInFlight(alice.fingerprint()));
+
+            // Alice deletes Dana and adds her back. Her request is tokenless, so
+            // what Dana issued last time went with the contact Alice removed -
+            // and Dana never sees a button, because the chat is already in her
+            // book. Left to itself that is a one-way conversation: Dana's replies
+            // would carry no bootstrap and Alice could never write. So a request
+            // from someone we have already issued a pass to is agreed to by
+            // itself, and a fresh batch goes back.
+            alice.removeContact(dana.fingerprint());
+            CHECK(!alice.hasContact(dana.fingerprint()));
+            const std::size_t beforeReturn = heldForAlice();
+            alice.addByInvite(dana.inviteUri(), "me again");
+            for (int round = 0; round < 3 && !dana.contactAcceptInFlight(alice.fingerprint());
+                ++round) {
+                dana.sync();
+            }
+            CHECK(waitFor([&]() { return heldForAlice() > beforeReturn; }));
+            for (int round = 0; round < 3 && dana.contactIsPending(alice.fingerprint());
+                ++round) {
+                dana.sync();
+            }
+            CHECK(!dana.contactIsPending(alice.fingerprint()));
+            // The point of all of it: Alice can write to her again.
+            CHECK(waitFor([&]() {
+                alice.sync();
+                return alice.canWriteTo(dana.fingerprint());
+            }));
         }
 
         // --- A second device of this account asks for the address book ---
