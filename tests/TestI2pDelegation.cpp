@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <ctime>
 
 using namespace bazarish;
@@ -53,6 +54,20 @@ int main()
     const i2p::Keys renewed = master.issueTransient(kTermDays);
     CHECK(renewed.blob() != delegation.blob());
     CHECK(i2p::routingHost(renewed.publicBase64()) == i2p::routingHost(master.publicBase64()));
+
+    // Only the destination's own key can delegate, and only for a term the batch
+    // can hold: blinding a delegation's transient would publish an address that
+    // is not this one.
+    const auto refused = [](const auto& call) {
+        try {
+            call();
+        } catch (const std::exception&) {
+            return true;
+        }
+        return false;
+    };
+    CHECK(refused([&] { (void)delegation.issueTransient(kTermDays); }));
+    CHECK(refused([&] { (void)master.issueTransient(0); }));
 
     std::printf("TestI2pDelegation ok\n");
     return 0;

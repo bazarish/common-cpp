@@ -66,6 +66,8 @@ constexpr i2pd::data::SigningKeyType kSigType = i2pd::data::SIGNING_KEY_TYPE_EDD
 // blinding yields a scalar - which is what RedDSA's private key already is.
 constexpr i2pd::data::SigningKeyType kB33SigType
     = i2pd::data::SIGNING_KEY_TYPE_REDDSA_SHA512_ED25519;
+// The batch counts its days in two bytes, which is the ceiling on a delegation.
+constexpr int kMaxB33Days = 0xFFFF;
 constexpr std::size_t kB32SuffixLen = 8;  // ".b32.i2p"
 // How long one receive waits on the engine before the caller looks up again:
 // long enough not to spin, short enough that a closed stream and an expired read
@@ -129,6 +131,17 @@ Bytes serializeKeys(const i2pd::data::PrivateKeys& keys)
 // libi2pd only reads the batch; the primitives are its own.
 Bytes createB33OfflineKeys(const i2pd::data::PrivateKeys& master, const int days)
 {
+    if (days < 1 || days > kMaxB33Days)
+    {
+        throw std::runtime_error("bazarish::i2p: a delegation is 1.."
+            + std::to_string(kMaxB33Days) + " days");
+    }
+    if (master.IsOfflineSignature())
+    {
+        // Blinding the transient of an existing delegation yields a key the
+        // address does not belong to, and a LeaseSet nobody can read.
+        throw std::runtime_error("bazarish::i2p: only the destination's own key can delegate");
+    }
     const auto identity = master.GetPublic();
     i2pd::data::BlindedPublicKey blinded(identity);
     if (!blinded.IsValid())
@@ -148,11 +161,12 @@ Bytes createB33OfflineKeys(const i2pd::data::PrivateKeys& master, const int days
     const std::size_t keyLen
         = signedLen + blindedVerifier->GetSignatureLen() + transientVerifier->GetPrivateKeyLen();
 
-    Bytes batch(i2pd::data::B33_OFFLINE_KEYS_HEADER_LENGTH + days*keyLen);
+    Bytes batch(
+        i2pd::data::B33_OFFLINE_KEYS_HEADER_LENGTH + static_cast<std::size_t>(days)*keyLen);
     std::size_t offset = 0;
     batch[offset] = i2pd::data::B33_OFFLINE_KEYS_VERSION;
     offset += 1;
-    memcpy(batch.data() + offset, identity->GetIdentHash(), i2pd::data::IdentHash::len);
+    std::memcpy(batch.data() + offset, identity->GetIdentHash(), i2pd::data::IdentHash::len);
     offset += i2pd::data::IdentHash::len;
     htobe16buf(batch.data() + offset, static_cast<std::uint16_t>(days));
     offset += 2;
