@@ -10,6 +10,11 @@
 
 namespace bazarish {
 
+// What a listener may be told to bind: TCP's range without port 0, which means
+// "any free port" and is never what an operator typed on purpose.
+inline constexpr int kMinPort = 1;
+inline constexpr int kMaxPort = 65535;
+
 // A daemon's config file, which a control plane may change one value at a time.
 //
 // The file belongs to the operator: their key order, their indentation and their

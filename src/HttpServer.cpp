@@ -377,6 +377,28 @@ void Server::routeAsync(const std::string& method, const std::string& pattern, A
     impl_->routes.push_back(std::move(entry));
 }
 
+auth::Headers collectAuthHeaders(const Request& request)
+{
+    auth::Headers headers;
+    for (const char* const name : {auth::kHeaderKeys, auth::kHeaderTimestamp,
+             auth::kHeaderSignatureClassical, auth::kHeaderSignaturePq, auth::kHeaderSession,
+             auth::kHeaderSeq, auth::kHeaderMac}) {
+        if (request.hasHeader(name)) {
+            headers[name] = request.header(name);
+        }
+    }
+    return headers;
+}
+
+Handler filled(Filler handler)
+{
+    return [handler = std::move(handler)](const Request& request) {
+        Response response;
+        handler(request, response);
+        return response;
+    };
+}
+
 void Server::dispatch(const Request& request, Responder respond)
 {
     const Route* route = nullptr;

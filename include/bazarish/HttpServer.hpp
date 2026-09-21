@@ -7,6 +7,9 @@
 
 #include <boost/asio/any_io_executor.hpp>
 
+#include "bazarish/Auth.hpp"
+#include "bazarish/Limits.hpp"
+
 #include <chrono>
 #include <functional>
 #include <map>
@@ -57,6 +60,17 @@ using Handler = std::function<Response(const Request&)>;
 // it has something. That is how a long poll is served without holding a thread.
 using Responder = std::function<void(Response)>;
 using AsyncHandler = std::function<std::optional<Response>(const Request&, Responder respond)>;
+
+// The authentication headers a request presents, under either scheme. Both sets
+// are collected whatever the route accepts: a listener that gathered only the
+// signature headers made every session-authenticated request look unsigned, and
+// three copies of this in three components is how that happened in one of them.
+auth::Headers collectAuthHeaders(const Request& request);
+
+// Adapts a handler written as "fill in the response" to one that returns it.
+// Several services are written that way; the engine hands a response back.
+using Filler = std::function<void(const Request&, Response&)>;
+Handler filled(Filler handler);
 
 class Server {
 public:
