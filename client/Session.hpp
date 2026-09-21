@@ -506,15 +506,15 @@ public:
     void setDelegationDays(std::int64_t days, bool announce = true);
 
     bool refreshI2pTransientIfDue(std::int64_t now, std::int64_t leadSeconds);
-    // Issues a fresh time-boxed transient (offline keys) from the master, valid
-    // until expiresUnix - the delegation handed to the serving server to operate
-    // the destination for the subscription window. Throws if the account has no
-    // user-owned destination. subscribe() calls this automatically when one
-    // exists, for the subscription period.
-    void renewI2pTransient(std::int64_t expiresUnix);
+    // Issues a fresh delegation (offline keys plus a b33 offline key per day)
+    // from the master, covering that many whole days - what the serving server
+    // needs to operate and publish the destination. Returns the unix second the
+    // delegation runs out, which is the term the server is told. Throws if the
+    // account has no user-owned destination.
+    std::int64_t renewI2pTransient(int days);
     // The active transient blob to hand to the serving server (empty if none).
     Bytes i2pTransient() const;
-    // The active transient as I2P-base64 (the form the server feeds its I2P router).
+    // The active transient as base64 (the form the server feeds its I2P router).
     std::string i2pTransientBase64() const;
 
     // Sign-in-with-key: signs an opaque challenge issued by a service portal,
@@ -1607,11 +1607,10 @@ private:
     // account is unencrypted.
     std::string passphrase_;
     // This account's own I2P destination, empty until it is minted (subscribing
-    // mints one). The master private key (i2p-master.dat) is the user's
-    // long-term routing identity; the active
-    // transient (i2p-transient.dat) is the time-boxed delegation for the
-    // current serving server. Both are sealed at rest when the account is
-    // encrypted.
+    // mints one). The master private key ("i2p-master") is the user's long-term
+    // routing identity; the active delegation ("i2p-transient") is the time-boxed
+    // capability the current serving server operates it with. Both are rows of
+    // the account database, sealed at rest when the account is encrypted.
     // Echoes waiting for this account's own thread: a send the recipient's server
     // signed for, reported on the courier's thread and written to our own mailbox
     // here. Held behind a pointer because a session moves and a delivery in
@@ -1629,6 +1628,7 @@ private:
     std::shared_ptr<EchoQueue> echoQueue_ = std::make_shared<EchoQueue>();
     AddressDecisionFn addressDecision_;
     Bytes i2pMaster_;
+    // The blinded ".b32.i2p" host of i2pMaster_, which is what peers route to.
     std::string i2pAddress_;
     Bytes i2pTransient_;
 

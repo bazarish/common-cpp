@@ -44,14 +44,6 @@ inline constexpr int kMaxTunnelQuantity = 16;
 // Floodfill is never enabled in either role.
 enum class Role { eClient, eServer };
 
-// How a destination publishes its LeaseSet, which fixes its shareable address.
-//   eEncrypted: encrypted LeaseSet2 -> blinded "b33" address (project default;
-//               floodfills cannot enumerate the destination or its tunnels).
-//   eStandard:  standard LeaseSet2 -> plain "b32" address. Required for an
-//               offline-key per-user destination (the server cannot blind an
-//               encrypted LS2 without the withheld master signing key).
-enum class LeaseSetKind { eEncrypted, eStandard };
-
 // An I2P destination keypair (Ed25519, signing type 7). Holds secret material;
 // copyable (it is just key bytes). Consolidates what used to be duplicated as the
 // resolver's OfflineKeys and the client's I2pKeys.
@@ -73,19 +65,28 @@ public:
     // I2P-base64 of the private keys (the destination private form).
     std::string privateBase64() const;
     // Base64 of the public destination (shareable; feeds address derivation/cards).
+    // Stable across transients issued from this key as a master.
     std::string publicBase64() const;
-    // Plain base32 of the identity, without the ".b32.i2p" suffix (stable across
-    // transients issued from this key as a master).
-    std::string base32() const;
     // True if this carries an offline signature (a transient, not a bare master).
     bool isOffline() const;
+    // The unix second the delegation in this blob runs out; 0 if it carries none.
+    std::int64_t transientExpires() const;
+    // How many days of b33 offline keys this blob carries; 0 if it carries none.
+    // The key for the current day is verified against that day's blinded key as
+    // it is counted, so a batch that cannot publish today counts as none.
+    int b33OfflineKeyDays() const;
 
-    // Issue a time-boxed transient delegated from THIS (master) key, valid until
-    // expiresUnix (unix seconds). The transient shares this key's base32 but signs
-    // with a delegated key; the master signing secret is not in the result. The
-    // air-gapped offline-custody ceremony; the live server only ever holds a
-    // transient.
-    Keys issueTransient(std::int64_t expiresUnix) const;
+    // Issue a time-boxed delegation from THIS (master) key, covering whole UTC
+    // days from the current one. The result shares this key's address but signs
+    // with delegated keys; the master signing secret is not in it.
+    //
+    // It carries two kinds of delegated key. One offline transient signs the
+    // LeaseSet itself. A batch of one transient per day, each authorized by the
+    // blinded key of its own day, signs the outer layer of the encrypted
+    // LeaseSet - which is what lets a server publish this destination blinded
+    // without ever holding the master signing key. No blinded private key is
+    // handed over: one would give the master away.
+    Keys issueTransient(int days) const;
 
 private:
     Keys();
@@ -95,9 +96,9 @@ private:
     friend class Endpoint;
 };
 
-// The shareable ".b32.i2p" host for a destination's public base64, per leaseset
-// kind (b33 for encrypted, plain b32 for standard).
-std::string routingHost(const std::string& publicBase64, LeaseSetKind kind);
+// The shareable ".b32.i2p" host for a destination's public base64: the blinded
+// b33 of its encrypted LeaseSet2, which is the only form this project publishes.
+std::string routingHost(const std::string& publicBase64);
 
 // The version of the embedded upstream i2pd engine (e.g. "2.60.0"), for display.
 std::string routerVersion();
@@ -164,9 +165,6 @@ private:
 struct EndpointConfig {
     // The destination identity. A generated key, a loaded master, or a transient.
     Keys keys;
-    // Publish kind (and thus the address form). Use eStandard for an offline-key
-    // per-user destination; eEncrypted (b33) otherwise.
-    LeaseSetKind leaseSet = LeaseSetKind::eEncrypted;
     // Tunnel privacy for this destination's pool.
     Privacy privacy = Privacy::eMax;
     // Parallel tunnels per direction (throughput/redundancy), clamped to [1, 16].
@@ -201,7 +199,7 @@ public:
 
     // The shareable base64 destination (goes into a contact card).
     std::string publicBase64() const;
-    // The ".b32.i2p" host peers route to (b33 if encrypted, b32 if standard).
+    // The blinded ".b32.i2p" (b33) host peers route to.
     std::string routingHost() const;
     // The private-keys blob; persist to keep this address across restarts.
     Bytes privateBlob() const;

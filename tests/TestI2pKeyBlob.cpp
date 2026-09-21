@@ -6,6 +6,7 @@
 
 #include "TestUtil.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 
@@ -61,7 +62,11 @@ const std::string kPublic
       "h7KU0eiJOa7IJpcdxpITVhunBADY2tr8to7pE7iLBGKwZyfCQFwDox6n8Lw5Gy1VrKh-UERLhnMX1RhNUbkfGxhF"
       "k16QP8la3HAtlD8eDHePCgK3RD-ppQmsGE1RuR8bGEWTXpA~yVrccC2UPx4Md48KArdEP6mlCawYTVG5HxsYRZNe"
       "kD~JWtxwLZQ~Hgx3jwoCt0Q~qaUJrN06HYbWuSy1VKVdixU1FuOt~XnOJs5XJDTt2gIFU9zNBQAEAAcAAA==";
-const std::string kBase32 = "jfiuzcfkvxpq6ouxr4u365bi6piii7g6hxa6rpdxatcityyekopq";
+// The blinded address of that destination, computed independently (base64 decode
+// + zlib CRC-32 + base32) rather than by the code under test.
+const std::string kB33Host = "5jzslxj2dwdnnojmwvkkkxmlcu2rny5n7v444jwok4sdj3o2aicvhxgn.b32.i2p";
+// The expiry the golden transient was delegated with.
+constexpr std::int64_t kTransientExpires = 4102444800;
 const std::string kMasterPrivateBase64
     = "4yp1RNANtMU~WVnOB2Q55srbFpNRvbLbVk2RbD8egXS2XoU4Rg37I9xMcVj1OmPqkoV3BOn-rv5eZx-u2qnxH~YC"
       "qoENfsKtSpoaPDQUp5mTh5vH0BHY2D7YZUYzCPfs3mEugI136NxUi0fpze~dgSH~7Eft7Q3oXtBNL47glAAJuu5V"
@@ -84,21 +89,22 @@ int main()
 
     CHECK(master.blob() == masterBlob);
     CHECK(master.publicBase64() == kPublic);
-    CHECK(master.base32() == kBase32);
     CHECK(master.privateBase64() == kMasterPrivateBase64);
     CHECK(!master.isOffline());
+    CHECK(master.transientExpires() == 0);
 
-    // The address a peer routes to is derived from the same identity, so the two
-    // derivations have to agree.
-    CHECK(i2p::routingHost(master.publicBase64(), i2p::LeaseSetKind::eStandard)
-        == kBase32 + ".b32.i2p");
+    // The address a peer routes to is the blinded one, derived from the same
+    // identity with no engine behind it.
+    CHECK(i2p::routingHost(master.publicBase64()) == kB33Host);
 
     // A delegated transient keeps the master's address - that is the whole point
-    // of offline delegation - and says so about itself.
+    // of offline delegation - and says so about itself. This one predates the b33
+    // offline keys, so it carries none.
     const i2p::Keys transient = i2p::Keys::fromBlob(bazarish::fromHex(kTransientBlob));
     CHECK(transient.publicBase64() == kPublic);
-    CHECK(transient.base32() == kBase32);
+    CHECK(i2p::routingHost(transient.publicBase64()) == kB33Host);
     CHECK(transient.isOffline());
+    CHECK(transient.transientExpires() == kTransientExpires);
 
     // A blob too short to hold an identity is refused rather than half-read.
     bool refused = false;

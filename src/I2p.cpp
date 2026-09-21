@@ -25,6 +25,8 @@ constexpr auto kRouterReadyPoll = std::chrono::milliseconds(500);
 // Ed25519 signature.
 constexpr std::size_t kElGamalPrivateKeyBytes = 256;
 constexpr std::size_t kEd25519PrivateKeyBytes = 32;
+// The expiry that opens an offline signature block, big-endian unix seconds.
+constexpr std::size_t kOfflineExpiresBytes = 4;
 
 // libi2pd log output gate. OFF by default: the engine's logging is suppressed
 // until a caller turns it on, and a build with no engine keeps the flag anyway
@@ -99,12 +101,6 @@ std::string Keys::publicBase64() const
         toBase64(Bytes(impl_->blob.begin(), impl_->blob.begin() + identity)));
 }
 
-std::string Keys::base32() const
-{
-    const std::size_t identity = i2pIdentityLength(impl_->blob);
-    return toBase32(sha256(Bytes(impl_->blob.begin(), impl_->blob.begin() + identity)));
-}
-
 bool Keys::isOffline() const
 {
     const std::size_t signingAt = i2pIdentityLength(impl_->blob) + kElGamalPrivateKeyBytes;
@@ -118,12 +114,38 @@ bool Keys::isOffline() const
         [](const std::uint8_t byte) { return byte == 0; });
 }
 
-Keys Keys::issueTransient(const std::int64_t expiresUnix) const
+std::int64_t Keys::transientExpires() const
+{
+    if (!isOffline()) { return 0; }
+    // The offline block opens the delegation, right where the withheld signing
+    // key would be: expires(4) || transient signature type(2) || transient key.
+    const std::size_t expiresAt
+        = i2pIdentityLength(impl_->blob) + kElGamalPrivateKeyBytes + kEd25519PrivateKeyBytes;
+    if (impl_->blob.size() < expiresAt + kOfflineExpiresBytes) {
+        throw std::runtime_error("bazarish::i2p: truncated private keys blob");
+    }
+    std::int64_t expires = 0;
+    for (std::size_t i = 0; i < kOfflineExpiresBytes; ++i) {
+        expires = (expires << 8) | impl_->blob[expiresAt + i];
+    }
+    return expires;
+}
+
+int Keys::b33OfflineKeyDays() const
 {
 #ifdef BAZARISH_WITH_I2PD
-    return fromBlob(backend::issueTransientBlob(impl_->blob, expiresUnix));
+    return backend::b33OfflineKeyDays(impl_->blob);
 #else
-    (void)expiresUnix;
+    noEmbeddedEngine();
+#endif
+}
+
+Keys Keys::issueTransient(const int days) const
+{
+#ifdef BAZARISH_WITH_I2PD
+    return fromBlob(backend::issueTransientBlob(impl_->blob, days));
+#else
+    (void)days;
     noEmbeddedEngine();
 #endif
 }

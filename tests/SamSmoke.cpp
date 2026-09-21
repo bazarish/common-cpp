@@ -29,12 +29,13 @@ constexpr auto kDial = std::chrono::seconds(180);
 constexpr auto kAcceptWait = std::chrono::seconds(180);
 constexpr auto kDatagramWait = std::chrono::milliseconds(60000);
 constexpr int kTunnelQuantity = 2;
+// A blinded b33 label is 56 base32 characters, plus ".b32.i2p".
+constexpr std::size_t kB33HostLen = 56 + 8;
 
 i2p::EndpointConfig destinationFor(i2p::Router& router, const bool published,
     const std::string& label)
 {
     i2p::EndpointConfig config{router.generateKeys()};
-    config.leaseSet = i2p::LeaseSetKind::eEncrypted;
     config.privacy = i2p::Privacy::eMinimal;
     config.tunnelQuantity = kTunnelQuantity;
     config.published = published;
@@ -73,8 +74,9 @@ int main(int argc, char** argv)
 
     const i2p::Keys keys = router.generateKeys();
     CHECK(!keys.publicBase64().empty());
-    CHECK(keys.base32().size() == 52);
-    std::printf("generated destination: %s.b32.i2p\n", keys.base32().c_str());
+    const std::string host = i2p::routingHost(keys.publicBase64());
+    CHECK(host.size() == kB33HostLen);
+    std::printf("generated destination: %s\n", host.c_str());
 
     std::printf("building two destinations (tunnels take a while)...\n");
     const std::shared_ptr<i2p::Endpoint> server

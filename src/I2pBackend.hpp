@@ -97,7 +97,8 @@ std::size_t embeddedSeedRouterInfos(
 // Key material the embedded engine mints. Kept behind these two calls because
 // they are the whole of what a build without the engine cannot do.
 Bytes generateKeysBlob();
-Bytes issueTransientBlob(const Bytes& master, std::int64_t expiresUnix);
+Bytes issueTransientBlob(const Bytes& master, int days);
+int b33OfflineKeyDays(const Bytes& blob);
 #endif
 
 }  // namespace bazarish::i2p::backend

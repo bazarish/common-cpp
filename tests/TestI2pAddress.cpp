@@ -44,23 +44,12 @@ int main()
     }
     CHECK(threw);
 
-    // Standard LeaseSet2 (offline-key) address: base32(sha256(destination)).
-    // Golden vector computed independently (python base64 + sha256 + base32).
-    const std::string expectedB32 = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
-    CHECK(standardLeaseSetHost(destination) == expectedB32);
-
-    threw = false;
-    try {
-        (void)standardLeaseSetHost("AAAA");
-    } catch (const std::exception&) {
-        threw = true;
-    }
-    CHECK(threw);
-
-    // .b32.i2p validation: both produced forms (b33 + standard b32) are valid;
-    // raw destinations, addressbook names and malformed labels are not.
+    // .b32.i2p validation: the blinded b33 this project publishes is valid, and so
+    // is the plain b32 of any destination a peer may still name; raw destinations,
+    // addressbook names and malformed labels are not.
+    const std::string plainB32 = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
     CHECK(isB32I2pHost(expectedB33));   // 56-char blinded b33
-    CHECK(isB32I2pHost(expectedB32));   // 52-char standard b32
+    CHECK(isB32I2pHost(plainB32));      // 52-char plain b32
     CHECK(!isB32I2pHost(destination));  // raw base64 destination
     CHECK(!isB32I2pHost("stats.i2p"));  // short addressbook name (not .b32.i2p)
     CHECK(isB32I2pHost("abc.b32.i2p"));  // length not constrained (b32 vs b33 differ)
@@ -69,7 +58,7 @@ int main()
     CHECK(!isB32I2pHost(""));
 
     // An uppercased label (I2P b32 is lowercase) is rejected.
-    std::string upper = expectedB32;
+    std::string upper = plainB32;
     for (std::size_t i = 0; i + 8 < upper.size(); ++i) {
         if (upper[i] >= 'a' && upper[i] <= 'z') {
             upper[i] = static_cast<char>(upper[i] - 'a' + 'A');
@@ -84,7 +73,7 @@ int main()
         threw = true;
     }
     CHECK(threw);
-    validateB32I2pHost(expectedB32);  // does not throw
+    validateB32I2pHost(expectedB33);  // does not throw
 
     std::printf("TestI2pAddress: all checks passed\n");
     return 0;

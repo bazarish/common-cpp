@@ -156,9 +156,6 @@ constexpr int kBundleFormatVersion = 1;
 // re-issues a fresh one well before it lapses (see refreshI2pTransientIfDue).
 constexpr std::int64_t kSecondsPerDay = 24 * 3600;
 
-// Host form of a standard-LeaseSet I2P address (the per-user destination).
-constexpr const char* kI2pHostSuffix = ".b32.i2p";
-
 
 std::int64_t nowSeconds()
 {
@@ -670,7 +667,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     };
     session.i2pMaster_ = loadBlob("i2p-master");
     if (!session.i2pMaster_.empty()) {
-        session.i2pAddress_ = i2pBase32(session.i2pMaster_);
+        session.i2pAddress_ = i2pRoutingHost(session.i2pMaster_);
     }
     session.i2pTransient_ = loadBlob("i2p-transient");
 
@@ -965,11 +962,10 @@ void Session::publishRouting()
     if (cardB64_.empty()) {
         throw std::runtime_error("not registered: nothing to publish routing into");
     }
-    // The transient is a time-boxed capability that lets the server operate our
-    // destination. Its term is the only clock the account has: the server keeps
-    // serving while it is renewed.
-    const std::int64_t expires = nowSeconds() + delegationDays_ * kSecondsPerDay;
-    renewI2pTransient(expires);
+    // The transient is a time-boxed capability that lets the server operate and
+    // publish our destination. Its term is the only clock the account has: the
+    // server keeps serving while it is renewed.
+    const std::int64_t expires = renewI2pTransient(delegationDays_);
     reportConnectProgress(88, "Delegating your destination to the server");
     client_->sendI2pTransient(i2pTransientBase64(), expires);
     reportConnectProgress(92, "Publishing your contact card");
@@ -1028,7 +1024,7 @@ std::int64_t Session::currentCardIssuedAt() const
 
 std::string Session::ownRoutingHost() const
 {
-    return i2pAddress_.empty() ? std::string() : i2pAddress_ + kI2pHostSuffix;
+    return i2pAddress_;
 }
 
 void Session::persistSealedBlob(const std::string& name, const Bytes& blob) const
@@ -1049,7 +1045,7 @@ std::string Session::ensureI2pDestination()
     if (i2pMaster_.empty()) {
         const I2pMasterKey master = generateI2pMaster();
         i2pMaster_ = master.privateKeys;
-        i2pAddress_ = master.base32;
+        i2pAddress_ = master.host;
         persistI2pBlob("i2p-master", i2pMaster_);
     }
     return i2pAddress_;
@@ -1074,13 +1070,16 @@ void Session::deleteI2pDestination()
     db_->erase("i2p-transient");
 }
 
-void Session::renewI2pTransient(const std::int64_t expiresUnix)
+std::int64_t Session::renewI2pTransient(const int days)
 {
     if (i2pMaster_.empty()) {
         throw std::runtime_error("no user-owned I2P destination to delegate");
     }
-    i2pTransient_ = issueI2pOfflineKeys(i2pMaster_, expiresUnix);
+    i2pTransient_ = issueI2pOfflineKeys(i2pMaster_, days);
     persistI2pBlob("i2p-transient", i2pTransient_);
+    // A delegation covers whole days, so its term is the one inside it and not
+    // the one this device would have computed. The server checks the two agree.
+    return i2pDelegationExpires(i2pTransient_);
 }
 
 Bytes Session::i2pTransient() const
@@ -1100,7 +1099,7 @@ std::string Session::loadI2pDestination(const Bytes& privateKeysDat)
     }
     const I2pMasterKey master = loadI2pMaster(privateKeysDat);
     i2pMaster_ = master.privateKeys;
-    i2pAddress_ = master.base32;
+    i2pAddress_ = master.host;
     persistI2pBlob("i2p-master", i2pMaster_);
     return i2pAddress_;
 }
@@ -1109,7 +1108,7 @@ void Session::replaceI2pMaster(const Bytes& privateKeysDat)
 {
     const I2pMasterKey master = loadI2pMaster(privateKeysDat);
     i2pMaster_ = master.privateKeys;
-    i2pAddress_ = master.base32;
+    i2pAddress_ = master.host;
     persistI2pBlob("i2p-master", i2pMaster_);
     // The delegation this device held was signed by the master it is replacing,
     // so it is not a capability for this address at all.
@@ -1145,7 +1144,7 @@ bool Session::adoptI2pMasterFromOwnMailbox(const std::string& wantedHost)
                 continue;
             }
             const Bytes master = fromBase64(body.at("i2pMaster").get<std::string>());
-            if (!wantedHost.empty() && i2pBase32(master) + ".b32.i2p" != wantedHost) {
+            if (!wantedHost.empty() && i2pRoutingHost(master) != wantedHost) {
                 continue;  // another device's older address; not the one being served
             }
             loadI2pDestination(master);
@@ -1185,7 +1184,7 @@ bool Session::reconcileI2pAddress()
             return std::string();
         }
     }();
-    const std::string ourHost = i2pMaster_.empty() ? std::string() : i2pAddress_ + ".b32.i2p";
+    const std::string ourHost = i2pMaster_.empty() ? std::string() : i2pAddress_;
 
     // Nothing served yet: this account is new here, and this device's address -
     // minted now if it has none - becomes the account's.
@@ -1686,8 +1685,7 @@ void Session::setDelegationDays(const std::int64_t days, const bool announce)
     // Re-issue at once so the new term applies now rather than at the next
     // renewal, which the old term would have scheduled.
     if (hasI2pDestination() && !myDest_.empty()) {
-        const std::int64_t expires = nowSeconds() + delegationDays_ * kSecondsPerDay;
-        renewI2pTransient(expires);
+        const std::int64_t expires = renewI2pTransient(static_cast<int>(delegationDays_));
         client_->sendI2pTransient(i2pTransientBase64(), expires);
     }
     if (announce) {
@@ -1728,8 +1726,7 @@ bool Session::refreshI2pTransientIfDue(const std::int64_t now, const std::int64_
     if (status.transientExpires != 0 && status.transientExpires - now > leadSeconds) {
         return false;
     }
-    const std::int64_t expiresUnix = now + delegationDays_ * kSecondsPerDay;
-    renewI2pTransient(expiresUnix);
+    const std::int64_t expiresUnix = renewI2pTransient(static_cast<int>(delegationDays_));
     client_->sendI2pTransient(i2pTransientBase64(), expiresUnix);
     return true;
 }
@@ -3700,7 +3697,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 message.contentType = type;
                 const std::string wanted = body.value("host", std::string());
                 const bool haveWanted = !i2pMaster_.empty()
-                    && (wanted.empty() || i2pBase32(i2pMaster_) + ".b32.i2p" == wanted);
+                    && (wanted.empty() || i2pRoutingHost(i2pMaster_) == wanted);
                 if (body.value("device", std::string()) != client_->clientId() && haveWanted) {
                     try {
                         syncI2pMasterToSelf();
@@ -3747,7 +3744,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                             // account. Believed only when the server confirms it is
                             // the one being served: a stale copy of an older master
                             // must not take a working address away from this device.
-                            const std::string offered = i2pBase32(master) + ".b32.i2p";
+                            const std::string offered = i2pRoutingHost(master);
                             if (client_->myDestination().dest == offered) {
                                 replaceI2pMaster(master);
                                 log::info("this account's address is now {}", offered);
@@ -4332,8 +4329,8 @@ std::shared_ptr<bazarish::i2p::Endpoint> Session::openCallMediaSession()
     // the media destination is one-time and unlinked from the identity
     // destination, so a short tunnel never weakens identity anonymity.
     bazarish::i2p::EndpointConfig config{i2pRouter().generateKeys(),
-        bazarish::i2p::LeaseSetKind::eEncrypted, bazarish::i2p::Privacy::eMinimal,
-        bazarish::i2p::kDefaultTunnelQuantity, true, "Call media", destinationOwner()};
+        bazarish::i2p::Privacy::eMinimal, bazarish::i2p::kDefaultTunnelQuantity, true,
+        "Call media", destinationOwner()};
     // The one destination that carries real time. It goes on the lane kept for
     // media, so a file moving through another destination cannot make a call
     // stutter: a lane is a single thread, and everything pinned to it waits its

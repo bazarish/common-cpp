@@ -23,20 +23,13 @@ namespace bazarish {
 // unsupported destination.
 std::string encryptedLeaseSetHost(const std::string& i2pBase64Destination);
 
-// Derives the shareable .b32.i2p host for a destination published as a STANDARD
-// LeaseSet2 - the ordinary base32(sha256(destination)) address (52 base32
-// chars). This is the form for an offline-key per-user destination (and any
-// standard-LeaseSet destination): it cannot publish a blinded b33, but it IS
-// reachable by this standard b32. The input is the destination in I2P-base64
-// (the I2P-base64 alphabet). Throws on a malformed destination.
-std::string standardLeaseSetHost(const std::string& i2pBase64Destination);
-
 // True iff host is a .b32.i2p address: it ends in ".b32.i2p" and the label is a
 // non-empty lowercase RFC-4648 base32 string. The label LENGTH is not constrained
-// - a standard b32 and a blinded b33 (and other signature types) legitimately
-// differ in length. Short addressbook names (e.g. "name.i2p") and raw base64
-// destinations are NOT valid. Project-wide invariant: every routing/connection
-// target is a .b32.i2p host - no poisonable addressbook names, no raw destinations.
+// - a blinded b33 and a plain b32 (and other signature types) legitimately differ
+// in length, and a peer may still name either. Short addressbook names (e.g.
+// "name.i2p") and raw base64 destinations are NOT valid. Project-wide invariant:
+// every routing/connection target is a .b32.i2p host - no poisonable addressbook
+// names, no raw destinations.
 bool isB32I2pHost(const std::string& host);
 
 // I2P's base64 alphabet is the standard one with '+' as '-' and '/' as '~'.

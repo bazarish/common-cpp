@@ -3,6 +3,7 @@
 
 #include <bazarish/Crypto.hpp>
 #include <bazarish/I2p.hpp>
+#include <bazarish/I2pAddress.hpp>
 
 // User-owned I2P key custody, now a thin shim over the shared bazarish::i2p::Keys
 // (the embedded libi2pd in common) - the previously-vendored trimmed libi2pd
@@ -17,18 +18,19 @@ I2pMasterKey generateI2pMaster()
     // destination this client makes: the master is what delegation withholds
     // from whoever operates the address, so it must never leave this process.
     const bazarish::i2p::Keys keys = bazarish::i2p::Keys::generate();
-    return {keys.blob(), keys.base32()};
+    return {keys.blob(), bazarish::i2p::routingHost(keys.publicBase64())};
 }
 
 I2pMasterKey loadI2pMaster(const Bytes& privateKeysDat)
 {
     const bazarish::i2p::Keys keys = bazarish::i2p::Keys::fromBlob(privateKeysDat);
-    return {keys.blob(), keys.base32()};
+    return {keys.blob(), bazarish::i2p::routingHost(keys.publicBase64())};
 }
 
-std::string i2pBase32(const Bytes& privateKeys)
+std::string i2pRoutingHost(const Bytes& privateKeys)
 {
-    return bazarish::i2p::Keys::fromBlob(privateKeys).base32();
+    return bazarish::i2p::routingHost(
+        bazarish::i2p::Keys::fromBlob(privateKeys).publicBase64());
 }
 
 std::string i2pPrivateKeysBase64(const Bytes& privateKeys)
@@ -37,9 +39,14 @@ std::string i2pPrivateKeysBase64(const Bytes& privateKeys)
     return toBase64(privateKeys);
 }
 
-Bytes issueI2pOfflineKeys(const Bytes& masterPrivateKeys, std::int64_t expiresUnix)
+Bytes issueI2pOfflineKeys(const Bytes& masterPrivateKeys, const int days)
 {
-    return bazarish::i2p::Keys::fromBlob(masterPrivateKeys).issueTransient(expiresUnix).blob();
+    return bazarish::i2p::Keys::fromBlob(masterPrivateKeys).issueTransient(days).blob();
+}
+
+std::int64_t i2pDelegationExpires(const Bytes& privateKeys)
+{
+    return bazarish::i2p::Keys::fromBlob(privateKeys).transientExpires();
 }
 
 }  // namespace bazarish::client

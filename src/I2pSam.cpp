@@ -51,7 +51,6 @@ sam::SessionConfig sessionConfigFor(const EndpointConfig& config, const sam::Sty
     sam::SessionConfig session;
     session.privateKeys = config.keys.privateBase64();
     session.style = style;
-    session.leaseSet = config.leaseSet;
     session.privacy = config.privacy;
     session.tunnelQuantity = config.tunnelQuantity;
     session.published = config.published;
@@ -91,7 +90,7 @@ public:
         : router_(std::move(router))
         , config_(config)
         , publicDestination_(config.keys.publicBase64())
-        , hostAddress_(i2p::routingHost(publicDestination_, config.leaseSet))
+        , hostAddress_(i2p::routingHost(publicDestination_))
         , keysBlob_(config.keys.blob())
         , label_(config.label)
     {

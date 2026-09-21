@@ -35,9 +35,9 @@ namespace {
 // degrades to that default with nothing but a log line.
 constexpr int kEd25519SignatureType = 7;
 
-// NETDB_STORE_TYPE values for i2cp.leaseSetType.
+// The NETDB_STORE_TYPE value for i2cp.leaseSetType. Every destination this
+// project publishes is an encrypted LeaseSet2, reached at its blinded address.
 constexpr int kEncryptedLeaseSetType = 5;
-constexpr int kStandardLeaseSetType = 3;
 
 // A control reply cannot exceed the router's own line buffer, so anything longer
 // is not a reply. Without a bound, whatever holds the port decides how much
@@ -525,9 +525,8 @@ std::string sessionCreateLine(const std::string& id, const SessionConfig& config
     line << "SESSION CREATE STYLE=" << styleName(config.style) << " ID=" << id
          << " DESTINATION="
          << (config.privateKeys.empty() ? kTransientDestination : config.privateKeys)
-         << " SIGNATURE_TYPE=" << kEd25519SignatureType << " i2cp.leaseSetType="
-         << (config.leaseSet == i2p::LeaseSetKind::eEncrypted ? kEncryptedLeaseSetType
-                                                              : kStandardLeaseSetType);
+         << " SIGNATURE_TYPE=" << kEd25519SignatureType
+         << " i2cp.leaseSetType=" << kEncryptedLeaseSetType;
     if (!config.published) {
         // SAM creates every destination as public, so this option is the only way
         // to keep a dial-out destination out of the netDb.
@@ -847,7 +846,7 @@ const std::string& Session::privateKeys() const
 
 std::string Session::routingHost() const
 {
-    return i2p::routingHost(impl_->publicDestination, impl_->config.leaseSet);
+    return i2p::routingHost(impl_->publicDestination);
 }
 
 bool Session::alive() const

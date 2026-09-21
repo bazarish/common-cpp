@@ -86,7 +86,6 @@ struct SessionConfig {
     // destination, which is gone when the session ends.
     std::string privateKeys;
     Style style = Style::eStream;
-    i2p::LeaseSetKind leaseSet = i2p::LeaseSetKind::eEncrypted;
     i2p::Privacy privacy = i2p::Privacy::eMax;
     int tunnelQuantity = i2p::kDefaultTunnelQuantity;
     // Whether the LeaseSet is published. A destination that only dials out stays

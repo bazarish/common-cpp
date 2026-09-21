@@ -108,9 +108,8 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
             router_.retagEndpoint(*endpoint, labelFor(peerName), owner_);
         } else {
             endpoint = router_.createEndpoint(bazarish::i2p::EndpointConfig{
-                router_.generateKeys(), bazarish::i2p::LeaseSetKind::eEncrypted,
-                tunnelPrivacy(), bazarish::i2p::kDefaultTunnelQuantity, false,
-                labelFor(peerName), owner_});
+                router_.generateKeys(), tunnelPrivacy(),
+                bazarish::i2p::kDefaultTunnelQuantity, false, labelFor(peerName), owner_});
         }
         const std::lock_guard<std::mutex> lock(mutex_);
         const auto now = std::chrono::steady_clock::now();

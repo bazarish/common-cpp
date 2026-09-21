@@ -342,7 +342,6 @@ sam::SessionConfig streamConfig()
     sam::SessionConfig config;
     config.privateKeys = kPrivateKeys;
     config.style = sam::Style::eStream;
-    config.leaseSet = i2p::LeaseSetKind::eEncrypted;
     config.privacy = i2p::Privacy::eMinimal;
     config.tunnelQuantity = 2;
     config.published = false;

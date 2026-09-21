@@ -73,13 +73,11 @@ std::size_t i2pIdentityLength(const Bytes& buffer)
 
 namespace i2p {
 
-// The address form follows from how the destination publishes itself, and both
-// forms are computed here - so an address is available with no router of any
-// kind behind it.
-std::string routingHost(const std::string& publicBase64, const LeaseSetKind kind)
+// Every destination this project publishes is an encrypted LeaseSet2, so there is
+// one address form. It is computed here, with no router of any kind behind it.
+std::string routingHost(const std::string& publicBase64)
 {
-    return kind == LeaseSetKind::eEncrypted ? encryptedLeaseSetHost(publicBase64)
-                                            : standardLeaseSetHost(publicBase64);
+    return encryptedLeaseSetHost(publicBase64);
 }
 
 }  // namespace i2p
@@ -121,19 +119,6 @@ std::string encryptedLeaseSetHost(const std::string& i2pBase64Destination)
     addr[2] ^= static_cast<std::uint8_t>(checksum >> 16);
 
     return toBase32(Bytes(addr.begin(), addr.end())) + ".b32.i2p";
-}
-
-std::string standardLeaseSetHost(const std::string& i2pBase64Destination)
-{
-    const Bytes destination = fromBase64(i2pToStandardBase64(i2pBase64Destination));
-
-    // The destination must at least hold the two key fields; the standard b32
-    // is the base32 of the SHA-256 over the whole destination (key fields plus
-    // certificate), regardless of signature type.
-    if (destination.size() < kCertOffset) {
-        throw std::runtime_error("i2p destination too short");
-    }
-    return toBase32(sha256(destination)) + ".b32.i2p";
 }
 
 bool isB32I2pHost(const std::string& host)

@@ -260,8 +260,8 @@ std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
     }
     const auto build = [router, &owner, privacy]() {
         return router->createEndpoint(bazarish::i2p::EndpointConfig{
-            router->generateKeys(), bazarish::i2p::LeaseSetKind::eEncrypted, privacy,
-            bazarish::i2p::kDefaultTunnelQuantity, /*published=*/false, "Facade link", owner});
+            router->generateKeys(), privacy, bazarish::i2p::kDefaultTunnelQuantity,
+            /*published=*/false, "Facade link", owner});
     };
     // One per account. Both of an account's clients - the transport and the request
     // parked waiting for news - dial through it; they need their own request

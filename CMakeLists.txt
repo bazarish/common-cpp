@@ -128,6 +128,7 @@ bazarish_add_test(TestPadding)
 bazarish_add_test(TestErrors)
 bazarish_add_test(TestAddress)
 bazarish_add_test(TestI2pAddress)
+bazarish_add_test(TestI2pDelegation)
 bazarish_add_test(TestI2pKeyBlob)
 
 # Live end-to-end over an external router reached by SAM (not a unit test - it

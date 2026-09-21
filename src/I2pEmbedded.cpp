@@ -17,6 +17,7 @@
 #include "Crypto.h"
 #include "Datagram.h"
 #include "Destination.h"
+#include "I2PEndian.h"
 #include "Identity.h"
 #include "Log.h"
 #include "NetDb.hpp"
@@ -25,13 +26,18 @@
 #include "SSU2.h"
 #include "Streaming.h"
 #include "Transports.h"
+#include "Timestamp.h"
 #include "Tunnel.h"
 #include "TunnelPool.h"
 #include "util.h"
 #include "version.h"
 
+#include <openssl/crypto.h>
+
 #include <algorithm>
+#include <cstring>
 #include <fstream>
+#include <memory>
 #include <map>
 #include <set>
 #include <atomic>
@@ -56,6 +62,10 @@ namespace bazarish::i2p {
 namespace {
 
 constexpr i2pd::data::SigningKeyType kSigType = i2pd::data::SIGNING_KEY_TYPE_EDDSA_SHA512_ED25519;
+// The outer layer of an encrypted LeaseSet is signed under a blinded key, and
+// blinding yields a scalar - which is what RedDSA's private key already is.
+constexpr i2pd::data::SigningKeyType kB33SigType
+    = i2pd::data::SIGNING_KEY_TYPE_REDDSA_SHA512_ED25519;
 constexpr std::size_t kB32SuffixLen = 8;  // ".b32.i2p"
 // How long one receive waits on the engine before the caller looks up again:
 // long enough not to spin, short enough that a closed stream and an expired read
@@ -86,6 +96,14 @@ bazarish::log::Level mapLevel(LogLevel level)
     }
 }
 
+// The start of the current UTC day. The b33 batch holds one key per day, so a
+// delegation covers whole days counted from here and ends at a midnight.
+std::uint64_t currentMidnight()
+{
+    return (i2pd::util::GetSecondsSinceEpoch()/i2pd::data::SECONDS_PER_DAY)
+        * i2pd::data::SECONDS_PER_DAY;
+}
+
 i2pd::data::PrivateKeys parseKeys(const Bytes& blob)
 {
     ensureCryptoInit();
@@ -103,6 +121,74 @@ Bytes serializeKeys(const i2pd::data::PrivateKeys& keys)
     const std::size_t n = keys.ToBuffer(out.data(), out.size());
     out.resize(n);
     return out;
+}
+
+// The b33 offline keys that let a server publish this destination as an encrypted
+// LeaseSet2 without holding its signing key: one transient per day, each
+// authorized by the blinded key of its own day. Generation lives here because
+// libi2pd only reads the batch; the primitives are its own.
+Bytes createB33OfflineKeys(const i2pd::data::PrivateKeys& master, const int days)
+{
+    const auto identity = master.GetPublic();
+    i2pd::data::BlindedPublicKey blinded(identity);
+    if (!blinded.IsValid())
+    {
+        throw std::runtime_error("bazarish::i2p: destination has no blinded address");
+    }
+    const std::unique_ptr<i2pd::crypto::Verifier> transientVerifier(
+        i2pd::data::IdentityEx::CreateVerifier(kB33SigType));
+    const std::unique_ptr<i2pd::crypto::Verifier> blindedVerifier(
+        i2pd::data::IdentityEx::CreateVerifier(blinded.GetBlindedSigType()));
+    if (!transientVerifier || !blindedVerifier)
+    {
+        throw std::runtime_error("bazarish::i2p: unsupported blinded signature type");
+    }
+    const std::size_t signedLen
+        = i2pd::data::OFFLINE_SIGNATURE_HEADER_LENGTH + transientVerifier->GetPublicKeyLen();
+    const std::size_t keyLen
+        = signedLen + blindedVerifier->GetSignatureLen() + transientVerifier->GetPrivateKeyLen();
+
+    Bytes batch(i2pd::data::B33_OFFLINE_KEYS_HEADER_LENGTH + days*keyLen);
+    std::size_t offset = 0;
+    batch[offset] = i2pd::data::B33_OFFLINE_KEYS_VERSION;
+    offset += 1;
+    memcpy(batch.data() + offset, identity->GetIdentHash(), i2pd::data::IdentHash::len);
+    offset += i2pd::data::IdentHash::len;
+    htobe16buf(batch.data() + offset, static_cast<std::uint16_t>(days));
+    offset += 2;
+
+    const std::uint64_t midnight = currentMidnight();
+    for (int day = 0; day < days; ++day)
+    {
+        char date[9];
+        i2pd::util::GetDateString(midnight + day*i2pd::data::SECONDS_PER_DAY, date);
+        std::uint8_t* const entry = batch.data() + offset;
+        // The first two fields are byte for byte the offline block of the LeaseSet.
+        htobe32buf(entry, midnight + (day + 1)*i2pd::data::SECONDS_PER_DAY);
+        htobe16buf(entry + 4, kB33SigType);
+        std::uint8_t blindedPrivate[i2pd::crypto::EDDSA25519_PRIVATE_KEY_LENGTH];
+        std::uint8_t blindedPublic[i2pd::crypto::EDDSA25519_PUBLIC_KEY_LENGTH];
+        if (!blinded.BlindPrivateKey(
+                master.GetSigningPrivateKey(), date, blindedPrivate, blindedPublic))
+        {
+            throw std::runtime_error("bazarish::i2p: cannot blind the signing key");
+        }
+        const std::unique_ptr<i2pd::crypto::Signer> signer(
+            i2pd::data::PrivateKeys::CreateSigner(blinded.GetBlindedSigType(), blindedPrivate));
+        // The blinded private key would give the destination's own key away: alpha
+        // is derived from public data, so subtracting it recovers the master.
+        OPENSSL_cleanse(blindedPrivate, sizeof blindedPrivate);
+        if (!signer)
+        {
+            throw std::runtime_error("bazarish::i2p: cannot sign for the blinded key");
+        }
+        i2pd::data::PrivateKeys::GenerateSigningKeyPair(kB33SigType,
+            entry + signedLen + blindedVerifier->GetSignatureLen(),
+            entry + i2pd::data::OFFLINE_SIGNATURE_HEADER_LENGTH);
+        signer->Sign(entry, static_cast<int>(signedLen), entry + signedLen);
+        offset += keyLen;
+    }
+    return batch;
 }
 
 void privacyToTunnel(Privacy privacy, int& length, int& variance)
@@ -439,7 +525,6 @@ public:
     std::shared_ptr<IoService> io;
     std::shared_ptr<i2pd::client::ClientDestination> dest;
     std::shared_ptr<i2pd::datagram::DatagramDestination> datagram;
-    LeaseSetKind leaseSet = LeaseSetKind::eEncrypted;
 
     // What this destination is for, as the caller named it: only ever used to say
     // which one a log line is about.
@@ -1078,14 +1163,13 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
 {
     auto impl = std::make_shared<EmbeddedEndpoint>();
     impl->label = config.label;
-    impl->leaseSet = config.leaseSet;
     impl->publicDestination = config.keys.publicBase64();
-    impl->hostAddress = bazarish::i2p::routingHost(impl->publicDestination, config.leaseSet);
+    impl->hostAddress = bazarish::i2p::routingHost(impl->publicDestination);
     impl->keysBlob = config.keys.blob();
 
     i2pd::util::Mapping params;
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_TYPE,
-        config.leaseSet == LeaseSetKind::eEncrypted ? "5" : "3");
+        std::to_string(i2pd::data::NETDB_STORE_TYPE_ENCRYPTED_LEASESET2));
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_ENCRYPTION_TYPE, "4");
     // Never write this destination's leaseset keys to the router directory: the
     // files there are named by the destination, so persisting them would leave a
@@ -1196,10 +1280,29 @@ Bytes generateKeysBlob()
     return serializeKeys(i2pd::data::PrivateKeys::CreateRandomKeys(kSigType));
 }
 
-Bytes issueTransientBlob(const Bytes& master, const std::int64_t expiresUnix)
+Bytes issueTransientBlob(const Bytes& master, const int days)
 {
-    return serializeKeys(parseKeys(master).CreateOfflineKeys(
-        kSigType, static_cast<std::uint32_t>(expiresUnix)));
+    const i2pd::data::PrivateKeys keys = parseKeys(master);
+    // The transient of the inner LeaseSet lasts exactly as long as the batch.
+    const std::uint64_t expires = currentMidnight() + days*i2pd::data::SECONDS_PER_DAY;
+    Bytes blob
+        = serializeKeys(keys.CreateOfflineKeys(kSigType, static_cast<std::uint32_t>(expires)));
+    const Bytes batch = createB33OfflineKeys(keys, days);
+    blob.insert(blob.end(), batch.begin(), batch.end());
+    return blob;
+}
+
+int b33OfflineKeyDays(const Bytes& blob)
+{
+    const i2pd::data::PrivateKeys keys = parseKeys(blob);
+    const i2pd::data::B33OfflineKeys& batch = keys.GetB33OfflineKeys();
+    if (batch.GetLen() < i2pd::data::B33_OFFLINE_KEYS_HEADER_LENGTH) { return 0; }
+    // A batch that cannot sign today is no better than none: say so now rather
+    // than at the first publication, which has no caller left to tell.
+    char today[9];
+    i2pd::util::GetDateString(currentMidnight(), today);
+    if (!i2pd::data::OfflinePrivateKeys(keys, today).IsOfflineSignature()) { return 0; }
+    return bufbe16toh(batch.GetBuffer() + i2pd::data::B33_OFFLINE_KEYS_HEADER_LENGTH - 2);
 }
 
 }  // namespace backend
