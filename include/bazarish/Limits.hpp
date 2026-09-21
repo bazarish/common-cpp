@@ -94,4 +94,12 @@ inline constexpr double kDelegationRenewAtFraction = 0.5;
 inline constexpr std::size_t kMaxPassesPerRequest = 256;
 inline constexpr std::size_t kMaxPassesPerMailbox = 4096;
 
+// The largest body any listener in the fleet accepts. The heaviest legitimate
+// request is a message written into a mailbox: kMaxMessagePayloadBytes base64'd
+// inside a JSON object, padded to a step of the ladder once it is carried in a
+// tunnel, measured at 704577 bytes. This is roughly three times that - room for
+// the protocol to grow, and nothing like the room a caller needs to make a
+// server buy memory by the request.
+inline constexpr std::size_t kMaxRequestBodyBytes = 2 * 1024 * 1024;
+
 }  // namespace bazarish

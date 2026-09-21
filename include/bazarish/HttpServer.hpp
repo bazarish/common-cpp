@@ -81,7 +81,7 @@ public:
         // A signed request carries hybrid keys and a post-quantum signature:
         // ~8.3 KB of head before anything the caller sends.
         std::size_t maxHeadBytes = 64 * 1024;
-        std::size_t maxBodyBytes = 64 * 1024 * 1024;
+        std::size_t maxBodyBytes = kMaxRequestBodyBytes;
         std::chrono::seconds readTimeout{120};
     };
 
