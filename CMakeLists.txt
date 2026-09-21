@@ -41,6 +41,7 @@ add_library(bazarish_common STATIC
     src/Pass.cpp
     src/Padding.cpp
     src/ConfigFile.cpp
+    src/PrivateFile.cpp
     src/WebAssets.cpp
     src/Errors.cpp
     src/FederationFrame.cpp
