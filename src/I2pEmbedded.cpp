@@ -61,6 +61,9 @@ constexpr std::size_t kB32SuffixLen = 8;  // ".b32.i2p"
 // long enough not to spin, short enough that a closed stream and an expired read
 // deadline are both noticed promptly.
 constexpr int kReceivePollSeconds = 5;
+// How long to wait for a transport server to hand back a snapshot of its
+// session map; it is answered on that server's own service thread.
+constexpr int kSessionSnapshotSeconds = 2;
 
 // libi2pd's crypto state must be initialised once before any key operation. With
 // precomputation=false this is a cheap no-op-safe call; the guard keeps it once.
@@ -960,7 +963,7 @@ bool EmbeddedRouter::ready() const
 {
     if (i2pd::data::netdb.GetNumRouters() == 0) { return false; }
     auto pool = i2pd::tunnel::tunnels.GetExploratoryPool();
-    return pool && !pool->GetOutboundTunnels().empty();
+    return pool && pool->HasOutboundTunnels();
 }
 
 int EmbeddedRouter::knownRouters() const { return i2pd::data::netdb.GetNumRouters(); }
@@ -1006,9 +1009,14 @@ std::vector<TransportPeer> EmbeddedRouter::transportPeers() const
         const auto sessions = ntcp2->GetNTCP2Sessions();
         collect(sessions, "NTCP2");
     }
-    if (const auto* const ssu2 = i2pd::transport::transports.GetSSU2Server()) {
-        const auto sessions = ssu2->GetSSU2Sessions();
-        collect(sessions, "SSU2");
+    if (auto* const ssu2 = i2pd::transport::transports.GetSSU2Server()) {
+        // The SSU2 session map may only be read on the server's own service, which
+        // hands the snapshot back through a future.
+        i2pd::transport::SSU2Server::SSU2Sessions sessions;
+        if (ssu2->GetSSU2Sessions(sessions).wait_for(std::chrono::seconds(kSessionSnapshotSeconds))
+            == std::future_status::ready) {
+            collect(sessions, "SSU2");
+        }
     }
     return peers;
 }
@@ -1053,9 +1061,7 @@ std::vector<LocalDestination> EmbeddedRouter::localDestinations() const
         info.closing = !tunnelPool || !tunnelPool->IsActive();
         if (const auto pool = tunnelPool) {
             info.inboundTunnels = static_cast<int>(pool->GetInboundTunnels(kTunnelCountProbe).size());
-            // No locked accessor exists for the outbound set: copy it the way the
-            // engine's own status console does, then count what is established.
-            const auto outbound = pool->GetOutboundTunnels();
+            const auto outbound = pool->GetOutboundTunnelsList();
             for (const auto& tunnel : outbound) {
                 if (tunnel && tunnel->IsEstablished()) {
                     ++info.outboundTunnels;
