@@ -60,4 +60,10 @@ private:
 // instead of a font.
 http::Response serveWebAsset(const WebAssets::File& file, const http::Request& request);
 
+// Text made safe to substitute into a template. render() does not escape - the
+// services pass built-up markup through it on purpose - so every value that came
+// from outside goes through this first, and a value that did not is the defect
+// this exists to name.
+std::string htmlEscape(const std::string& text);
+
 }  // namespace bazarish
