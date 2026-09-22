@@ -45,8 +45,10 @@ struct I2pHttpHead {
 // Reads from `stream` (any type with readSome(void*, size_t) - a bazarish::i2p
 // Stream) up to the CRLFCRLF head terminator and parses the status line and
 // headers; any body bytes read past it are returned in `.leftover`. Throws on a
-// malformed response or premature EOF. The streaming download path uses this and
-// then keeps reading the body off the same stream.
+// malformed response, and separately when the stream ends before the head is
+// complete - which is a dead route rather than a peer speaking badly, and the two
+// send a reader looking in different places. The streaming download path uses
+// this and then keeps reading the body off the same stream.
 template <class Stream>
 I2pHttpHead readI2pHttpHead(Stream& stream)
 {
@@ -56,7 +58,8 @@ I2pHttpHead readI2pHttpHead(Stream& stream)
     while ((headerEnd = raw.find("\r\n\r\n")) == std::string::npos) {
         const std::size_t got = stream.readSome(buffer.data(), buffer.size());
         if (got == 0) {
-            throw std::runtime_error("malformed i2p http response");
+            throw std::runtime_error("i2p stream closed after " + std::to_string(raw.size())
+                + " bytes, before the response head was complete");
         }
         raw.append(buffer.data(), got);
     }

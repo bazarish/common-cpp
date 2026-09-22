@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <exception>
 #include <string>
 #include <sys/types.h>
 
@@ -105,6 +106,20 @@ int main()
         CHECK(head.status == 404);
         CHECK(head.headers.at("content-length") == "9");
         CHECK(head.leftover == "not-found");
+    }
+
+    // A route that dies mid-response says so, and says how far it got: the reader
+    // of this message otherwise goes looking for a peer speaking bad HTTP when
+    // what happened is that the stream went away.
+    {
+        FdStream stream = streamFrom("HTTP/1.1 200 OK\r\nContent-Len");
+        std::string said;
+        try {
+            (void)readI2pHttpHead(stream);
+        } catch (const std::exception& error) {
+            said = error.what();
+        }
+        CHECK(said.find("closed after 28 bytes") != std::string::npos);
     }
 
     // A head with no body (an empty 200).
