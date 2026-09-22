@@ -63,6 +63,7 @@ add_library(bazarish_common STATIC
     src/HttpClient.cpp
     src/GatewayProtocol.cpp
     src/HttpServer.cpp
+    src/WebSocketClient.cpp
     src/Hmac.cpp
     src/Portal.cpp
     src/PortalSession.cpp
