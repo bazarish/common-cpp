@@ -13,7 +13,6 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <exception>
 #include <ctime>
 
 using namespace bazarish;
@@ -40,11 +39,9 @@ int main()
 
     // The term is whole UTC days counted from the current one, so it ends at a
     // midnight - which is also where each day's blinded key hands over.
-    const std::int64_t expires = delegation.transientExpires();
-    CHECK(expires % kSecondsPerDay == 0);
     const std::int64_t midnight
         = (static_cast<std::int64_t>(std::time(nullptr)) / kSecondsPerDay) * kSecondsPerDay;
-    CHECK(expires == midnight + kTermDays * kSecondsPerDay);
+    CHECK(delegation.transientExpires() == midnight + kTermDays * kSecondsPerDay);
 
     // Delegation withholds the master signing key and keeps the address: a
     // contact's card goes on working across a renewal, and across a move to
@@ -53,21 +50,13 @@ int main()
     CHECK(i2p::routingHost(delegation.publicBase64()) == i2p::routingHost(master.publicBase64()));
     const i2p::Keys renewed = master.issueTransient(kTermDays);
     CHECK(renewed.blob() != delegation.blob());
-    CHECK(i2p::routingHost(renewed.publicBase64()) == i2p::routingHost(master.publicBase64()));
+    CHECK(renewed.publicBase64() == master.publicBase64());
 
     // Only the destination's own key can delegate, and only for a term the batch
     // can hold: blinding a delegation's transient would publish an address that
     // is not this one.
-    const auto refused = [](const auto& call) {
-        try {
-            call();
-        } catch (const std::exception&) {
-            return true;
-        }
-        return false;
-    };
-    CHECK(refused([&] { (void)delegation.issueTransient(kTermDays); }));
-    CHECK(refused([&] { (void)master.issueTransient(0); }));
+    CHECK_THROWS(delegation.issueTransient(kTermDays));
+    CHECK_THROWS(master.issueTransient(0));
 
     std::printf("TestI2pDelegation ok\n");
     return 0;

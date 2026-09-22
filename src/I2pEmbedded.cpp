@@ -129,7 +129,8 @@ Bytes serializeKeys(const i2pd::data::PrivateKeys& keys)
 // LeaseSet2 without holding its signing key: one transient per day, each
 // authorized by the blinded key of its own day. Generation lives here because
 // libi2pd only reads the batch; the primitives are its own.
-Bytes createB33OfflineKeys(const i2pd::data::PrivateKeys& master, const int days)
+Bytes createB33OfflineKeys(
+    const i2pd::data::PrivateKeys& master, const int days, const std::uint64_t midnight)
 {
     if (days < 1 || days > kMaxB33Days)
     {
@@ -171,7 +172,6 @@ Bytes createB33OfflineKeys(const i2pd::data::PrivateKeys& master, const int days
     htobe16buf(batch.data() + offset, static_cast<std::uint16_t>(days));
     offset += 2;
 
-    const std::uint64_t midnight = currentMidnight();
     for (int day = 0; day < days; ++day)
     {
         char date[9];
@@ -1297,11 +1297,14 @@ Bytes generateKeysBlob()
 Bytes issueTransientBlob(const Bytes& master, const int days)
 {
     const i2pd::data::PrivateKeys keys = parseKeys(master);
+    // One reading of the clock for the whole delegation: taken twice, a day
+    // change between them would end the inner transient a day before the batch.
+    const std::uint64_t midnight = currentMidnight();
     // The transient of the inner LeaseSet lasts exactly as long as the batch.
-    const std::uint64_t expires = currentMidnight() + days*i2pd::data::SECONDS_PER_DAY;
+    const std::uint64_t expires = midnight + days*i2pd::data::SECONDS_PER_DAY;
     Bytes blob
         = serializeKeys(keys.CreateOfflineKeys(kSigType, static_cast<std::uint32_t>(expires)));
-    const Bytes batch = createB33OfflineKeys(keys, days);
+    const Bytes batch = createB33OfflineKeys(keys, days, midnight);
     blob.insert(blob.end(), batch.begin(), batch.end());
     return blob;
 }
