@@ -61,6 +61,7 @@ add_library(bazarish_common STATIC
     src/Health.cpp
     src/Restart.cpp
     src/HttpClient.cpp
+    src/GatewayProtocol.cpp
     src/HttpServer.cpp
     src/Hmac.cpp
     src/Portal.cpp
@@ -147,6 +148,7 @@ bazarish_add_test(TestLog)
 bazarish_add_test(TestHealth)
 bazarish_add_test(TestRestart)
 bazarish_add_test(TestHttpClient)
+bazarish_add_test(TestGatewayProtocol)
 bazarish_add_test(TestWebSocket)
 bazarish_add_test(TestLoginChallenge)
 bazarish_add_test(TestCaptcha)
