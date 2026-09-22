@@ -261,11 +261,14 @@ GatewayStream::~GatewayStream()
 
 void GatewayStream::arrived(const Bytes& data)
 {
+    // Counted before it is readable, not after: a reader woken by the insert
+    // credits what it read, and crediting bytes the book has not been told
+    // about yet is reading more than ever arrived.
+    book_.tookIn(data.size());
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         inbox_.insert(inbox_.end(), data.begin(), data.end());
     }
-    book_.tookIn(data.size());
     arrived_.notify_all();
 }
 
