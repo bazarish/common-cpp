@@ -198,6 +198,7 @@ if(BAZARISH_WITH_CLIENT)
         client/FederationFetch.cpp
         client/FileTransfer.cpp
         client/I2pKeys.cpp
+        client/GatewayAddress.cpp
         client/I2pRouter.cpp
         client/Invite.cpp
         client/OutboundCourier.cpp
@@ -241,6 +242,7 @@ if(BAZARISH_WITH_CLIENT)
     target_compile_options(alias_smoke PRIVATE -Wall -Wextra -Werror)
     bazarish_client_add_test(TestClientFacade)
     bazarish_client_add_test(TestFileTransfer)
+    bazarish_client_add_test(TestGatewayAddress)
     bazarish_client_add_test(TestI2pKeys)
     bazarish_client_add_test(TestI2pProxy)
     bazarish_client_add_test(TestInvite)
