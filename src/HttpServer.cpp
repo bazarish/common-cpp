@@ -2,6 +2,7 @@
 #include <bazarish/HttpServer.hpp>
 
 #include <bazarish/Log.hpp>
+#include <bazarish/WebSocket.hpp>
 
 // Before any Boost.Asio header: awaitable.hpp (Boost 1.81, Debian 12) uses
 // std::exchange without including <utility>, which libstdc++ 12 does not pull in
@@ -13,17 +14,20 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/websocket.hpp>
 
 #include <algorithm>
 #include <string_view>
 #include <atomic>
 #include <cctype>
+#include <deque>
 #include <mutex>
 #include <regex>
 #include <thread>
@@ -100,6 +104,142 @@ struct Route {
     AsyncHandler handler;
 };
 
+struct SocketRoute {
+    std::string pattern;
+    SocketRoutes routes;
+};
+
+namespace websocket = boost::beast::websocket;
+
+// One WebSocket. Reads run in a coroutine, writes are posted to the same
+// strand, and Beast permits those two to overlap while nothing else touches the
+// stream - which is why the connection was accepted onto a strand of its own.
+class SocketImpl : public Socket, public std::enable_shared_from_this<SocketImpl> {
+public:
+    SocketImpl(websocket::stream<beast::tcp_stream> stream, SocketRoutes routes)
+        : stream_(std::move(stream))
+        , routes_(std::move(routes))
+    {
+    }
+
+    void send(std::vector<unsigned char> message) override
+    {
+        if (!open_.load()) {
+            return;
+        }
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            queued_ += message.size();
+            queue_.push_back(std::move(message));
+            if (writing_) {
+                return;
+            }
+            writing_ = true;
+        }
+        const std::shared_ptr<SocketImpl> self = shared_from_this();
+        asio::post(stream_.get_executor(), [self]() { self->write(); });
+    }
+
+    std::size_t pending() const override
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return queued_;
+    }
+
+    void close() override
+    {
+        if (!open_.exchange(false)) {
+            return;
+        }
+        const std::shared_ptr<SocketImpl> self = shared_from_this();
+        asio::post(stream_.get_executor(), [self]() {
+            boost::system::error_code ignored;
+            self->stream_.next_layer().socket().shutdown(tcp::socket::shutdown_both, ignored);
+        });
+    }
+
+    bool open() const override { return open_.load(); }
+
+    websocket::stream<beast::tcp_stream>& stream() { return stream_; }
+    const SocketRoutes& routes() const { return routes_; }
+    void markClosed() { open_.store(false); }
+
+private:
+    // On the strand. One message is in flight at a time, so the next one can
+    // still be reordered by whoever queued it while this one goes out.
+    void write()
+    {
+        std::vector<unsigned char>* front = nullptr;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (queue_.empty()) {
+                writing_ = false;
+                return;
+            }
+            front = &queue_.front();
+        }
+        const std::shared_ptr<SocketImpl> self = shared_from_this();
+        stream_.binary(true);
+        stream_.async_write(asio::buffer(*front),
+            [self](const boost::system::error_code& error, const std::size_t) {
+                {
+                    const std::lock_guard<std::mutex> lock(self->mutex_);
+                    self->queued_ -= self->queue_.front().size();
+                    self->queue_.pop_front();
+                    if (error) {
+                        self->writing_ = false;
+                    }
+                }
+                if (error) {
+                    self->close();
+                    return;
+                }
+                self->write();
+            });
+    }
+
+    websocket::stream<beast::tcp_stream> stream_;
+    SocketRoutes routes_;
+    mutable std::mutex mutex_;
+    std::deque<std::vector<unsigned char>> queue_;
+    std::size_t queued_ = 0;
+    bool writing_ = false;
+    std::atomic<bool> open_{true};
+};
+
+asio::awaitable<void> runSocket(std::shared_ptr<SocketImpl> socket, Request request)
+{
+    websocket::stream<beast::tcp_stream>& stream = socket->stream();
+    const SocketRoutes& routes = socket->routes();
+    if (routes.opened) {
+        routes.opened(socket, request);
+    }
+    beast::flat_buffer buffer;
+    for (;;) {
+        boost::system::error_code readError;
+        co_await stream.async_read(
+            buffer, asio::redirect_error(asio::use_awaitable, readError));
+        if (readError) {
+            break;
+        }
+        if (!stream.got_binary()) {
+            // Not a mistake to be tolerated: a caller sending text is not
+            // speaking this protocol.
+            break;
+        }
+        if (routes.message) {
+            const unsigned char* const at
+                = static_cast<const unsigned char*>(buffer.data().data());
+            routes.message(socket, std::vector<unsigned char>(at, at + buffer.size()));
+        }
+        buffer.consume(buffer.size());
+    }
+    socket->markClosed();
+    if (routes.closed) {
+        routes.closed(socket);
+    }
+}
+
 }  // namespace
 
 std::string Request::header(const std::string& name) const
@@ -162,6 +302,7 @@ struct Server::Impl {
     std::vector<std::thread> workers;
     std::mutex routesMutex;
     std::vector<Route> routes;
+    std::vector<SocketRoute> socketRoutes;
     std::atomic<bool> stopping{false};
 
     explicit Impl(Options o)
@@ -229,6 +370,78 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
                     = std::string(field.value());
             }
             request.body = parsed.body();
+
+            if (websocket::is_upgrade(parsed)) {
+                SocketRoutes chosen;
+                bool matched = false;
+                {
+                    const std::lock_guard<std::mutex> lock(routesMutex);
+                    for (const SocketRoute& route : socketRoutes) {
+                        if (route.pattern == request.path) {
+                            chosen = route.routes;
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
+                if (matched) {
+                    std::optional<Response> refusal;
+                    if (chosen.admit) {
+                        try {
+                            refusal = chosen.admit(request);
+                        } catch (const std::exception& error) {
+                            bazarish::log::warn(
+                                "upgrade check for {} threw: {}", request.path, error.what());
+                            refusal = Response{500, "application/json", {},
+                                R"({"error":{"code":"DELIVERY_REJECTED","message":"internal error"}})"};
+                        }
+                    }
+                    if (refusal.has_value()) {
+                        http::response<http::string_body> out{
+                            static_cast<http::status>(refusal->status), parsed.version()};
+                        if (!refusal->contentType.empty()) {
+                            out.set(http::field::content_type, refusal->contentType);
+                        }
+                        for (const auto& header : refusal->headers) {
+                            out.set(header.first, header.second);
+                        }
+                        out.body() = refusal->body;
+                        // A refused upgrade ends the connection: the client asked
+                        // for a socket, and there is nothing else it wanted here.
+                        out.keep_alive(false);
+                        out.prepare_payload();
+                        boost::system::error_code refusalError;
+                        co_await http::async_write(stream, out,
+                            asio::redirect_error(asio::use_awaitable, refusalError));
+                        break;
+                    }
+                    websocket::stream<beast::tcp_stream> upgraded(std::move(stream));
+                    websocket::stream_base::timeout timeouts{};
+                    timeouts.handshake_timeout = options.readTimeout;
+                    // A socket that says nothing is pinged, and dropped if the
+                    // ping goes unanswered.
+                    timeouts.idle_timeout = chosen.idleTimeout;
+                    timeouts.keep_alive_pings = true;
+                    upgraded.set_option(timeouts);
+                    upgraded.set_option(websocket::stream_base::decorator(
+                        [protocol = chosen.subprotocol](websocket::response_type& response) {
+                            if (!protocol.empty()) {
+                                response.set(http::field::sec_websocket_protocol, protocol);
+                            }
+                        }));
+                    upgraded.read_message_max(chosen.maxMessageBytes);
+                    boost::system::error_code upgradeError;
+                    co_await upgraded.async_accept(
+                        parsed, asio::redirect_error(asio::use_awaitable, upgradeError));
+                    if (upgradeError) {
+                        co_return;
+                    }
+                    co_await runSocket(
+                        std::make_shared<SocketImpl>(std::move(upgraded), std::move(chosen)),
+                        request);
+                    co_return;
+                }
+            }
 
             // The lock covers the lookup and nothing else. Holding it across the
             // await below would have parked the whole table for as long as one
@@ -332,8 +545,12 @@ asio::awaitable<void> Server::Impl::accept()
 {
     while (!stopping.load()) {
         boost::system::error_code acceptError;
-        tcp::socket socket = co_await acceptor->async_accept(
-            asio::redirect_error(asio::use_awaitable, acceptError));
+        // Accepted onto a strand of its own, so everything derived from this
+        // socket runs serialized. A WebSocket reads and writes at the same
+        // time, and both touch one stream.
+        tcp::socket socket(asio::make_strand(io));
+        co_await acceptor->async_accept(
+            socket, asio::redirect_error(asio::use_awaitable, acceptError));
         if (acceptError) {
             if (stopping.load()) {
                 break;
@@ -341,7 +558,8 @@ asio::awaitable<void> Server::Impl::accept()
             bazarish::log::warn("accept failed: {}", acceptError.message());
             continue;
         }
-        asio::co_spawn(io, serve(std::move(socket)), asio::detached);
+        const asio::any_io_executor executor = socket.get_executor();
+        asio::co_spawn(executor, serve(std::move(socket)), asio::detached);
     }
 }
 
@@ -353,6 +571,12 @@ Server::Server(Options options)
 Server::~Server()
 {
     stop();
+}
+
+void Server::upgrade(const std::string& pattern, SocketRoutes routes)
+{
+    const std::lock_guard<std::mutex> lock(impl_->routesMutex);
+    impl_->socketRoutes.push_back(SocketRoute{pattern, std::move(routes)});
 }
 
 void Server::route(const std::string& method, const std::string& pattern, Handler handler)

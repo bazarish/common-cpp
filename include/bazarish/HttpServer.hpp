@@ -61,6 +61,9 @@ using Handler = std::function<Response(const Request&)>;
 using Responder = std::function<void(Response)>;
 using AsyncHandler = std::function<std::optional<Response>(const Request&, Responder respond)>;
 
+// Declared in WebSocket.hpp.
+struct SocketRoutes;
+
 // The authentication headers a request presents, under either scheme. Both sets
 // are collected whatever the route accepts: a listener that gathered only the
 // signature headers made every session-authenticated request look unsigned, and
@@ -94,6 +97,10 @@ public:
     // Routes are matched in registration order; `pattern` is either a literal
     // path or an ECMAScript regex when it contains a capture group.
     void route(const std::string& method, const std::string& pattern, Handler handler);
+    // Serves a WebSocket at this path, on this same listener. The routes are
+    // declared in WebSocket.hpp, which a caller includes; taking them by value
+    // here needs only the name.
+    void upgrade(const std::string& pattern, SocketRoutes routes);
     void routeAsync(const std::string& method, const std::string& pattern, AsyncHandler handler);
     void get(const std::string& pattern, Handler handler);
     void getAsync(const std::string& pattern, AsyncHandler handler);
