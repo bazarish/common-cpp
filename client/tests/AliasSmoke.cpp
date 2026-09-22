@@ -80,8 +80,10 @@ int main(const int argc, const char** argv)
         resolver.dest.c_str());
 
     const std::string dataDir = argc > 2 ? argv[2] : "/tmp/baz-alias-smoke";
-    bazarish::i2p::Router router(
-        bazarish::i2p::RouterConfig{dataDir, bazarish::i2p::Role::eClient});
+    bazarish::i2p::RouterConfig routerConfig;
+    routerConfig.dataDir = dataDir;
+    routerConfig.role = bazarish::i2p::Role::eClient;
+    bazarish::i2p::Router router(routerConfig);
     std::printf("[alias] waiting for router in %s...\n", dataDir.c_str());
     router.waitReady(std::chrono::seconds(kRouterWaitSeconds));
     if (!router.ready()) {

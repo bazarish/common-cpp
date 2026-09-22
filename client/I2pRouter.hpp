@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include "GatewayAddress.hpp"
+
 #include <bazarish/I2p.hpp>
 
 #include <bazarish/Bytes.hpp>
@@ -112,6 +114,14 @@ bool i2pEnabled();
 // because the embedded engine cannot be initialised twice in one process.
 void setSamTransport(std::string host, int port);
 bool usingSamTransport();
+
+// The private gateway, when one is set: a host that runs the router so this
+// device does not have to. It takes precedence over both the engine in this
+// process and SAM, because a user who named one meant it to carry the traffic.
+// Set before anything asks for the shared router; like the transport choice it
+// takes hold at a start and not in the middle of one.
+void setGatewayTransport(const GatewayAddress& address, std::string pin);
+bool usingGatewayTransport();
 std::string samTransportHost();
 int samTransportPort();
 

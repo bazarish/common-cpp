@@ -92,6 +92,10 @@ std::string g_proxyHost;
 // in this process. Shares the proxy mutex: both are settings read when a router
 // is built.
 std::string g_samHost;
+// The gateway, when one is named. Set once before the router is asked for, like
+// every other transport choice.
+std::optional<GatewayAddress> g_gateway;
+std::string g_gatewayPin;
 int g_samPort = 0;
 int g_proxyPort = 0;
 
@@ -211,6 +215,19 @@ bool usingSamTransport()
     return !g_samHost.empty();
 }
 
+void setGatewayTransport(const GatewayAddress& address, std::string pin)
+{
+    const std::lock_guard<std::mutex> lock(proxyMutex());
+    g_gateway = address;
+    g_gatewayPin = std::move(pin);
+}
+
+bool usingGatewayTransport()
+{
+    const std::lock_guard<std::mutex> lock(proxyMutex());
+    return g_gateway.has_value();
+}
+
 std::string samTransportHost()
 {
     const std::lock_guard<std::mutex> lock(proxyMutex());
@@ -233,6 +250,17 @@ bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir
     config.reseedUrls = reseedUrls();
     config.socksProxyHost = i2pSocksProxyHost();
     config.socksProxyPort = i2pSocksProxyPort();
+    if (usingGatewayTransport()) {
+        const std::lock_guard<std::mutex> lock(proxyMutex());
+        config.backend = bazarish::i2p::Backend::eGateway;
+        config.gatewayHost = g_gateway->host;
+        config.gatewayPort = g_gateway->port;
+        config.gatewayPath = g_gateway->path;
+        config.gatewayToken = g_gateway->token;
+        config.gatewayTls = g_gateway->tls;
+        config.gatewayPin = g_gatewayPin;
+        return config;
+    }
     if (usingSamTransport()) {
         config.backend = bazarish::i2p::Backend::eSam;
         config.samHost = samTransportHost();
