@@ -26,10 +26,12 @@ namespace {
 using gateway::Frame;
 using gateway::FrameType;
 
-// A stream that turns out to be carrying bulk is given a socket of its own, so
-// a file stops sharing a queue with everything else. Small request-and-answer
-// streams - a card fetch, a facade call - never reach this and never cost one.
-constexpr std::uint64_t kOwnSocketAfterBytes = 256 * 1024;
+// A flow gets a socket of its own when it is created and never afterwards. A
+// live stream cannot be moved: the counts the attach exchanges make the move
+// lossless but not ordered, and frames already queued on the socket being left
+// arrive behind frames on the one being joined. Ordering that would need a
+// sequence number this wire does not carry. Media is attached at creation,
+// before there is anything to reorder, and a stream stays where it started.
 // How long a caller waits for an answer to a request before giving up on the
 // gateway rather than on the operation.
 constexpr std::chrono::seconds kCallTimeout{60};
@@ -315,9 +317,6 @@ std::size_t GatewayStream::readSome(void* const buffer, const std::size_t size)
     // Read means consumed, and a credit is the total consumed so far.
     book_.consumed(got);
     router_.send(gateway::encodeCredit(id_, book_.consumedTotal()));
-    if (book_.received() > kOwnSocketAfterBytes) {
-        router_.attach(id_, book_.received());
-    }
     return got;
 }
 
@@ -332,9 +331,6 @@ void GatewayStream::writeAll(const void* const data, const std::size_t size)
         outbox_.insert(outbox_.end(), at, at + size);
     }
     drain();
-    if (book_.sent() > kOwnSocketAfterBytes) {
-        router_.attach(id_, book_.received());
-    }
 }
 
 void GatewayStream::drain()
