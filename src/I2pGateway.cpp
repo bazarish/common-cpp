@@ -336,10 +336,13 @@ void GatewayStream::writeAll(const void* const data, const std::size_t size)
 
 void GatewayStream::drain()
 {
-    std::vector<Bytes> frames;
+    // Under the one lock from first byte to last: a write and an arriving
+    // credit both drain, and what keeps their frames in order is this lock. A
+    // data frame that overtakes another is a corrupted stream.
     bool ending = false;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        const http::SocketPtr own = router_.socketFor(id_);
         while (!outbox_.empty()) {
             // Never more than the window the gateway granted, and never more
             // than one message: a message cannot be interleaved with another,
@@ -351,24 +354,24 @@ void GatewayStream::drain()
             }
             const Bytes chunk(outbox_.begin(), outbox_.begin() + static_cast<std::ptrdiff_t>(piece));
             book_.wrote(chunk.data(), chunk.size());
-            frames.push_back(gateway::encode(FrameType::eStreamData, id_, chunk));
+            const Bytes frame = gateway::encode(FrameType::eStreamData, id_, chunk);
+            if (own) {
+                own->send(std::vector<unsigned char>(frame.begin(), frame.end()));
+            } else {
+                router_.send(frame);
+            }
             outbox_.erase(outbox_.begin(), outbox_.begin() + static_cast<std::ptrdiff_t>(piece));
         }
         if (outbox_.empty() && endWhenDrained_) {
             endWhenDrained_ = false;
             ending = true;
-        }
-    }
-    if (ending) {
-        book_.finishSending();
-        frames.push_back(gateway::encode(FrameType::eStreamClose, id_));
-    }
-    const http::SocketPtr own = router_.socketFor(id_);
-    for (const Bytes& frame : frames) {
-        if (own) {
-            own->send(std::vector<unsigned char>(frame.begin(), frame.end()));
-        } else {
-            router_.send(frame);
+            book_.finishSending();
+            const Bytes frame = gateway::encode(FrameType::eStreamClose, id_);
+            if (own) {
+                own->send(std::vector<unsigned char>(frame.begin(), frame.end()));
+            } else {
+                router_.send(frame);
+            }
         }
     }
     if (ending) {
