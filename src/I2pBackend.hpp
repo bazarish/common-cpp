@@ -88,6 +88,7 @@ public:
 
 // Built in the transport's own translation unit, so the facade holds no engine.
 std::unique_ptr<RouterBackend> makeSamRouter(const RouterConfig& config);
+std::unique_ptr<RouterBackend> makeGatewayRouter(const RouterConfig& config);
 
 #ifdef BAZARISH_WITH_I2PD
 std::unique_ptr<RouterBackend> makeEmbeddedRouter(const RouterConfig& config);

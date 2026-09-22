@@ -385,6 +385,10 @@ Router::Router(RouterConfig config) : impl_(std::make_unique<Impl>())
         impl_->transport = backend::makeSamRouter(config);
         return;
     }
+    if (config.backend == Backend::eGateway) {
+        impl_->transport = backend::makeGatewayRouter(config);
+        return;
+    }
 #ifdef BAZARISH_WITH_I2PD
     impl_->transport = backend::makeEmbeddedRouter(config);
 #else

@@ -255,7 +255,11 @@ private:
 //              running many accounts affordable. The router is handed the
 //              private keys of every destination it operates, so it has to be
 //              on this machine and its address has to be loopback.
-enum class Backend { eEmbedded, eSam };
+//   eGateway:  a router on another machine, reached over one WebSocket per flow
+//              at a secret path. The gateway mints and operates every
+//              destination, so no key of this client's ever travels; what it
+//              costs is that the gateway sees every address dialled.
+enum class Backend { eEmbedded, eSam, eGateway };
 
 // What this transport can answer. A router outside the process keeps its own
 // counsel about the network it is on, so a caller asks rather than reading
@@ -303,6 +307,15 @@ struct RouterConfig {
     int samControlPort = kDefaultSamControlPort;
     // 0 selects the router's own default: one below the control port.
     int samDatagramPort = 0;
+    // Where the gateway is, and what certificate it must present. The pin is
+    // the whole of the check: no chain, no name, no authority.
+    std::string gatewayHost;
+    int gatewayPort = 0;
+    std::string gatewayPath;
+    std::string gatewayToken;
+    std::string gatewayPin;
+    // False only for the hop to a front on this same machine.
+    bool gatewayTls = true;
 };
 
 // What the engine made of the proxy configuration, read back from it rather than
