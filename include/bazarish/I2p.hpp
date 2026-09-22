@@ -183,6 +183,13 @@ struct EndpointConfig {
     // sharing a lane with a call's media is a call that stutters while the file
     // moves. Media asks for the lane kept for it, which nothing else is put on.
     bool realtime = false;
+    // Whether this destination is expected to move a lot: a file being sent or
+    // fetched, which gets a destination of its own anyway. It is the same kind
+    // of hint as `realtime` and for the same reason - a transport that carries
+    // flows over one connection can give this one a connection of its own, so a
+    // transfer stops sharing a queue with everything else. A transport with
+    // nothing to do with it ignores it.
+    bool bulk = false;
 };
 
 // One I2P destination on the router: a stable address that can accept and open

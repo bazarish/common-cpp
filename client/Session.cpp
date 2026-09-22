@@ -2977,6 +2977,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             config.privacy = transferPrivacy();
             config.tunnelQuantity = 2;
             config.label = "File upload";
+            config.bulk = true;
             config.owner = destinationOwner();
             const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
                 = i2pRouter().createEndpoint(config);

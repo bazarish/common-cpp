@@ -56,7 +56,7 @@ class GatewayRouter;
 
 class GatewayStream : public StreamBackend {
 public:
-    GatewayStream(GatewayRouter& router, std::uint32_t id);
+    GatewayStream(GatewayRouter& router, std::uint32_t id, std::uint32_t endpoint);
     ~GatewayStream() override;
 
     void setReadTimeout(std::chrono::seconds timeout) override { readTimeout_ = timeout; }
@@ -80,6 +80,9 @@ private:
 
     GatewayRouter& router_;
     std::uint32_t id_;
+    // A stream with no socket of its own rides its destination's, when that
+    // destination has one, and the main socket otherwise.
+    std::uint32_t endpoint_;
     gateway::StreamBook book_;
     std::chrono::seconds readTimeout_{0};
     mutable std::mutex mutex_;
@@ -225,6 +228,8 @@ public:
     // Gives a flow a socket of its own, once it is worth one.
     void attach(std::uint32_t flow, std::uint64_t received);
     http::SocketPtr socketFor(std::uint32_t flow) const;
+    // A stream's own socket, else its destination's, else none.
+    http::SocketPtr socketFor(std::uint32_t stream, std::uint32_t endpoint) const;
 
 private:
     void arrived(const http::SocketPtr& socket, const std::vector<unsigned char>& message);
@@ -248,9 +253,11 @@ private:
 
 // --- stream ---
 
-GatewayStream::GatewayStream(GatewayRouter& router, const std::uint32_t id)
+GatewayStream::GatewayStream(
+    GatewayRouter& router, const std::uint32_t id, const std::uint32_t endpoint)
     : router_(router)
     , id_(id)
+    , endpoint_(endpoint)
 {
     router_.remember(id_, this);
 }
@@ -341,7 +348,7 @@ void GatewayStream::drain()
     bool ending = false;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        const http::SocketPtr own = router_.socketFor(id_);
+        const http::SocketPtr own = router_.socketFor(id_, endpoint_);
         while (!outbox_.empty()) {
             // Never more than the window the gateway granted, and never more
             // than one message: a message cannot be interleaved with another,
@@ -466,7 +473,7 @@ std::unique_ptr<StreamBackend> GatewayEndpoint::connect(
         return nullptr;
     }
     const std::uint32_t id = router_.nextId();
-    auto stream = std::make_unique<GatewayStream>(router_, id);
+    auto stream = std::make_unique<GatewayStream>(router_, id, id_);
     const Bytes ask = gateway::encodeJson(FrameType::eStreamOpen, id,
         {{"endpoint", id_}, {"host", host}, {"deadline", timeout.count()}});
     // The whole deadline travels: the gateway re-issues the dial until it runs
@@ -643,6 +650,13 @@ http::SocketPtr GatewayRouter::socketFor(const std::uint32_t flow) const
     return found == flows_.end() ? nullptr : found->second;
 }
 
+http::SocketPtr GatewayRouter::socketFor(
+    const std::uint32_t stream, const std::uint32_t endpoint) const
+{
+    const http::SocketPtr own = socketFor(stream);
+    return own ? own : socketFor(endpoint);
+}
+
 void GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t received)
 {
     if (flow == 0) {
@@ -768,9 +782,11 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         const std::lock_guard<std::mutex> lock(mutex_);
         endpoints_[id] = endpoint;
     }
-    if (raw) {
-        // Media gets a socket of its own from the start: it is the one flow
-        // that cannot wait behind anything.
+    if (raw || config.bulk) {
+        // A destination that carries media, or one raised for a single
+        // transfer, takes a socket of its own at creation - before there is
+        // anything in flight to be reordered by the move that giving it one
+        // later would be. Everything on it then has a queue of its own.
         attach(id, 0);
     }
     return endpoint;
@@ -881,7 +897,8 @@ void GatewayRouter::dispatch(const Frame& frame)
             if (on == nullptr) {
                 return;
             }
-            on->callerArrived(std::make_unique<GatewayStream>(*this, frame.ref),
+            on->callerArrived(
+                std::make_unique<GatewayStream>(*this, frame.ref, body.value("endpoint", 0U)),
                 body.value("peer", std::string()));
             return;
         }
