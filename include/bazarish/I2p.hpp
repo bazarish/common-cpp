@@ -232,6 +232,14 @@ public:
     // identity), or an empty vector on timeout.
     std::vector<std::uint8_t> receiveRawDatagram(std::chrono::milliseconds timeout);
 
+    // Give up on everything this destination is waiting for, now, and refuse to
+    // start anything new: a dial stops retrying, a read ends, an accept returns
+    // empty-handed. Callable from any thread, and the only way to get a thread
+    // out of a dial that has a minute of deadline left to spend - which is what
+    // an account being closed needs, because its work runs on a thread the
+    // interface is waiting to join. One way: a stopped endpoint is finished with.
+    void stop();
+
 private:
     Endpoint();
     struct Impl;

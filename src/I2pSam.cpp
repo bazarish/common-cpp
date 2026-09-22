@@ -126,6 +126,15 @@ public:
         notWithAnExternalRouter("swapping an offline transient");
     }
 
+    void stop() override
+    {
+        stopped_.store(true);
+        // Whoever is waiting for the session to come up is woken so the flag is
+        // looked at; a dial already on the wire is the router's to finish, and
+        // this endpoint simply will not start another.
+        ready_.notify_all();
+    }
+
     std::unique_ptr<backend::StreamBackend> connect(
         const std::string& host, const std::chrono::seconds timeout) override
     {
@@ -134,7 +143,7 @@ public:
         if (session == nullptr) {
             return nullptr;
         }
-        while (std::chrono::steady_clock::now() < deadline) {
+        while (std::chrono::steady_clock::now() < deadline && !stopped_) {
             const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
                 deadline - std::chrono::steady_clock::now());
             try {
@@ -238,13 +247,15 @@ private:
     std::shared_ptr<sam::Session> waitForStreams(const std::chrono::seconds timeout)
     {
         std::unique_lock<std::mutex> lock(mutex_);
-        const auto arrived = [this] { return streams_ != nullptr || !failure_.empty(); };
+        const auto arrived = [this] {
+            return streams_ != nullptr || !failure_.empty() || stopped_;
+        };
         if (timeout.count() == 0) {
             ready_.wait(lock, arrived);
         } else if (!ready_.wait_for(lock, timeout, arrived)) {
             return nullptr;
         }
-        return streams_;
+        return stopped_ ? nullptr : streams_;
     }
 
     // The session for a datagram style, built on first use over the same keys.
@@ -265,6 +276,11 @@ private:
     const std::string publicDestination_;
     const std::string hostAddress_;
     const Bytes keysBlob_;
+
+    // Raised once, by stop(): this endpoint is finished with and starts nothing
+    // more. An external router owns the sockets, so what can be done here is to
+    // stop waiting and stop asking.
+    std::atomic<bool> stopped_{false};
 
     mutable std::mutex mutex_;
     std::condition_variable ready_;

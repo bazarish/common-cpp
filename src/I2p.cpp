@@ -312,6 +312,11 @@ Bytes Endpoint::privateBlob() const
     return impl_->transport->privateBlob();
 }
 
+void Endpoint::stop()
+{
+    impl_->transport->stop();
+}
+
 void Endpoint::refreshOfflineSignature(const Keys& newTransient)
 {
     impl_->transport->refreshOfflineSignature(newTransient);

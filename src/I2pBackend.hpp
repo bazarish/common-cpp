@@ -53,6 +53,8 @@ public:
         = 0;
     virtual void sendRawDatagram(const std::string& host, const void* data, std::size_t size) = 0;
     virtual std::vector<std::uint8_t> receiveRawDatagram(std::chrono::milliseconds timeout) = 0;
+
+    virtual void stop() = 0;
 };
 
 class RouterBackend {

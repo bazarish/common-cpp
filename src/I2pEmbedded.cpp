@@ -76,6 +76,12 @@ constexpr int kReceivePollSeconds = 5;
 // How long to wait for a transport server to hand back a snapshot of its
 // session map; it is answered on that server's own service thread.
 constexpr int kSessionSnapshotSeconds = 2;
+// One round of asking the network for a destination, and how finely that round is
+// waited out so a stopped endpoint is noticed inside it. The pause is what
+// separates two rounds when the first came back empty.
+constexpr int kDialRoundMillis = 30000;
+constexpr int kDialSliceMillis = 250;
+constexpr int kDialRetryPauseMillis = 2000;
 
 // libi2pd's crypto state must be initialised once before any key operation. With
 // precomputation=false this is a cheap no-op-safe call; the guard keeps it once.
@@ -432,6 +438,10 @@ public:
     // destination go first would leave the close to run against a torn-down
     // streaming layer.
     std::shared_ptr<i2pd::client::ClientDestination> owner;
+    // Raised when the whole destination is stopped, and shared with it: a read
+    // must end when the endpoint is told to give up, not only when this one
+    // stream is closed.
+    std::shared_ptr<std::atomic<bool>> stopped;
     std::atomic<bool> closed{false};
     // Zero waits for as long as the stream is open.
     std::atomic<int> readTimeoutSeconds{0};
@@ -439,10 +449,10 @@ public:
 
 std::size_t EmbeddedStream::readSome(void* buffer, std::size_t size)
 {
-    if (!stream || closed || size == 0) { return 0; }
+    if (!stream || closed || (stopped && *stopped) || size == 0) { return 0; }
     const std::chrono::seconds timeout{readTimeoutSeconds.load()};
     const auto started = std::chrono::steady_clock::now();
-    while (!closed)
+    while (!closed && !(stopped && *stopped))
     {
         auto promise = std::make_shared<std::promise<std::size_t>>();
         auto future = promise->get_future();
@@ -532,6 +542,14 @@ public:
         std::string& peerBase64, std::chrono::milliseconds timeout) override;
     void sendRawDatagram(const std::string& host, const void* data, std::size_t size) override;
     std::vector<std::uint8_t> receiveRawDatagram(std::chrono::milliseconds timeout) override;
+    void stop() override;
+
+    // Raised once, by stop(). Every wait this endpoint owns watches it, and so do
+    // the streams it handed out - which is what lets a thread be taken out of a
+    // dial that still has a minute of deadline to spend. Held by shared_ptr
+    // because a stream outlives the call that made it and may outlive nothing
+    // else of this endpoint.
+    std::shared_ptr<std::atomic<bool>> stopped = std::make_shared<std::atomic<bool>>(false);
 
     // Keeps the router's shared service alive for as long as this endpoint (and its
     // destination's reference to the io_context) exists. Declared first so it is
@@ -637,6 +655,16 @@ std::string EmbeddedEndpoint::publicBase64() const { return publicDestination; }
 std::string EmbeddedEndpoint::routingHost() const { return hostAddress; }
 Bytes EmbeddedEndpoint::privateBlob() const { return keysBlob; }
 
+void EmbeddedEndpoint::stop()
+{
+    stopped->store(true);
+    // The waiters are asleep on their own condition variables, and the flag alone
+    // does not reach them: each is woken so its predicate is looked at again.
+    acceptCv.notify_all();
+    dgCv.notify_all();
+    rawCv.notify_all();
+}
+
 void EmbeddedEndpoint::refreshOfflineSignature(const Keys& newTransient)
 {
     dest->UpdateOfflineSignature(parseKeys(newTransient.blob()));
@@ -683,7 +711,7 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::connect(
     // Retry the lookup-and-connect until the deadline: a freshly published remote
     // LeaseSet can lag the remote's readiness, so one attempt may miss it.
     const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline)
+    while (std::chrono::steady_clock::now() < deadline && !*stopped)
     {
         auto promise = std::make_shared<std::promise<std::shared_ptr<i2pd::stream::Stream>>>();
         auto future = promise->get_future();
@@ -692,18 +720,31 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::connect(
         const auto remaining = deadline - std::chrono::steady_clock::now();
         const auto attempt = std::min(
             std::chrono::duration_cast<std::chrono::milliseconds>(remaining),
-            std::chrono::milliseconds(30000));
+            std::chrono::milliseconds(kDialRoundMillis));
         if (attempt.count() <= 0) { break; }
-        if (future.wait_for(attempt) == std::future_status::ready)
+        // Waited for in slices so stop() is noticed while a round is still in the
+        // air: the deadline is a minute, and a caller that has given up must not
+        // be held for the rest of it.
+        std::future_status waited = std::future_status::timeout;
+        for (auto spent = std::chrono::milliseconds(0);
+             spent < attempt && waited == std::future_status::timeout && !*stopped;
+             spent += std::chrono::milliseconds(kDialSliceMillis))
+        {
+            waited = future.wait_for(std::chrono::milliseconds(kDialSliceMillis));
+        }
+        if (waited == std::future_status::ready)
         {
             if (auto stream = future.get())
             {
                 auto wrapped = std::make_unique<EmbeddedStream>();
                 wrapped->stream = std::move(stream);
                 wrapped->owner = destination;
+                wrapped->stopped = stopped;
                 return wrapped;
             }
-            std::this_thread::sleep_for(std::chrono::seconds(2));  // failed round; re-request
+            if (*stopped) { break; }
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(kDialRetryPauseMillis));  // failed round; re-request
         }
     }
     return nullptr;
@@ -713,7 +754,7 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::accept(
     std::string& peerBase64, const std::chrono::seconds timeout)
 {
     std::unique_lock<std::mutex> lock(acceptMutex);
-    const auto ready = [this] { return !acceptQueue.empty(); };
+    const auto ready = [this] { return !acceptQueue.empty() || *stopped; };
     if (timeout.count() == 0)
     {
         acceptCv.wait(lock, ready);
@@ -722,6 +763,7 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::accept(
     {
         return nullptr;
     }
+    if (acceptQueue.empty()) { return nullptr; }  // woken by stop()
     auto stream = acceptQueue.front();
     acceptQueue.pop_front();
     lock.unlock();
@@ -730,6 +772,7 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::accept(
     auto wrapped = std::make_unique<EmbeddedStream>();
     wrapped->stream = std::move(stream);
     wrapped->owner = dest;
+    wrapped->stopped = stopped;
     return wrapped;
 }
 
@@ -774,7 +817,8 @@ std::vector<std::uint8_t> EmbeddedEndpoint::receiveDatagram(std::string& peerBas
     std::chrono::milliseconds timeout)
 {
     std::unique_lock<std::mutex> lock(dgMutex);
-    if (!dgCv.wait_for(lock, timeout, [this] { return !dgQueue.empty(); }))
+    if (!dgCv.wait_for(lock, timeout, [this] { return !dgQueue.empty() || *stopped; })
+        || dgQueue.empty())
     {
         return {};
     }
@@ -850,7 +894,8 @@ void EmbeddedEndpoint::sendRawDatagram(const std::string& host, const void* data
 std::vector<std::uint8_t> EmbeddedEndpoint::receiveRawDatagram(std::chrono::milliseconds timeout)
 {
     std::unique_lock<std::mutex> lock(rawMutex);
-    if (!rawCv.wait_for(lock, timeout, [this] { return !rawQueue.empty(); }))
+    if (!rawCv.wait_for(lock, timeout, [this] { return !rawQueue.empty() || *stopped; })
+        || rawQueue.empty())
     {
         return {};
     }

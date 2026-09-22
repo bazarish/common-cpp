@@ -46,6 +46,13 @@ std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest();
 std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
     const std::string& owner, bazarish::i2p::Privacy privacy);
 
+// Take an account's facade link out of service: every dial and read on it gives
+// up at once and the next caller gets a fresh one. Callable from any thread, and
+// meant for the one that has to wait for the account's own thread to come back -
+// a dial has a minute of deadline to spend, and closing an account cannot wait
+// out somebody else's minute.
+void stopFacadeLinkFor(const std::string& owner);
+
 // Brings the embedded router into line with the current enable flag: starts it
 // (creating it under dataDir on first use) when enabled, stops its network when
 // disabled. Reads the flag itself, so concurrent toggles converge on the final

@@ -4,10 +4,12 @@
 #include "I2pRouter.hpp"
 
 #include <bazarish/FederationFrame.hpp>
+#include <bazarish/Log.hpp>
 
 #include <chrono>
 #include <memory>
 #include <stdexcept>
+#include <thread>
 
 namespace bazarish::client {
 
@@ -19,6 +21,12 @@ constexpr int kDialSeconds = 90;
 // answers a card from its own store, so this is a bound on a far side that took
 // the request and went quiet - not on any work it has to do.
 constexpr int kReplySeconds = 90;
+// A fetch that got no answer at all is tried again, the way a delivery is: a
+// destination published a moment ago, a lease about to be replaced, or a stream
+// the far side dropped all end the same way, and all of them are gone by the
+// next try. Only silence is repeated - a peer that answered has answered.
+constexpr int kFetchAttempts = 3;
+constexpr int kFetchRetryGapSeconds[kFetchAttempts - 1] = {2, 6};
 
 namespace {
 
@@ -47,7 +55,7 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(
     return endpoint;
 }
 
-FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& dest,
+FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& dest,
     const std::string& op, const Bytes& sealed)
 {
     auto stream = endpoint.connect(dest, std::chrono::seconds(kDialSeconds));
@@ -64,6 +72,26 @@ FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& des
     outcome.sealed = reply.sealed;
     outcome.errorCode = reply.errorCode;
     return outcome;
+}
+
+FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& dest,
+    const std::string& op, const Bytes& sealed)
+{
+    for (int attempt = 1;; ++attempt) {
+        try {
+            return fetchOnce(endpoint, dest, op, sealed);
+        } catch (const std::exception& error) {
+            // The last one's reason is the one the user is told, so it is thrown
+            // rather than turned into a message of this loop's own.
+            if (attempt >= kFetchAttempts) {
+                throw;
+            }
+            bazarish::log::info("federation fetch: no answer from {} on try {}, asking again: {}",
+                bazarish::log::redact(dest), attempt, error.what());
+            std::this_thread::sleep_for(
+                std::chrono::seconds(kFetchRetryGapSeconds[attempt - 1]));
+        }
+    }
 }
 
 }  // namespace

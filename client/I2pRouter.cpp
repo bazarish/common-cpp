@@ -44,6 +44,19 @@ std::unique_ptr<WarmDestPool>& warmPoolSlot()
     return pool;
 }
 
+std::mutex& facadeLinksMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+// One facade link per account, by weak_ptr so it goes down with its last user.
+std::map<std::string, std::weak_ptr<bazarish::i2p::Endpoint>>& facadeLinks()
+{
+    static std::map<std::string, std::weak_ptr<bazarish::i2p::Endpoint>> links;
+    return links;
+}
+
 // Brings the warm pool up alongside a running router. Call under routerMutex.
 void ensureWarmPool(bazarish::i2p::Router& router)
 {
@@ -251,9 +264,6 @@ bazarish::i2p::Router* sharedI2pRouterIfRunning()
 std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
     const std::string& owner, const bazarish::i2p::Privacy privacy)
 {
-    static std::mutex linksMutex;
-    static std::map<std::string, std::weak_ptr<bazarish::i2p::Endpoint>> links;
-
     bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
     if (router == nullptr) {
         return nullptr;  // the caller starts the router first
@@ -266,17 +276,38 @@ std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
     // One per account. Both of an account's clients - the transport and the request
     // parked waiting for news - dial through it; they need their own request
     // queues, not their own addresses, and a destination carries many streams at
-    // once. Held by weak_ptr, so it goes down with its last user.
+    // once.
     if (owner.empty()) {
         return build();  // nothing to share it with
     }
-    const std::lock_guard<std::mutex> lock(linksMutex);
-    if (const std::shared_ptr<bazarish::i2p::Endpoint> existing = links[owner].lock()) {
+    const std::lock_guard<std::mutex> lock(facadeLinksMutex());
+    if (const std::shared_ptr<bazarish::i2p::Endpoint> existing = facadeLinks()[owner].lock()) {
         return existing;
     }
     const std::shared_ptr<bazarish::i2p::Endpoint> link = build();
-    links[owner] = link;
+    facadeLinks()[owner] = link;
     return link;
+}
+
+void stopFacadeLinkFor(const std::string& owner)
+{
+    std::shared_ptr<bazarish::i2p::Endpoint> link;
+    {
+        const std::lock_guard<std::mutex> lock(facadeLinksMutex());
+        const auto found = facadeLinks().find(owner);
+        if (found == facadeLinks().end()) {
+            return;
+        }
+        link = found->second.lock();
+        // Dropped here rather than after: whatever asks next builds a live one
+        // instead of finding this one and waiting on a destination that is done.
+        facadeLinks().erase(found);
+    }
+    // Outside the lock: the thread this frees is often the one about to ask for
+    // another account's link.
+    if (link) {
+        link->stop();
+    }
 }
 
 std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest()
