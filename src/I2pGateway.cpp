@@ -60,17 +60,22 @@ public:
     void setReadTimeout(std::chrono::seconds timeout) override { readTimeout_ = timeout; }
     std::size_t readSome(void* buffer, std::size_t size) override;
     void writeAll(const void* data, std::size_t size) override;
-    std::size_t pendingBytes() const override { return book_.pending(); }
+    // Bytes handed over that have not left this device yet: what is still
+    // waiting for a window, and what the window holds uncredited.
+    std::size_t pendingBytes() const override;
     void close() override;
 
     std::uint32_t id() const { return id_; }
     // Bytes the gateway sent for this stream.
     void arrived(const Bytes& data);
-    void creditedBy(std::uint64_t total) { book_.peerCredited(total); }
+    void creditedBy(std::uint64_t total);
     void farSideFinished();
     void reset();
 
 private:
+    // Moves what is queued into the window, as far as it reaches.
+    void drain();
+
     GatewayRouter& router_;
     std::uint32_t id_;
     gateway::StreamBook book_;
@@ -78,8 +83,13 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable arrived_;
     std::deque<unsigned char> inbox_;
+    // Written by the caller and not yet inside the window. A write queues and
+    // returns, as it does on every other transport; what bounds it is the
+    // caller watching pendingBytes(), not this.
+    std::deque<unsigned char> outbox_;
     bool finished_ = false;
     bool closed_ = false;
+    bool endWhenDrained_ = false;
 };
 
 class GatewayEndpoint : public EndpointBackend {
@@ -310,33 +320,73 @@ std::size_t GatewayStream::readSome(void* const buffer, const std::size_t size)
 
 void GatewayStream::writeAll(const void* const data, const std::size_t size)
 {
-    const unsigned char* at = static_cast<const unsigned char*>(data);
-    std::size_t left = size;
-    while (left > 0) {
-        // Never more than the window the gateway granted, and never more than
-        // one message: a message cannot be interleaved with another, so its
-        // length is how long anything else waits behind it.
-        while (book_.room() == 0) {
-            if (closed_) {
-                throw std::runtime_error("bazarish::i2p: the stream is closed");
-            }
-            std::this_thread::sleep_for(kPoll);
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (closed_) {
+            throw std::runtime_error("bazarish::i2p: the stream is closed");
         }
-        const std::size_t piece = std::min({left, book_.room(), gateway::kMaxBodyBytes});
-        book_.wrote(at, piece);
-        const http::SocketPtr out = router_.socketFor(id_);
-        const Bytes frame = gateway::encode(FrameType::eStreamData, id_, at, piece);
-        if (out) {
-            out->send(frame);
-        } else {
-            router_.send(frame);
-        }
-        at += piece;
-        left -= piece;
+        const unsigned char* const at = static_cast<const unsigned char*>(data);
+        outbox_.insert(outbox_.end(), at, at + size);
     }
+    drain();
     if (book_.sent() > kOwnSocketAfterBytes) {
         router_.attach(id_, book_.received());
     }
+}
+
+void GatewayStream::drain()
+{
+    std::vector<Bytes> frames;
+    bool ending = false;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        while (!outbox_.empty()) {
+            // Never more than the window the gateway granted, and never more
+            // than one message: a message cannot be interleaved with another,
+            // so its length is how long anything else waits behind it.
+            const std::size_t piece
+                = std::min({book_.room(), gateway::kMaxBodyBytes, outbox_.size()});
+            if (piece == 0) {
+                break;
+            }
+            const Bytes chunk(outbox_.begin(), outbox_.begin() + static_cast<std::ptrdiff_t>(piece));
+            book_.wrote(chunk.data(), chunk.size());
+            frames.push_back(gateway::encode(FrameType::eStreamData, id_, chunk));
+            outbox_.erase(outbox_.begin(), outbox_.begin() + static_cast<std::ptrdiff_t>(piece));
+        }
+        if (outbox_.empty() && endWhenDrained_) {
+            endWhenDrained_ = false;
+            ending = true;
+        }
+    }
+    if (ending) {
+        book_.finishSending();
+        frames.push_back(gateway::encode(FrameType::eStreamClose, id_));
+    }
+    const http::SocketPtr own = router_.socketFor(id_);
+    for (const Bytes& frame : frames) {
+        if (own) {
+            own->send(std::vector<unsigned char>(frame.begin(), frame.end()));
+        } else {
+            router_.send(frame);
+        }
+    }
+    if (ending) {
+        router_.forget(id_);
+    }
+}
+
+std::size_t GatewayStream::pendingBytes() const
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return outbox_.size() + book_.pending();
+}
+
+void GatewayStream::creditedBy(const std::uint64_t total)
+{
+    book_.peerCredited(total);
+    // Room here is room for what is queued behind it.
+    drain();
 }
 
 void GatewayStream::close()
@@ -346,11 +396,12 @@ void GatewayStream::close()
         const std::lock_guard<std::mutex> lock(mutex_);
         tell = !closed_;
         closed_ = true;
+        // The end goes out behind the bytes it ends. One that overtook them
+        // would be a truncated file at the far end.
+        endWhenDrained_ = tell;
     }
     if (tell) {
-        book_.finishSending();
-        router_.send(gateway::encode(FrameType::eStreamClose, id_));
-        router_.forget(id_);
+        drain();
     }
     arrived_.notify_all();
 }
