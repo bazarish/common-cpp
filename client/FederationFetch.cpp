@@ -6,6 +6,7 @@
 #include <bazarish/FederationFrame.hpp>
 #include <bazarish/Log.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <stdexcept>
@@ -27,6 +28,12 @@ constexpr int kReplySeconds = 90;
 // next try. Only silence is repeated - a peer that answered has answered.
 constexpr int kFetchAttempts = 3;
 constexpr int kFetchRetryGapSeconds[kFetchAttempts - 1] = {2, 6};
+// The whole lookup, however many tries fit inside it - and one try that spends
+// its whole dial and its whole wait already fills it. So a peer that is simply
+// not there is reported as fast as it ever was, while a stream that died in
+// seconds leaves room to ask again. A try is started only if the budget can pay
+// for its dial, because a dial with no time in it reaches nobody.
+constexpr int kFetchRunSeconds = kDialSeconds + kReplySeconds;
 
 namespace {
 
@@ -56,9 +63,9 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(
 }
 
 FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& dest,
-    const std::string& op, const Bytes& sealed)
+    const std::string& op, const Bytes& sealed, const std::chrono::seconds dialFor)
 {
-    auto stream = endpoint.connect(dest, std::chrono::seconds(kDialSeconds));
+    auto stream = endpoint.connect(dest, dialFor);
     if (!stream) {
         throw std::runtime_error("federation fetch: cannot reach " + dest);
     }
@@ -77,19 +84,28 @@ FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& des
 FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& dest,
     const std::string& op, const Bytes& sealed)
 {
+    const auto deadline
+        = std::chrono::steady_clock::now() + std::chrono::seconds(kFetchRunSeconds);
     for (int attempt = 1;; ++attempt) {
+        const auto left = std::chrono::duration_cast<std::chrono::seconds>(
+            deadline - std::chrono::steady_clock::now());
         try {
-            return fetchOnce(endpoint, dest, op, sealed);
+            return fetchOnce(endpoint, dest, op, sealed,
+                std::min(left, std::chrono::seconds(kDialSeconds)));
         } catch (const std::exception& error) {
             // The last one's reason is the one the user is told, so it is thrown
             // rather than turned into a message of this loop's own.
-            if (attempt >= kFetchAttempts) {
+            const auto gap = attempt < kFetchAttempts
+                ? std::chrono::seconds(kFetchRetryGapSeconds[attempt - 1])
+                : std::chrono::seconds(0);
+            if (attempt >= kFetchAttempts
+                || std::chrono::steady_clock::now() + gap + std::chrono::seconds(kDialSeconds)
+                    > deadline) {
                 throw;
             }
             bazarish::log::info("federation fetch: no answer from {} on try {}, asking again: {}",
                 bazarish::log::redact(dest), attempt, error.what());
-            std::this_thread::sleep_for(
-                std::chrono::seconds(kFetchRetryGapSeconds[attempt - 1]));
+            std::this_thread::sleep_for(gap);
         }
     }
 }
