@@ -56,6 +56,23 @@ std::uint16_t readBigEndian16(const unsigned char* const at)
         (static_cast<std::uint16_t>(at[0]) << kBitsPerByte) | static_cast<std::uint16_t>(at[1]));
 }
 
+// A frame whose body is a document. The rest carry bytes, because base64
+// over a 16 KiB chunk of a file would be a third of the connection spent
+// on nothing.
+bool carriesJson(const FrameType type)
+{
+    switch (type) {
+        case FrameType::eStreamData:
+        case FrameType::eStreamCredit:
+        case FrameType::eStreamClose:
+        case FrameType::eRawSend:
+        case FrameType::eRawRecv:
+            return false;
+        default:
+            return true;
+    }
+}
+
 }  // namespace
 
 ProtocolError::ProtocolError(const Fault fault, const std::string& message)
@@ -117,38 +134,6 @@ std::optional<FrameType> frameTypeFromByte(const std::uint8_t value)
     return std::nullopt;
 }
 
-bool carriesJson(const FrameType type)
-{
-    switch (type) {
-        case FrameType::eStreamData:
-        case FrameType::eStreamCredit:
-        case FrameType::eStreamClose:
-        case FrameType::eRawSend:
-        case FrameType::eRawRecv:
-            return false;
-        default:
-            return true;
-    }
-}
-
-bool ridesFlowSocket(const FrameType type)
-{
-    switch (type) {
-        // A close or a reset travels with the data it ends. Sent on the main
-        // socket instead, it would overtake bytes still queued on the flow's
-        // own, and a reader would be told the stream ended before it did.
-        case FrameType::eStreamData:
-        case FrameType::eStreamCredit:
-        case FrameType::eStreamClose:
-        case FrameType::eStreamReset:
-        case FrameType::eRawSend:
-        case FrameType::eRawRecv:
-            return true;
-        default:
-            return false;
-    }
-}
-
 std::string_view faultName(const Fault fault)
 {
     switch (fault) {
@@ -165,19 +150,6 @@ std::string_view faultName(const Fault fault)
         case Fault::eInternal: return "internal";
     }
     return "internal";
-}
-
-std::optional<Fault> faultFromName(const std::string_view name)
-{
-    const Fault all[] = {Fault::eVersion, Fault::eBadFrame, Fault::eUnknownId, Fault::eNoEndpoint,
-        Fault::eUnsupported, Fault::eRefused, Fault::eUnreachable, Fault::eTimeout, Fault::eClosed,
-        Fault::eWrongLane, Fault::eInternal};
-    for (const Fault fault : all) {
-        if (faultName(fault) == name) {
-            return fault;
-        }
-    }
-    return std::nullopt;
 }
 
 Bytes encode(const FrameType type, const std::uint32_t ref, const void* const body,

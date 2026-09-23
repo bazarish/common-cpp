@@ -86,12 +86,6 @@ enum class FrameType : std::uint8_t {
 
 std::string_view frameTypeName(FrameType type);
 std::optional<FrameType> frameTypeFromByte(std::uint8_t value);
-// True for the frames whose body is JSON. The rest carry bytes, because base64
-// over a 16 KiB chunk of a file would be a third of the connection spent on
-// nothing.
-bool carriesJson(FrameType type);
-// True for the frames that ride a flow's own socket when it has one.
-bool ridesFlowSocket(FrameType type);
 
 // What one side tells the other went wrong. An operation the gateway cannot
 // perform is one of these; it is never a zero, an empty list or a quiet success.
@@ -110,7 +104,6 @@ enum class Fault {
 };
 
 std::string_view faultName(Fault fault);
-std::optional<Fault> faultFromName(std::string_view name);
 
 class ProtocolError : public std::runtime_error {
 public:

@@ -49,17 +49,13 @@ int main()
     CHECK(!frameTypeFromByte(0x13).has_value());
     CHECK(!frameTypeFromByte(0xFF).has_value());
 
-    // Faults name themselves the same way in both directions.
+    // Every fault has a name of its own.
     std::set<std::string> faultNames;
     for (const Fault fault : kAllFaults) {
         const std::string name(faultName(fault));
         CHECK(!name.empty());
         CHECK(faultNames.insert(name).second);
-        const std::optional<Fault> back = faultFromName(name);
-        CHECK(back.has_value());
-        CHECK(back.value() == fault);
     }
-    CHECK(!faultFromName("no-such-fault").has_value());
 
     // The header is five bytes and the reference is big endian, because a
     // reader on another machine has to agree about which byte comes first.
@@ -95,27 +91,6 @@ int main()
     Bytes unknownType = empty;
     unknownType[0] = 0x7F;
     CHECK_THROWS(decode(unknownType.data(), unknownType.size()));
-
-    // Control frames carry a document; data frames carry bytes.
-    CHECK(carriesJson(FrameType::eReady));
-    CHECK(carriesJson(FrameType::eStreamReset));
-    CHECK(!carriesJson(FrameType::eStreamData));
-    CHECK(!carriesJson(FrameType::eStreamCredit));
-    CHECK(!carriesJson(FrameType::eStreamClose));
-    CHECK(!carriesJson(FrameType::eRawSend));
-    CHECK(!carriesJson(FrameType::eRawRecv));
-
-    // A close or a reset rides with the data it ends, or it would overtake it.
-    CHECK(ridesFlowSocket(FrameType::eStreamData));
-    CHECK(ridesFlowSocket(FrameType::eStreamCredit));
-    CHECK(ridesFlowSocket(FrameType::eStreamClose));
-    CHECK(ridesFlowSocket(FrameType::eStreamReset));
-    CHECK(ridesFlowSocket(FrameType::eRawSend));
-    CHECK(ridesFlowSocket(FrameType::eRawRecv));
-    CHECK(!ridesFlowSocket(FrameType::eStreamOpen));
-    CHECK(!ridesFlowSocket(FrameType::eStreamOpened));
-    CHECK(!ridesFlowSocket(FrameType::eStreamInbound));
-    CHECK(!ridesFlowSocket(FrameType::eEndpointCreate));
 
     // A document round trips; anything that is not one is refused.
     const nlohmann::json body = {{"version", kProtocolVersion}, {"resumed", true}};

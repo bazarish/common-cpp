@@ -386,9 +386,16 @@ std::size_t GatewayStream::readSome(void* const buffer, const std::size_t size)
     inbox_.erase(inbox_.begin(), inbox_.begin() + static_cast<std::ptrdiff_t>(got));
     lock.unlock();
 
-    // Read means consumed, and a credit is the total consumed so far.
+    // Read means consumed, and a credit is the total consumed so far. It goes
+    // out where this stream's data goes: a lane carries a stream's data, its
+    // credits and its end, or it is not that stream's lane.
     book_.consumed(got);
-    router_.send(gateway::encodeCredit(id_, book_.consumedTotal()));
+    const Bytes credit = gateway::encodeCredit(id_, book_.consumedTotal());
+    if (const http::SocketPtr own = router_.socketFor(id_, endpoint_)) {
+        own->send(std::vector<unsigned char>(credit.begin(), credit.end()));
+    } else {
+        router_.send(credit);
+    }
     return got;
 }
 
