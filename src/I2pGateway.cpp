@@ -35,9 +35,9 @@ using gateway::FrameType;
 // How long a caller waits for an answer to a request before giving up on the
 // gateway rather than on the operation.
 constexpr std::chrono::seconds kCallTimeout{60};
-// How often a blocked reader looks again at whether anything arrived, and how
-// often the cover thread looks at its two clocks.
-constexpr std::chrono::milliseconds kPoll{20};
+// How often the cover thread looks at its clocks. Nothing in the data path
+// waits on a timer: a read blocks until bytes arrive and a write goes out when
+// it is written.
 constexpr std::chrono::milliseconds kCoverTick{200};
 // A control socket is replaced at a quiet moment, not in the middle of one: it
 // must have carried nothing for this long, and have nothing outstanding.

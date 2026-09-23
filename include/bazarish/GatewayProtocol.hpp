@@ -44,11 +44,13 @@ inline constexpr std::size_t kInboundQueue = 8;
 inline constexpr std::size_t kDatagramQueue = 64;
 inline constexpr std::chrono::seconds kKeepalive{30};
 inline constexpr std::chrono::seconds kPongTimeout{15};
-// How often a destination's readiness and counts are pushed. Nothing else is:
-// what a gateway's own router knows of the network describes that machine and
-// its other clients, and a client that does not show it has no reason to be
-// told it.
-inline constexpr std::chrono::seconds kStatusPeriod{2};
+// How often a destination is looked at, not how often anything is sent: a
+// frame goes only when something changed. A caller waits for a destination to
+// be ready before it dials, so this interval is added to everything that
+// creates one - which is why it is a fraction of a second and not seconds.
+// Nothing else is pushed: what a gateway's own router knows of the network
+// describes that machine and its other clients.
+inline constexpr std::chrono::milliseconds kStatusPeriod{250};
 inline constexpr std::size_t kMaxSocketsPerSession = 16;
 
 // Cover traffic. The answer's length is drawn by the gateway and the request's
