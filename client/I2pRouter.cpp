@@ -352,14 +352,13 @@ void setI2pSocksProxy(std::string host, const int port)
         g_proxyHost = std::move(host);
         g_proxyPort = port;
     }
-    if (usingSamTransport()) {
-        return;  // the clearnet side of an external router is its operator's
-    }
     const std::lock_guard<std::mutex> lock(routerMutex());
-    if (const std::unique_ptr<bazarish::i2p::Router>& router = routerSlot(); router) {
-        // Written into the engine now; the transports read it as they come up.
-        router->setSocksProxy(i2pSocksProxyHost(), i2pSocksProxyPort());
+    const std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
+    if (!router || !router->capabilities().proxy) {
+        return;  // the clearnet side of a router elsewhere is its operator's
     }
+    // Written into the engine now; the transports read it as they come up.
+    router->setSocksProxy(i2pSocksProxyHost(), i2pSocksProxyPort());
 }
 
 std::string i2pSocksProxyHost()
@@ -376,12 +375,16 @@ int i2pSocksProxyPort()
 
 std::optional<bazarish::i2p::ProxyState> i2pProxyState()
 {
-    if (usingSamTransport()) {
-        return std::nullopt;
-    }
     const std::lock_guard<std::mutex> lock(routerMutex());
     const std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
     if (!router || !router->running()) {
+        return std::nullopt;
+    }
+    // What the transport can answer, not which transport it is: a router
+    // outside this process has a clearnet side of its own and asking about it
+    // throws. Guessing by backend meant a third one arrived and the throw went
+    // out through whatever was reading the status.
+    if (!router->capabilities().proxy) {
         return std::nullopt;
     }
     return router->proxyState();
@@ -390,8 +393,8 @@ std::optional<bazarish::i2p::ProxyState> i2pProxyState()
 void restartI2pRouter(const std::filesystem::path& dataDir)
 {
     (void)dataDir;
-    if (usingSamTransport()) {
-        return;  // there is no engine here to cycle
+    if (usingSamTransport() || usingGatewayTransport()) {
+        return;  // the engine is not in this process, so there is none to cycle
     }
     const std::lock_guard<std::mutex> lock(routerMutex());
     std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
@@ -400,7 +403,9 @@ void restartI2pRouter(const std::filesystem::path& dataDir)
     }
     stopWarmPool();  // join the warmer before the router's network stops
     router->stop();
-    router->setSocksProxy(i2pSocksProxyHost(), i2pSocksProxyPort());
+    if (router->capabilities().proxy) {
+        router->setSocksProxy(i2pSocksProxyHost(), i2pSocksProxyPort());
+    }
     router->start();
     ensureWarmPool(*router);
 }
