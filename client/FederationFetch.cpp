@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <thread>
@@ -37,6 +38,17 @@ constexpr int kFetchRunSeconds = kDialSeconds + kReplySeconds;
 
 namespace {
 
+// Per thread, because a fetch runs on the thread that asked for it and reports
+// to whoever is watching that one.
+thread_local std::function<void(const std::string&)> stageSink;
+
+void sayStage(const std::string& stage)
+{
+    if (stageSink) {
+        stageSink(stage);
+    }
+}
+
 // A warm, pre-built throwaway dest from the pool when one is ready (no cold
 // tunnel-build latency), else a fresh one built cold. Either way the dest is
 // single-use and belongs to whoever asked for it; connecting out does not need a
@@ -46,11 +58,13 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(
 {
     std::shared_ptr<bazarish::i2p::Endpoint> endpoint = acquireWarmDest();
     if (endpoint) {
+        sayStage("Taking a destination to ask from");
         // A spare belongs to nobody while it waits; from here it is this
         // account's lookup, and the status view should say so.
         router.retagEndpoint(*endpoint, "Contact lookup", owner);
         return endpoint;
     }
+    sayStage("Building a destination to ask from");
     endpoint = router.createEndpoint(bazarish::i2p::EndpointConfig{
         router.generateKeys(), privacy, bazarish::i2p::kDefaultTunnelQuantity, false,
         "Contact lookup", owner});
@@ -65,6 +79,7 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(
 FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& dest,
     const std::string& op, const Bytes& sealed, const std::chrono::seconds dialFor)
 {
+    sayStage("Reaching their server");
     auto stream = endpoint.connect(dest, dialFor);
     if (!stream) {
         throw std::runtime_error("federation fetch: cannot reach " + dest);
@@ -73,6 +88,7 @@ FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& des
     // thread: an add sits at "preparing" for as long as this waits.
     stream->setReadTimeout(std::chrono::seconds(kReplySeconds));
 
+    sayStage("Waiting for their answer");
     const FederationFetchResult reply = federationSendFetch(*stream, op, sealed);
     FetchOutcome outcome;
     outcome.ok = reply.ok;
@@ -103,6 +119,7 @@ FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& des
                     > deadline) {
                 throw;
             }
+            sayStage("No answer; asking again");
             bazarish::log::info("federation fetch: no answer from {} on try {}, asking again: {}",
                 bazarish::log::redact(dest), attempt, error.what());
             std::this_thread::sleep_for(gap);
@@ -111,6 +128,11 @@ FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& des
 }
 
 }  // namespace
+
+void tellFetchStages(std::function<void(const std::string&)> tell)
+{
+    stageSink = std::move(tell);
+}
 
 FetchOutcome federationFetchOverI2p(bazarish::i2p::Router& router, const std::string& dest,
     const std::string& op, const Bytes& sealed, const bazarish::i2p::Privacy privacy,

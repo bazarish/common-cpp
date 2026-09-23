@@ -11,6 +11,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -144,6 +145,11 @@ public:
     // Frames written while there is no control socket. The gap is seconds and
     // the session outlives it, so they wait rather than fail.
     std::deque<Bytes> waiting;
+    // A socket is up but what it has to replay has not gone out yet. Until it
+    // has, a stream's data waits with the rest instead of being dropped: it is
+    // past the replay that was worked out for this socket, so nothing else
+    // would ever send it.
+    bool holding = false;
     std::atomic<std::int64_t> lastUse{0};
 };
 
@@ -829,6 +835,17 @@ void GatewayRouter::openControl()
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->cookie = body.value("session", std::string());
+        // From here this socket's replay is what settles the order, so nothing
+        // written from now on may go out ahead of it. An attempt that failed
+        // after this point may have left data waiting; it is still in the book
+        // and so in the replay below, and sending it again as well would send
+        // it twice.
+        link_->holding = true;
+        for (auto at = link_->waiting.begin(); at != link_->waiting.end();) {
+            const bool isData = !at->empty()
+                && static_cast<FrameType>(at->front()) == FrameType::eStreamData;
+            at = isData ? link_->waiting.erase(at) : std::next(at);
+        }
         std::map<std::uint32_t, std::uint64_t> alive;
         if (const auto found = body.find("streams"); found != body.end() && found->is_array()) {
             for (const nlohmann::json& one : *found) {
@@ -875,27 +892,26 @@ void GatewayRouter::openControl()
 
     // Anything asked and not yet answered goes again, with the same reference:
     // identifiers are never reused, so the gateway answers a repeat from what
-    // it already did rather than doing it twice.
-    std::vector<Bytes> again;
-    std::deque<Bytes> held;
+    // it already did rather than doing it twice. Said under the lock that hands
+    // the socket over, so that a write racing this one queues behind these
+    // frames instead of overtaking them.
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         for (const auto& [ref, request] : link_->awaited) {
             (void)ref;
             const std::lock_guard<std::mutex> waiting(request->mutex);
             if (!request->done && !request->request.empty()) {
-                again.push_back(request->request);
+                opened.socket->send(std::vector<unsigned char>(
+                    request->request.begin(), request->request.end()));
             }
         }
+        for (const Bytes& frame : link_->waiting) {
+            opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
+        }
+        link_->waiting.clear();
         link_->control = opened.socket;
-        held.swap(link_->waiting);
+        link_->holding = false;
         link_->lastUse.store(millisNow());
-    }
-    for (const Bytes& frame : again) {
-        opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
-    }
-    for (const Bytes& frame : held) {
-        opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
     }
     bazarish::log::info("i2p: a gateway running i2pd {}, {}",
         body.value("i2pd", std::string("?")), resumed ? "session rejoined" : "new session");
@@ -1057,9 +1073,10 @@ void Link::send(const Bytes& frame)
             // Between control sockets. A stream's data is not queued here: the
             // bytes are still held against their window, and the resume on the
             // next socket puts them back in order. Queueing them as well would
-            // send them twice, once behind the replay.
-            if (!frame.empty()
-                && static_cast<FrameType>(frame.front()) != FrameType::eStreamData) {
+            // send them twice, once behind the replay. Once that replay has
+            // been worked out, the opposite holds and everything waits.
+            if (holding || (!frame.empty()
+                && static_cast<FrameType>(frame.front()) != FrameType::eStreamData)) {
                 // The gap is seconds and the session outlives it, so the rest
                 // waits rather than disappearing.
                 waiting.push_back(frame);

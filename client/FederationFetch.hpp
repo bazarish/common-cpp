@@ -6,9 +6,17 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/I2p.hpp>
 
+#include <functional>
 #include <string>
 
 namespace bazarish::client {
+
+// Where a fetch says what it is doing, for whoever started it on this thread.
+// A fetch is a dial and then a wait, and one that says "resolving" for both
+// leaves a person watching an add with no idea which of the two is slow. Set
+// for the length of a call and cleared after; a thread that sets none is told
+// nothing.
+void tellFetchStages(std::function<void(const std::string&)> tell);
 
 // Speaks one federation fetch frame to a .b32.i2p destination over a FRESH
 // throwaway destination on the embedded router (the direct path: our own server
