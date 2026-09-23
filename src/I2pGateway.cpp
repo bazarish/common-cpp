@@ -741,7 +741,7 @@ void GatewayRouter::openControl()
     // name is gone whatever the reason, and saying so beats letting a reader
     // wait for bytes that are never coming.
     nlohmann::json ours = nlohmann::json::array();
-    std::vector<std::pair<GatewayStream*, std::uint64_t>> replay;
+    std::vector<Bytes> replay;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         cookie_ = body.value("session", std::string());
@@ -760,7 +760,11 @@ void GatewayRouter::openControl()
                 continue;
             }
             ours.push_back({{"id", streamId}, {"received", stream->received()}});
-            replay.emplace_back(stream, found->second);
+            // Built here, under the lock that keeps the stream alive: the map
+            // holds pointers to objects their callers own.
+            for (Bytes& frame : stream->replayFrames(found->second)) {
+                replay.push_back(std::move(frame));
+            }
         }
         if (const auto found = body.find("endpoints"); found != body.end() && found->is_array()) {
             for (const nlohmann::json& one : *found) {
@@ -781,10 +785,8 @@ void GatewayRouter::openControl()
         opened.socket->send(std::vector<unsigned char>(resume.begin(), resume.end()));
     }
     // This side's own unconfirmed bytes, in order, before anything new.
-    for (const auto& [stream, theirs] : replay) {
-        for (const Bytes& frame : stream->replayFrames(theirs)) {
-            opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
-        }
+    for (const Bytes& frame : replay) {
+        opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
     }
 
     std::deque<Bytes> held;
@@ -896,9 +898,16 @@ void GatewayRouter::send(const Bytes& frame)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         if (socket_ == nullptr) {
-            // Between control sockets. The gap is seconds and the session
-            // outlives it, so this waits rather than disappearing.
-            waiting_.push_back(frame);
+            // Between control sockets. A stream's data is not queued here: the
+            // bytes are still held against their window, and the resume on the
+            // next socket puts them back in order. Queueing them as well would
+            // send them twice, once behind the replay.
+            if (!frame.empty()
+                && static_cast<FrameType>(frame.front()) != FrameType::eStreamData) {
+                // The gap is seconds and the session outlives it, so the rest
+                // waits rather than disappearing.
+                waiting_.push_back(frame);
+            }
             return;
         }
         socket = socket_;
