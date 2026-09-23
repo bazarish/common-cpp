@@ -60,7 +60,16 @@ inline constexpr std::size_t kDecoyRequestMaxBytes = 2048;
 // being fetched from rather than one connection that lives for hours.
 inline constexpr std::chrono::seconds kControlSocketMinLife{1};
 inline constexpr std::chrono::seconds kControlSocketMaxLife{300};
-inline constexpr std::chrono::seconds kControlGapMax{30};
+// The break between one control socket and the next must not be felt: it is
+// the client's own doing, and what it costs is the longest a message can sit at
+// the gateway before the client hears of it. What an observer sees is the
+// number of connections and how long each lived, not the dead time between
+// them, so making the gap short costs the cover nothing.
+inline constexpr std::chrono::seconds kControlGapMax{2};
+// The gap has its own floor. The decoy timer is a separate clock with a range
+// of its own - half a second to five minutes - and the two have nothing to say
+// to each other.
+inline constexpr std::chrono::milliseconds kControlGapMin{200};
 
 enum class FrameType : std::uint8_t {
     eHello = 0x01,

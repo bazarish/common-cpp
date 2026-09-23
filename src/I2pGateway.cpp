@@ -79,6 +79,14 @@ std::size_t drawBetween(const std::size_t low, const std::size_t high)
     return low + static_cast<std::size_t>(value % (high - low + 1));
 }
 
+// The longest this client leaves itself without a control socket on purpose.
+std::chrono::milliseconds chosenGap(const RouterConfig& config)
+{
+    return config.gatewayControlMaxGap.count() > 0
+        ? std::chrono::milliseconds(config.gatewayControlMaxGap)
+        : std::chrono::milliseconds(gateway::kControlGapMax);
+}
+
 [[noreturn]] void notWithAGateway(const char* const what)
 {
     throw std::runtime_error(
@@ -293,8 +301,10 @@ public:
     // In service, which a session is across a gap between control sockets: the
     // client drops its own on purpose, and the session outlives it.
     bool running() const override { return live_.load(); }
-    // There is a control socket right now. The gateway's own tunnels are its
-    // business; what this side can honestly say is whether it can be reached.
+    // In service and reachable. A gap between control sockets is this client's
+    // own doing and the session lives through it, so a gap is not "not ready" -
+    // it would flicker the status every minute for no reason. Being without one
+    // for longer than a gap may last is the thing worth reporting.
     bool ready() const override;
 
     int knownRouters() const override { return known_.load(); }
@@ -728,8 +738,18 @@ void GatewayRouter::stop()
 
 bool GatewayRouter::ready() const
 {
-    const std::lock_guard<std::mutex> lock(link_->mutex);
-    return live_.load() && link_->control != nullptr && link_->control->open();
+    if (!live_.load()) {
+        return false;
+    }
+    {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        if (link_->control != nullptr && link_->control->open()) {
+            return true;
+        }
+    }
+    const std::chrono::milliseconds allowed
+        = chosenGap(config_) + kCoverTick + kQuietBeforeChurn;
+    return millisNow() - aloneSince_.load() < allowed.count();
 }
 
 void GatewayRouter::openControl()
@@ -961,7 +981,9 @@ void GatewayRouter::coverLoop()
             continue;
         }
         closeControl();
-        std::this_thread::sleep_for(drawBetween(std::min(decoyMin, maxGap), maxGap));
+        std::this_thread::sleep_for(
+            drawBetween(std::min(std::chrono::milliseconds(gateway::kControlGapMin), maxGap),
+                maxGap));
         if (!live_.load()) {
             break;
         }
