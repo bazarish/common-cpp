@@ -93,11 +93,49 @@ struct Pending {
     Frame answer;
 };
 
+class GatewayStream;
+class GatewayEndpoint;
+
+// What a stream or a destination needs from the connection, held by shared_ptr
+// so that one of them outliving the router is a flow that stops working rather
+// than a write into a dead object. The embedded transport keeps its owner alive
+// the same way, and at process exit a destination really can outlive the router
+// that made it.
+class Link {
+public:
+    explicit Link(const bool odd) : ids_(odd) {}
+
+    std::uint32_t nextId() { return ids_.next(); }
+    void send(const Bytes& frame);
+    http::SocketPtr socketFor(std::uint32_t flow) const;
+    // A stream's own socket, else its destination's, else none.
+    http::SocketPtr socketFor(std::uint32_t stream, std::uint32_t endpoint) const;
+    // Sends and waits for the answer that carries the same reference.
+    Frame call(const Bytes& frame, std::uint32_t ref, std::chrono::seconds timeout);
+    void forget(std::uint32_t id);
+    // A stream is owned by whoever asked for it, so this holds a pointer and
+    // the stream says when it goes.
+    void remember(std::uint32_t id, GatewayStream* stream);
+
+    mutable std::mutex mutex;
+    gateway::Ids ids_;
+    http::SocketPtr socket;
+    std::string cookie;
+    std::map<std::uint32_t, std::shared_ptr<Pending>> awaited;
+    std::map<std::uint32_t, std::weak_ptr<GatewayEndpoint>> endpoints;
+    std::map<std::uint32_t, GatewayStream*> streams;
+    std::map<std::uint32_t, http::SocketPtr> flows;
+    // Frames written while there is no control socket. The gap is seconds and
+    // the session outlives it, so they wait rather than fail.
+    std::deque<Bytes> waiting;
+    std::atomic<std::int64_t> lastUse{0};
+};
+
 class GatewayRouter;
 
 class GatewayStream : public StreamBackend {
 public:
-    GatewayStream(GatewayRouter& router, std::uint32_t id, std::uint32_t endpoint);
+    GatewayStream(std::shared_ptr<Link> link, std::uint32_t id, std::uint32_t endpoint);
     ~GatewayStream() override;
 
     void setReadTimeout(std::chrono::seconds timeout) override { readTimeout_ = timeout; }
@@ -124,7 +162,7 @@ private:
     // Moves what is queued into the window, as far as it reaches.
     void drain();
 
-    GatewayRouter& router_;
+    std::shared_ptr<Link> link_;
     std::uint32_t id_;
     // A stream with no socket of its own rides its destination's, when that
     // destination has one, and the main socket otherwise.
@@ -145,7 +183,7 @@ private:
 
 class GatewayEndpoint : public EndpointBackend {
 public:
-    GatewayEndpoint(GatewayRouter& router, std::uint32_t id, std::string host, bool raw);
+    GatewayEndpoint(std::shared_ptr<Link> link, std::uint32_t id, std::string host, bool raw);
     ~GatewayEndpoint() override;
 
     bool ready() const override { return ready_.load(); }
@@ -194,7 +232,7 @@ public:
     int leaseSets() const { return leases_.load(); }
 
 private:
-    GatewayRouter& router_;
+    std::shared_ptr<Link> link_;
     std::uint32_t id_;
     std::string host_;
     bool raw_;
@@ -213,7 +251,7 @@ class GatewayRouter : public RouterBackend {
 public:
     explicit GatewayRouter(const RouterConfig& config)
         : config_(config)
-        , ids_(/*odd=*/false)
+        , link_(std::make_shared<Link>(/*odd=*/false))
     {
     }
 
@@ -267,19 +305,8 @@ public:
 
     // --- what the endpoints and streams use ---
 
-    std::uint32_t nextId() { return ids_.next(); }
-    void send(const Bytes& frame);
-    // Sends and waits for the answer that carries the same reference.
-    Frame call(const Bytes& frame, std::uint32_t ref, std::chrono::seconds timeout);
-    void forget(std::uint32_t id);
-    // A stream is owned by whoever asked for it, so the router holds a pointer
-    // and the stream says when it goes.
-    void remember(std::uint32_t id, GatewayStream* stream);
-    // Gives a flow a socket of its own, once it is worth one.
+    // Gives a flow a socket of its own, at the moment it is created.
     void attach(std::uint32_t flow, std::uint64_t received);
-    http::SocketPtr socketFor(std::uint32_t flow) const;
-    // A stream's own socket, else its destination's, else none.
-    http::SocketPtr socketFor(std::uint32_t stream, std::uint32_t endpoint) const;
 
 private:
     void arrived(const http::SocketPtr& socket, const std::vector<unsigned char>& message);
@@ -294,22 +321,17 @@ private:
     void coverLoop();
     void decoy();
     bool quiet() const;
+    // Gives up on a session the gateway can no longer be holding, so what was
+    // written for it stops accumulating for nothing.
+    void abandon();
 
     RouterConfig config_;
-    gateway::Ids ids_;
-    http::SocketPtr socket_;
-    std::string cookie_;
-    mutable std::mutex mutex_;
-    std::map<std::uint32_t, std::shared_ptr<Pending>> pending_;
-    std::map<std::uint32_t, std::weak_ptr<GatewayEndpoint>> endpoints_;
-    std::map<std::uint32_t, GatewayStream*> streams_;
-    std::map<std::uint32_t, http::SocketPtr> flows_;
-    // Frames written while there is no control socket. The gap is seconds and
-    // the session outlives it, so they wait rather than fail.
-    std::deque<Bytes> waiting_;
+    std::shared_ptr<Link> link_;
     std::thread cover_;
     std::atomic<bool> live_{false};
-    std::atomic<std::int64_t> lastUse_{0};
+    // When the control socket went away, which is when the gateway's own clock
+    // on this session started.
+    std::atomic<std::int64_t> aloneSince_{0};
     std::atomic<int> known_{0};
     std::atomic<int> floodfills_{0};
     std::atomic<int> inbound_{0};
@@ -319,18 +341,18 @@ private:
 // --- stream ---
 
 GatewayStream::GatewayStream(
-    GatewayRouter& router, const std::uint32_t id, const std::uint32_t endpoint)
-    : router_(router)
+    std::shared_ptr<Link> link, const std::uint32_t id, const std::uint32_t endpoint)
+    : link_(std::move(link))
     , id_(id)
     , endpoint_(endpoint)
 {
-    router_.remember(id_, this);
+    link_->remember(id_, this);
 }
 
 GatewayStream::~GatewayStream()
 {
     close();
-    router_.remember(id_, nullptr);
+    link_->remember(id_, nullptr);
 }
 
 void GatewayStream::arrived(const Bytes& data)
@@ -391,10 +413,10 @@ std::size_t GatewayStream::readSome(void* const buffer, const std::size_t size)
     // credits and its end, or it is not that stream's lane.
     book_.consumed(got);
     const Bytes credit = gateway::encodeCredit(id_, book_.consumedTotal());
-    if (const http::SocketPtr own = router_.socketFor(id_, endpoint_)) {
+    if (const http::SocketPtr own = link_->socketFor(id_, endpoint_)) {
         own->send(std::vector<unsigned char>(credit.begin(), credit.end()));
     } else {
-        router_.send(credit);
+        link_->send(credit);
     }
     return got;
 }
@@ -432,7 +454,7 @@ void GatewayStream::drain()
     bool ending = false;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        const http::SocketPtr own = router_.socketFor(id_, endpoint_);
+        const http::SocketPtr own = link_->socketFor(id_, endpoint_);
         while (!outbox_.empty()) {
             // Never more than the window the gateway granted, and never more
             // than one message: a message cannot be interleaved with another,
@@ -448,7 +470,7 @@ void GatewayStream::drain()
             if (own) {
                 own->send(std::vector<unsigned char>(frame.begin(), frame.end()));
             } else {
-                router_.send(frame);
+                link_->send(frame);
             }
             outbox_.erase(outbox_.begin(), outbox_.begin() + static_cast<std::ptrdiff_t>(piece));
         }
@@ -460,12 +482,12 @@ void GatewayStream::drain()
             if (own) {
                 own->send(std::vector<unsigned char>(frame.begin(), frame.end()));
             } else {
-                router_.send(frame);
+                link_->send(frame);
             }
         }
     }
     if (ending) {
-        router_.forget(id_);
+        link_->forget(id_);
     }
 }
 
@@ -502,8 +524,8 @@ void GatewayStream::close()
 // --- endpoint ---
 
 GatewayEndpoint::GatewayEndpoint(
-    GatewayRouter& router, const std::uint32_t id, std::string host, const bool raw)
-    : router_(router)
+    std::shared_ptr<Link> link, const std::uint32_t id, std::string host, const bool raw)
+    : link_(std::move(link))
     , id_(id)
     , host_(std::move(host))
     , raw_(raw)
@@ -556,14 +578,14 @@ std::unique_ptr<StreamBackend> GatewayEndpoint::connect(
     if (stopped_.load()) {
         return nullptr;
     }
-    const std::uint32_t id = router_.nextId();
-    auto stream = std::make_unique<GatewayStream>(router_, id, id_);
+    const std::uint32_t id = link_->nextId();
+    auto stream = std::make_unique<GatewayStream>(link_, id, id_);
     const Bytes ask = gateway::encodeJson(FrameType::eStreamOpen, id,
         {{"endpoint", id_}, {"host", host}, {"deadline", timeout.count()}});
     // The whole deadline travels: the gateway re-issues the dial until it runs
     // out, because a LeaseSet that is not in the netDb yet is a reason to try
     // again rather than to fail.
-    const Frame answer = router_.call(ask, id, timeout + kCallTimeout);
+    const Frame answer = link_->call(ask, id, timeout + kCallTimeout);
     if (answer.type != FrameType::eStreamOpened) {
         return nullptr;
     }
@@ -601,7 +623,7 @@ void GatewayEndpoint::sendRawDatagram(
     // Media rides a socket of its own, so a file cannot queue in front of it.
     // With none attached its datagrams are dropped: audio that arrives late has
     // already been played past.
-    const http::SocketPtr out = router_.socketFor(id_);
+    const http::SocketPtr out = link_->socketFor(id_);
     if (out) {
         out->send(frame);
     }
@@ -630,8 +652,8 @@ void GatewayEndpoint::stop()
     if (stopped_.exchange(true)) {
         return;
     }
-    router_.send(gateway::encode(FrameType::eEndpointStop, id_));
-    router_.forget(id_);
+    link_->send(gateway::encode(FrameType::eEndpointStop, id_));
+    link_->forget(id_);
     arrived_.notify_all();
 }
 
@@ -649,8 +671,8 @@ http::SocketDial GatewayRouter::dialFor() const
     dial.maxMessageBytes = gateway::kMaxFrameBytes;
     dial.idleTimeout = gateway::kKeepalive + gateway::kPongTimeout;
     dial.headers[gateway::kTokenHeader] = config_.gatewayToken;
-    if (!cookie_.empty()) {
-        dial.headers[gateway::kSessionHeader] = cookie_;
+    if (!link_->cookie.empty()) {
+        dial.headers[gateway::kSessionHeader] = link_->cookie;
     }
     return dial;
 }
@@ -673,14 +695,14 @@ void GatewayRouter::stop()
     http::SocketPtr socket;
     std::vector<http::SocketPtr> flows;
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        socket = socket_;
-        socket_.reset();
-        for (const auto& [flow, held] : flows_) {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        socket = link_->socket;
+        link_->socket.reset();
+        for (const auto& [flow, held] : link_->flows) {
             (void)flow;
             flows.push_back(held);
         }
-        flows_.clear();
+        link_->flows.clear();
     }
     for (const http::SocketPtr& held : flows) {
         held->close();
@@ -692,8 +714,8 @@ void GatewayRouter::stop()
 
 bool GatewayRouter::ready() const
 {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return live_.load() && socket_ != nullptr && socket_->open();
+    const std::lock_guard<std::mutex> lock(link_->mutex);
+    return live_.load() && link_->socket != nullptr && link_->socket->open();
 }
 
 void GatewayRouter::openControl()
@@ -704,9 +726,10 @@ void GatewayRouter::openControl()
             arrived(socket, message);
         },
         [this](const http::SocketPtr& gone) {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            if (socket_ == gone) {
-                socket_.reset();
+            const std::lock_guard<std::mutex> lock(link_->mutex);
+            if (link_->socket == gone) {
+                link_->socket.reset();
+                aloneSince_.store(millisNow());
             }
         });
     if (opened.socket == nullptr) {
@@ -715,11 +738,11 @@ void GatewayRouter::openControl()
 
     // Said on the socket itself rather than through send(), which would queue
     // it behind whatever is waiting for a socket that is not up yet.
-    const std::uint32_t id = nextId();
+    const std::uint32_t id = link_->nextId();
     const std::shared_ptr<Pending> pending = std::make_shared<Pending>();
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        pending_[id] = pending;
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        link_->awaited[id] = pending;
     }
     const Bytes hello
         = gateway::encodeJson(FrameType::eHello, id, {{"version", gateway::kProtocolVersion}});
@@ -733,8 +756,8 @@ void GatewayRouter::openControl()
         answer = pending->answer;
     }
     {
-        const std::lock_guard<std::mutex> held(mutex_);
-        pending_.erase(id);
+        const std::lock_guard<std::mutex> held(link_->mutex);
+        link_->awaited.erase(id);
     }
     if (!said || answer.type != FrameType::eReady) {
         opened.socket->close();
@@ -750,15 +773,15 @@ void GatewayRouter::openControl()
     nlohmann::json ours = nlohmann::json::array();
     std::vector<Bytes> replay;
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        cookie_ = body.value("session", std::string());
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        link_->cookie = body.value("session", std::string());
         std::map<std::uint32_t, std::uint64_t> alive;
         if (const auto found = body.find("streams"); found != body.end() && found->is_array()) {
             for (const nlohmann::json& one : *found) {
                 alive[one.value("id", 0U)] = one.value("received", std::uint64_t{0});
             }
         }
-        for (const auto& [streamId, stream] : streams_) {
+        for (const auto& [streamId, stream] : link_->streams) {
             const auto found = alive.find(streamId);
             if (found == alive.end()) {
                 if (resumed) {
@@ -775,8 +798,8 @@ void GatewayRouter::openControl()
         }
         if (const auto found = body.find("endpoints"); found != body.end() && found->is_array()) {
             for (const nlohmann::json& one : *found) {
-                const auto at = endpoints_.find(one.value("id", 0U));
-                if (at == endpoints_.end()) {
+                const auto at = link_->endpoints.find(one.value("id", 0U));
+                if (at == link_->endpoints.end()) {
                     continue;
                 }
                 if (const std::shared_ptr<GatewayEndpoint> endpoint = at->second.lock()) {
@@ -788,7 +811,7 @@ void GatewayRouter::openControl()
     }
     if (!ours.empty()) {
         const Bytes resume
-            = gateway::encodeJson(FrameType::eResume, nextId(), {{"streams", ours}});
+            = gateway::encodeJson(FrameType::eResume, link_->nextId(), {{"streams", ours}});
         opened.socket->send(std::vector<unsigned char>(resume.begin(), resume.end()));
     }
     // This side's own unconfirmed bytes, in order, before anything new.
@@ -798,10 +821,10 @@ void GatewayRouter::openControl()
 
     std::deque<Bytes> held;
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        socket_ = opened.socket;
-        held.swap(waiting_);
-        lastUse_.store(millisNow());
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        link_->socket = opened.socket;
+        held.swap(link_->waiting);
+        link_->lastUse.store(millisNow());
     }
     for (const Bytes& frame : held) {
         opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
@@ -814,22 +837,46 @@ void GatewayRouter::closeControl()
 {
     http::SocketPtr socket;
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        socket = socket_;
-        socket_.reset();
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        socket = link_->socket;
+        link_->socket.reset();
     }
     if (socket) {
+        aloneSince_.store(millisNow());
         socket->close();
     }
 }
 
+void GatewayRouter::abandon()
+{
+    std::vector<GatewayStream*> stranded;
+    {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        if (link_->waiting.empty() && link_->streams.empty()) {
+            return;
+        }
+        link_->waiting.clear();
+        for (const auto& [id, stream] : link_->streams) {
+            (void)id;
+            stranded.push_back(stream);
+        }
+        for (GatewayStream* const stream : stranded) {
+            stream->reset();
+        }
+    }
+    bazarish::log::warn(
+        "i2p: the gateway has been out of reach longer than a session lasts; "
+        "{} stream(s) given up",
+        stranded.size());
+}
+
 bool GatewayRouter::quiet() const
 {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    if (!pending_.empty()) {
+    const std::lock_guard<std::mutex> lock(link_->mutex);
+    if (!link_->awaited.empty()) {
         return false;
     }
-    return millisNow() - lastUse_.load() >= kQuietBeforeChurn.count();
+    return millisNow() - link_->lastUse.load() >= kQuietBeforeChurn.count();
 }
 
 void GatewayRouter::decoy()
@@ -894,17 +941,24 @@ void GatewayRouter::coverLoop()
             openControl();
         } catch (const std::exception& error) {
             bazarish::log::warn("i2p: the gateway would not take a new socket: {}", error.what());
+            // Past the term a session lasts there is nothing left at the far
+            // end to come back to, and what is queued for it is queued for
+            // nothing.
+            if (millisNow() - aloneSince_.load()
+                > std::chrono::milliseconds(gateway::kSessionTtl).count()) {
+                abandon();
+            }
         }
         churnAt = nextChurn();
     }
 }
 
-void GatewayRouter::send(const Bytes& frame)
+void Link::send(const Bytes& frame)
 {
     http::SocketPtr socket;
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        if (socket_ == nullptr) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (socket == nullptr) {
             // Between control sockets. A stream's data is not queued here: the
             // bytes are still held against their window, and the resume on the
             // next socket puts them back in order. Queueing them as well would
@@ -913,24 +967,24 @@ void GatewayRouter::send(const Bytes& frame)
                 && static_cast<FrameType>(frame.front()) != FrameType::eStreamData) {
                 // The gap is seconds and the session outlives it, so the rest
                 // waits rather than disappearing.
-                waiting_.push_back(frame);
+                waiting.push_back(frame);
             }
             return;
         }
-        socket = socket_;
-        lastUse_.store(millisNow());
+        socket = socket;
+        lastUse.store(millisNow());
     }
     socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
 }
 
-http::SocketPtr GatewayRouter::socketFor(const std::uint32_t flow) const
+http::SocketPtr Link::socketFor(const std::uint32_t flow) const
 {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    const auto found = flows_.find(flow);
-    return found == flows_.end() ? nullptr : found->second;
+    const std::lock_guard<std::mutex> lock(mutex);
+    const auto found = flows.find(flow);
+    return found == flows.end() ? nullptr : found->second;
 }
 
-http::SocketPtr GatewayRouter::socketFor(
+http::SocketPtr Link::socketFor(
     const std::uint32_t stream, const std::uint32_t endpoint) const
 {
     const http::SocketPtr own = socketFor(stream);
@@ -943,8 +997,8 @@ void GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t receive
         return;
     }
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        if (flows_.count(flow) > 0 || flows_.size() + 1 >= gateway::kMaxSocketsPerSession) {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        if (link_->flows.count(flow) > 0 || link_->flows.size() + 1 >= gateway::kMaxSocketsPerSession) {
             return;
         }
     }
@@ -954,8 +1008,8 @@ void GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t receive
             arrived(socket, message);
         },
         [this, flow](const http::SocketPtr&) {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            flows_.erase(flow);
+            const std::lock_guard<std::mutex> lock(link_->mutex);
+            link_->flows.erase(flow);
         });
     if (opened.socket == nullptr) {
         // A flow without a socket of its own rides the main one. Slower under
@@ -964,19 +1018,19 @@ void GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t receive
         return;
     }
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        flows_[flow] = opened.socket;
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        link_->flows[flow] = opened.socket;
     }
     opened.socket->send(gateway::encodeJson(FrameType::eAttach, flow, {{"received", received}}));
 }
 
-Frame GatewayRouter::call(
+Frame Link::call(
     const Bytes& frame, const std::uint32_t ref, const std::chrono::seconds timeout)
 {
     const std::shared_ptr<Pending> pending = std::make_shared<Pending>();
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        pending_[ref] = pending;
+        const std::lock_guard<std::mutex> lock(mutex);
+        awaited[ref] = pending;
     }
     send(frame);
 
@@ -987,8 +1041,8 @@ Frame GatewayRouter::call(
     Frame answer = pending->answer;
     lock.unlock();
     {
-        const std::lock_guard<std::mutex> held(mutex_);
-        pending_.erase(ref);
+        const std::lock_guard<std::mutex> held(mutex);
+        awaited.erase(ref);
     }
     if (!answered) {
         throw std::runtime_error("bazarish::i2p: the gateway did not answer in time");
@@ -996,27 +1050,27 @@ Frame GatewayRouter::call(
     return answer;
 }
 
-void GatewayRouter::remember(const std::uint32_t id, GatewayStream* const stream)
+void Link::remember(const std::uint32_t id, GatewayStream* const stream)
 {
-    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::lock_guard<std::mutex> lock(mutex);
     if (stream == nullptr) {
-        streams_.erase(id);
+        streams.erase(id);
         return;
     }
-    streams_[id] = stream;
+    streams[id] = stream;
 }
 
-void GatewayRouter::forget(const std::uint32_t id)
+void Link::forget(const std::uint32_t id)
 {
     http::SocketPtr flow;
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        streams_.erase(id);
-        endpoints_.erase(id);
-        const auto found = flows_.find(id);
-        if (found != flows_.end()) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        streams.erase(id);
+        endpoints.erase(id);
+        const auto found = flows.find(id);
+        if (found != flows.end()) {
             flow = found->second;
-            flows_.erase(found);
+            flows.erase(found);
         }
     }
     if (flow) {
@@ -1039,7 +1093,7 @@ Keys GatewayRouter::generateKeys()
 
 std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointConfig& config)
 {
-    const std::uint32_t id = nextId();
+    const std::uint32_t id = link_->nextId();
     // In this client the two coincide exactly: raw datagrams carry a call's
     // media and nothing else, and a call's media is the only destination that
     // asks for the realtime lane. A raw destination that is not realtime would
@@ -1049,7 +1103,8 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         {"privacy", privacyName(config.privacy)}, {"tunnels", config.tunnelQuantity},
         {"published", config.published}, {"realtime", config.realtime}};
     const Frame answer
-        = call(gateway::encodeJson(FrameType::eEndpointCreate, id, ask), id, kCallTimeout);
+        = link_->call(gateway::encodeJson(FrameType::eEndpointCreate, id, ask), id,
+            kCallTimeout);
     if (answer.type != FrameType::eOk) {
         throw std::runtime_error("bazarish::i2p: the gateway refused a destination");
     }
@@ -1057,10 +1112,10 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
     if (host.empty()) {
         throw std::runtime_error("bazarish::i2p: the gateway named no address");
     }
-    const auto endpoint = std::make_shared<GatewayEndpoint>(*this, id, host, raw);
+    const auto endpoint = std::make_shared<GatewayEndpoint>(link_, id, host, raw);
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        endpoints_[id] = endpoint;
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        link_->endpoints[id] = endpoint;
     }
     if (raw || config.bulk) {
         // A destination that carries media, or one raised for a single
@@ -1075,8 +1130,8 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
 std::vector<LocalDestination> GatewayRouter::localDestinations() const
 {
     std::vector<LocalDestination> destinations;
-    const std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& [id, held] : endpoints_) {
+    const std::lock_guard<std::mutex> lock(link_->mutex);
+    for (const auto& [id, held] : link_->endpoints) {
         (void)id;
         const std::shared_ptr<GatewayEndpoint> endpoint = held.lock();
         if (endpoint == nullptr) {
@@ -1110,9 +1165,9 @@ void GatewayRouter::dispatch(const Frame& frame)
     // An answer is whatever carries the reference somebody is waiting on.
     std::shared_ptr<Pending> waiting;
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        const auto found = pending_.find(frame.ref);
-        if (found != pending_.end()) {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        const auto found = link_->awaited.find(frame.ref);
+        if (found != link_->awaited.end()) {
             waiting = found->second;
         }
     }
@@ -1136,13 +1191,13 @@ void GatewayRouter::dispatch(const Frame& frame)
     std::shared_ptr<GatewayEndpoint> endpoint;
     GatewayStream* stream = nullptr;
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        const auto atEndpoint = endpoints_.find(frame.ref);
-        if (atEndpoint != endpoints_.end()) {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        const auto atEndpoint = link_->endpoints.find(frame.ref);
+        if (atEndpoint != link_->endpoints.end()) {
             endpoint = atEndpoint->second.lock();
         }
-        const auto atStream = streams_.find(frame.ref);
-        if (atStream != streams_.end()) {
+        const auto atStream = link_->streams.find(frame.ref);
+        if (atStream != link_->streams.end()) {
             stream = atStream->second;
         }
     }
@@ -1168,9 +1223,9 @@ void GatewayRouter::dispatch(const Frame& frame)
             const nlohmann::json body = gateway::bodyJson(frame);
             std::shared_ptr<GatewayEndpoint> on;
             {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                const auto found = endpoints_.find(body.value("endpoint", 0U));
-                if (found != endpoints_.end()) {
+                const std::lock_guard<std::mutex> lock(link_->mutex);
+                const auto found = link_->endpoints.find(body.value("endpoint", 0U));
+                if (found != link_->endpoints.end()) {
                     on = found->second.lock();
                 }
             }
@@ -1178,7 +1233,7 @@ void GatewayRouter::dispatch(const Frame& frame)
                 return;
             }
             on->callerArrived(
-                std::make_unique<GatewayStream>(*this, frame.ref, body.value("endpoint", 0U)),
+                std::make_unique<GatewayStream>(link_, frame.ref, body.value("endpoint", 0U)),
                 body.value("peer", std::string()));
             return;
         }
