@@ -119,7 +119,7 @@ public:
 
     mutable std::mutex mutex;
     gateway::Ids ids_;
-    http::SocketPtr socket;
+    http::SocketPtr control;
     std::string cookie;
     std::map<std::uint32_t, std::shared_ptr<Pending>> awaited;
     std::map<std::uint32_t, std::weak_ptr<GatewayEndpoint>> endpoints;
@@ -696,8 +696,8 @@ void GatewayRouter::stop()
     std::vector<http::SocketPtr> flows;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
-        socket = link_->socket;
-        link_->socket.reset();
+        socket = link_->control;
+        link_->control.reset();
         for (const auto& [flow, held] : link_->flows) {
             (void)flow;
             flows.push_back(held);
@@ -715,7 +715,7 @@ void GatewayRouter::stop()
 bool GatewayRouter::ready() const
 {
     const std::lock_guard<std::mutex> lock(link_->mutex);
-    return live_.load() && link_->socket != nullptr && link_->socket->open();
+    return live_.load() && link_->control != nullptr && link_->control->open();
 }
 
 void GatewayRouter::openControl()
@@ -727,8 +727,8 @@ void GatewayRouter::openControl()
         },
         [this](const http::SocketPtr& gone) {
             const std::lock_guard<std::mutex> lock(link_->mutex);
-            if (link_->socket == gone) {
-                link_->socket.reset();
+            if (link_->control == gone) {
+                link_->control.reset();
                 aloneSince_.store(millisNow());
             }
         });
@@ -822,7 +822,7 @@ void GatewayRouter::openControl()
     std::deque<Bytes> held;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
-        link_->socket = opened.socket;
+        link_->control = opened.socket;
         held.swap(link_->waiting);
         link_->lastUse.store(millisNow());
     }
@@ -838,8 +838,8 @@ void GatewayRouter::closeControl()
     http::SocketPtr socket;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
-        socket = link_->socket;
-        link_->socket.reset();
+        socket = link_->control;
+        link_->control.reset();
     }
     if (socket) {
         aloneSince_.store(millisNow());
@@ -958,7 +958,7 @@ void Link::send(const Bytes& frame)
     http::SocketPtr socket;
     {
         const std::lock_guard<std::mutex> lock(mutex);
-        if (socket == nullptr) {
+        if (control == nullptr) {
             // Between control sockets. A stream's data is not queued here: the
             // bytes are still held against their window, and the resume on the
             // next socket puts them back in order. Queueing them as well would
@@ -971,7 +971,7 @@ void Link::send(const Bytes& frame)
             }
             return;
         }
-        socket = socket;
+        socket = control;
         lastUse.store(millisNow());
     }
     socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
