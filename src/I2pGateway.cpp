@@ -187,7 +187,8 @@ private:
 
 class GatewayEndpoint : public EndpointBackend {
 public:
-    GatewayEndpoint(std::shared_ptr<Link> link, std::uint32_t id, std::string host, bool raw);
+    GatewayEndpoint(std::shared_ptr<Link> link, std::uint32_t id, std::string host, bool raw,
+        std::string label, std::string owner);
     ~GatewayEndpoint() override;
 
     bool ready() const override { return ready_.load(); }
@@ -228,6 +229,8 @@ public:
 
     std::uint32_t id() const { return id_; }
     bool raw() const { return raw_; }
+    const std::string& label() const { return label_; }
+    const std::string& owner() const { return owner_; }
     void statusChanged(bool ready, int in, int out, int leases);
     void datagramArrived(std::vector<std::uint8_t> payload);
     void callerArrived(std::unique_ptr<GatewayStream> stream, const std::string& peer);
@@ -240,6 +243,11 @@ private:
     std::uint32_t id_;
     std::string host_;
     bool raw_;
+    // What this destination is for and whose it is. Neither went to the
+    // gateway - it has no use for them, and no business knowing which
+    // destination carries a call - so the status view reads them from here.
+    std::string label_;
+    std::string owner_;
     std::atomic<bool> ready_{false};
     std::atomic<bool> stopped_{false};
     std::atomic<int> in_{0};
@@ -527,12 +535,14 @@ void GatewayStream::close()
 
 // --- endpoint ---
 
-GatewayEndpoint::GatewayEndpoint(
-    std::shared_ptr<Link> link, const std::uint32_t id, std::string host, const bool raw)
+GatewayEndpoint::GatewayEndpoint(std::shared_ptr<Link> link, const std::uint32_t id,
+    std::string host, const bool raw, std::string label, std::string owner)
     : link_(std::move(link))
     , id_(id)
     , host_(std::move(host))
     , raw_(raw)
+    , label_(std::move(label))
+    , owner_(std::move(owner))
 {
 }
 
@@ -1131,7 +1141,8 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
     if (host.empty()) {
         throw std::runtime_error("bazarish::i2p: the gateway named no address");
     }
-    const auto endpoint = std::make_shared<GatewayEndpoint>(link_, id, host, raw);
+    const auto endpoint
+        = std::make_shared<GatewayEndpoint>(link_, id, host, raw, config.label, config.owner);
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->endpoints[id] = endpoint;
@@ -1157,8 +1168,8 @@ std::vector<LocalDestination> GatewayRouter::localDestinations() const
             continue;
         }
         LocalDestination entry;
-        // The label and the owner never went to the gateway; the caller joins
-        // its own onto this.
+        entry.label = endpoint->label();
+        entry.owner = endpoint->owner();
         entry.host = endpoint->routingHost();
         entry.ready = endpoint->ready();
         entry.inboundTunnels = endpoint->inboundTunnels();
