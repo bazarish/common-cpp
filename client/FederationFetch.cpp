@@ -28,6 +28,10 @@ constexpr int kReplySeconds = 90;
 // the far side dropped all end the same way, and all of them are gone by the
 // next try. Only silence is repeated - a peer that answered has answered.
 constexpr int kFetchAttempts = 3;
+// What a try must still be able to pay for to be worth starting: a dial at
+// least this long even when the last one was quicker, and an answer after it.
+constexpr int kLeastDialSeconds = 10;
+constexpr int kLeastReplySeconds = 20;
 constexpr int kFetchRetryGapSeconds[kFetchAttempts - 1] = {2, 6};
 // The whole lookup, however many tries fit inside it - and one try that spends
 // its whole dial and its whole wait already fills it. So a peer that is simply
@@ -77,16 +81,20 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(
 }
 
 FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& dest,
-    const std::string& op, const Bytes& sealed, const std::chrono::seconds dialFor)
+    const std::string& op, const Bytes& sealed, const std::chrono::seconds dialFor,
+    const std::chrono::seconds waitFor, std::chrono::seconds& dialTook)
 {
     sayStage("Reaching their server");
+    const auto dialStarted = std::chrono::steady_clock::now();
     auto stream = endpoint.connect(dest, dialFor);
+    dialTook = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - dialStarted);
     if (!stream) {
         throw std::runtime_error("federation fetch: cannot reach " + dest);
     }
     // A peer that accepts the stream and then says nothing must not hold this
     // thread: an add sits at "preparing" for as long as this waits.
-    stream->setReadTimeout(std::chrono::seconds(kReplySeconds));
+    stream->setReadTimeout(waitFor);
 
     sayStage("Waiting for their answer");
     const FederationFetchResult reply = federationSendFetch(*stream, op, sealed);
@@ -102,21 +110,30 @@ FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& des
 {
     const auto deadline
         = std::chrono::steady_clock::now() + std::chrono::seconds(kFetchRunSeconds);
+    // What the dial actually cost last time. A peer whose leaseset is already in
+    // hand is dialled in a second or two, and holding the whole dial allowance
+    // back for a try that will not need it is what turned three tries into one
+    // whenever the first one was met with silence.
+    std::chrono::seconds dialTook{kDialSeconds};
     for (int attempt = 1;; ++attempt) {
         const auto left = std::chrono::duration_cast<std::chrono::seconds>(
             deadline - std::chrono::steady_clock::now());
         try {
             return fetchOnce(endpoint, dest, op, sealed,
-                std::min(left, std::chrono::seconds(kDialSeconds)));
+                std::min(left, std::chrono::seconds(kDialSeconds)),
+                std::min(left, std::chrono::seconds(kReplySeconds)), dialTook);
         } catch (const std::exception& error) {
             // The last one's reason is the one the user is told, so it is thrown
             // rather than turned into a message of this loop's own.
             const auto gap = attempt < kFetchAttempts
                 ? std::chrono::seconds(kFetchRetryGapSeconds[attempt - 1])
                 : std::chrono::seconds(0);
+            // A try is worth starting only if what is left can pay for the dial
+            // it now knows the price of, and for an answer after it.
+            const auto next = std::max(dialTook, std::chrono::seconds(kLeastDialSeconds))
+                + std::chrono::seconds(kLeastReplySeconds);
             if (attempt >= kFetchAttempts
-                || std::chrono::steady_clock::now() + gap + std::chrono::seconds(kDialSeconds)
-                    > deadline) {
+                || std::chrono::steady_clock::now() + gap + next > deadline) {
                 throw;
             }
             sayStage("No answer; asking again");
