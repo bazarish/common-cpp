@@ -102,7 +102,6 @@ std::string_view frameTypeName(const FrameType type)
         case FrameType::eStreamReset: return "stream-reset";
         case FrameType::eRawSend: return "raw-send";
         case FrameType::eRawRecv: return "raw-recv";
-        case FrameType::eRouterStatus: return "router-status";
     }
     return "unknown";
 }
@@ -128,7 +127,6 @@ std::optional<FrameType> frameTypeFromByte(const std::uint8_t value)
         case FrameType::eStreamReset:
         case FrameType::eRawSend:
         case FrameType::eRawRecv:
-        case FrameType::eRouterStatus:
             return static_cast<FrameType>(value);
     }
     return std::nullopt;

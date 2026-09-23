@@ -17,7 +17,7 @@ const std::vector<FrameType> kAllTypes = {FrameType::eHello, FrameType::eReady, 
     FrameType::eEndpointStop, FrameType::eEndpointStatus, FrameType::eStreamOpen,
     FrameType::eStreamOpened, FrameType::eStreamInbound, FrameType::eStreamData,
     FrameType::eStreamCredit, FrameType::eStreamClose, FrameType::eStreamReset,
-    FrameType::eRawSend, FrameType::eRawRecv, FrameType::eRouterStatus};
+    FrameType::eRawSend, FrameType::eRawRecv};
 
 const std::vector<Fault> kAllFaults = {Fault::eVersion, Fault::eBadFrame, Fault::eUnknownId,
     Fault::eNoEndpoint, Fault::eUnsupported, Fault::eRefused, Fault::eUnreachable, Fault::eTimeout,
@@ -47,6 +47,7 @@ int main()
     // A byte nobody assigned is not quietly accepted.
     CHECK(!frameTypeFromByte(0x00).has_value());
     CHECK(!frameTypeFromByte(0x13).has_value());
+    CHECK(!frameTypeFromByte(0x40).has_value());
     CHECK(!frameTypeFromByte(0xFF).has_value());
 
     // Every fault has a name of its own.

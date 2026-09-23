@@ -42,6 +42,10 @@ constexpr std::chrono::milliseconds kCoverTick{200};
 // A control socket is replaced at a quiet moment, not in the middle of one: it
 // must have carried nothing for this long, and have nothing outstanding.
 constexpr std::chrono::milliseconds kQuietBeforeChurn{1000};
+// How soon a control socket that died is tried again, and how far that wait
+// grows while the gateway stays out of reach.
+constexpr std::chrono::milliseconds kFirstRetry{500};
+constexpr std::chrono::milliseconds kSlowestRetry{15000};
 
 std::int64_t millisNow()
 {
@@ -280,10 +284,9 @@ public:
     Capabilities capabilities() const override
     {
         Capabilities what;
-        // The gateway's own router answers these, and they are what the
-        // connection progress and the status view read. They describe a machine
-        // the user chose, and the view says so.
-        what.routerCounters = true;
+        // What a gateway's router knows of the network describes that machine
+        // and everyone else using it. It is neither shown nor sent.
+        what.routerCounters = false;
         what.destinationCounters = true;
         // A slice of the netDb is what a server packs into a private reseed,
         // and a client never asks for one.
@@ -307,11 +310,11 @@ public:
     // for longer than a gap may last is the thing worth reporting.
     bool ready() const override;
 
-    int knownRouters() const override { return known_.load(); }
-    int floodfills() const override { return floodfills_.load(); }
+    int knownRouters() const override { return 0; }
+    int floodfills() const override { return 0; }
     int transitTunnels() const override { return 0; }
-    int inboundTunnels() const override { return inbound_.load(); }
-    int outboundTunnels() const override { return outbound_.load(); }
+    int inboundTunnels() const override { return 0; }
+    int outboundTunnels() const override { return 0; }
     std::vector<TransportPeer> transportPeers() const override { return {}; }
     std::vector<LocalDestination> localDestinations() const override;
 
@@ -343,6 +346,7 @@ private:
     void coverLoop();
     void decoy();
     bool quiet() const;
+    bool hasControl() const;
     // Gives up on a session the gateway can no longer be holding, so what was
     // written for it stops accumulating for nothing.
     void abandon();
@@ -354,10 +358,6 @@ private:
     // When the control socket went away, which is when the gateway's own clock
     // on this session started.
     std::atomic<std::int64_t> aloneSince_{0};
-    std::atomic<int> known_{0};
-    std::atomic<int> floodfills_{0};
-    std::atomic<int> inbound_{0};
-    std::atomic<int> outbound_{0};
 };
 
 // --- stream ---
@@ -741,12 +741,12 @@ bool GatewayRouter::ready() const
     if (!live_.load()) {
         return false;
     }
-    {
-        const std::lock_guard<std::mutex> lock(link_->mutex);
-        if (link_->control != nullptr && link_->control->open()) {
-            return true;
-        }
+    if (hasControl()) {
+        return true;
     }
+    // A gap between control sockets is this client's own doing and the session
+    // lives through it, so a gap is not "not ready". Being without one for
+    // longer than a gap may last is.
     const std::chrono::milliseconds allowed
         = chosenGap(config_) + kCoverTick + kQuietBeforeChurn;
     return millisNow() - aloneSince_.load() < allowed.count();
@@ -918,6 +918,12 @@ void GatewayRouter::abandon()
         stranded.size());
 }
 
+bool GatewayRouter::hasControl() const
+{
+    const std::lock_guard<std::mutex> lock(link_->mutex);
+    return link_->control != nullptr && link_->control->open();
+}
+
 bool GatewayRouter::quiet() const
 {
     const std::lock_guard<std::mutex> lock(link_->mutex);
@@ -962,12 +968,47 @@ void GatewayRouter::coverLoop()
     };
     auto decoyAt = nextDecoy();
     auto churnAt = nextChurn();
+    // When the next attempt at a control socket may be made. A socket the
+    // client dropped on purpose waits out its gap; one that died on its own
+    // waits a moment and then keeps trying, slower each time, so a gateway that
+    // is down is not hammered.
+    auto openAt = std::chrono::steady_clock::now();
+    std::chrono::milliseconds backoff = kFirstRetry;
+
     while (live_.load()) {
         std::this_thread::sleep_for(kCoverTick);
         if (!live_.load()) {
             break;
         }
         const auto now = std::chrono::steady_clock::now();
+
+        // No control socket is the thing to fix first, whatever put it there.
+        // Waiting for the next scheduled change would leave the session mute
+        // for as long as that change is away.
+        if (!hasControl()) {
+            if (now < openAt) {
+                continue;
+            }
+            try {
+                openControl();
+                backoff = kFirstRetry;
+                churnAt = nextChurn();
+            } catch (const std::exception& error) {
+                bazarish::log::warn(
+                    "i2p: the gateway would not take a socket: {}", error.what());
+                openAt = std::chrono::steady_clock::now() + backoff;
+                backoff = std::min(backoff * 2, kSlowestRetry);
+                // Past the term a session lasts there is nothing left at the
+                // far end to come back to, and what is queued for it is queued
+                // for nothing.
+                if (millisNow() - aloneSince_.load()
+                    > std::chrono::milliseconds(gateway::kSessionTtl).count()) {
+                    abandon();
+                }
+            }
+            continue;
+        }
+
         if (now >= decoyAt) {
             decoy();
             decoyAt = nextDecoy();
@@ -981,25 +1022,9 @@ void GatewayRouter::coverLoop()
             continue;
         }
         closeControl();
-        std::this_thread::sleep_for(
-            drawBetween(std::min(std::chrono::milliseconds(gateway::kControlGapMin), maxGap),
-                maxGap));
-        if (!live_.load()) {
-            break;
-        }
-        try {
-            openControl();
-        } catch (const std::exception& error) {
-            bazarish::log::warn("i2p: the gateway would not take a new socket: {}", error.what());
-            // Past the term a session lasts there is nothing left at the far
-            // end to come back to, and what is queued for it is queued for
-            // nothing.
-            if (millisNow() - aloneSince_.load()
-                > std::chrono::milliseconds(gateway::kSessionTtl).count()) {
-                abandon();
-            }
-        }
-        churnAt = nextChurn();
+        openAt = std::chrono::steady_clock::now()
+            + drawBetween(std::min(std::chrono::milliseconds(gateway::kControlGapMin), maxGap),
+                maxGap);
     }
 }
 
@@ -1228,15 +1253,6 @@ void GatewayRouter::dispatch(const Frame& frame)
         waiting->answer = frame;
         waiting->done = true;
         waiting->answered.notify_all();
-        return;
-    }
-
-    if (frame.type == FrameType::eRouterStatus) {
-        const nlohmann::json body = gateway::bodyJson(frame);
-        known_.store(body.value("known", 0));
-        floodfills_.store(body.value("floodfills", 0));
-        inbound_.store(body.value("in", 0));
-        outbound_.store(body.value("out", 0));
         return;
     }
 

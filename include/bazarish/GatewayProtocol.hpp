@@ -44,6 +44,10 @@ inline constexpr std::size_t kInboundQueue = 8;
 inline constexpr std::size_t kDatagramQueue = 64;
 inline constexpr std::chrono::seconds kKeepalive{30};
 inline constexpr std::chrono::seconds kPongTimeout{15};
+// How often a destination's readiness and counts are pushed. Nothing else is:
+// what a gateway's own router knows of the network describes that machine and
+// its other clients, and a client that does not show it has no reason to be
+// told it.
 inline constexpr std::chrono::seconds kStatusPeriod{2};
 inline constexpr std::size_t kMaxSocketsPerSession = 16;
 
@@ -90,7 +94,6 @@ enum class FrameType : std::uint8_t {
     eStreamReset = 0x26,
     eRawSend = 0x30,
     eRawRecv = 0x31,
-    eRouterStatus = 0x40,
 };
 
 std::string_view frameTypeName(FrameType type);
