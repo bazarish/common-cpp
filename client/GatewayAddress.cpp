@@ -80,10 +80,15 @@ std::string GatewayAddress::toString() const
     text += host;
     const int standard = tls ? kHttpsPort : kHttpPort;
     if (port != standard) {
-        text += ":" + std::to_string(port);
+        // Appended rather than built with +: GCC 12, which is the base the
+        // portable build is made on, misreads a literal added to a string and
+        // refuses it as a memcpy of the whole address space.
+        text += ':';
+        text += std::to_string(port);
     }
     text += path;
-    text += "#" + token;
+    text += '#';
+    text += token;
     return text;
 }
 
