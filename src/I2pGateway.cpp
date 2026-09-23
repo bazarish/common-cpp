@@ -241,12 +241,14 @@ public:
 
     std::uint32_t id() const { return id_; }
     bool raw() const { return raw_; }
-    const std::string& label() const
+    // By value: a reference would outlive the lock that guards it, and retag
+    // may be renaming the string while the status view reads it.
+    std::string label() const
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         return label_;
     }
-    const std::string& owner() const
+    std::string owner() const
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         return owner_;
