@@ -85,12 +85,16 @@ std::size_t drawBetween(const std::size_t low, const std::size_t high)
         std::string("bazarish::i2p: ") + what + " is not something a gateway can answer");
 }
 
-// One request waiting for the answer that carries its reference.
+// One request waiting for the answer that carries its reference. It keeps the
+// frame it sent: a control socket is replaced on a timer, and a request that
+// was in flight when its socket went is a request nobody will ever answer
+// unless it is asked again.
 struct Pending {
     std::mutex mutex;
     std::condition_variable answered;
     bool done = false;
     Frame answer;
+    Bytes request;
 };
 
 class GatewayStream;
@@ -819,12 +823,26 @@ void GatewayRouter::openControl()
         opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
     }
 
+    // Anything asked and not yet answered goes again, with the same reference:
+    // identifiers are never reused, so the gateway answers a repeat from what
+    // it already did rather than doing it twice.
+    std::vector<Bytes> again;
     std::deque<Bytes> held;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
+        for (const auto& [ref, request] : link_->awaited) {
+            (void)ref;
+            const std::lock_guard<std::mutex> waiting(request->mutex);
+            if (!request->done && !request->request.empty()) {
+                again.push_back(request->request);
+            }
+        }
         link_->control = opened.socket;
         held.swap(link_->waiting);
         link_->lastUse.store(millisNow());
+    }
+    for (const Bytes& frame : again) {
+        opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
     }
     for (const Bytes& frame : held) {
         opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
@@ -1028,6 +1046,7 @@ Frame Link::call(
     const Bytes& frame, const std::uint32_t ref, const std::chrono::seconds timeout)
 {
     const std::shared_ptr<Pending> pending = std::make_shared<Pending>();
+    pending->request = frame;
     {
         const std::lock_guard<std::mutex> lock(mutex);
         awaited[ref] = pending;
