@@ -551,6 +551,14 @@ asio::awaitable<void> Server::Impl::accept()
         tcp::socket socket(asio::make_strand(io));
         co_await acceptor->async_accept(
             socket, asio::redirect_error(asio::use_awaitable, acceptError));
+        if (!acceptError) {
+            // Nagle holds a small write back until the last one is answered,
+            // and a small write is what a request, a reply and a credit all
+            // are. Measured on loopback: 80 ms a round trip with it, single
+            // digits without.
+            boost::system::error_code ignored;
+            socket.set_option(tcp::no_delay(true), ignored);
+        }
         if (acceptError) {
             if (stopping.load()) {
                 break;

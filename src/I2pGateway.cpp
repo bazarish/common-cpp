@@ -241,8 +241,25 @@ public:
 
     std::uint32_t id() const { return id_; }
     bool raw() const { return raw_; }
-    const std::string& label() const { return label_; }
-    const std::string& owner() const { return owner_; }
+    const std::string& label() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return label_;
+    }
+    const std::string& owner() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return owner_;
+    }
+    // A destination taken out of the warm reserve becomes whatever it was taken
+    // for, and the status view has to say so. Nothing goes to the gateway: it
+    // never knew what this destination was for in the first place.
+    void retag(std::string label, std::string owner)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        label_ = std::move(label);
+        owner_ = std::move(owner);
+    }
     void statusChanged(bool ready, int in, int out, int leases);
     void datagramArrived(std::vector<std::uint8_t> payload);
     void callerArrived(std::unique_ptr<GatewayStream> stream, const std::string& peer);
@@ -326,7 +343,8 @@ public:
 
     Keys generateKeys() override;
     std::shared_ptr<EndpointBackend> createEndpoint(const EndpointConfig& config) override;
-    void retagEndpoint(const EndpointBackend&, std::string, std::string) override {}
+    void retagEndpoint(
+        const EndpointBackend& endpoint, std::string label, std::string owner) override;
 
     // --- what the endpoints and streams use ---
 
@@ -1202,6 +1220,20 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         attach(id, 0);
     }
     return endpoint;
+}
+
+void GatewayRouter::retagEndpoint(
+    const EndpointBackend& endpoint, std::string label, std::string owner)
+{
+    const std::lock_guard<std::mutex> lock(link_->mutex);
+    for (const auto& [id, held] : link_->endpoints) {
+        (void)id;
+        const std::shared_ptr<GatewayEndpoint> mine = held.lock();
+        if (mine != nullptr && mine.get() == &endpoint) {
+            mine->retag(std::move(label), std::move(owner));
+            return;
+        }
+    }
 }
 
 std::vector<LocalDestination> GatewayRouter::localDestinations() const

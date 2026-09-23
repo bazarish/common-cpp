@@ -240,6 +240,10 @@ Connected connect(const SocketDial& dial)
             return out;
         }
         out.plain->expires_never();
+        // Small frames are the whole of this protocol; Nagle would hold each
+        // one until the last was answered.
+        boost::system::error_code ignoredOption;
+        out.plain->socket().set_option(tcp::no_delay(true), ignoredOption);
         return out;
     }
 
@@ -277,6 +281,9 @@ Connected connect(const SocketDial& dial)
         return out;
     }
     beast::get_lowest_layer(*out.secure).expires_never();
+    boost::system::error_code ignoredOption;
+    beast::get_lowest_layer(*out.secure).socket().set_option(
+        tcp::no_delay(true), ignoredOption);
     return out;
 }
 
