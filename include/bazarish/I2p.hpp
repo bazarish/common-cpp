@@ -323,6 +323,17 @@ struct RouterConfig {
     std::string gatewayPin;
     // False only for the hop to a front on this same machine.
     bool gatewayTls = true;
+    // How this client's own traffic to the gateway is shaped: how often it
+    // fetches something it throws away, and how long it keeps a control socket
+    // before replacing it. An observer of the clearnet leg sees connection
+    // lifetimes and byte timing and nothing else, and one connection that lives
+    // for hours is not what a browser does. Zero takes the protocol's own
+    // figure, which is what a deployment with no opinion wants.
+    std::chrono::milliseconds gatewayDecoyMin{0};
+    std::chrono::milliseconds gatewayDecoyMax{0};
+    std::chrono::seconds gatewayControlMinLife{0};
+    std::chrono::seconds gatewayControlMaxLife{0};
+    std::chrono::seconds gatewayControlMaxGap{0};
 };
 
 // What the engine made of the proxy configuration, read back from it rather than

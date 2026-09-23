@@ -35,7 +35,10 @@ int main(int argc, char** argv)
 {
     const std::string dataDir = argc > 1 ? argv[1] : "/tmp/baz-i2p-smoke";
 
-    bazarish::i2p::Router router(bazarish::i2p::RouterConfig{dataDir, bazarish::i2p::Role::eClient});
+    bazarish::i2p::RouterConfig config;
+    config.dataDir = dataDir;
+    config.role = bazarish::i2p::Role::eClient;
+    bazarish::i2p::Router router(config);
     std::printf("[smoke] waiting for router...\n");
     router.waitReady(seconds(300));
     std::printf("[smoke] router ready=%d knownRouters=%d\n", router.ready(), router.knownRouters());

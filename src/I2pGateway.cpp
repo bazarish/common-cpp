@@ -35,8 +35,49 @@ using gateway::FrameType;
 // How long a caller waits for an answer to a request before giving up on the
 // gateway rather than on the operation.
 constexpr std::chrono::seconds kCallTimeout{60};
-// How often a blocked reader looks again at whether anything arrived.
+// How often a blocked reader looks again at whether anything arrived, and how
+// often the cover thread looks at its two clocks.
 constexpr std::chrono::milliseconds kPoll{20};
+constexpr std::chrono::milliseconds kCoverTick{200};
+// A control socket is replaced at a quiet moment, not in the middle of one: it
+// must have carried nothing for this long, and have nothing outstanding.
+constexpr std::chrono::milliseconds kQuietBeforeChurn{1000};
+
+std::int64_t millisNow()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// A number between the two, from the system's random source.
+std::chrono::milliseconds drawBetween(
+    const std::chrono::milliseconds low, const std::chrono::milliseconds high)
+{
+    if (high <= low) {
+        return low;
+    }
+    const Bytes draw = randomBytes(sizeof(std::uint64_t));
+    std::uint64_t value = 0;
+    for (const unsigned char byte : draw) {
+        value = (value << 8) | byte;
+    }
+    const std::uint64_t span = static_cast<std::uint64_t>((high - low).count()) + 1;
+    return low + std::chrono::milliseconds(static_cast<std::int64_t>(value % span));
+}
+
+std::size_t drawBetween(const std::size_t low, const std::size_t high)
+{
+    if (high <= low) {
+        return low;
+    }
+    const Bytes draw = randomBytes(sizeof(std::uint64_t));
+    std::uint64_t value = 0;
+    for (const unsigned char byte : draw) {
+        value = (value << 8) | byte;
+    }
+    return low + static_cast<std::size_t>(value % (high - low + 1));
+}
 
 [[noreturn]] void notWithAGateway(const char* const what)
 {
@@ -71,6 +112,11 @@ public:
     // Bytes the gateway sent for this stream.
     void arrived(const Bytes& data);
     void creditedBy(std::uint64_t total);
+    // How much this side has taken in, which is what a resume tells the
+    // gateway, and what it has sent that the gateway has not confirmed, which
+    // is what goes out again.
+    std::uint64_t received() const { return book_.received(); }
+    std::vector<Bytes> replayFrames(std::uint64_t peerReceived);
     void farSideFinished();
     void reset();
 
@@ -194,8 +240,12 @@ public:
 
     void start() override;
     void stop() override;
-    bool running() const override { return socket_ != nullptr && socket_->open(); }
-    bool ready() const override { return running(); }
+    // In service, which a session is across a gap between control sockets: the
+    // client drops its own on purpose, and the session outlives it.
+    bool running() const override { return live_.load(); }
+    // There is a control socket right now. The gateway's own tunnels are its
+    // business; what this side can honestly say is whether it can be reached.
+    bool ready() const override;
 
     int knownRouters() const override { return known_.load(); }
     int floodfills() const override { return floodfills_.load(); }
@@ -235,6 +285,15 @@ private:
     void arrived(const http::SocketPtr& socket, const std::vector<unsigned char>& message);
     void dispatch(const Frame& frame);
     http::SocketDial dialFor() const;
+    // Opens a control socket, says hello, and puts back what a socket that died
+    // left unfinished. Throws when the gateway will not have it.
+    void openControl();
+    void closeControl();
+    // The timers that make this look like a host being fetched from rather than
+    // one connection that lives for hours.
+    void coverLoop();
+    void decoy();
+    bool quiet() const;
 
     RouterConfig config_;
     gateway::Ids ids_;
@@ -245,6 +304,12 @@ private:
     std::map<std::uint32_t, std::weak_ptr<GatewayEndpoint>> endpoints_;
     std::map<std::uint32_t, GatewayStream*> streams_;
     std::map<std::uint32_t, http::SocketPtr> flows_;
+    // Frames written while there is no control socket. The gap is seconds and
+    // the session outlives it, so they wait rather than fail.
+    std::deque<Bytes> waiting_;
+    std::thread cover_;
+    std::atomic<bool> live_{false};
+    std::atomic<std::int64_t> lastUse_{0};
     std::atomic<int> known_{0};
     std::atomic<int> floodfills_{0};
     std::atomic<int> inbound_{0};
@@ -338,6 +403,18 @@ void GatewayStream::writeAll(const void* const data, const std::size_t size)
         outbox_.insert(outbox_.end(), at, at + size);
     }
     drain();
+}
+
+std::vector<Bytes> GatewayStream::replayFrames(const std::uint64_t peerReceived)
+{
+    const Bytes again = book_.replay(peerReceived);
+    std::vector<Bytes> frames;
+    for (std::size_t at = 0; at < again.size(); at += gateway::kMaxBodyBytes) {
+        const std::size_t piece = std::min(gateway::kMaxBodyBytes, again.size() - at);
+        frames.push_back(gateway::encode(
+            FrameType::eStreamData, id_, again.data() + at, piece));
+    }
+    return frames;
 }
 
 void GatewayStream::drain()
@@ -573,44 +650,19 @@ http::SocketDial GatewayRouter::dialFor() const
 
 void GatewayRouter::start()
 {
-    if (running()) {
+    if (live_.load()) {
         return;
     }
-    const http::SocketDialResult opened = http::openSocket(
-        dialFor(),
-        [this](const http::SocketPtr& socket, const std::vector<unsigned char>& message) {
-            arrived(socket, message);
-        },
-        [this](const http::SocketPtr&) {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            socket_.reset();
-        });
-    if (opened.socket == nullptr) {
-        throw std::runtime_error("bazarish::i2p: the gateway would not open: " + opened.error);
-    }
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        socket_ = opened.socket;
-    }
-
-    const std::uint32_t id = nextId();
-    const Frame ready = call(
-        gateway::encodeJson(FrameType::eHello, id, {{"version", gateway::kProtocolVersion}}), id,
-        kCallTimeout);
-    if (ready.type != FrameType::eReady) {
-        stop();
-        throw std::runtime_error("bazarish::i2p: the gateway would not say hello");
-    }
-    const nlohmann::json body = gateway::bodyJson(ready);
-    const std::lock_guard<std::mutex> lock(mutex_);
-    cookie_ = body.value("session", std::string());
-    bazarish::log::info("i2p: a gateway running i2pd {}, {}",
-        body.value("i2pd", std::string("?")),
-        body.value("resumed", false) ? "session rejoined" : "new session");
+    openControl();
+    live_.store(true);
+    cover_ = std::thread([this]() { coverLoop(); });
 }
 
 void GatewayRouter::stop()
 {
+    if (live_.exchange(false) && cover_.joinable()) {
+        cover_.join();
+    }
     http::SocketPtr socket;
     std::vector<http::SocketPtr> flows;
     {
@@ -631,16 +683,228 @@ void GatewayRouter::stop()
     }
 }
 
-void GatewayRouter::send(const Bytes& frame)
+bool GatewayRouter::ready() const
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return live_.load() && socket_ != nullptr && socket_->open();
+}
+
+void GatewayRouter::openControl()
+{
+    const http::SocketDialResult opened = http::openSocket(
+        dialFor(),
+        [this](const http::SocketPtr& socket, const std::vector<unsigned char>& message) {
+            arrived(socket, message);
+        },
+        [this](const http::SocketPtr& gone) {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (socket_ == gone) {
+                socket_.reset();
+            }
+        });
+    if (opened.socket == nullptr) {
+        throw std::runtime_error("bazarish::i2p: the gateway would not open: " + opened.error);
+    }
+
+    // Said on the socket itself rather than through send(), which would queue
+    // it behind whatever is waiting for a socket that is not up yet.
+    const std::uint32_t id = nextId();
+    const std::shared_ptr<Pending> pending = std::make_shared<Pending>();
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        pending_[id] = pending;
+    }
+    const Bytes hello
+        = gateway::encodeJson(FrameType::eHello, id, {{"version", gateway::kProtocolVersion}});
+    opened.socket->send(std::vector<unsigned char>(hello.begin(), hello.end()));
+
+    Frame answer;
+    bool said = false;
+    {
+        std::unique_lock<std::mutex> lock(pending->mutex);
+        said = pending->answered.wait_for(lock, kCallTimeout, [&]() { return pending->done; });
+        answer = pending->answer;
+    }
+    {
+        const std::lock_guard<std::mutex> held(mutex_);
+        pending_.erase(id);
+    }
+    if (!said || answer.type != FrameType::eReady) {
+        opened.socket->close();
+        throw std::runtime_error("bazarish::i2p: the gateway would not say hello");
+    }
+
+    const nlohmann::json body = gateway::bodyJson(answer);
+    const bool resumed = body.value("resumed", false);
+
+    // What is still standing, and what is not. A stream the gateway does not
+    // name is gone whatever the reason, and saying so beats letting a reader
+    // wait for bytes that are never coming.
+    nlohmann::json ours = nlohmann::json::array();
+    std::vector<std::pair<GatewayStream*, std::uint64_t>> replay;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        cookie_ = body.value("session", std::string());
+        std::map<std::uint32_t, std::uint64_t> alive;
+        if (const auto found = body.find("streams"); found != body.end() && found->is_array()) {
+            for (const nlohmann::json& one : *found) {
+                alive[one.value("id", 0U)] = one.value("received", std::uint64_t{0});
+            }
+        }
+        for (const auto& [streamId, stream] : streams_) {
+            const auto found = alive.find(streamId);
+            if (found == alive.end()) {
+                if (resumed) {
+                    stream->reset();
+                }
+                continue;
+            }
+            ours.push_back({{"id", streamId}, {"received", stream->received()}});
+            replay.emplace_back(stream, found->second);
+        }
+        if (const auto found = body.find("endpoints"); found != body.end() && found->is_array()) {
+            for (const nlohmann::json& one : *found) {
+                const auto at = endpoints_.find(one.value("id", 0U));
+                if (at == endpoints_.end()) {
+                    continue;
+                }
+                if (const std::shared_ptr<GatewayEndpoint> endpoint = at->second.lock()) {
+                    endpoint->statusChanged(one.value("ready", false), one.value("tunnelsIn", 0),
+                        one.value("tunnelsOut", 0), one.value("leaseSets", 0));
+                }
+            }
+        }
+    }
+    if (!ours.empty()) {
+        const Bytes resume
+            = gateway::encodeJson(FrameType::eResume, nextId(), {{"streams", ours}});
+        opened.socket->send(std::vector<unsigned char>(resume.begin(), resume.end()));
+    }
+    // This side's own unconfirmed bytes, in order, before anything new.
+    for (const auto& [stream, theirs] : replay) {
+        for (const Bytes& frame : stream->replayFrames(theirs)) {
+            opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
+        }
+    }
+
+    std::deque<Bytes> held;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        socket_ = opened.socket;
+        held.swap(waiting_);
+        lastUse_.store(millisNow());
+    }
+    for (const Bytes& frame : held) {
+        opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
+    }
+    bazarish::log::info("i2p: a gateway running i2pd {}, {}",
+        body.value("i2pd", std::string("?")), resumed ? "session rejoined" : "new session");
+}
+
+void GatewayRouter::closeControl()
 {
     http::SocketPtr socket;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         socket = socket_;
+        socket_.reset();
     }
     if (socket) {
-        socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
+        socket->close();
     }
+}
+
+bool GatewayRouter::quiet() const
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!pending_.empty()) {
+        return false;
+    }
+    return millisNow() - lastUse_.load() >= kQuietBeforeChurn.count();
+}
+
+void GatewayRouter::decoy()
+{
+    const Bytes noise = randomBytes(
+        drawBetween(gateway::kDecoyRequestMinBytes, gateway::kDecoyRequestMaxBytes));
+    // The answer is thrown away. Its length was never this side's to choose.
+    (void)http::probeHost(dialFor(), std::string(noise.begin(), noise.end()));
+}
+
+void GatewayRouter::coverLoop()
+{
+    // Zero takes the protocol's own figure, which is what a deployment with no
+    // opinion wants.
+    const auto chosen = [](const std::chrono::milliseconds set,
+                            const std::chrono::milliseconds fallback) {
+        return set.count() > 0 ? set : fallback;
+    };
+    const std::chrono::milliseconds decoyMin
+        = chosen(config_.gatewayDecoyMin, gateway::kDecoyMinDelay);
+    const std::chrono::milliseconds decoyMax
+        = chosen(config_.gatewayDecoyMax, gateway::kDecoyMaxDelay);
+    const std::chrono::milliseconds minLife = chosen(config_.gatewayControlMinLife,
+        std::chrono::milliseconds(gateway::kControlSocketMinLife));
+    const std::chrono::milliseconds maxLife = chosen(config_.gatewayControlMaxLife,
+        std::chrono::milliseconds(gateway::kControlSocketMaxLife));
+    const std::chrono::milliseconds maxGap = chosen(
+        config_.gatewayControlMaxGap, std::chrono::milliseconds(gateway::kControlGapMax));
+
+    const auto nextDecoy = [decoyMin, decoyMax]() {
+        return std::chrono::steady_clock::now() + drawBetween(decoyMin, decoyMax);
+    };
+    const auto nextChurn = [minLife, maxLife]() {
+        return std::chrono::steady_clock::now() + drawBetween(minLife, maxLife);
+    };
+    auto decoyAt = nextDecoy();
+    auto churnAt = nextChurn();
+    while (live_.load()) {
+        std::this_thread::sleep_for(kCoverTick);
+        if (!live_.load()) {
+            break;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= decoyAt) {
+            decoy();
+            decoyAt = nextDecoy();
+        }
+        if (!live_.load() || now < churnAt) {
+            continue;
+        }
+        // A socket carrying something is not dropped: the draw is taken at the
+        // next quiet moment instead.
+        if (!quiet()) {
+            continue;
+        }
+        closeControl();
+        std::this_thread::sleep_for(drawBetween(std::min(decoyMin, maxGap), maxGap));
+        if (!live_.load()) {
+            break;
+        }
+        try {
+            openControl();
+        } catch (const std::exception& error) {
+            bazarish::log::warn("i2p: the gateway would not take a new socket: {}", error.what());
+        }
+        churnAt = nextChurn();
+    }
+}
+
+void GatewayRouter::send(const Bytes& frame)
+{
+    http::SocketPtr socket;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (socket_ == nullptr) {
+            // Between control sockets. The gap is seconds and the session
+            // outlives it, so this waits rather than disappearing.
+            waiting_.push_back(frame);
+            return;
+        }
+        socket = socket_;
+        lastUse_.store(millisNow());
+    }
+    socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
 }
 
 http::SocketPtr GatewayRouter::socketFor(const std::uint32_t flow) const
