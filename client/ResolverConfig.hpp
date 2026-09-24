@@ -19,7 +19,7 @@ namespace bazarish::client {
 // so the resolve logic can be exercised against a test resolver.
 struct ResolverCoordinate {
     std::string rootFingerprint;  // resolver root identity fingerprint (trust anchor)
-    std::string dest;             // the address the resolver answers at (blinded)
+    std::string dest;             // the address the resolver answers at
 
     bool configured() const { return !rootFingerprint.empty() && !dest.empty(); }
 };
@@ -34,7 +34,7 @@ struct ResolverCoordinate {
 inline constexpr const char* kResolverRootFingerprint
     = "fknq2ve6o3iuqzqu3ucllh7ozsxvsei457pe4rxsbwpm5lwdxrra";
 inline constexpr const char* kResolverDest
-    = "onjhiky4lshgqx3dumfbekyg7gwzfrwvvtghxdwkca6lt5slnvqkkqa5.b32.i2p";
+    = "zftxw3rxtsa7wconwzx6sxf6wqjnrumoqjajmreahzkoyuebhgfq.b32.i2p";
 
 inline ResolverCoordinate defaultResolverCoordinate()
 {
