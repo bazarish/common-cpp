@@ -40,6 +40,7 @@ add_library(bazarish_common STATIC
     src/Certificates.cpp
     src/Pass.cpp
     src/Padding.cpp
+    src/RateLimiter.cpp
     src/ConfigFile.cpp
     src/PrivateFile.cpp
     src/WebAssets.cpp
@@ -132,8 +133,12 @@ bazarish_add_test(TestPadding)
 bazarish_add_test(TestErrors)
 bazarish_add_test(TestAddress)
 bazarish_add_test(TestI2pAddress)
-bazarish_add_test(TestI2pDelegation)
-bazarish_add_test(TestI2pKeyBlob)
+if(BAZARISH_WITH_I2PD)
+    # Both work the key material the embedded engine owns; without it there is
+    # nothing here to test rather than something failing.
+    bazarish_add_test(TestI2pDelegation)
+    bazarish_add_test(TestI2pKeyBlob)
+endif()
 
 # Live end-to-end over an external router reached by SAM (not a unit test - it
 # needs a running i2pd and the network), the counterpart of i2p_smoke.
