@@ -4,11 +4,15 @@
 #include "I2pRouter.hpp"
 
 #include <bazarish/FederationFrame.hpp>
+#include <bazarish/I2pHttp.hpp>
 #include <bazarish/Log.hpp>
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <functional>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <thread>
@@ -28,6 +32,10 @@ constexpr int kReplySeconds = 90;
 // the far side dropped all end the same way, and all of them are gone by the
 // next try. Only silence is repeated - a peer that answered has answered.
 constexpr int kFetchAttempts = 3;
+// The resolver's op for a public name lookup, and the one status that means it
+// answered. Everything else it says names itself in the body.
+constexpr const char* kResolveOp = "resolve";
+constexpr int kHttpOk = 200;
 // What a try must still be able to pay for to be worth starting: a dial at
 // least this long even when the last one was quicker, and an answer after it.
 constexpr int kLeastDialSeconds = 10;
@@ -80,9 +88,61 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(
     return endpoint;
 }
 
+// What is spoken once the stream is open. A server of this project answers a
+// federation frame; the alias resolver is a web service inside I2P, reached
+// through an i2pd tunnel, and answers HTTP. The dialling, the throwaway
+// destination and the retries are the same for both, which is why they meet
+// here rather than in two copies of this file.
+enum class Face { eFederationFrame, eResolverHttp };
+
+// The resolver's HTTP API, in the shape each op is written in: a resolve is a
+// GET of the name, an owner's op is a POST of what they signed. The answer's
+// body is the reply itself, which is what the callers already expect to find in
+// `sealed`; a refusal names itself in the body it comes with.
+FetchOutcome askResolver(bazarish::i2p::Stream& stream, const std::string& host,
+    const std::string& op, const Bytes& body)
+{
+    std::string method = "POST";
+    std::string path = "/v1/op/" + op;
+    std::string payload(body.begin(), body.end());
+    if (op == kResolveOp) {
+        const nlohmann::json query = nlohmann::json::parse(payload);
+        method = "GET";
+        path = "/v1/alias/" + query.at("alias").get<std::string>();
+        payload.clear();
+    }
+    const std::map<std::string, std::string> headers
+        = payload.empty() ? std::map<std::string, std::string>{}
+                          : std::map<std::string, std::string>{
+                                {"Content-Type", "application/octet-stream"}};
+    const std::string head = buildI2pHttpRequest(method, host, path, headers, payload.size());
+    stream.writeAll(head.data(), head.size());
+    if (!payload.empty()) {
+        stream.writeAll(payload.data(), payload.size());
+    }
+    const I2pHttpResponse answer = readI2pHttpResponse(stream);
+
+    FetchOutcome outcome;
+    outcome.ok = answer.status == kHttpOk;
+    if (outcome.ok) {
+        outcome.sealed.assign(answer.body.begin(), answer.body.end());
+        return outcome;
+    }
+    try {
+        outcome.errorCode
+            = nlohmann::json::parse(answer.body).value("errorCode", std::string());
+    } catch (const std::exception&) {
+        outcome.errorCode = "HTTP_" + std::to_string(answer.status);
+    }
+    if (outcome.errorCode.empty()) {
+        outcome.errorCode = "HTTP_" + std::to_string(answer.status);
+    }
+    return outcome;
+}
+
 FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& dest,
     const std::string& op, const Bytes& sealed, const std::chrono::seconds dialFor,
-    const std::chrono::seconds waitFor, std::chrono::seconds& dialTook)
+    const std::chrono::seconds waitFor, std::chrono::seconds& dialTook, const Face face)
 {
     sayStage("Reaching their server");
     const auto dialStarted = std::chrono::steady_clock::now();
@@ -97,6 +157,9 @@ FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& des
     stream->setReadTimeout(waitFor);
 
     sayStage("Waiting for their answer");
+    if (face == Face::eResolverHttp) {
+        return askResolver(*stream, dest, op, sealed);
+    }
     const FederationFetchResult reply = federationSendFetch(*stream, op, sealed);
     FetchOutcome outcome;
     outcome.ok = reply.ok;
@@ -106,7 +169,7 @@ FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& des
 }
 
 FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& dest,
-    const std::string& op, const Bytes& sealed)
+    const std::string& op, const Bytes& sealed, const Face face)
 {
     const auto deadline
         = std::chrono::steady_clock::now() + std::chrono::seconds(kFetchRunSeconds);
@@ -121,7 +184,7 @@ FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& des
         try {
             return fetchOnce(endpoint, dest, op, sealed,
                 std::min(left, std::chrono::seconds(kDialSeconds)),
-                std::min(left, std::chrono::seconds(kReplySeconds)), dialTook);
+                std::min(left, std::chrono::seconds(kReplySeconds)), dialTook, face);
         } catch (const std::exception& error) {
             // The last one's reason is the one the user is told, so it is thrown
             // rather than turned into a message of this loop's own.
@@ -157,7 +220,26 @@ FetchOutcome federationFetchOverI2p(bazarish::i2p::Router& router, const std::st
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
         = takeThrowawayDest(router, privacy, owner);
-    return fetchOver(*endpoint, dest, op, sealed);
+    return fetchOver(*endpoint, dest, op, sealed, Face::eFederationFrame);
+}
+
+FetchOutcome resolverFetchOverI2p(bazarish::i2p::Router& router, const std::string& host,
+    const std::string& op, const Bytes& body, const bazarish::i2p::Privacy privacy,
+    const std::string& owner)
+{
+    const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
+        = takeThrowawayDest(router, privacy, owner);
+    return fetchOver(*endpoint, host, op, body, Face::eResolverHttp);
+}
+
+FetchTransport resolverHeldDest(
+    bazarish::i2p::Router& router, const bazarish::i2p::Privacy privacy, const std::string& owner)
+{
+    const std::shared_ptr<bazarish::i2p::Endpoint> held
+        = takeThrowawayDest(router, privacy, owner);
+    return [held](const std::string& host, const std::string& op, const Bytes& body) {
+        return fetchOver(*held, host, op, body, Face::eResolverHttp);
+    };
 }
 
 FetchTransport federationHeldDest(
@@ -170,7 +252,7 @@ FetchTransport federationHeldDest(
     const std::shared_ptr<bazarish::i2p::Endpoint> held
         = takeThrowawayDest(router, privacy, owner);
     return [held](const std::string& dest, const std::string& op, const Bytes& sealed) {
-        return fetchOver(*held, dest, op, sealed);
+        return fetchOver(*held, dest, op, sealed, Face::eFederationFrame);
     };
 }
 

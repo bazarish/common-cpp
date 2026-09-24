@@ -92,11 +92,12 @@ int main(const int argc, const char** argv)
     }
     std::printf("[alias] router ready, knownRouters=%d\n", router.knownRouters());
 
-    // The transport a client really uses: a throwaway destination per exchange,
-    // dialled straight at the resolver, with our own server nowhere in it.
-    const FetchTransport transport = [&router](const std::string& toDest, const std::string& op,
+    // The transport a client really uses for the registry: a throwaway
+    // destination per exchange, dialled straight at it, with our own server
+    // nowhere in it, speaking the registry's own HTTP API.
+    const FetchTransport transport = [&router](const std::string& host, const std::string& op,
                                          const Bytes& body) {
-        return federationFetchOverI2p(router, toDest, op, body, bazarish::i2p::Privacy::eMinimal,
+        return resolverFetchOverI2p(router, host, op, body, bazarish::i2p::Privacy::eMinimal,
             "alias-smoke");
     };
 
@@ -105,7 +106,7 @@ int main(const int argc, const char** argv)
     // --- A resolve, over the real thing ---
     // A name nobody holds is the useful negative here: the sentence a resolve
     // throws for an unknown alias can only come from a daemon that received the
-    // frame, parsed it and answered with that code.
+    // request, parsed it and answered with that code.
     try {
         const Descriptor descriptor
             = Client::resolveAlias(alias, resolver, nowSeconds(), transport);

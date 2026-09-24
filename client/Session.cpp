@@ -2080,10 +2080,28 @@ Session::ContactCardResolved Session::resolveContactCard(
                 *router, toDest, op, sealed, context.blobFetchPrivacy, context.destinationOwner);
         };
 
+        // The registry answers its own HTTP API rather than a federation frame,
+        // so the name lookup goes over a transport of its own. Everything after
+        // it - the card and its certificates - is a server of this project.
+        const FetchTransport toRegistry = [&context](const std::string& host,
+                                              const std::string& op,
+                                              const Bytes& body) -> FetchOutcome {
+            if (!context.i2pEnabled) {
+                throw std::runtime_error("adding a contact needs I2P, and it is switched off");
+            }
+            bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
+            if (router == nullptr || !router->ready()) {
+                throw std::runtime_error(
+                    "adding a contact needs the I2P router; it is still building tunnels");
+            }
+            return resolverFetchOverI2p(
+                *router, host, op, body, context.blobFetchPrivacy, context.destinationOwner);
+        };
+
         if (request.byAlias) {
             const std::string alias = normalizeAlias(request.uriOrAlias);
             const Descriptor descriptor
-                = fetchClient.resolveAlias(alias, context.resolver, nowSeconds(), transport);
+                = fetchClient.resolveAlias(alias, context.resolver, nowSeconds(), toRegistry);
             out.info = fetchClient.fetchCard(descriptor, transport);
             out.fingerprint = descriptor.fingerprint;
             out.view = descriptor.view;
@@ -2208,8 +2226,10 @@ std::string Session::addByAlias(const std::string& alias, const std::string& tex
     // verification. Everything after the mapping - the card fetch and its
     // certificates - is verified end-to-end as usual.
     const std::string normalized = normalizeAlias(alias);
+    // The registry over its own transport, the card over the federation one:
+    // two different things answer them.
     const Descriptor descriptor
-        = client_->resolveAlias(normalized, resolverCoordinate_, nowSeconds(), fetchTransport());
+        = client_->resolveAlias(normalized, resolverCoordinate_, nowSeconds(), heldTransport());
     // Card fetch always over I2P (never a facade contact lookup), to avoid
     // disclosing co-location to our own server (see addByInvite / the co-location
     // rule in Contacts.md).
@@ -5032,9 +5052,11 @@ bool tellAliasesWhereWeAre(const Session::AliasErrandContext& context, const Ide
     return needed != 0 && accepted == needed;
 }
 
-// One throwaway destination held for a run of calls, or the reason there can be
-// no destination at all. Said plainly rather than quietly downgraded: the
-// registry is reached over I2P and nothing else.
+// One throwaway destination held for a run of calls to the registry, or the
+// reason there can be no destination at all. Said plainly rather than quietly
+// downgraded: the registry is reached over I2P and nothing else. What is spoken
+// on it is the registry's own HTTP API - it is a web service inside I2P, not a
+// server of this project.
 FetchTransport heldDestFor(
     const bool i2pEnabled, const bazarish::i2p::Privacy privacy, const std::string& owner)
 {
@@ -5046,7 +5068,7 @@ FetchTransport heldDestFor(
     if (router == nullptr || !router->ready()) {
         throw std::runtime_error("The I2P router is still building tunnels.");
     }
-    return federationHeldDest(*router, privacy, owner);
+    return resolverHeldDest(*router, privacy, owner);
 }
 
 }  // namespace
