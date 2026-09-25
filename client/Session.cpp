@@ -3355,7 +3355,16 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
         }
         ++handled;
         try {
-            const Bytes blob = client_->fetchBlob(entry.id);
+            // Fetched ahead of this pass when something else had the time,
+            // asked for here when it did not. A round trip per item is what a
+            // person writing a reply used to wait behind.
+            Bytes blob;
+            if (const auto held = fetched_.find(entry.id); held != fetched_.end()) {
+                blob = std::move(held->second);
+                fetched_.erase(held);
+            } else {
+                blob = client_->fetchBlob(entry.id);
+            }
             // Every item is sealed to our user sealing key the same way; the
             // server-visible delivery class never changes how we decrypt.
             const Bytes plain = cms::unseal(blob, sealingKey_);
@@ -3380,14 +3389,14 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                     bazarish::log::warn("sync: dropping an item that does not name its "
                                         "author: {}", error.what());
                     noteWire(false, "unsigned item", "dropped", error.what());
-                    client_->ack(entry.id);
+                    releaseItem(entry.id);
                     continue;
                 }
                 if (author != claimed) {
                     bazarish::log::warn("sync: dropping an item signed by {} claiming to be {}",
                         bazarish::log::redact(author), bazarish::log::redact(claimed));
                     noteWire(false, "item signed by another key", "dropped", {});
-                    client_->ack(entry.id);
+                    releaseItem(entry.id);
                     continue;
                 }
             }
@@ -3401,7 +3410,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
             if (body.value("v", kMessageFormatVersion) > kMessageFormatVersion) {
                 bazarish::log::info("sync: an item from a newer message format was not read");
                 noteWire(false, "item in a newer format", "dropped", {});
-                client_->ack(entry.id);
+                releaseItem(entry.id);
                 continue;
             }
 
@@ -3414,7 +3423,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
             if (body.value("type", std::string()) == "device.message"
                 && body.value("from", std::string()) == fingerprint()) {
                 if (body.value("device", std::string()) == client_->clientId()) {
-                    client_->ack(entry.id);
+                    releaseItem(entry.id);
                     continue;
                 }
                 const std::string peer = body.value("peer", std::string());
@@ -3427,7 +3436,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
             if (body.value("type", std::string()) == "device.saved"
                 && body.value("from", std::string()) == fingerprint()) {
                 if (body.value("device", std::string()) == client_->clientId()) {
-                    client_->ack(entry.id);
+                    releaseItem(entry.id);
                     continue;  // the device that saved it already has it
                 }
                 body = body.at("message");
@@ -3451,7 +3460,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
             const bool asking = type == "contact.request";
             if (!fromOurselves
                 && (isBlocked(message.fromFingerprint) || (!known && !asking))) {
-                client_->ack(entry.id);
+                releaseItem(entry.id);
                 continue;
             }
 
@@ -3591,7 +3600,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 // asks for its own copy if the user wants the file here too.
                 const std::string offerFor = body.value("forAsk", std::string());
                 if (!offerFor.empty() && !awaitingAsk(offerFor)) {
-                    client_->ack(entry.id);
+                    releaseItem(entry.id);
                     continue;
                 }
                 try {
@@ -3663,7 +3672,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 if (!reactionWithinLimits(message.text)) {
                     bazarish::log::info("oversized reaction from {} ignored",
                         bazarish::log::redact(message.fromFingerprint));
-                    client_->ack(entry.id);
+                    releaseItem(entry.id);
                     continue;
                 }
             } else if (type == "call.invite" || type == "call.accept" || type == "call.decline"
@@ -3681,7 +3690,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 bazarish::log::warn("sync: dropping a device message from {}",
                     bazarish::log::redact(message.fromFingerprint));
                 noteWire(false, "device message from a contact", "dropped", type);
-                client_->ack(entry.id);
+                releaseItem(entry.id);
                 continue;
             } else if (type == "device.delegation-term") {
                 // Another device changed the account's delegation term. Adopt it
@@ -3969,7 +3978,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
             // a pre-ack re-fetch is safe - applyBootstrap dedups tokens and the GUI
             // dedups by e2eId.
             if (autoAckSurfaced) {
-                client_->ack(entry.id);
+                releaseItem(entry.id);
             } else {
                 message.pendingId = entry.id;
                 awaitingAck_.insert(entry.id);
@@ -3990,7 +3999,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
             bazarish::log::warn(
                 "sync: dropping unreadable pending item: {}", error.what());
             noteWire(false, "unreadable item", "dropped", error.what());
-            client_->ack(entry.id);
+            releaseItem(entry.id);
         }
     }
     persistContacts();
@@ -4040,6 +4049,52 @@ void Session::ackPending(const std::string& pendingId)
 {
     forgetPending(pendingId);
     releasePending(pendingId);
+}
+
+void Session::setAckSink(AckSink sink)
+{
+    ackSink_ = std::move(sink);
+}
+
+void Session::releaseItem(const std::string& pendingId)
+{
+    if (pendingId.empty()) {
+        return;
+    }
+    if (!ackSink_) {
+        client_->ack(pendingId);
+        return;
+    }
+    // Not handed back yet: the mail loop waits on this count, and a wait asked
+    // before the server has been told is answered by the same item again.
+    awaitingAck_.insert(pendingId);
+    ackSink_(pendingId);
+}
+
+std::vector<Session::MailboxItem> Session::fetchMailbox(Client& client, const std::size_t maxItems)
+{
+    std::vector<MailboxItem> items;
+    for (const PendingEntry& entry : client.listPending()) {
+        if (maxItems > 0 && items.size() >= maxItems) {
+            break;
+        }
+        try {
+            items.push_back({entry.id, client.fetchBlob(entry.id)});
+        } catch (const std::exception& error) {
+            // Nothing is lost by giving up on one: the pass asks for whatever it
+            // was not handed.
+            bazarish::log::info("mailbox item not fetched ahead: {}", error.what());
+        }
+    }
+    return items;
+}
+
+void Session::holdFetched(std::vector<MailboxItem> items)
+{
+    fetched_.clear();
+    for (MailboxItem& item : items) {
+        fetched_.emplace(std::move(item.pendingId), std::move(item.blob));
+    }
 }
 
 void Session::forgetPending(const std::string& pendingId)

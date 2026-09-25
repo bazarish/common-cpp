@@ -1140,6 +1140,31 @@ public:
     void forgetPending(const std::string& pendingId);
     void releasePending(const std::string& pendingId);
 
+    // Where an ack that a mailbox pass decides on is made. Left unset it is made
+    // inside the pass, which is a round trip in the middle of it; a client that
+    // has somewhere else to make it sets this, and the pass only notes that the
+    // item has not been handed back yet (awaitingAcks covers it, so the mail
+    // loop still waits for it). The sink is called on the pass's own thread and
+    // is expected to return at once.
+    using AckSink = std::function<void(const std::string& pendingId)>;
+    void setAckSink(AckSink sink);
+
+    // One item of the mailbox, already fetched. A pass pays a round trip per
+    // item, and those are the ones a person waiting for their own message to go
+    // out is waiting behind - so they can be fetched ahead of the pass, on
+    // whatever thread is free, and handed over here.
+    struct MailboxItem {
+        std::string pendingId;
+        Bytes blob;
+    };
+    // Reads what the mailbox holds and fetches the items themselves. Static and
+    // context-based like resolveContactCard: it touches no session state, which
+    // is what makes it safe to run beside a live session on another thread.
+    static std::vector<MailboxItem> fetchMailbox(Client& client, std::size_t maxItems);
+    // Takes what was fetched ahead. A pass uses these instead of asking for
+    // them; anything it does not use is dropped when the next lot arrives.
+    void holdFetched(std::vector<MailboxItem> items);
+
     bool hasContact(const std::string& peerFingerprint) const;
     // Fingerprints of all known contacts, for UI listing.
     std::vector<std::string> contactFingerprints() const;
@@ -1560,6 +1585,15 @@ private:
     // ack travels back through the caller and lands after the next pass has
     // already asked for them.
     std::set<std::string> awaitingAck_;
+    // Where an ack is made, when it is not made in the pass itself.
+    AckSink ackSink_;
+    // Items fetched ahead of the pass, by pending id. A pass takes what it needs
+    // and the rest is replaced by the next lot, so nothing accumulates.
+    std::map<std::string, Bytes> fetched_;
+    // Hands an item back to the server: through the sink when there is one - the
+    // item is then counted as still carried until that sink says otherwise - and
+    // here and now when there is not.
+    void releaseItem(const std::string& pendingId);
     // Secret behind every delivery mask: drawn once when the account is created,
     // carried through backup and restore, and never sent - only masks derived
     // from it are, and only to this account's own server.
