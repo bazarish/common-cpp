@@ -1140,6 +1140,12 @@ public:
     void forgetPending(const std::string& pendingId);
     void releasePending(const std::string& pendingId);
 
+    // Told the moment the server answers a pass, which is long before the pass
+    // is over: what is left is this device's own work on what it was handed, and
+    // an interface that says "no server connection yet" through all of it is
+    // saying something that stopped being true at the first answer.
+    void onServerAnswered(std::function<void()> tell);
+
     // Where an ack that a mailbox pass decides on is made. Left unset it is made
     // inside the pass, which is a round trip in the middle of it; a client that
     // has somewhere else to make it sets this, and the pass only notes that the
@@ -1603,6 +1609,8 @@ private:
     // ack travels back through the caller and lands after the next pass has
     // already asked for them.
     std::set<std::string> awaitingAck_;
+    // Who to tell that the server answered.
+    std::function<void()> serverAnswered_;
     // Where an ack is made, when it is not made in the pass itself.
     AckSink ackSink_;
     // Where an envelope to this account's own devices goes, when it is not sent

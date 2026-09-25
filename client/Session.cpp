@@ -3371,6 +3371,9 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
         const log::Slow timed("asking what the mailbox holds", kSlowStretch);
         waiting = client_->listPending();
     }
+    if (serverAnswered_) {
+        serverAnswered_();  // it answered: whatever is left here is this device's own work
+    }
     // Named with the count, because what the loop costs is per item and the
     // list it was given is the only thing that says how many.
     const log::Slow timedItems(
@@ -3389,6 +3392,9 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
             break;
         }
         ++handled;
+        // Named with the item, because one of them holding the pass for minutes
+        // is a thing that has happened and the pass alone does not say which.
+        const log::Slow timedItem("taking in " + entry.id, kSlowStretch);
         try {
             // Fetched ahead of this pass when something else had the time,
             // asked for here when it did not. A round trip per item is what a
@@ -4084,6 +4090,11 @@ void Session::ackPending(const std::string& pendingId)
 {
     forgetPending(pendingId);
     releasePending(pendingId);
+}
+
+void Session::onServerAnswered(std::function<void()> tell)
+{
+    serverAnswered_ = std::move(tell);
 }
 
 void Session::setAckSink(AckSink sink)
