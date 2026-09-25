@@ -1149,6 +1149,18 @@ public:
     using AckSink = std::function<void(const std::string& pendingId)>;
     void setAckSink(AckSink sink);
 
+    // Where an envelope for this account's own devices is handed in when the
+    // caller has somewhere better to send it from. Left unset, every one of them
+    // is sent where it is made. The sink is called on the maker's thread and is
+    // expected to return at once.
+    using SelfSendSink
+        = std::function<void(std::string deliveryId, Bytes sealed, std::string kind)>;
+    void setSelfSendSink(SelfSendSink sink);
+    // Sends what was prepared earlier. Safe from any thread: the API client
+    // serializes its own requests.
+    void submitPrepared(
+        const std::string& deliveryId, const Bytes& sealed, const std::string& kind);
+
     // One item of the mailbox, already fetched. A pass pays a round trip per
     // item, and those are the ones a person waiting for their own message to go
     // out is waiting behind - so they can be fetched ahead of the pass, on
@@ -1260,7 +1272,13 @@ private:
     static void rememberKeys(Contact& contact, const IdentityKeys& keys);
 
     // One envelope into this account's own mailbox, signed and sealed to itself.
-    void submitSignedToSelf(nlohmann::json inner, const std::string& kind) const;
+    // `later` hands the finished envelope to the self-send sink when there is
+    // one, instead of making the request here: for what nobody is waiting on -
+    // the echo of a message this device has already sent - that request is a
+    // round trip taken on whatever thread the caller happens to be, and for the
+    // interface that thread is the one everything it does queues behind.
+    void submitSignedToSelf(
+        nlohmann::json inner, const std::string& kind, bool later = false) const;
 
     void noteWire(bool outgoing, std::string what, std::string status, std::string detail) const;
     std::string wireName(const std::string& peerFingerprint) const;
@@ -1587,6 +1605,9 @@ private:
     std::set<std::string> awaitingAck_;
     // Where an ack is made, when it is not made in the pass itself.
     AckSink ackSink_;
+    // Where an envelope to this account's own devices goes, when it is not sent
+    // where it was made.
+    SelfSendSink selfSendSink_;
     // Items fetched ahead of the pass, by pending id. A pass takes what it needs
     // and the rest is replaced by the next lot, so nothing accumulates.
     std::map<std::string, Bytes> fetched_;

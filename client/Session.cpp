@@ -1774,7 +1774,8 @@ Bytes Session::passIdFor(const std::string& peerFingerprint) const
     return deliveryPass(deliverySecret_, peerFingerprint);
 }
 
-void Session::submitSignedToSelf(nlohmann::json inner, const std::string& kind) const
+void Session::submitSignedToSelf(
+    nlohmann::json inner, const std::string& kind, const bool later) const
 {
     // Signed like anything else this account sends: another device of ours reads
     // it as a message from us, and a message from us has to prove it. Our keys
@@ -1783,7 +1784,24 @@ void Session::submitSignedToSelf(nlohmann::json inner, const std::string& kind) 
     const Bytes innerBytes = encodedBody(inner);
     // Sealed to our own sealing key: only this account's devices can read it.
     const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
-    client_->submitSelf(toHex(randomBytes(16)), cms::seal(innerBytes, ownSealing), kind);
+    const std::string deliveryId = toHex(randomBytes(16));
+    Bytes sealed = cms::seal(innerBytes, ownSealing);
+    if (later && selfSendSink_) {
+        selfSendSink_(deliveryId, std::move(sealed), kind);
+        return;
+    }
+    client_->submitSelf(deliveryId, sealed, kind);
+}
+
+void Session::setSelfSendSink(SelfSendSink sink)
+{
+    selfSendSink_ = std::move(sink);
+}
+
+void Session::submitPrepared(
+    const std::string& deliveryId, const Bytes& sealed, const std::string& kind)
+{
+    client_->submitSelf(deliveryId, sealed, kind);
 }
 
 IdentityKeys Session::knownKeysFor(const std::string& peerFingerprint) const
@@ -4269,7 +4287,9 @@ void Session::echoSentToSelf(const std::string& peerFingerprint, const nlohmann:
         {"device", client_->clientId()},
         {"message", inner},
     };
-    submitSignedToSelf(echo, "device.message");
+    // Nobody is waiting on this: it is the copy of a message this device has
+    // already sent, for the account's other devices to find.
+    submitSignedToSelf(echo, "device.message", /*later=*/true);
 }
 
 
