@@ -1130,6 +1130,15 @@ public:
     // pendingId), removing it from the mailbox. Called after the item has been
     // durably persisted on the client side. Throws if the server is unreachable.
     void ackPending(const std::string& pendingId);
+    // The two halves of that ack, so the one that costs a round trip can be made
+    // from another thread: forgetPending is this session's own bookkeeping and
+    // belongs on its thread, releasePending is the request that drops the item
+    // from the mailbox and is safe to make from anywhere - the API client
+    // serializes its own requests. A mailbox pass hands back one ack per item,
+    // and a send queued behind five of them is a send that waits five round
+    // trips for nothing.
+    void forgetPending(const std::string& pendingId);
+    void releasePending(const std::string& pendingId);
 
     bool hasContact(const std::string& peerFingerprint) const;
     // Fingerprints of all known contacts, for UI listing.

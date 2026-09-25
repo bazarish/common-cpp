@@ -4038,10 +4038,23 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
 
 void Session::ackPending(const std::string& pendingId)
 {
+    forgetPending(pendingId);
+    releasePending(pendingId);
+}
+
+void Session::forgetPending(const std::string& pendingId)
+{
     if (pendingId.empty()) {
         return;
     }
     awaitingAck_.erase(pendingId);
+}
+
+void Session::releasePending(const std::string& pendingId)
+{
+    if (pendingId.empty()) {
+        return;
+    }
     client_->ack(pendingId);
 }
 
