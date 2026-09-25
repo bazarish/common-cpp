@@ -2,6 +2,7 @@
 #pragma once
 
 #include <optional>
+#include <chrono>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -135,5 +136,34 @@ void debug(FormatString<Args...> fmt, Args&&... args)
         emit(Level::eDebug, formatLine(fmt, std::forward<Args>(args)...));
     }
 }
+
+// Says how long a stretch of work took, but only when it took long enough to
+// matter. What it is for: a thread that others queue behind, where the question
+// is never "how fast is this" but "which of these is the one being waited out".
+// Silent below the bound it is given, so it can be left in place.
+class Slow {
+public:
+    Slow(std::string what, const std::chrono::milliseconds report)
+        : what_(std::move(what))
+        , report_(report)
+        , startedAt_(std::chrono::steady_clock::now())
+    {
+    }
+    ~Slow()
+    {
+        const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - startedAt_);
+        if (took >= report_) {
+            info("{} took {} ms", what_, static_cast<long long>(took.count()));
+        }
+    }
+    Slow(const Slow&) = delete;
+    Slow& operator=(const Slow&) = delete;
+
+private:
+    const std::string what_;
+    const std::chrono::milliseconds report_;
+    const std::chrono::steady_clock::time_point startedAt_;
+};
 
 }  // namespace bazarish::log

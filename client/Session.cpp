@@ -39,6 +39,10 @@
 
 namespace bazarish::client {
 
+// A stretch of work on the thread the interface queues behind says so past
+// this; below it there is nothing to look at.
+constexpr std::chrono::milliseconds kSlowStretch{200};
+
 namespace {
 
 // How much of a delivery pass goes into the connection log: enough to line a
@@ -3340,7 +3344,20 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
     // and came back, and the pass we issued them went with the contact they
     // removed.
     std::set<std::string> reaskedPeers;
-    const std::vector<PendingEntry> waiting = client_->listPending();
+    // Two things are timed here, because between them they are the pass, and a
+    // pass is what everything the user asks for queues behind: asking the server
+    // what is waiting - which also waits its turn on this client, behind
+    // whatever else is using it - and taking the items in.
+    std::vector<PendingEntry> waiting;
+    {
+        const log::Slow timed("asking what the mailbox holds", kSlowStretch);
+        waiting = client_->listPending();
+    }
+    // Named with the count, because what the loop costs is per item and the
+    // list it was given is the only thing that says how many.
+    const log::Slow timedItems(
+        "taking in the " + std::to_string(waiting.size()) + " item(s) the mailbox held",
+        kSlowStretch);
     morePending_ = false;
     std::size_t handled = 0;
     for (const PendingEntry& entry : waiting) {
