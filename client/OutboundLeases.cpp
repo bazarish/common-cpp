@@ -95,6 +95,11 @@ void OutboundLeases::dropExpired(const std::chrono::steady_clock::time_point now
 std::shared_ptr<bazarish::i2p::Endpoint> OutboundLeases::held(const std::string& toDest)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
+    return heldLocked(toDest);
+}
+
+std::shared_ptr<bazarish::i2p::Endpoint> OutboundLeases::heldLocked(const std::string& toDest)
+{
     dropExpired(std::chrono::steady_clock::now());
     const auto found = leases_.find(toDest);
     return found == leases_.end() ? nullptr : found->second.endpoint;
@@ -102,46 +107,75 @@ std::shared_ptr<bazarish::i2p::Endpoint> OutboundLeases::held(const std::string&
 
 bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerName)
 {
-    std::shared_ptr<bazarish::i2p::Endpoint> endpoint = held(toDest);
-    if (!endpoint) {
+    std::shared_ptr<bazarish::i2p::Endpoint> endpoint;
+    bool making = false;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        // One preparation per correspondent. A reply to a message that has just
+        // arrived is always at least the second send to them - the receipt for
+        // it went first - and both used to make an address of their own: two
+        // sets of tunnels for one correspondent, with the second sender watching
+        // its own build from behind an empty circle while the first was long
+        // ready.
+        prepared_.wait(lock, [this, &toDest]() { return preparing_.count(toDest) == 0; });
+        endpoint = heldLocked(toDest);
+        if (!endpoint) {
+            preparing_.insert(toDest);
+            making = true;
+        }
+    }
+    if (making) {
         // Everything from here to the tunnels being up is what a person watches
         // as an empty circle: the message has not started travelling yet. It is
         // worth saying which of the two ways it went, because one of them is
         // instant and the other builds tunnels.
         const log::Slow timed("making an address ready to send from", kSlowPrepare);
-        // Taken outside the lock: acquiring wakes the pool's warmer, and holding
-        // the lock across it would queue every other send behind one refill.
-        endpoint = acquireWarmDest();
-        if (!endpoint) {
-            log::info("no warm address for {}: building one, which is tunnels",
-                log::redact(toDest));
+        try {
+            // Taken outside the lock: acquiring wakes the pool's warmer, and
+            // holding the lock across it would queue every other send behind one
+            // refill.
+            endpoint = acquireWarmDest();
+            if (endpoint) {
+                // A spare belongs to nobody while it waits; from here it carries
+                // one correspondent's mail, and the status view should say so.
+                router_.retagEndpoint(*endpoint, labelFor(peerName), owner_);
+            } else {
+                log::info("no warm address for {}: building one, which is tunnels",
+                    log::redact(toDest));
+                endpoint = router_.createEndpoint(bazarish::i2p::EndpointConfig{
+                    router_.generateKeys(), tunnelPrivacy(),
+                    bazarish::i2p::kDefaultTunnelQuantity, false, labelFor(peerName), owner_});
+            }
+        } catch (...) {
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                preparing_.erase(toDest);
+            }
+            prepared_.notify_all();
+            throw;
         }
-        if (endpoint) {
-            // A spare belongs to nobody while it waits; from here it carries one
-            // correspondent's mail, and the status view should say so.
-            router_.retagEndpoint(*endpoint, labelFor(peerName), owner_);
-        } else {
-            endpoint = router_.createEndpoint(bazarish::i2p::EndpointConfig{
-                router_.generateKeys(), tunnelPrivacy(),
-                bazarish::i2p::kDefaultTunnelQuantity, false, labelFor(peerName), owner_});
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            const auto now = std::chrono::steady_clock::now();
+            const auto found = leases_.find(toDest);
+            if (found != leases_.end() && found->second.expiresAt > now) {
+                endpoint = found->second.endpoint;  // a term that outlived the wait
+            } else {
+                leases_[toDest] = Lease{
+                    endpoint, now + std::chrono::seconds(kLeaseTermSeconds), tunnelPrivacy()};
+            }
+            preparing_.erase(toDest);
         }
-        const std::lock_guard<std::mutex> lock(mutex_);
-        const auto now = std::chrono::steady_clock::now();
-        const auto found = leases_.find(toDest);
-        if (found != leases_.end() && found->second.expiresAt > now) {
-            endpoint = found->second.endpoint;  // another send got there first
-        } else {
-            leases_[toDest]
-                = Lease{endpoint, now + std::chrono::seconds(kLeaseTermSeconds), tunnelPrivacy()};
-        }
-        const bool ready = endpoint->waitReady(std::chrono::seconds(kOutboundDestReadySeconds));
-        if (!ready) {
-            log::warn("the address for {} has no tunnels after {} s",
-                log::redact(toDest), kOutboundDestReadySeconds);
-        }
-        return ready;
+        prepared_.notify_all();
     }
-    return endpoint->waitReady(std::chrono::seconds(kOutboundDestReadySeconds));
+    // Waited for outside every lock: tunnels take what they take, and a send to
+    // one correspondent must not hold the book while another one builds.
+    const bool ready = endpoint->waitReady(std::chrono::seconds(kOutboundDestReadySeconds));
+    if (!ready) {
+        log::warn("the address for {} has no tunnels after {} s", log::redact(toDest),
+            kOutboundDestReadySeconds);
+    }
+    return ready;
 }
 
 std::shared_ptr<DeliveryStream> OutboundLeases::openStream(

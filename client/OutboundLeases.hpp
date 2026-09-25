@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 
@@ -67,6 +68,8 @@ private:
     // Drops every term that has run out. Called with the lock held.
     void dropExpired(std::chrono::steady_clock::time_point now);
     std::shared_ptr<bazarish::i2p::Endpoint> held(const std::string& toDest);
+    // The same, with the lock already held by the caller.
+    std::shared_ptr<bazarish::i2p::Endpoint> heldLocked(const std::string& toDest);
 
     struct Lease {
         std::shared_ptr<bazarish::i2p::Endpoint> endpoint;
@@ -81,6 +84,14 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     std::map<std::string, Lease> leases_;
+    // Correspondents whose address is being made ready right now. A second send
+    // to the same one - and the reply to a message that has just arrived is
+    // always at least the second, because the receipt for it went first - waits
+    // for that address rather than building another beside it. Two addresses for
+    // one correspondent cost two sets of tunnels, and the second sender watches
+    // its own build from behind an empty circle while the first is already done.
+    std::set<std::string> preparing_;
+    std::condition_variable prepared_;
     std::atomic<bool> running_{true};
     std::thread sweeper_;
 };
