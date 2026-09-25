@@ -5,9 +5,14 @@
 
 #include <bazarish/Log.hpp>
 
+#include <chrono>
 #include <utility>
 
 namespace bazarish::client {
+
+// Making an address ready is instant when there is a warm one and tunnels when
+// there is not; past this it is the second kind, and the sender is waiting.
+constexpr std::chrono::milliseconds kSlowPrepare{300};
 
 namespace {
 
@@ -99,9 +104,18 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
 {
     std::shared_ptr<bazarish::i2p::Endpoint> endpoint = held(toDest);
     if (!endpoint) {
+        // Everything from here to the tunnels being up is what a person watches
+        // as an empty circle: the message has not started travelling yet. It is
+        // worth saying which of the two ways it went, because one of them is
+        // instant and the other builds tunnels.
+        const log::Slow timed("making an address ready to send from", kSlowPrepare);
         // Taken outside the lock: acquiring wakes the pool's warmer, and holding
         // the lock across it would queue every other send behind one refill.
         endpoint = acquireWarmDest();
+        if (!endpoint) {
+            log::info("no warm address for {}: building one, which is tunnels",
+                log::redact(toDest));
+        }
         if (endpoint) {
             // A spare belongs to nobody while it waits; from here it carries one
             // correspondent's mail, and the status view should say so.
@@ -120,6 +134,12 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
             leases_[toDest]
                 = Lease{endpoint, now + std::chrono::seconds(kLeaseTermSeconds), tunnelPrivacy()};
         }
+        const bool ready = endpoint->waitReady(std::chrono::seconds(kOutboundDestReadySeconds));
+        if (!ready) {
+            log::warn("the address for {} has no tunnels after {} s",
+                log::redact(toDest), kOutboundDestReadySeconds);
+        }
+        return ready;
     }
     return endpoint->waitReady(std::chrono::seconds(kOutboundDestReadySeconds));
 }

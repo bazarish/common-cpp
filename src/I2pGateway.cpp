@@ -855,9 +855,13 @@ void GatewayRouter::openControl()
         for (const auto& [streamId, stream] : link_->streams) {
             const auto found = alive.find(streamId);
             if (found == alive.end()) {
-                if (resumed) {
-                    stream->reset();
-                }
+                // Gone, whichever way this socket came to be: a session that was
+                // rejoined does not hold it any more, and a session that is new
+                // never held it at all. The second case used to be left alone,
+                // which left a writer working a stream nobody has - it hears
+                // nothing back, waits out its own deadline, and only then tries
+                // again.
+                stream->reset();
                 continue;
             }
             ours.push_back({{"id", streamId}, {"received", stream->received()}});
