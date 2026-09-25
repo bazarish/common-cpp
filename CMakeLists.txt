@@ -249,6 +249,12 @@ if(BAZARISH_WITH_CLIENT)
     add_executable(alias_smoke client/tests/AliasSmoke.cpp)
     target_link_libraries(alias_smoke PRIVATE bazarish_client)
     target_compile_options(alias_smoke PRIVATE -Wall -Wextra -Werror)
+    # What a send costs against a real account and a real server, with a
+    # timestamp on every step. Not a unit test, for the same reason as the two
+    # above: it needs the network and something to talk to.
+    add_executable(send_smoke client/tests/SendSmoke.cpp)
+    target_link_libraries(send_smoke PRIVATE bazarish_client)
+    target_compile_options(send_smoke PRIVATE -Wall -Wextra -Werror)
     bazarish_client_add_test(TestClientFacade)
     bazarish_client_add_test(TestFileTransfer)
     bazarish_client_add_test(TestGatewayAddress)
