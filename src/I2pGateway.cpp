@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -142,6 +143,11 @@ public:
     std::map<std::uint32_t, std::weak_ptr<GatewayEndpoint>> endpoints;
     std::map<std::uint32_t, GatewayStream*> streams;
     std::map<std::uint32_t, http::SocketPtr> flows;
+    // Flows whose socket died. What it was carrying is still counted as sent
+    // and held for a replay, and only an attach that says how far this side got
+    // asks for it back - so the flow is taken up again off the dying socket's
+    // own thread.
+    std::set<std::uint32_t> orphaned;
     // Frames written while there is no control socket. The gap is seconds and
     // the session outlives it, so they wait rather than fail.
     std::deque<Bytes> waiting;
@@ -179,6 +185,8 @@ public:
     std::vector<Bytes> replayFrames(std::uint64_t peerReceived);
     void farSideFinished();
     void reset();
+    // Reset: the session that carried it is gone.
+    bool givenUp() const;
 
 private:
     // Moves what is queued into the window, as far as it reaches.
@@ -357,7 +365,11 @@ public:
     // --- what the endpoints and streams use ---
 
     // Gives a flow a socket of its own, at the moment it is created.
-    void attach(std::uint32_t flow, std::uint64_t received);
+    // Whether the flow got a socket of its own.
+    bool attach(std::uint32_t flow, std::uint64_t received);
+    // Takes up again every flow whose socket died, so the gateway replays
+    // what went with it.
+    void reattachOrphans();
 
 private:
     void arrived(const http::SocketPtr& socket, const std::vector<unsigned char>& message);
@@ -426,12 +438,22 @@ void GatewayStream::farSideFinished()
     arrived_.notify_all();
 }
 
+bool GatewayStream::givenUp() const
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return closed_;
+}
+
 void GatewayStream::reset()
 {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         finished_ = true;
         closed_ = true;
+        // Given up: there is no session left to carry what is queued, and a
+        // writer waiting for it to move would wait for nothing. It owes nothing
+        // from here, and the next write says the stream is closed.
+        outbox_.clear();
     }
     arrived_.notify_all();
 }
@@ -542,6 +564,9 @@ void GatewayStream::drain()
 std::size_t GatewayStream::pendingBytes() const
 {
     const std::lock_guard<std::mutex> lock(mutex_);
+    if (closed_) {
+        return 0;
+    }
     return outbox_.size() + book_.pending();
 }
 
@@ -1021,6 +1046,7 @@ void GatewayRouter::coverLoop()
             break;
         }
         const auto now = std::chrono::steady_clock::now();
+        reattachOrphans();
 
         // No control socket is the thing to fix first, whatever put it there.
         // Waiting for the next scheduled change would leave the session mute
@@ -1107,15 +1133,15 @@ http::SocketPtr Link::socketFor(
     return own ? own : socketFor(endpoint);
 }
 
-void GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t received)
+bool GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t received)
 {
     if (flow == 0) {
-        return;
+        return false;
     }
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         if (link_->flows.count(flow) > 0 || link_->flows.size() + 1 >= gateway::kMaxSocketsPerSession) {
-            return;
+            return false;
         }
     }
     const http::SocketDialResult opened = http::openSocket(
@@ -1126,18 +1152,51 @@ void GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t receive
         [this, flow](const http::SocketPtr&) {
             const std::lock_guard<std::mutex> lock(link_->mutex);
             link_->flows.erase(flow);
+            link_->orphaned.insert(flow);
         });
     if (opened.socket == nullptr) {
         // A flow without a socket of its own rides the main one. Slower under
         // load, and not a failure.
         bazarish::log::debug("i2p: no socket of its own for flow {}: {}", flow, opened.error);
-        return;
+        return false;
     }
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->flows[flow] = opened.socket;
     }
     opened.socket->send(gateway::encodeJson(FrameType::eAttach, flow, {{"received", received}}));
+    return true;
+}
+
+void GatewayRouter::reattachOrphans()
+{
+    std::vector<std::pair<std::uint32_t, std::uint64_t>> again;
+    {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        for (auto at = link_->orphaned.begin(); at != link_->orphaned.end();) {
+            const auto found = link_->streams.find(*at);
+            if (found == link_->streams.end() || found->second->givenUp()) {
+                // The stream ended with its socket, or the session it belonged
+                // to is gone: there is nothing left to replay it onto.
+                at = link_->orphaned.erase(at);
+                continue;
+            }
+            // Read under this lock, which is what keeps the stream alive: the
+            // map holds pointers to objects their callers own.
+            again.emplace_back(*at, found->second->received());
+            ++at;
+        }
+    }
+    for (const auto& [flow, received] : again) {
+        if (attach(flow, received)) {
+            const std::lock_guard<std::mutex> lock(link_->mutex);
+            link_->orphaned.erase(flow);
+        }
+        // Still owed a replay if it did not: the stream holds what went with the
+        // socket, and nothing else asks for it back. The next tick tries again,
+        // and the session's own term is what ends the wait if the gateway is
+        // gone for good.
+    }
 }
 
 Frame Link::call(
