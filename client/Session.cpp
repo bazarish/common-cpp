@@ -2057,9 +2057,9 @@ std::unique_ptr<Client> Session::makeEventClient(const ContactFetchContext& cont
     return waiter;
 }
 
-bool Session::waitForEvents(Client& waiter, const int waitSeconds)
+std::vector<PendingEntry> Session::waitForMail(Client& waiter, const int waitSeconds)
 {
-    return !waiter.waitForPending(waitSeconds).empty();
+    return waiter.waitForPending(waitSeconds);
 }
 
 Session::ContactCardResolved Session::resolveContactCard(
@@ -4117,10 +4117,11 @@ void Session::releaseItem(const std::string& pendingId)
     ackSink_(pendingId);
 }
 
-std::vector<Session::MailboxItem> Session::fetchMailbox(Client& client, const std::size_t maxItems)
+std::vector<Session::MailboxItem> Session::fetchMailbox(
+    Client& client, const std::vector<PendingEntry>& waiting, const std::size_t maxItems)
 {
     std::vector<MailboxItem> items;
-    for (const PendingEntry& entry : client.listPending()) {
+    for (const PendingEntry& entry : waiting) {
         if (maxItems > 0 && items.size() >= maxItems) {
             break;
         }

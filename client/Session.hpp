@@ -728,7 +728,11 @@ public:
     // outbound I2P destination of its own, and rebuilding it per wait left a
     // trail of half-built dialers in the router.
     static std::unique_ptr<Client> makeEventClient(const ContactFetchContext& context);
-    static bool waitForEvents(Client& waiter, int waitSeconds);
+    // What the held-open request came back with: the items the mailbox holds,
+    // or nothing when the window simply closed. The server answers it the
+    // moment something arrives, so this is how mail is learned about - there is
+    // no timer anywhere in it.
+    static std::vector<PendingEntry> waitForMail(Client& waiter, int waitSeconds);
 
     static ContactCardResolved resolveContactCard(
         const ContactFetchContext& context, const ContactCardRequest& request);
@@ -1178,7 +1182,8 @@ public:
     // Reads what the mailbox holds and fetches the items themselves. Static and
     // context-based like resolveContactCard: it touches no session state, which
     // is what makes it safe to run beside a live session on another thread.
-    static std::vector<MailboxItem> fetchMailbox(Client& client, std::size_t maxItems);
+    static std::vector<MailboxItem> fetchMailbox(
+        Client& client, const std::vector<PendingEntry>& waiting, std::size_t maxItems);
     // Takes what was fetched ahead. A pass uses these instead of asking for
     // them; anything it does not use is dropped when the next lot arrives.
     void holdFetched(std::vector<MailboxItem> items);
