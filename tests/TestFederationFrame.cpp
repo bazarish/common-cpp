@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include <bazarish/FederationFrame.hpp>
 
+#include "TestUtil.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <sys/socket.h>
@@ -12,15 +14,6 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
-
-#define CHECK(condition)                                                            \
-    do {                                                                            \
-        if (!(condition)) {                                                         \
-            std::fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, \
-                #condition);                                                        \
-            std::exit(1);                                                           \
-        }                                                                           \
-    } while (false)
 
 using namespace bazarish;
 

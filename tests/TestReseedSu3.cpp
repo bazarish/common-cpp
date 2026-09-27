@@ -6,6 +6,8 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/I2p.hpp>
 
+#include "TestUtil.hpp"
+
 #include <zlib.h>
 
 #include <cstdio>
@@ -13,15 +15,6 @@
 #include <cstring>
 #include <string>
 #include <vector>
-
-#define CHECK(condition)                                                            \
-    do {                                                                            \
-        if (!(condition)) {                                                         \
-            std::fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, \
-                #condition);                                                        \
-            std::exit(1);                                                           \
-        }                                                                           \
-    } while (false)
 
 namespace {
 

@@ -6,6 +6,8 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Crypto.hpp>
 
+#include "TestUtil.hpp"
+
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -21,15 +23,6 @@
 #include <vector>
 
 using namespace bazarish;
-
-#define CHECK(condition)                                                            \
-    do {                                                                            \
-        if (!(condition)) {                                                         \
-            std::fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, \
-                #condition);                                                        \
-            std::exit(1);                                                           \
-        }                                                                           \
-    } while (false)
 
 namespace {
 

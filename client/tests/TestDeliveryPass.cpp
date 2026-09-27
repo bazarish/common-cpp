@@ -21,6 +21,8 @@
 #include <bazarish/FederationFrame.hpp>
 #include <bazarish/HttpServer.hpp>
 
+#include "TestUtil.hpp"
+
 #include <functional>
 #include <nlohmann/json.hpp>
 
@@ -36,22 +38,12 @@
 #include <thread>
 #include <vector>
 
-#define CHECK(condition)                                                            \
-    do {                                                                            \
-        if (!(condition)) {                                                         \
-            std::fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, \
-                #condition);                                                        \
-            std::exit(1);                                                           \
-        }                                                                           \
-    } while (false)
-
 using namespace bazarish;
 using namespace bazarish::client;
 
 namespace {
 
 namespace fs = std::filesystem;
-
 
 // Who the tunnel said this is. The transport authenticates the caller once, when
 // it opens; a route behind it is told, exactly as the real server tells one from

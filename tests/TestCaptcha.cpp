@@ -4,6 +4,8 @@
 #include <bazarish/Hmac.hpp>
 #include <bazarish/SelfHostedCaptcha.hpp>
 
+#include "TestUtil.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <cctype>
@@ -13,15 +15,6 @@
 #include <map>
 #include <memory>
 #include <string>
-
-#define CHECK(condition)                                                            \
-    do {                                                                            \
-        if (!(condition)) {                                                         \
-            std::fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, \
-                #condition);                                                        \
-            std::exit(1);                                                           \
-        }                                                                           \
-    } while (false)
 
 using namespace bazarish::service;
 
