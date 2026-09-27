@@ -97,6 +97,25 @@ Bytes bioToBytes(BIO* const bio)
     return Bytes(data, data + size);
 }
 
+// CMS_add0_recipient_password takes ownership of the password buffer and frees it
+// with the structure, so it must be an OpenSSL allocation rather than the
+// std::string's storage. Default PBKDF2 iteration count and PWRI key wrap; the
+// password key encryption key is AES-256.
+void addPasswordRecipient(CMS_ContentInfo* const cms, const std::string& password)
+{
+    unsigned char* const copy
+        = static_cast<unsigned char*>(OPENSSL_memdup(password.data(), password.size()));
+    if (copy == nullptr) {
+        throw std::runtime_error("OPENSSL_memdup failed");
+    }
+    if (CMS_add0_recipient_password(
+            cms, -1, NID_undef, NID_undef, copy, static_cast<int>(password.size()), nullptr)
+        == nullptr) {
+        OPENSSL_free(copy);
+        throw std::runtime_error("CMS_add0_recipient_password failed");
+    }
+}
+
 // Builds a carrier X.509 certificate for subjectKey. The certificate is
 // signed by signerKey, which must be capable of signing; for self-signed
 // identity carriers signerKey == subjectKey.
@@ -561,21 +580,7 @@ Bytes sealWithPassword(const Bytes& plaintext, const std::string& password)
     if (cms == nullptr) {
         throw std::runtime_error("CMS_encrypt failed");
     }
-    // CMS_add0_recipient_password takes ownership of the password buffer and
-    // frees it with the structure, so it must be an OpenSSL allocation, not
-    // our std::string's storage. Default PBKDF2 iteration count and PWRI key
-    // wrap; the password key encryption key is AES-256.
-    unsigned char* const passCopy
-        = static_cast<unsigned char*>(OPENSSL_memdup(password.data(), password.size()));
-    if (passCopy == nullptr) {
-        throw std::runtime_error("OPENSSL_memdup failed");
-    }
-    if (CMS_add0_recipient_password(cms.get(), -1, NID_undef, NID_undef, passCopy,
-            static_cast<int>(password.size()), nullptr)
-        == nullptr) {
-        OPENSSL_free(passCopy);
-        throw std::runtime_error("CMS_add0_recipient_password failed");
-    }
+    addPasswordRecipient(cms.get(), password);
     if (CMS_final(cms.get(), input.get(), nullptr, CMS_BINARY) != 1) {
         throw std::runtime_error("CMS_final failed");
     }
@@ -603,17 +608,7 @@ void sealWithPasswordToFile(const std::filesystem::path& inPath,
     if (cms == nullptr) {
         throw std::runtime_error("CMS_encrypt failed");
     }
-    unsigned char* const passCopy
-        = static_cast<unsigned char*>(OPENSSL_memdup(password.data(), password.size()));
-    if (passCopy == nullptr) {
-        throw std::runtime_error("OPENSSL_memdup failed");
-    }
-    if (CMS_add0_recipient_password(cms.get(), -1, NID_undef, NID_undef, passCopy,
-            static_cast<int>(password.size()), nullptr)
-        == nullptr) {
-        OPENSSL_free(passCopy);
-        throw std::runtime_error("CMS_add0_recipient_password failed");
-    }
+    addPasswordRecipient(cms.get(), password);
     // Streams the plaintext from `input`, writing indefinite-length BER ciphertext
     // to `output` (replaces the in-memory path's CMS_final + i2d_CMS_bio).
     if (i2d_CMS_bio_stream(output.get(), cms.get(), input.get(), CMS_BINARY | CMS_STREAM) != 1) {
