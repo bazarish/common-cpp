@@ -336,7 +336,6 @@ public:
     // Tells the account's other devices that this conversation was emptied here -
     // our own copy of it, not the correspondent's.
     void syncChatClearToSelf(const std::string& peerFingerprint);
-    // Hands the account's own answers to its other devices.
     void syncAccountPrefsToSelf();
 
     // Permanently removes a contact: drops it from the contact list, deletes its sealed
@@ -405,27 +404,23 @@ public:
     // Raises ApiError(eAccountPendingApproval) while approval is outstanding.
     void publishRouting();
 
-    // --- Pictures ---
+    // --- Pictures and voice messages ---
     //
-    // A picture that has arrived (or one being sent) lives in the account
-    // database like everything else this client keeps: encrypted at rest, gone
-    // when the account is deleted, and never a plaintext copy sitting in a cache
-    // directory. It is small by construction - the composer shrinks it before
-    // sending - so it costs the database little.
+    // Both ride inside the message rather than being fetched, and their bytes live
+    // in the account database like everything else this client keeps: encrypted at
+    // rest, gone when the account is deleted, and never a plaintext copy in a cache
+    // directory. Both are small by construction - the composer shrinks a picture,
+    // and a voice message is Opus frames - so they cost the database little. The
+    // key is the id of the message that carried them.
 
-    // A voice message: Opus frames, small enough to ride inside the message, kept
-    // in the account like a picture.
     bool sendVoice(const std::string& peerFingerprint, const Bytes& opus, std::int64_t durationMs,
         const std::string& e2eId = {},
         const DeliveryWatch& watch = {},
         const std::string& replyTo = {}, bool forwarded = false);
 
-    // Stores a picture's bytes against the message that announced it.
     void putPicture(const std::string& e2eId, const Bytes& bytes);
-    // The picture of a message, or nothing when this account does not hold it.
     std::optional<Bytes> picture(const std::string& e2eId) const;
     bool hasPicture(const std::string& e2eId) const;
-    // The same for a voice message's audio.
     void putVoice(const std::string& e2eId, const Bytes& bytes);
     std::optional<Bytes> voice(const std::string& e2eId) const;
 
@@ -607,7 +602,7 @@ public:
     // configured in this build.
     std::string addByAlias(const std::string& alias, const std::string& text);
 
-    // --- Asynchronous contact add ------------------------------------------------
+    // --- Asynchronous contact add ---
     // addByInvite / addByAlias above are synchronous: they block on a federated
     // card fetch (the serving server dials the peer over I2P, tens of seconds when
     // the peer is slow or unreachable). A GUI must never run that on the thread that
@@ -1079,7 +1074,7 @@ public:
     void setCallMuted(bool muted);
 
 
-    // The current call snapshot (state eIdle when there is none).
+    // State eIdle when there is no call.
     CallInfo currentCall() const;
 
     // Drains the calls that finished since the last call - each needs a chat-history
@@ -1117,7 +1112,6 @@ public:
     // writes - to a correspondent or to this account's own devices - passes
     // through here, so a new one cannot forget the rule.
     void requireSwitchedOn() const;
-    // Whether the last pass left items in the mailbox.
     bool morePending() const { return morePending_; }
     // Writes whatever the courier has confirmed since the last call to the
     // account's other devices. A delivery that finished on the courier's own
@@ -1293,6 +1287,12 @@ private:
 
     void noteWire(bool outgoing, std::string what, std::string status, std::string detail) const;
     std::string wireName(const std::string& peerFingerprint) const;
+
+    // The head every message carries, whatever its type: the format version,
+    // the type, the id the two sides know it by, who sent it and when. `payload`
+    // is what that type adds.
+    nlohmann::json envelope(const std::string& type, const std::string& id,
+        nlohmann::json payload = nlohmann::json::object()) const;
 
     bool sendContent(const std::string& peerFingerprint, nlohmann::json inner,
         const DeliveryWatch& watch = {}, bool waitForOutcome = false,

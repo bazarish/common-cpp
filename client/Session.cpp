@@ -373,6 +373,22 @@ nlohmann::json decodedBody(const Bytes& bytes)
     return nlohmann::json::from_cbor(unpadFromLadder(bytes));
 }
 
+// The router an add's lookups go over. They never go through our own server: a
+// lookup relayed there would tell it who is being added, so no router is a
+// refusal rather than a quieter route.
+bazarish::i2p::Router& routerForAdd(const bool i2pEnabled)
+{
+    if (!i2pEnabled) {
+        throw std::runtime_error("adding a contact needs I2P, and it is switched off");
+    }
+    bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
+    if (router == nullptr || !router->ready()) {
+        throw std::runtime_error(
+            "adding a contact needs the I2P router; it is still building tunnels");
+    }
+    return *router;
+}
+
 }  // namespace
 
 std::string inlineKeyboardJson(const InlineKeyboard& keyboard)
@@ -1164,17 +1180,12 @@ bool Session::adoptI2pMasterFromOwnMailbox(const std::string& wantedHost)
 
 void Session::askDevicesForI2pMaster(const std::string& servedHost)
 {
-    const nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "device.i2p-master-request"},
-        {"id", toHex(randomBytes(16))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    const nlohmann::json inner = envelope("device.i2p-master-request", toHex(randomBytes(16)), {
         {"device", client_->clientId()},
         // Which address is wanted, so a device holding several - or an older one
         // - answers with the one the server is actually serving.
         {"host", servedHost},
-    };
+    });
     submitSignedToSelf(inner, "device.i2p-master-request");
 }
 
@@ -1250,14 +1261,9 @@ void Session::syncI2pMasterToSelf()
     if (i2pMaster_.empty() || myDest_.empty() || myServingKeyB64_.empty()) {
         return;  // nothing to sync, or our own routing is not known yet
     }
-    const nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "device.i2p-master"},
-        {"id", toHex(randomBytes(16))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    const nlohmann::json inner = envelope("device.i2p-master", toHex(randomBytes(16)), {
         {"i2pMaster", toBase64(i2pMaster_)},
-    };
+    });
     // Straight into our own mailbox on our own server, which every device of
     // this account polls: the request's signature is the admission check, so
     // there is no destination to dial and no token to spend.
@@ -1305,14 +1311,9 @@ void Session::syncAvatarToSelf()
     if (myDest_.empty() || myServingKeyB64_.empty()) {
         return;  // our own routing is not known yet
     }
-    const nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "device.avatar"},
-        {"id", toHex(randomBytes(16))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    const nlohmann::json inner = envelope("device.avatar", toHex(randomBytes(16)), {
         {"avatar", {{"mime", avatarMime_}, {"data", toBase64(avatar_)}}},
-    };
+    });
     // Sealed to our own sealing key: only this account's devices can read it.
     submitSignedToSelf(inner, "device.avatar");
 }
@@ -1322,15 +1323,10 @@ void Session::syncContactNameToSelf(const std::string& peerFingerprint, const st
     if (myDest_.empty() || myServingKeyB64_.empty()) {
         return;  // our own routing is not known yet
     }
-    const nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "device.contact-name"},
-        {"id", toHex(randomBytes(16))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    const nlohmann::json inner = envelope("device.contact-name", toHex(randomBytes(16)), {
         {"peer", peerFingerprint},
         {"name", name},
-    };
+    });
     submitSignedToSelf(inner, "device.contact-name");
 }
 
@@ -1551,14 +1547,9 @@ void Session::maybeSendAvatarToContact(const std::string& peerFingerprint, const
         || contact.sealingPublicB64.empty() || contact.servingSealingB64.empty()) {
         return;
     }
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "avatar"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope("avatar", toHex(randomBytes(8)), {
         {"avatar", {{"mime", avatarMime_}, {"data", toBase64(avatar_)}}},
-    };
+    });
     try {
         sendContent(peerFingerprint, std::move(inner));
         contact.avatarSentToPeer = true;
@@ -1703,15 +1694,10 @@ void Session::syncDelegationTermToSelf()
     // term would keep renewing past what another device chose, and the shorter
     // choice would never take effect (a device stands down while the server
     // holds a delegation comfortably in date).
-    const nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "device.delegation-term"},
-        {"id", toHex(randomBytes(16))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    const nlohmann::json inner = envelope("device.delegation-term", toHex(randomBytes(16)), {
         {"device", client_->clientId()},
         {"days", delegationDays_},
-    };
+    });
     submitSignedToSelf(inner, "device.delegation-term");
 }
 
@@ -1994,16 +1980,8 @@ FetchTransport Session::fetchTransport() const
         // stream is already encrypted to the destination), so relaying it would
         // hand our own server the one thing this design keeps from it. No
         // router, no fetch - said plainly rather than quietly downgraded.
-        if (!i2pEnabled()) {
-            throw std::runtime_error("adding a contact needs I2P, and it is switched off");
-        }
-        bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
-        if (router == nullptr || !router->ready()) {
-            throw std::runtime_error(
-                "adding a contact needs the I2P router; it is still building tunnels");
-        }
-        return federationFetchOverI2p(
-            *router, toDest, op, sealed, transferPrivacy(), destinationOwner());
+        return federationFetchOverI2p(routerForAdd(i2pEnabled()), toDest, op, sealed,
+            transferPrivacy(), destinationOwner());
     };
 }
 
@@ -2090,16 +2068,8 @@ Session::ContactCardResolved Session::resolveContactCard(
         const FetchTransport transport = [&context](const std::string& toDest,
                                              const std::string& op,
                                              const Bytes& sealed) -> FetchOutcome {
-            if (!context.i2pEnabled) {
-                throw std::runtime_error("adding a contact needs I2P, and it is switched off");
-            }
-            bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
-            if (router == nullptr || !router->ready()) {
-                throw std::runtime_error(
-                    "adding a contact needs the I2P router; it is still building tunnels");
-            }
-            return federationFetchOverI2p(
-                *router, toDest, op, sealed, context.blobFetchPrivacy, context.destinationOwner);
+            return federationFetchOverI2p(routerForAdd(context.i2pEnabled), toDest, op, sealed,
+                context.blobFetchPrivacy, context.destinationOwner);
         };
 
         // The registry answers its own HTTP API rather than a federation frame,
@@ -2108,16 +2078,8 @@ Session::ContactCardResolved Session::resolveContactCard(
         const FetchTransport toRegistry = [&context](const std::string& host,
                                               const std::string& op,
                                               const Bytes& body) -> FetchOutcome {
-            if (!context.i2pEnabled) {
-                throw std::runtime_error("adding a contact needs I2P, and it is switched off");
-            }
-            bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
-            if (router == nullptr || !router->ready()) {
-                throw std::runtime_error(
-                    "adding a contact needs the I2P router; it is still building tunnels");
-            }
-            return resolverFetchOverI2p(
-                *router, host, op, body, context.blobFetchPrivacy, context.destinationOwner);
+            return resolverFetchOverI2p(routerForAdd(context.i2pEnabled), host, op, body,
+                context.blobFetchPrivacy, context.destinationOwner);
         };
 
         if (request.byAlias) {
@@ -2297,15 +2259,10 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     // weighs is what a flood of requests costs the person being asked.
     const std::string replyPass = registerPassFor(peerFingerprint);
 
-    const nlohmann::json payload = {
-        {"v", kMessageFormatVersion},
-        {"type", "contact.request"},
-        // The request names itself, and keeps that name across a resend: the
-        // recipient's server derives the delivery from it and recognises the
-        // second copy of a request as the first one rather than a new one.
-        {"id", requestId},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    // The request names itself, and keeps that name across a resend: the
+    // recipient's server derives the delivery from it and recognises the second
+    // copy of a request as the first one rather than a new one.
+    const nlohmann::json payload = envelope("contact.request", requestId, {
         {"text", text},
         // Our own self-chosen display name, so the recipient can show a named
         // friend in their contacts from the start - mirroring how we learn their
@@ -2320,7 +2277,7 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
                 {"view", sharedView()},
                 {"pass", replyPass},
             }},
-    };
+    });
     // E2E-encrypted to the peer's prekey: the first message is confidential.
     // Delivered tokenless under the "contact" admission class.
     nlohmann::json request = payload;
@@ -2367,18 +2324,13 @@ void Session::acceptContactRequest(const std::string& peerFingerprint)
     // Agreeing is simply our first reply to the requester: sendContent attaches our
     // bootstrap (our routing + a reply-token batch) because issuedToThem is still
     // false, which is exactly the descriptor the requester needs to finish the add.
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "contact.accept"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope("contact.accept", toHex(randomBytes(8)), {
         // Our own display name, so the requester can name us in their contacts too -
         // the reverse direction of the requester's `dn` on the contact request. A
         // one-time seed (only when they hold no name for us yet), so names are
         // symmetric after a first exchange.
         {"dn", name_},
-    };
+    });
     sendContent(peerFingerprint, std::move(inner));
 }
 
@@ -2386,14 +2338,9 @@ bool Session::sendMessage(const std::string& peerFingerprint, const std::string&
     const std::string& e2eId, const DeliveryWatch& watch, const std::string& replyTo,
     const bool forwarded)
 {
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "text"},
-        {"id", e2eId.empty() ? toHex(randomBytes(8)) : e2eId},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope("text", e2eId.empty() ? toHex(randomBytes(8)) : e2eId, {
         {"text", text},
-    };
+    });
     if (forwarded) {
         // A bare mark: this was passed on rather than written here. It names
         // nobody - not who wrote it, not who passed it on before - and proves
@@ -2442,12 +2389,7 @@ bool Session::sendPicture(const std::string& peerFingerprint, const fs::path& pa
     // The sender's own chat draws it from the same place the recipient will.
     putPicture(id, bytes);
 
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", kTypeImage},
-        {"id", id},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope(kTypeImage, id, {
         {"image",
             {
                 {"name", path.filename().string()},
@@ -2455,7 +2397,7 @@ bool Session::sendPicture(const std::string& peerFingerprint, const fs::path& pa
                 {"size", bytes.size()},
                 {"data", nlohmann::json::binary(bytes)},
             }},
-    };
+    });
     if (!replyTo.empty()) {
         inner["replyTo"] = replyTo;
     }
@@ -2472,12 +2414,7 @@ bool Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
     const std::string id = e2eId.empty() ? toHex(randomBytes(8)) : e2eId;
     putVoice(id, opus);
 
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", kTypeVoice},
-        {"id", id},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope(kTypeVoice, id, {
         {"voice",
             {
                 // Opus at the call format: 48 kHz mono, 20 ms frames, each one
@@ -2486,7 +2423,7 @@ bool Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
                 {"size", opus.size()},
                 {"data", nlohmann::json::binary(opus)},
             }},
-    };
+    });
     if (forwarded) {
         inner["forwarded"] = true;
     }
@@ -2512,12 +2449,7 @@ bool Session::announceTransfer(const std::string& type, const std::string& peerF
     sentFiles_[id] = SentFile{path, digest, size, peerFingerprint};
     persistSentFiles();
 
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", type},
-        {"id", id},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope(type, id, {
         {"file",
             {
                 {"name", path.filename().string()},
@@ -2525,7 +2457,7 @@ bool Session::announceTransfer(const std::string& type, const std::string& peerF
                 {"sha256", digest},
                 {"mime", guessMime(path)},
             }},
-    };
+    });
     if (!replyTo.empty()) {
         inner["replyTo"] = replyTo;
     }
@@ -2539,15 +2471,10 @@ void Session::sendInteractive(const std::string& peerFingerprint, const std::str
     // An interactive message is a "text" message that additionally carries an
     // inline keyboard. A recipient that does not understand keyboards still
     // renders the text; the registry stays forward-compatible.
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "text"},
-        {"id", e2eId.empty() ? toHex(randomBytes(8)) : e2eId},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope("text", e2eId.empty() ? toHex(randomBytes(8)) : e2eId, {
         {"text", text},
         {"keyboard", keyboardToJson(keyboard)},
-    };
+    });
     sendContent(peerFingerprint, std::move(inner), watch);
 }
 
@@ -2555,30 +2482,20 @@ void Session::sendCommand(const std::string& peerFingerprint, const std::string&
     const std::string& args, const std::string& e2eId,
     const DeliveryWatch& watch)
 {
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "bot.command"},
-        {"id", e2eId.empty() ? toHex(randomBytes(8)) : e2eId},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope("bot.command", e2eId.empty() ? toHex(randomBytes(8)) : e2eId, {
         {"command", command},
         {"args", args},
-    };
+    });
     sendContent(peerFingerprint, std::move(inner), watch);
 }
 
 void Session::sendCallback(
     const std::string& peerFingerprint, const std::string& data, const std::string& refMessageId)
 {
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "bot.callback"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope("bot.callback", toHex(randomBytes(8)), {
         {"data", data},
         {"ref", refMessageId},
-    };
+    });
     sendContent(peerFingerprint, std::move(inner));
 }
 
@@ -2588,29 +2505,19 @@ bool Session::sendEdit(const std::string& peerFingerprint, const std::string& re
 {
     // An edit fully replaces the target's text and keyboard; the keyboard is
     // always carried (an empty array clears it) so the shape is unambiguous.
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "edit"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope("edit", toHex(randomBytes(8)), {
         {"ref", refMessageId},
         {"text", text},
         {"keyboard", keyboardToJson(keyboard)},
-    };
+    });
     return sendContent(peerFingerprint, std::move(inner), watch);
 }
 
 void Session::sendDelete(const std::string& peerFingerprint, const std::string& refMessageId)
 {
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "delete"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope("delete", toHex(randomBytes(8)), {
         {"ref", refMessageId},
-    };
+    });
     sendContent(peerFingerprint, std::move(inner));
 }
 
@@ -2679,13 +2586,7 @@ Session::RoutingPushResult Session::pushRoutingToContacts(
             onStage("Telling your contacts (" + std::to_string(result.told + result.failed + 1)
                 + "/" + std::to_string(peers.size()) + ")");
         }
-        nlohmann::json inner = {
-            {"v", kMessageFormatVersion},
-            {"type", "contact.routing"},
-            {"id", toHex(randomBytes(8))},
-            {"from", fingerprint()},
-            {"sentAt", nowMillis()},
-        };
+        nlohmann::json inner = envelope("contact.routing", toHex(randomBytes(8)));
         try {
             // The routing block rides on every message; this one carries nothing
             // else, so it is a routing update and nothing more.
@@ -2717,14 +2618,9 @@ void Session::sendReceipt(const std::string& peerFingerprint, const std::string&
     if (!found->second.issuedToThem) {
         return;  // their request is unanswered: this account says nothing to them
     }
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "receipt"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope("receipt", toHex(randomBytes(8)), {
         {"ref", refMessageId},
-    };
+    });
     bazarish::log::info("read receipt for {} on its way to {}", refMessageId,
         bazarish::log::redact(peerFingerprint));
     // Never the send that establishes anything: agreeing is the user's act.
@@ -2741,27 +2637,16 @@ void Session::sendReaction(const std::string& peerFingerprint, const std::string
         throw std::runtime_error("a reaction is at most "
             + std::to_string(kMaxReactionChars) + " characters");
     }
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "reaction"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope("reaction", toHex(randomBytes(8)), {
         {"ref", refMessageId},
         {"text", emoji},
-    };
+    });
     sendContent(peerFingerprint, std::move(inner));
 }
 
 void Session::sendChatClear(const std::string& peerFingerprint)
 {
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "chat.clear"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
-    };
+    nlohmann::json inner = envelope("chat.clear", toHex(randomBytes(8)));
     sendContent(peerFingerprint, std::move(inner));
 }
 
@@ -2799,12 +2684,7 @@ void Session::requestFile(
     }
     emitTransfer(e2eId, TransferState::eRequested, 0, 0, {}, "Asking the sender",
         peerFingerprint);
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "file.request"},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    nlohmann::json inner = envelope("file.request", toHex(randomBytes(8)), {
         {"fileId", e2eId},
         // Which request is waiting. Their devices all see the answer, and the
         // one-time address in it belongs to this request; the others leave it
@@ -2813,7 +2693,7 @@ void Session::requestFile(
         // is stable: naming it here told a correspondent which devices this
         // account writes from, and over a few files how many there are.
         {"ask", ask},
-    };
+    });
     sendContent(peerFingerprint, std::move(inner));
 }
 
@@ -2890,14 +2770,12 @@ void Session::cancelTransfer(const std::string& e2eId)
 {
     for (const StoppedHalf& half : stopTransfer(e2eId)) {
         try {
+            // `ask` says which half is stopped, by the name the request drew for
+            // itself. Their other devices may be pulling the same file under
+            // requests of their own, and this does not touch those.
             sendContent(half.peer,
-                nlohmann::json{{"v", kMessageFormatVersion}, {"type", "file.cancel"},
-                    {"id", toHex(randomBytes(8))}, {"from", fingerprint()},
-                    {"sentAt", nowMillis()}, {"fileId", e2eId},
-                    // Which half is stopped, by the name the request drew for
-                    // itself. Their other devices may be pulling the same file
-                    // under requests of their own, and this does not touch those.
-                    {"ask", half.ask}});
+                envelope("file.cancel", toHex(randomBytes(8)),
+                    {{"fileId", e2eId}, {"ask", half.ask}}));
         } catch (const std::exception& error) {
             bazarish::log::warn("could not tell {} the transfer was stopped: {}",
                 bazarish::log::redact(half.peer), error.what());
@@ -2966,14 +2844,9 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
     if (!fs::exists(found->second.path)) {
         // Either we never announced it or the user moved the file: say so instead
         // of leaving the recipient waiting on a transfer that can never start.
-        nlohmann::json inner = {
-            {"v", kMessageFormatVersion},
-            {"type", "file.unavailable"},
-            {"id", toHex(randomBytes(8))},
-            {"from", fingerprint()},
-            {"sentAt", nowMillis()},
+        nlohmann::json inner = envelope("file.unavailable", toHex(randomBytes(8)), {
             {"fileId", fileId},
-        };
+        });
         sendContent(peerFingerprint, std::move(inner));
         return;
     }
@@ -3042,15 +2915,10 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             offer.key = prepared.key;
             offer.sha256 = prepared.sha256;
             offer.size = prepared.size;
-            nlohmann::json inner = {
-                {"v", kMessageFormatVersion},
-                {"type", "file.offer"},
-                {"id", toHex(randomBytes(8))},
-                {"from", fingerprint()},
-                {"sentAt", nowMillis()},
+            nlohmann::json inner = envelope("file.offer", toHex(randomBytes(8)), {
                 {"offer", fileOfferToJson(offer)},
                 {"forAsk", forAsk},
-            };
+            });
             sendContent(peerFingerprint, std::move(inner));
             emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, "Waiting for them",
                 peerFingerprint);
@@ -3087,9 +2955,8 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             // offer that will never come, with nothing to explain the silence.
             try {
                 sendContent(peerFingerprint,
-                    nlohmann::json{{"v", kMessageFormatVersion}, {"type", "file.unavailable"},
-                        {"id", toHex(randomBytes(8))}, {"from", fingerprint()},
-                        {"sentAt", nowMillis()}, {"fileId", fileId}});
+                    envelope("file.unavailable", toHex(randomBytes(8)),
+                        {{"fileId", fileId}}));
             } catch (const std::exception& tellError) {
                 bazarish::log::warn("could not tell {} the transfer failed: {}",
                     bazarish::log::redact(peerFingerprint), tellError.what());
@@ -3148,6 +3015,20 @@ void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& pee
             transfers_->pending.erase(found);
         }
     }).detach();
+}
+
+nlohmann::json Session::envelope(
+    const std::string& type, const std::string& id, nlohmann::json payload) const
+{
+    nlohmann::json inner = {
+        {"v", kMessageFormatVersion},
+        {"type", type},
+        {"id", id},
+        {"from", fingerprint()},
+        {"sentAt", nowMillis()},
+    };
+    inner.update(std::move(payload));
+    return inner;
 }
 
 bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inner,
@@ -4289,16 +4170,11 @@ void Session::echoSentToSelf(const std::string& peerFingerprint, const nlohmann:
     if (myDest_.empty() || myServingKeyB64_.empty()) {
         return;  // our own routing is not known yet
     }
-    const nlohmann::json echo = {
-        {"v", kMessageFormatVersion},
-        {"type", "device.message"},
-        {"id", toHex(randomBytes(16))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    const nlohmann::json echo = envelope("device.message", toHex(randomBytes(16)), {
         {"peer", peerFingerprint},
         {"device", client_->clientId()},
         {"message", inner},
-    };
+    });
     // Nobody is waiting on this: it is the copy of a message this device has
     // already sent, for the account's other devices to find.
     submitSignedToSelf(echo, "device.message", /*later=*/true);
@@ -4310,14 +4186,9 @@ void Session::askDevicesForContacts()
     // The one thing a fresh device cannot get from the network: a contact is
     // reached by destination and read by capability, and there is no lookup that
     // turns a fingerprint into either. The account's other devices hold the book.
-    const nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "device.contacts-request"},
-        {"id", toHex(randomBytes(16))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    const nlohmann::json inner = envelope("device.contacts-request", toHex(randomBytes(16)), {
         {"device", client_->clientId()},
-    };
+    });
     submitSignedToSelf(inner, "device.contacts-request");
 }
 
@@ -4369,16 +4240,11 @@ void Session::sendContactBookTo(const std::string& toDevice)
         if (chunk.empty()) {
             return;
         }
-        const nlohmann::json inner = {
-            {"v", kMessageFormatVersion},
-            {"type", "device.contacts"},
-            {"id", toHex(randomBytes(16))},
-            {"from", fingerprint()},
-            {"sentAt", nowMillis()},
+        const nlohmann::json inner = envelope("device.contacts", toHex(randomBytes(16)), {
             {"device", client_->clientId()},
             {"forDevice", toDevice},
             {"contacts", chunk},
-        };
+        });
         submitSignedToSelf(inner, "device.contacts");
         chunk.clear();
         chunkBytes = 0;
@@ -4540,15 +4406,10 @@ void Session::announceCallTaken(const std::string& callId)
     // them keeps ringing until it hears otherwise. The device that answers or
     // refuses says so, and the rest drop the call without recording anything: the
     // device that took it owns the outcome.
-    const nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "call.taken"},
-        {"id", toHex(randomBytes(16))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    const nlohmann::json inner = envelope("call.taken", toHex(randomBytes(16)), {
         {"device", client_->clientId()},
         {"callId", callId},
-    };
+    });
     try {
         submitSignedToSelf(inner, "call.taken");
     } catch (const std::exception& error) {
@@ -4561,13 +4422,7 @@ void Session::announceCallTaken(const std::string& callId)
 bool Session::sendCallSignal(
     const std::string& peerFingerprint, const std::string& type, nlohmann::json extra)
 {
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", type},
-        {"id", toHex(randomBytes(8))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
-    };
+    nlohmann::json inner = envelope(type, toHex(randomBytes(8)));
     for (const auto& field : extra.items()) {
         inner[field.key()] = field.value();
     }
@@ -5075,15 +4930,11 @@ void Session::adoptAliasStatus(const AliasStatus& status)
 
 void Session::relayAliasStatus(const Bytes& statusDer, const Bytes& delegationDer)
 {
-    const nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", "device.alias-status"},
-        {"id", toHex(randomBytes(kRequestIdBytes))},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
+    const nlohmann::json inner = envelope("device.alias-status",
+        toHex(randomBytes(kRequestIdBytes)), {
         {"status", toBase64(statusDer)},
         {"delegation", toBase64(delegationDer)},
-    };
+    });
     submitSignedToSelf(inner, "device.alias-status");
 }
 
