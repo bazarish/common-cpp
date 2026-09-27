@@ -600,9 +600,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
             std::chrono::steady_clock::now() - startedAt)
             .count();
     };
-    try {
-        const ApiResponse response = tunnelledLocked(
-            method, path, query, body, contentType, headers, readTimeoutSeconds);
+    const auto accept = [&](const ApiResponse& response) {
         if (response.status < 200 || response.status >= 300) {
             raiseFromResponse(response.status, response.body);
         }
@@ -610,13 +608,21 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
             noteWire(method, path, note, std::to_string(response.status), response.body.size(),
                 elapsedMillis());
         }
+    };
+    const auto failed = [&](const std::string& why) {
+        noteWire(method, path, note, "failed: " + why, 0, elapsedMillis());
+    };
+    try {
+        const ApiResponse response = tunnelledLocked(
+            method, path, query, body, contentType, headers, readTimeoutSeconds);
+        accept(response);
         return response;
     } catch (const ApiError& error) {
         // A refused session is answered by opening a new tunnel and trying once
         // more - never by retrying the same way, which is how a server stuck on
         // 401 would spin a client forever.
         if (error.code != ErrorCode::eSessionInvalid || sessionId_.empty()) {
-            noteWire(method, path, note, "failed: " + std::string(error.what()), 0, elapsedMillis());
+            failed(error.what());
             throw;
         }
         constexpr int kRefusalsBeforeGivingUp = 3;
@@ -626,11 +632,11 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
             sessionRefusals_ = 0;
             sessionBlockedUntil_ = nowSeconds() + sessionBackoffSeconds(1);
             bazarish::log::warn("tunnels keep being refused; standing off for a while");
-            noteWire(method, path, note, "failed: " + std::string(error.what()), 0, elapsedMillis());
+            failed(error.what());
             throw;
         }
         if (!ensureSessionLocked()) {
-            noteWire(method, path, note, "failed: no tunnel", 0, elapsedMillis());
+            failed("no tunnel");
             throw;
         }
         const std::uint64_t seq = sessionSeq_ + 1;
@@ -643,13 +649,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
         }
         const ApiResponse response = tunnelledLocked(
             method, path, query, body, contentType, retryHeaders, readTimeoutSeconds);
-        if (response.status < 200 || response.status >= 300) {
-            raiseFromResponse(response.status, response.body);
-        }
-        if (!quietOnSuccess) {
-            noteWire(method, path, note, std::to_string(response.status), response.body.size(),
-                elapsedMillis());
-        }
+        accept(response);
         return response;
     }
 }
