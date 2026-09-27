@@ -93,9 +93,6 @@ struct PendingEntry {
 struct PortalInfo {
     std::string message;
     std::vector<std::string> links;
-    // Whether registering here means solving a captcha on the portal. When it
-    // does not, the client registers itself and the user never sees a page.
-    bool captcha = true;
 };
 
 // The opaque result of one federation fetch (card / alias resolve), as seen by
@@ -204,8 +201,9 @@ public:
     // registration link(s), shown when subscribing is refused because the key is
     // not registered yet. Unauthenticated on the server; safe to call any time.
     PortalInfo fetchPortalInfo();
-    // Registers this identity with the server without a page to visit. Only a
-    // server that asks for no captcha accepts it; anything else raises.
+    // Registers this identity with the server without a page to visit. A
+    // moderated server takes the registration too and holds the account until an
+    // operator approves it; a banned key raises.
     void registerHere();
     // Hands the serving server a fresh offline transient (I2P-base64) so it can
     // operate the user's destination for the subscription window. An empty

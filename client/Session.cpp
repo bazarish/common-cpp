@@ -912,14 +912,14 @@ void Session::registerAccount()
     requireSwitchedOn();
     // Publishing our card is what turns the registration into an account, and it
     // publishes our sealing key as a prekey so contacts can encrypt their very
-    // first message to us before any token exchange. A server that asks for no
-    // captcha registers us right here, so connecting is the whole flow and there
-    // is no page to visit; one that does asks for a portal visit, and says so.
+    // first message to us before any token exchange. Connecting is the whole
+    // flow and there is no page to visit: a server refuses the card while this
+    // key has no account, and registering is one call away.
     PublishResult result;
     try {
         result = client_->publishCard(sealingKey_.publicDer(), ownRoutingHost(), currentCardIssuedAt());
     } catch (const ApiError& error) {
-        if (error.code != ErrorCode::eDeliveryRejected || client_->fetchPortalInfo().captcha) {
+        if (error.code != ErrorCode::eDeliveryRejected) {
             throw;
         }
         reportConnectProgress(60, "Registering with this server");

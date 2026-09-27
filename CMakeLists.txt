@@ -71,8 +71,6 @@ add_library(bazarish_common STATIC
     src/Portal.cpp
     src/PortalSession.cpp
     src/LoginChallenge.cpp
-    src/Captcha.cpp
-    src/SelfHostedCaptcha.cpp
 )
 add_library(Bazarish::Common ALIAS bazarish_common)
 
@@ -162,7 +160,6 @@ bazarish_add_test(TestGatewayProtocol)
 bazarish_add_test(TestGatewayStreamBook)
 bazarish_add_test(TestWebSocket)
 bazarish_add_test(TestLoginChallenge)
-bazarish_add_test(TestCaptcha)
 bazarish_add_test(TestConfigFile)
 bazarish_add_test(TestWebAssets)
 

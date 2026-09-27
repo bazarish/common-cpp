@@ -162,17 +162,14 @@ PortalInfo Client::fetchPortalInfo()
             }
         }
     }
-    if (const auto registration = body.find("registration");
-        registration != body.end() && registration->is_object()) {
-        info.captcha = registration->value("captcha", true);
-    }
     return info;
 }
 
 void Client::registerHere()
 {
-    // The answer is the ack: a refusal (a server that registers on its portal,
-    // or a banned key) throws, and the caller keeps sending the user to the page.
+    // The answer is the ack: a refusal - a banned key - throws. A moderated
+    // server accepts and holds the account until an operator approves it, which
+    // the account's own state reports later, not this call.
     (void)api_.postJson("/v1/account/registration", nlohmann::json::object()).json();
 }
 
