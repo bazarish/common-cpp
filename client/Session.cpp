@@ -18,6 +18,7 @@
 #include <bazarish/Errors.hpp>
 #include <bazarish/Hmac.hpp>
 #include <bazarish/Limits.hpp>
+#include <bazarish/PrivateFile.hpp>
 #include <bazarish/Padding.hpp>
 #include <bazarish/Pass.hpp>
 #include <bazarish/Log.hpp>
@@ -245,15 +246,6 @@ void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap)
         "delivery pass for {} accepted", bazarish::log::redact(contact.dest));
 }
 
-std::string readFileText(const fs::path& path)
-{
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        throw std::runtime_error("failed to open " + path.string());
-    }
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-}
-
 void writeFileText(const fs::path& path, const std::string& text)
 {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
@@ -387,6 +379,21 @@ bazarish::i2p::Router& routerForAdd(const bool i2pEnabled)
             "adding a contact needs the I2P router; it is still building tunnels");
     }
     return *router;
+}
+
+// What a message may carry whatever its type: the message it answers, and a bare
+// mark that it was passed on rather than written here. The mark names nobody -
+// not who wrote it, not who passed it on before - and proves nothing about the
+// text it travels with.
+void addReplyAndForward(
+    nlohmann::json& inner, const std::string& replyTo, const bool forwarded)
+{
+    if (!replyTo.empty()) {
+        inner["replyTo"] = replyTo;
+    }
+    if (forwarded) {
+        inner["forwarded"] = true;
+    }
 }
 
 }  // namespace
@@ -2341,15 +2348,7 @@ bool Session::sendMessage(const std::string& peerFingerprint, const std::string&
     nlohmann::json inner = envelope("text", e2eId.empty() ? toHex(randomBytes(8)) : e2eId, {
         {"text", text},
     });
-    if (forwarded) {
-        // A bare mark: this was passed on rather than written here. It names
-        // nobody - not who wrote it, not who passed it on before - and proves
-        // nothing about the text it travels with.
-        inner["forwarded"] = true;
-    }
-    if (!replyTo.empty()) {
-        inner["replyTo"] = replyTo;
-    }
+    addReplyAndForward(inner, replyTo, forwarded);
     return sendContent(peerFingerprint, std::move(inner), watch);
 }
 
@@ -2398,9 +2397,7 @@ bool Session::sendPicture(const std::string& peerFingerprint, const fs::path& pa
                 {"data", nlohmann::json::binary(bytes)},
             }},
     });
-    if (!replyTo.empty()) {
-        inner["replyTo"] = replyTo;
-    }
+    addReplyAndForward(inner, replyTo, /*forwarded=*/false);
     return sendContent(peerFingerprint, std::move(inner), watch);
 }
 
@@ -2424,12 +2421,7 @@ bool Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
                 {"data", nlohmann::json::binary(opus)},
             }},
     });
-    if (forwarded) {
-        inner["forwarded"] = true;
-    }
-    if (!replyTo.empty()) {
-        inner["replyTo"] = replyTo;
-    }
+    addReplyAndForward(inner, replyTo, forwarded);
     return sendContent(peerFingerprint, std::move(inner), watch);
 }
 
@@ -2458,9 +2450,7 @@ bool Session::announceTransfer(const std::string& type, const std::string& peerF
                 {"mime", guessMime(path)},
             }},
     });
-    if (!replyTo.empty()) {
-        inner["replyTo"] = replyTo;
-    }
+    addReplyAndForward(inner, replyTo, /*forwarded=*/false);
     return sendContent(peerFingerprint, std::move(inner), watch);
 }
 
