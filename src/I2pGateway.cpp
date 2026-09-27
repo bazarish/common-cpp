@@ -252,6 +252,9 @@ public:
     std::vector<std::uint8_t> receiveRawDatagram(std::chrono::milliseconds timeout) override;
 
     void stop() override;
+    // The gateway does not hold this destination any more, so there is nothing
+    // to stop and nothing that will ever answer for it.
+    void lost();
 
     std::uint32_t id() const { return id_; }
     bool raw() const { return raw_; }
@@ -732,6 +735,17 @@ void GatewayEndpoint::stop()
     arrived_.notify_all();
 }
 
+void GatewayEndpoint::lost()
+{
+    if (stopped_.exchange(true)) {
+        return;
+    }
+    ready_.store(false);
+    link_->forget(id_);
+    arrived_.notify_all();
+    bazarish::log::warn("i2p: the gateway has lost the destination for {}", label());
+}
+
 // --- router ---
 
 http::SocketDial GatewayRouter::dialFor() const
@@ -857,6 +871,7 @@ void GatewayRouter::openControl()
     // wait for bytes that are never coming.
     nlohmann::json ours = nlohmann::json::array();
     std::vector<Bytes> replay;
+    std::vector<std::shared_ptr<GatewayEndpoint>> gone;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->cookie = body.value("session", std::string());
@@ -896,9 +911,12 @@ void GatewayRouter::openControl()
                 replay.push_back(std::move(frame));
             }
         }
+        std::set<std::uint32_t> standing;
         if (const auto found = body.find("endpoints"); found != body.end() && found->is_array()) {
             for (const nlohmann::json& one : *found) {
-                const auto at = link_->endpoints.find(one.value("id", 0U));
+                const std::uint32_t endpointId = one.value("id", 0U);
+                standing.insert(endpointId);
+                const auto at = link_->endpoints.find(endpointId);
                 if (at == link_->endpoints.end()) {
                     continue;
                 }
@@ -908,6 +926,20 @@ void GatewayRouter::openControl()
                 }
             }
         }
+        // The same reconciliation the streams above get. A destination the
+        // gateway does not name is gone, and until this side is told so a dial
+        // from it is refused with no-endpoint after waiting out its own
+        // deadline, once per destination the pool still holds.
+        for (const auto& [endpointId, held] : link_->endpoints) {
+            if (standing.count(endpointId) == 0) {
+                if (std::shared_ptr<GatewayEndpoint> endpoint = held.lock()) {
+                    gone.push_back(std::move(endpoint));
+                }
+            }
+        }
+    }
+    for (const std::shared_ptr<GatewayEndpoint>& endpoint : gone) {
+        endpoint->lost();  // takes the link's lock, so not above
     }
     if (!ours.empty()) {
         const Bytes resume
