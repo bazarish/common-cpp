@@ -56,33 +56,26 @@ std::int64_t millisNow()
         .count();
 }
 
-// A number between the two, from the system's random source.
+// A number in [low, high], from the system's random source.
+std::uint64_t drawBetween(const std::uint64_t low, const std::uint64_t high)
+{
+    if (high <= low) {
+        return low;
+    }
+    const Bytes draw = randomBytes(sizeof(std::uint64_t));
+    std::uint64_t value = 0;
+    for (const unsigned char byte : draw) {
+        value = (value << 8) | byte;
+    }
+    return low + value % (high - low + 1);
+}
+
 std::chrono::milliseconds drawBetween(
     const std::chrono::milliseconds low, const std::chrono::milliseconds high)
 {
-    if (high <= low) {
-        return low;
-    }
-    const Bytes draw = randomBytes(sizeof(std::uint64_t));
-    std::uint64_t value = 0;
-    for (const unsigned char byte : draw) {
-        value = (value << 8) | byte;
-    }
-    const std::uint64_t span = static_cast<std::uint64_t>((high - low).count()) + 1;
-    return low + std::chrono::milliseconds(static_cast<std::int64_t>(value % span));
-}
-
-std::size_t drawBetween(const std::size_t low, const std::size_t high)
-{
-    if (high <= low) {
-        return low;
-    }
-    const Bytes draw = randomBytes(sizeof(std::uint64_t));
-    std::uint64_t value = 0;
-    for (const unsigned char byte : draw) {
-        value = (value << 8) | byte;
-    }
-    return low + static_cast<std::size_t>(value % (high - low + 1));
+    return std::chrono::milliseconds(static_cast<std::int64_t>(
+        drawBetween(static_cast<std::uint64_t>(low.count()),
+            static_cast<std::uint64_t>(high.count()))));
 }
 
 // The longest this client leaves itself without a control socket on purpose.
@@ -1032,8 +1025,8 @@ bool GatewayRouter::quiet() const
 
 void GatewayRouter::decoy()
 {
-    const Bytes noise = randomBytes(
-        drawBetween(gateway::kDecoyRequestMinBytes, gateway::kDecoyRequestMaxBytes));
+    const Bytes noise = randomBytes(static_cast<std::size_t>(
+        drawBetween(gateway::kDecoyRequestMinBytes, gateway::kDecoyRequestMaxBytes)));
     // The answer is thrown away. Its length was never this side's to choose.
     (void)http::probeHost(dialFor(), std::string(noise.begin(), noise.end()));
 }
