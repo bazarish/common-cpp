@@ -35,6 +35,10 @@ public:
     virtual ~EndpointBackend() = default;
 
     virtual bool ready() const = 0;
+    // True when this destination is gone for good, so waiting for it to be ready
+    // again is waiting for nothing. Only a borrowed destination can be taken away:
+    // an engine in this process keeps its own until its owner stops it.
+    virtual bool lost() const { return false; }
     virtual std::string publicBase64() const = 0;
     virtual std::string routingHost() const = 0;
     virtual Bytes privateBlob() const = 0;

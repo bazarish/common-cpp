@@ -269,6 +269,11 @@ bool Endpoint::ready() const
     return impl_->transport->ready();
 }
 
+bool Endpoint::lost() const
+{
+    return impl_->transport->lost();
+}
+
 bool Endpoint::waitReady(const std::chrono::seconds timeout)
 {
     const auto deadline = std::chrono::steady_clock::now() + timeout;

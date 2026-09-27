@@ -211,6 +211,7 @@ public:
     ~GatewayEndpoint() override;
 
     bool ready() const override { return ready_.load(); }
+    bool lost() const override { return stopped_.load(); }
     std::string publicBase64() const override
     {
         // The gateway minted this destination and never sent its key, so there

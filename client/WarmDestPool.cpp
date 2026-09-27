@@ -44,13 +44,12 @@ std::shared_ptr<bazarish::i2p::Endpoint> WarmDestPool::acquire()
     std::shared_ptr<bazarish::i2p::Endpoint> dest;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        // A dest that stopped being ready while it waited here cannot dial: its
-        // tunnels went, or the router that minted it has lost it. Handing it out
-        // costs the caller a failed lookup for nothing.
+        // A dest the transport lost while it waited here cannot dial, and handing
+        // it out costs the caller a failed lookup for nothing.
         while (!ready_.empty()) {
             dest = std::move(ready_.front());
             ready_.pop_front();
-            if (dest->ready()) {
+            if (!dest->lost()) {
                 break;
             }
             dest.reset();

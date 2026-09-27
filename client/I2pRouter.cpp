@@ -310,7 +310,10 @@ std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
     }
     const std::lock_guard<std::mutex> lock(facadeLinksMutex());
     if (const std::shared_ptr<bazarish::i2p::Endpoint> existing = facadeLinks()[owner].lock()) {
-        return existing;
+        if (!existing->lost()) {
+            return existing;
+        }
+        facadeLinks().erase(owner);  // the next ask gets an address that exists
     }
     const std::shared_ptr<bazarish::i2p::Endpoint> link = build();
     facadeLinks()[owner] = link;

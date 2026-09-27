@@ -361,6 +361,12 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
 {
     reportConnectProgress(30, "Starting the I2P router");
     sharedI2pRouter(i2pDataDir_);  // started here if it is not up yet
+    if (i2pOut_ && i2pOut_->lost()) {
+        // Gone with the transport that held it. Its tunnels are not coming back,
+        // so waiting on them below would wait out every deadline there is.
+        i2pStream_.reset();
+        i2pOut_.reset();
+    }
     if (!i2pOut_) {
         reportConnectProgress(40, "Building your I2P tunnels");
         // One destination per account, shared with everything else that dials its

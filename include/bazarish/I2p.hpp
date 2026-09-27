@@ -203,6 +203,9 @@ public:
     // True once the destination has a published LeaseSet and outbound tunnels.
     bool ready() const;
     bool waitReady(std::chrono::seconds timeout);
+    // True when the destination is gone for good rather than not ready yet: a
+    // borrowed one the transport no longer holds. Whoever kept it builds another.
+    bool lost() const;
 
     // The shareable base64 destination (goes into a contact card).
     std::string publicBase64() const;
