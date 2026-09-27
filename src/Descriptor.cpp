@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "bazarish/Descriptor.hpp"
 
+#include "bazarish/Address.hpp"
 #include "bazarish/Crypto.hpp"
 #include "bazarish/I2pAddress.hpp"
 
@@ -13,22 +14,6 @@ namespace {
 
 constexpr char kPrefix[] = "bazarish://invite?";
 constexpr std::size_t kPrefixLen = sizeof(kPrefix) - 1;
-
-// A fingerprint is base32(sha256(...)) - kFingerprintTextLength lowercase
-// RFC-4648 base32 characters.
-bool isFingerprint(const std::string& fingerprint)
-{
-    if (fingerprint.size() != bazarish::kFingerprintTextLength) {
-        return false;
-    }
-    for (const char c : fingerprint) {
-        const bool isBase32Char = (c >= 'a' && c <= 'z') || (c >= '2' && c <= '7');
-        if (!isBase32Char) {
-            return false;
-        }
-    }
-    return true;
-}
 
 // Percent-encodes a free-form value (the display name) so arbitrary text -
 // spaces, '&', '=', UTF-8 - survives the '&'/'=' split with no ambiguity. Only
