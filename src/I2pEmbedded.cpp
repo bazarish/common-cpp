@@ -352,10 +352,6 @@ std::atomic<bool> g_routerLive{false};
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// Free functions
-// ---------------------------------------------------------------------------
-
 std::string backend::embeddedRouterVersion()
 {
     // The upstream i2pd version baked into the embedded engine (e.g. "2.60.0").
@@ -414,10 +410,6 @@ std::size_t backend::embeddedSeedRouterInfos(
     }
     return written;
 }
-
-// ---------------------------------------------------------------------------
-// Stream
-// ---------------------------------------------------------------------------
 
 class EmbeddedStream final : public backend::StreamBackend {
 public:
@@ -518,10 +510,6 @@ void EmbeddedStream::close()
         stream->AsyncClose();
     }
 }
-
-// ---------------------------------------------------------------------------
-// Endpoint
-// ---------------------------------------------------------------------------
 
 class EmbeddedEndpoint final : public backend::EndpointBackend,
                                public std::enable_shared_from_this<EmbeddedEndpoint> {
@@ -903,10 +891,6 @@ std::vector<std::uint8_t> EmbeddedEndpoint::receiveRawDatagram(std::chrono::mill
     rawQueue.pop_front();
     return payload;
 }
-
-// ---------------------------------------------------------------------------
-// Router
-// ---------------------------------------------------------------------------
 
 class EmbeddedRouter final : public backend::RouterBackend {
 public:

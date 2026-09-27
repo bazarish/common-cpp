@@ -608,10 +608,6 @@ Destination generateDestination(const RouterAddress& router)
     return Destination{pub->second, priv->second};
 }
 
-// ---------------------------------------------------------------------------
-// Stream
-// ---------------------------------------------------------------------------
-
 Stream::Stream(const Socket socket)
     : socket_(socket)
 {
@@ -684,10 +680,6 @@ void Stream::close()
         socket_ = kInvalidSocket;
     }
 }
-
-// ---------------------------------------------------------------------------
-// Session
-// ---------------------------------------------------------------------------
 
 struct Session::Impl {
     RouterAddress router;

@@ -43,10 +43,6 @@ std::atomic<bool> g_i2pLogging{false};
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// Keys
-// ---------------------------------------------------------------------------
-
 // Key material is held as the blob it is stored and transmitted as, and read
 // with this project's own parser. Only minting a destination and delegating a
 // transient need the engine, which is why they are the two calls a build
@@ -150,10 +146,6 @@ Keys Keys::issueTransient(const int days) const
 #endif
 }
 
-// ---------------------------------------------------------------------------
-// Free functions
-// ---------------------------------------------------------------------------
-
 std::string routerVersion()
 {
 #ifdef BAZARISH_WITH_I2PD
@@ -220,10 +212,6 @@ bool i2pLogging()
     return g_i2pLogging;
 }
 
-// ---------------------------------------------------------------------------
-// Stream
-// ---------------------------------------------------------------------------
-
 struct Stream::Impl {
     std::unique_ptr<backend::StreamBackend> transport;
 };
@@ -268,10 +256,6 @@ void Stream::close()
 {
     impl_->transport->close();
 }
-
-// ---------------------------------------------------------------------------
-// Endpoint
-// ---------------------------------------------------------------------------
 
 struct Endpoint::Impl {
     std::shared_ptr<backend::EndpointBackend> transport;
@@ -370,10 +354,6 @@ std::vector<std::uint8_t> Endpoint::receiveRawDatagram(const std::chrono::millis
 {
     return impl_->transport->receiveRawDatagram(timeout);
 }
-
-// ---------------------------------------------------------------------------
-// Router
-// ---------------------------------------------------------------------------
 
 struct Router::Impl {
     std::unique_ptr<backend::RouterBackend> transport;

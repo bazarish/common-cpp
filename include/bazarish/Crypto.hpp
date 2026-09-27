@@ -29,15 +29,13 @@ public:
     // OpenSSL CMS SignedData has no EdDSA support, and certificates are
     // CMS-signed by these keys.
     static Key generateSigning();
-    // Post-quantum signing keys: ML-DSA-65 (FIPS 204). Not usable as a
-    // CMS signer in OpenSSL, so the hybrid layering signs with it at the
-    // EVP level (see Cms.hpp).
+    // Post-quantum signing keys: ML-DSA-65 (FIPS 204). Not usable as a CMS
+    // signer in OpenSSL, so the hybrid layering signs with it at the EVP level.
     static Key generateSigningPq();
     // Sealing keys for envelopes: **hybrid** - ECDH P-256 plus ML-KEM-768
     // (FIPS 203). A sealed blob can only be opened with both private halves, so
-    // breaking one scheme alone reveals nothing (see Cms.hpp for the layering
-    // and why OpenSSL CMS cannot carry the KEM half yet). A distinct key from
-    // the identity key by design.
+    // breaking one scheme alone reveals nothing. A distinct key from the identity
+    // key by design.
     //
     // A sealing key is therefore the one shape of Key that holds two EVP keys.
     // Its public form is not a bare SPKI but the pair, and its PEM is two
