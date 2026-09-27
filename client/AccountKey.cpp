@@ -265,8 +265,9 @@ Sidecar read(const fs::path& file)
     return sidecar;
 }
 
-// Creates the sidecar for an account that has none: a fresh database key, sealed.
-Bytes create(const fs::path& file, const std::string& passphrase)
+// New salt and nonce, and the cost this passphrase gets: an empty one has nothing
+// to slow down, so it takes the open profile.
+Sidecar freshSidecar(const std::string& passphrase)
 {
     Sidecar sidecar;
     if (passphrase.empty()) {
@@ -275,6 +276,13 @@ Bytes create(const fs::path& file, const std::string& passphrase)
     }
     fill(sidecar.salt.data(), sidecar.salt.size());
     fill(sidecar.nonce.data(), sidecar.nonce.size());
+    return sidecar;
+}
+
+// Creates the sidecar for an account that has none: a fresh database key, sealed.
+Bytes create(const fs::path& file, const std::string& passphrase)
+{
+    Sidecar sidecar = freshSidecar(passphrase);
     Bytes key(kKeyBytes);
     fill(key.data(), key.size());
     seal(wrappingKey(passphrase, sidecar), sidecar, key);
@@ -348,13 +356,7 @@ void rewrap(const fs::path& databaseFile, const std::string& passphrase)
         }
         key = found->second.key;
     }
-    Sidecar sidecar;
-    if (passphrase.empty()) {
-        sidecar.memoryKiB = kOpenMemoryKiB;
-        sidecar.passes = kOpenPasses;
-    }
-    fill(sidecar.salt.data(), sidecar.salt.size());
-    fill(sidecar.nonce.data(), sidecar.nonce.size());
+    Sidecar sidecar = freshSidecar(passphrase);
     seal(wrappingKey(passphrase, sidecar), sidecar, key);
     write(sidecarFor(databaseFile), sidecar);
 }
