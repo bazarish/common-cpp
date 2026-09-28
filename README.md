@@ -9,26 +9,29 @@ component, so there is no duplicated crypto code.
 - **Identity** - post-quantum hybrid keys: ECDSA P-256 **+** ML-DSA-65 (FIPS 204).
   Every identity statement is dual-signed and valid only when both signatures
   verify. The fingerprint covers both public keys (base32 of SHA-256).
-- **Certificates** (CMS SignedData over JSON) - subscription certificate
-  (with an optional sealing **prekey**), alias certificate, server card.
+- **Certificates** (CMS SignedData over JSON) - the user's contact card (with a
+  sealing **prekey** a first-contact sender encrypts to), the alias certificate
+  and its delegation chain, and the server card.
 - **CMS sealing** - ECDH P-256 + AES-256-GCM envelopes for delivery metadata
   and E2E payloads.
-- **I2P transport** - one facade (`bazarish::i2p`) over two engines: libi2pd
-  inside the process, or a router outside it over **SAM v3** (`bazarish::sam`,
-  loopback only). The second is what lets one router serve many processes.
+- **I2P transport** - one facade (`bazarish::i2p`) over three engines: libi2pd
+  inside the process; a router outside it over **SAM v3** (`bazarish::sam`,
+  loopback only), which lets one router serve many processes; and a **private
+  gateway** reached over a pinned-TLS WebSocket, which is a router somebody else
+  runs for this device.
 - **Auth** - hybrid request signing/verification for the client API.
-- **Addressing**, one-time **delivery tokens**, typed **errors**, base32/64
-  and hex helpers.
+- **Addressing**, the **delivery passes** that admit mail to a mailbox, typed
+  **errors**, base32/64 and hex helpers.
 
 Cryptography uses OpenSSL only, with standardized algorithms and containers
 (PEM, DER, CMS). No custom cryptographic constructions.
 
 ## Build
 
-Requires CMake >= 3.20, a C++20 compiler and OpenSSL >= 3.0.
+Requires CMake >= 3.20, a C++20 compiler and OpenSSL >= 3.5.
 
 ```bash
-cmake -S . -B build && cmake --build build -j
+cmake -S . -B build && cmake --build build -j4
 ctest --test-dir build
 ```
 
