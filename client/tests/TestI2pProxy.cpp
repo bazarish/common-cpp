@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include <bazarish/I2p.hpp>
 
+#include "TestRouter.hpp"
 #include "TestUtil.hpp"
 
 #include <cstdio>
@@ -18,8 +19,7 @@ int main()
 
     // One router per process, so the cases below move the same one between
     // settings - which is what the application does when the user saves.
-    bazarish::i2p::RouterConfig config;
-    config.dataDir = dir;
+    bazarish::i2p::RouterConfig config = bazarish::i2p::offlineRouter(dir);
     config.role = bazarish::i2p::Role::eClient;
     bazarish::i2p::Router router(config);
 
