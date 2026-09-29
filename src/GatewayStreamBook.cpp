@@ -32,8 +32,13 @@ void StreamBook::wrote(const void* const data, const std::size_t size)
 void StreamBook::peerCredited(const std::uint64_t total)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
-    if (total < credited_) {
-        throw ProtocolError(Fault::eBadFrame, "a credit that says less than the last one");
+    if (total <= credited_) {
+        // Stale, not wrong, and so not a refusal: both sides repeat their counts
+        // when a socket is handed over, and the socket being left can still
+        // deliver a higher one after the new socket's repeat - two connections
+        // with no order between them. A cumulative count that says less says
+        // nothing.
+        return;
     }
     if (total > sent_) {
         throw ProtocolError(Fault::eBadFrame, "a credit for bytes that were never sent");

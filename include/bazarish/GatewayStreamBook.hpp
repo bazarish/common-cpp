@@ -34,9 +34,10 @@ public:
         const std::lock_guard<std::mutex> lock(mutex_);
         return sent_;
     }
-    // What the peer says it has consumed. Cumulative and never backwards, so a
-    // credit lost with a socket costs nothing: the next one says the same
-    // thing, only more of it.
+    // What the peer says it has consumed. Cumulative, so a credit lost with a
+    // socket costs nothing: the next one says the same thing, only more of it.
+    // One that says less is one that crossed a handover behind a higher one, and
+    // it is ignored rather than refused.
     void peerCredited(std::uint64_t total);
     std::uint64_t credited() const
     {

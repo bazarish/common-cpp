@@ -45,7 +45,11 @@ int main()
     CHECK(book.pending() == 4);
     book.peerCredited(5);
     CHECK(book.credited() == 5);
-    CHECK_THROWS(book.peerCredited(4));
+    // One that says less crossed a handover behind a higher one: stale, so
+    // ignored rather than refused. Refusing it closed the socket, which made the
+    // client reconnect and say it again.
+    book.peerCredited(4);
+    CHECK(book.credited() == 5);
     CHECK_THROWS(book.peerCredited(book.sent() + 1));
 
     // What the peer has not confirmed receiving goes out again, and what it has
