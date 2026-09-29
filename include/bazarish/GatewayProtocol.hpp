@@ -163,6 +163,11 @@ std::uint64_t decodeCredit(const Frame& frame);
 // a raw datagram carries no sender identity.
 Bytes encodeRawSend(std::uint32_t endpoint, const std::string& host, const void* data,
     std::size_t size);
+// The largest payload that still fits one frame addressed to this host. A
+// datagram over it is dropped where it is written, exactly as the router drops
+// one over its own limit: best effort means best effort, not an exception out
+// of a send that has no way to report one.
+std::size_t rawPayloadRoom(const std::string& host);
 struct RawSend {
     std::string host;
     Bytes payload;

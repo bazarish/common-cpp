@@ -48,6 +48,13 @@ constexpr std::chrono::milliseconds kQuietBeforeChurn{1000};
 // grows while the gateway stays out of reach.
 constexpr std::chrono::milliseconds kFirstRetry{500};
 constexpr std::chrono::milliseconds kSlowestRetry{15000};
+// How long a stopping router holds on for its last frames to reach the wire
+// before it closes the socket under them. A write is queued for the socket's
+// own thread, and a close drops what is still queued. Longer than this means
+// the gateway is not taking bytes at all, and then the session's own term is
+// what ends the destinations, exactly as it does for a client that vanished.
+constexpr std::chrono::milliseconds kFarewellWait{2000};
+constexpr std::chrono::milliseconds kFarewellPoll{20};
 
 std::int64_t millisNow()
 {
@@ -127,6 +134,11 @@ public:
     // A stream is owned by whoever asked for it, so this holds a pointer and
     // the stream says when it goes.
     void remember(std::uint32_t id, GatewayStream* stream);
+    // Ends every stream riding one destination, for when that destination is
+    // finished with. Without it a read waits for bytes from an address nobody
+    // operates any more - which is what the engine in this process ends at once
+    // when its endpoint is stopped.
+    void endStreamsOf(std::uint32_t endpoint);
 
     mutable std::mutex mutex;
     gateway::Ids ids_;
@@ -168,6 +180,7 @@ public:
     void close() override;
 
     std::uint32_t id() const { return id_; }
+    std::uint32_t endpoint() const { return endpoint_; }
     // Bytes the gateway sent for this stream.
     void arrived(const Bytes& data);
     void creditedBy(std::uint64_t total);
@@ -207,7 +220,7 @@ private:
 class GatewayEndpoint : public EndpointBackend {
 public:
     GatewayEndpoint(std::shared_ptr<Link> link, std::uint32_t id, std::string host, bool raw,
-        std::string label, std::string owner);
+        bool published, std::string label, std::string owner);
     ~GatewayEndpoint() override;
 
     bool ready() const override { return ready_.load(); }
@@ -252,6 +265,7 @@ public:
 
     std::uint32_t id() const { return id_; }
     bool raw() const { return raw_; }
+    bool published() const { return published_; }
     // By value: a reference would outlive the lock that guards it, and retag
     // may be renaming the string while the status view reads it.
     std::string label() const
@@ -285,6 +299,7 @@ private:
     std::uint32_t id_;
     std::string host_;
     bool raw_;
+    bool published_;
     // What this destination is for and whose it is. Neither went to the
     // gateway - it has no use for them, and no business knowing which
     // destination carries a call - so the status view reads them from here.
@@ -594,11 +609,12 @@ void GatewayStream::close()
 // --- endpoint ---
 
 GatewayEndpoint::GatewayEndpoint(std::shared_ptr<Link> link, const std::uint32_t id,
-    std::string host, const bool raw, std::string label, std::string owner)
+    std::string host, const bool raw, const bool published, std::string label, std::string owner)
     : link_(std::move(link))
     , id_(id)
     , host_(std::move(host))
     , raw_(raw)
+    , published_(published)
     , label_(std::move(label))
     , owner_(std::move(owner))
 {
@@ -691,6 +707,11 @@ void GatewayEndpoint::sendRawDatagram(
     if (stopped_.load()) {
         return;
     }
+    if (size > gateway::rawPayloadRoom(host)) {
+        // What the router does with one it cannot carry. A raw datagram is best
+        // effort, and a send has no way to report anything else.
+        return;
+    }
     const Bytes frame = gateway::encodeRawSend(id_, host, data, size);
     // Media rides a socket of its own, so a file cannot queue in front of it.
     // With none attached its datagrams are dropped: audio that arrives late has
@@ -725,6 +746,7 @@ void GatewayEndpoint::stop()
         return;
     }
     link_->send(gateway::encode(FrameType::eEndpointStop, id_));
+    link_->endStreamsOf(id_);
     link_->forget(id_);
     arrived_.notify_all();
 }
@@ -735,6 +757,7 @@ void GatewayEndpoint::lost()
         return;
     }
     ready_.store(false);
+    link_->endStreamsOf(id_);
     link_->forget(id_);
     arrived_.notify_all();
     bazarish::log::warn("i2p: the gateway has lost the destination for {}", label());
@@ -754,6 +777,9 @@ http::SocketDial GatewayRouter::dialFor() const
     dial.maxMessageBytes = gateway::kMaxFrameBytes;
     dial.idleTimeout = gateway::kKeepalive + gateway::kPongTimeout;
     dial.headers[gateway::kTokenHeader] = config_.gatewayToken;
+    // Under the lock that writes it: a socket is dialled from whichever thread
+    // wanted one, and the cookie changes when a session is joined or dropped.
+    const std::lock_guard<std::mutex> lock(link_->mutex);
     if (!link_->cookie.empty()) {
         dial.headers[gateway::kSessionHeader] = link_->cookie;
     }
@@ -775,6 +801,35 @@ void GatewayRouter::stop()
     if (live_.exchange(false) && cover_.joinable()) {
         cover_.join();
     }
+    // The destinations go down with it. A stopped router is somebody who turned
+    // I2P off, and an address of his that stays published and reachable for the
+    // rest of the session's term is the one thing he did not ask for. Said
+    // before the sockets close, because saying it needs one.
+    std::vector<std::shared_ptr<GatewayEndpoint>> standing;
+    {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        for (const auto& [id, endpoint] : link_->endpoints) {
+            (void)id;
+            if (std::shared_ptr<GatewayEndpoint> mine = endpoint.lock()) {
+                standing.push_back(std::move(mine));
+            }
+        }
+    }
+    for (const std::shared_ptr<GatewayEndpoint>& endpoint : standing) {
+        endpoint->stop();  // takes the link's lock, so not above
+    }
+    {
+        http::SocketPtr saying;
+        {
+            const std::lock_guard<std::mutex> lock(link_->mutex);
+            saying = link_->control;
+        }
+        const auto until = std::chrono::steady_clock::now() + kFarewellWait;
+        while (saying && saying->pending() > 0
+            && std::chrono::steady_clock::now() < until) {
+            std::this_thread::sleep_for(kFarewellPoll);
+        }
+    }
     http::SocketPtr socket;
     std::vector<http::SocketPtr> flows;
     {
@@ -786,6 +841,11 @@ void GatewayRouter::stop()
             flows.push_back(held);
         }
         link_->flows.clear();
+        link_->orphaned.clear();
+        link_->waiting.clear();
+        // Nothing of this session is left standing, so the next start opens one
+        // of its own rather than rejoining an empty one.
+        link_->cookie.clear();
     }
     for (const http::SocketPtr& held : flows) {
         held->close();
@@ -1200,16 +1260,30 @@ void GatewayRouter::reattachOrphans()
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         for (auto at = link_->orphaned.begin(); at != link_->orphaned.end();) {
-            const auto found = link_->streams.find(*at);
-            if (found == link_->streams.end() || found->second->givenUp()) {
-                // The stream ended with its socket, or the session it belonged
-                // to is gone: there is nothing left to replay it onto.
+            // A lane is a destination's before it is anything else, and only a
+            // stream that took one of its own is named here by a stream id.
+            // Both are read under this lock, which is what keeps them alive:
+            // the maps hold pointers to objects their callers own.
+            const auto stream = link_->streams.find(*at);
+            if (stream != link_->streams.end()) {
+                if (stream->second->givenUp()) {
+                    // The stream ended with its socket, or the session it
+                    // belonged to is gone: nothing left to replay it onto.
+                    at = link_->orphaned.erase(at);
+                    continue;
+                }
+                again.emplace_back(*at, stream->second->received());
+                ++at;
+                continue;
+            }
+            const auto endpoint = link_->endpoints.find(*at);
+            if (endpoint == link_->endpoints.end() || endpoint->second.expired()) {
                 at = link_->orphaned.erase(at);
                 continue;
             }
-            // Read under this lock, which is what keeps the stream alive: the
-            // map holds pointers to objects their callers own.
-            again.emplace_back(*at, found->second->received());
+            // Datagrams are not replayed, so a destination's lane asks for
+            // nothing back; it only has to exist again.
+            again.emplace_back(*at, 0);
             ++at;
         }
     }
@@ -1260,6 +1334,19 @@ void Link::remember(const std::uint32_t id, GatewayStream* const stream)
         return;
     }
     streams[id] = stream;
+}
+
+void Link::endStreamsOf(const std::uint32_t endpoint)
+{
+    // Under the lock that keeps them alive: the map holds pointers to objects
+    // their callers own, and reset() takes only the stream's own lock.
+    const std::lock_guard<std::mutex> lock(mutex);
+    for (const auto& [id, stream] : streams) {
+        (void)id;
+        if (stream->endpoint() == endpoint) {
+            stream->reset();
+        }
+    }
 }
 
 void Link::forget(const std::uint32_t id)
@@ -1314,8 +1401,8 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
     if (host.empty()) {
         throw std::runtime_error("bazarish::i2p: the gateway named no address");
     }
-    const auto endpoint
-        = std::make_shared<GatewayEndpoint>(link_, id, host, raw, config.label, config.owner);
+    const auto endpoint = std::make_shared<GatewayEndpoint>(
+        link_, id, host, raw, config.published, config.label, config.owner);
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->endpoints[id] = endpoint;
@@ -1325,7 +1412,14 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         // transfer, takes a socket of its own at creation - before there is
         // anything in flight to be reordered by the move that giving it one
         // later would be. Everything on it then has a queue of its own.
-        attach(id, 0);
+        if (!attach(id, 0)) {
+            const std::lock_guard<std::mutex> lock(link_->mutex);
+            // The cover thread takes up the lanes that are owed, and one that
+            // never opened is owed exactly as much as one that died. Without
+            // this a media destination that met a full session, or a moment of
+            // no connection, would have its datagrams dropped for good.
+            link_->orphaned.insert(id);
+        }
     }
     return endpoint;
 }
@@ -1358,6 +1452,7 @@ std::vector<LocalDestination> GatewayRouter::localDestinations() const
         entry.label = endpoint->label();
         entry.owner = endpoint->owner();
         entry.host = endpoint->routingHost();
+        entry.published = endpoint->published();
         entry.ready = endpoint->ready();
         entry.inboundTunnels = endpoint->inboundTunnels();
         entry.outboundTunnels = endpoint->outboundTunnels();

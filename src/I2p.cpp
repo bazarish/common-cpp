@@ -281,6 +281,11 @@ bool Endpoint::waitReady(const std::chrono::seconds timeout)
         if (ready()) {
             return true;
         }
+        if (lost()) {
+            // Tunnels that are not coming back. Whoever holds this builds
+            // another rather than waiting out a deadline for nothing.
+            return false;
+        }
         std::this_thread::sleep_for(kEndpointReadyPoll);
     }
     return ready();

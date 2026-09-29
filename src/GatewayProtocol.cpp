@@ -244,6 +244,12 @@ Bytes encodeRawSend(const std::uint32_t endpoint, const std::string& host, const
     return encode(FrameType::eRawSend, endpoint, body);
 }
 
+std::size_t rawPayloadRoom(const std::string& host)
+{
+    const std::size_t taken = kHostLengthBytes + host.size();
+    return taken < kMaxBodyBytes ? kMaxBodyBytes - taken : 0;
+}
+
 RawSend decodeRawSend(const Frame& frame)
 {
     if (frame.type != FrameType::eRawSend || frame.body.size() < kHostLengthBytes) {
