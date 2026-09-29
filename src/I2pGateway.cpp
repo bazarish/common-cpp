@@ -41,6 +41,11 @@ constexpr std::chrono::seconds kCallTimeout{60};
 // waits on a timer: a read blocks until bytes arrive and a write goes out when
 // it is written.
 constexpr std::chrono::milliseconds kCoverTick{200};
+// Sockets kept back from the flows: the control socket this session has, and the
+// one that replaces it before the gateway has noticed the first one go. A client
+// that fills its session to the gateway's limit cannot take a new control
+// socket, and a client that cannot do that is a client that stops.
+constexpr std::size_t kControlSocketsKept = 2;
 // A control socket is replaced at a quiet moment, not in the middle of one: it
 // must have carried nothing for this long, and have nothing outstanding.
 constexpr std::chrono::milliseconds kQuietBeforeChurn{1000};
@@ -1253,7 +1258,8 @@ bool GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t receive
     }
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
-        if (link_->flows.count(flow) > 0 || link_->flows.size() + 1 >= gateway::kMaxSocketsPerSession) {
+        if (link_->flows.count(flow) > 0
+            || link_->flows.size() + kControlSocketsKept >= gateway::kMaxSocketsPerSession) {
             return false;
         }
     }
