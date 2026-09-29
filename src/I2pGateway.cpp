@@ -246,6 +246,15 @@ public:
         const std::string& host, std::chrono::seconds timeout) override;
     std::unique_ptr<StreamBackend> accept(
         std::string& peerBase64, std::chrono::seconds timeout) override;
+    // A destination the gateway opened for datagrams has no streaming half, and
+    // one opened for streams has no datagram half. Said here, where the caller
+    // is, rather than as a frame refused at the far end a deadline later.
+    void mustCarryStreams() const
+    {
+        if (raw_) {
+            notWithAGateway("a stream on a destination that carries datagrams");
+        }
+    }
 
     void sendDatagram(const std::string&, const void*, std::size_t) override
     {
@@ -663,6 +672,7 @@ void GatewayEndpoint::callerArrived(
 std::unique_ptr<StreamBackend> GatewayEndpoint::connect(
     const std::string& host, const std::chrono::seconds timeout)
 {
+    mustCarryStreams();
     if (stopped_.load()) {
         return nullptr;
     }
@@ -683,6 +693,7 @@ std::unique_ptr<StreamBackend> GatewayEndpoint::connect(
 std::unique_ptr<StreamBackend> GatewayEndpoint::accept(
     std::string& peerBase64, const std::chrono::seconds timeout)
 {
+    mustCarryStreams();
     std::unique_lock<std::mutex> lock(mutex_);
     const auto deadline = timeout.count() > 0
         ? std::chrono::steady_clock::now() + timeout
@@ -704,6 +715,9 @@ std::unique_ptr<StreamBackend> GatewayEndpoint::accept(
 void GatewayEndpoint::sendRawDatagram(
     const std::string& host, const void* const data, const std::size_t size)
 {
+    if (!raw_) {
+        notWithAGateway("a datagram on a destination that carries streams");
+    }
     if (stopped_.load()) {
         return;
     }
@@ -725,6 +739,9 @@ void GatewayEndpoint::sendRawDatagram(
 std::vector<std::uint8_t> GatewayEndpoint::receiveRawDatagram(
     const std::chrono::milliseconds timeout)
 {
+    if (!raw_) {
+        notWithAGateway("a datagram on a destination that carries streams");
+    }
     std::unique_lock<std::mutex> lock(mutex_);
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (datagrams_.empty() && !stopped_.load()) {
@@ -1383,11 +1400,7 @@ Keys GatewayRouter::generateKeys()
 std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointConfig& config)
 {
     const std::uint32_t id = link_->nextId();
-    // In this client the two coincide exactly: raw datagrams carry a call's
-    // media and nothing else, and a call's media is the only destination that
-    // asks for the realtime lane. A raw destination that is not realtime would
-    // need a kind of its own in the configuration.
-    const bool raw = config.realtime;
+    const bool raw = config.traffic == Traffic::eRaw;
     const nlohmann::json ask = {{"kind", raw ? "raw" : "stream"},
         {"privacy", privacyName(config.privacy)}, {"tunnels", config.tunnelQuantity},
         {"published", config.published}, {"realtime", config.realtime}};

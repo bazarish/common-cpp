@@ -161,6 +161,13 @@ private:
     friend class Endpoint;
 };
 
+// What a destination carries. An engine in this process serves both from one
+// destination, and so does a router behind SAM, which opens a session of the
+// style a caller first asks for; a gateway is told at creation and opens one or
+// the other, so this says what rides the destination rather than leaving a lane
+// hint to speak for it.
+enum class Traffic { eStream, eRaw };
+
 // Per-destination configuration.
 struct EndpointConfig {
     // The destination identity. A generated key, a loaded master, or a transient.
@@ -178,6 +185,9 @@ struct EndpointConfig {
     // Whose destination it is, when one router serves several profiles. Empty
     // for destinations that belong to no profile (e.g. a shared warm pool).
     std::string owner = {};
+    // Streams, or raw datagrams. The two are exclusive on a transport that has
+    // to be told in advance.
+    Traffic traffic = Traffic::eStream;
     // Whether this destination carries real-time media. A destination is pinned
     // for its life to one of the router's single-threaded lanes; a bulk transfer
     // sharing a lane with a call's media is a call that stutters while the file

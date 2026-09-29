@@ -4329,6 +4329,7 @@ std::shared_ptr<bazarish::i2p::Endpoint> Session::openCallMediaSession()
     // media, so a file moving through another destination cannot make a call
     // stutter: a lane is a single thread, and everything pinned to it waits its
     // turn behind whatever else is on it.
+    config.traffic = bazarish::i2p::Traffic::eRaw;
     config.realtime = true;
     return i2pRouter().createEndpoint(config);
 }
