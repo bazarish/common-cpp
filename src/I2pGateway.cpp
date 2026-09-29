@@ -188,6 +188,8 @@ public:
     // gateway, and what it has sent that the gateway has not confirmed, which
     // is what goes out again.
     std::uint64_t received() const { return book_.received(); }
+    // What this side has read, which is what the far side is owed.
+    std::uint64_t consumed() const { return book_.consumedTotal(); }
     std::vector<Bytes> replayFrames(std::uint64_t peerReceived);
     void farSideFinished();
     void reset();
@@ -942,6 +944,7 @@ void GatewayRouter::openControl()
     // wait for bytes that are never coming.
     nlohmann::json ours = nlohmann::json::array();
     std::vector<Bytes> replay;
+    std::vector<Bytes> credits;
     std::vector<std::shared_ptr<GatewayEndpoint>> gone;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
@@ -976,6 +979,10 @@ void GatewayRouter::openControl()
                 continue;
             }
             ours.push_back({{"id", streamId}, {"received", stream->received()}});
+            // The same for the other direction: a credit handed to a socket that
+            // died went with it, and a stream whose peer is out of window sends
+            // nothing more to credit it again.
+            credits.push_back(gateway::encodeCredit(streamId, stream->consumed()));
             // Built here, under the lock that keeps the stream alive: the map
             // holds pointers to objects their callers own.
             for (Bytes& frame : stream->replayFrames(found->second)) {
@@ -1019,6 +1026,9 @@ void GatewayRouter::openControl()
     }
     // This side's own unconfirmed bytes, in order, before anything new.
     for (const Bytes& frame : replay) {
+        opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
+    }
+    for (const Bytes& frame : credits) {
         opened.socket->send(std::vector<unsigned char>(frame.begin(), frame.end()));
     }
 
