@@ -6,6 +6,8 @@
 #include "bazarish/Crypto.hpp"
 #include "bazarish/I2pAddress.hpp"
 
+#include <openssl/crypto.h>
+
 #include <algorithm>
 #include <atomic>
 #include <stdexcept>
@@ -48,6 +50,16 @@ std::atomic<bool> g_i2pLogging{false};
 // transient need the engine, which is why they are the two calls a build
 // without it cannot serve.
 struct Keys::Impl {
+    ~Impl()
+    {
+        // The blob is a private key. A freed buffer keeps its bytes until
+        // something else takes the page, and this one names an address somebody
+        // may still be operating.
+        if (!blob.empty()) {
+            OPENSSL_cleanse(blob.data(), blob.size());
+        }
+    }
+
     Bytes blob;
 };
 
