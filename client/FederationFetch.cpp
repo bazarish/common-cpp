@@ -77,9 +77,12 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(
         return endpoint;
     }
     sayStage("Building a destination to ask from");
-    endpoint = router.createEndpoint(bazarish::i2p::EndpointConfig{
-        router.generateKeys(), privacy, bazarish::i2p::kDefaultTunnelQuantity, false,
-        "Contact lookup", owner});
+    bazarish::i2p::EndpointConfig config;
+    config.privacy = privacy;
+    config.published = false;
+    config.label = "Contact lookup";
+    config.owner = owner;
+    endpoint = router.createEndpoint(config);
     if (!endpoint->waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
         // A dest built for this call has no tunnels yet. Dialing anyway fails in a
         // way that reads as "the peer is unreachable", which it is not.

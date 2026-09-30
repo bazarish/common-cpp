@@ -95,9 +95,12 @@ void WarmDestPool::warmerLoop()
         // leaseset - so it never touches the netDb.
         for (std::size_t i = 0; i < toCreate && running_.load(); ++i) {
             try {
-                auto endpoint = router_.createEndpoint(bazarish::i2p::EndpointConfig{
-                    router_.generateKeys(), tunnelPrivacy(), tunnelQuantity_,
-                    /*published=*/false, "Warm reserve"});
+                bazarish::i2p::EndpointConfig config;
+                config.privacy = tunnelPrivacy();
+                config.tunnelQuantity = tunnelQuantity_;
+                config.published = false;
+                config.label = "Warm reserve";
+                auto endpoint = router_.createEndpoint(config);
                 if (endpoint) {
                     building.push_back(
                         {std::move(endpoint), std::chrono::steady_clock::now(), generation});

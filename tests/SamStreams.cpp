@@ -27,8 +27,9 @@ int main(int argc, char** argv)
     i2p::Router router(config);
 
     const auto make = [&router](const char* label) {
-        const i2p::EndpointConfig endpoint{
-            router.generateKeys(), i2p::Privacy::eMinimal, 3, true, label, {}};
+        i2p::EndpointConfig endpoint;
+        endpoint.privacy = i2p::Privacy::eMinimal;
+        endpoint.label = label;
         return router.createEndpoint(endpoint);
     };
     const auto server = make("server");

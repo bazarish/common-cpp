@@ -2878,7 +2878,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             const PreparedFile prepared = prepareFile(source, ciphertextPath);
             emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, "Making an address",
                 peerFingerprint);
-            bazarish::i2p::EndpointConfig config{i2pRouter().generateKeys()};
+            bazarish::i2p::EndpointConfig config;
             config.privacy = transferPrivacy();
             config.tunnelQuantity = 2;
             config.label = "File upload";
@@ -4322,9 +4322,11 @@ std::shared_ptr<bazarish::i2p::Endpoint> Session::openCallMediaSession()
     // single biggest latency/jitter lever for realtime media. Safe here because
     // the media destination is one-time and unlinked from the identity
     // destination, so a short tunnel never weakens identity anonymity.
-    bazarish::i2p::EndpointConfig config{i2pRouter().generateKeys(),
-        bazarish::i2p::Privacy::eMinimal, bazarish::i2p::kDefaultTunnelQuantity, true,
-        "Call media", destinationOwner()};
+    bazarish::i2p::EndpointConfig config;
+    config.privacy = bazarish::i2p::Privacy::eMinimal;
+    config.published = true;
+    config.label = "Call media";
+    config.owner = destinationOwner();
     // The one destination that carries real time. It goes on the lane kept for
     // media, so a file moving through another destination cannot make a call
     // stutter: a lane is a single thread, and everything pinned to it waits its

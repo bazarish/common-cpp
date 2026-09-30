@@ -142,9 +142,12 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
             } else {
                 log::info("no warm address for {}: building one, which is tunnels",
                     log::redact(toDest));
-                endpoint = router_.createEndpoint(bazarish::i2p::EndpointConfig{
-                    router_.generateKeys(), tunnelPrivacy(),
-                    bazarish::i2p::kDefaultTunnelQuantity, false, labelFor(peerName), owner_});
+                bazarish::i2p::EndpointConfig config;
+                config.privacy = tunnelPrivacy();
+                config.published = false;
+                config.label = labelFor(peerName);
+                config.owner = owner_;
+                endpoint = router_.createEndpoint(config);
             }
         } catch (...) {
             {

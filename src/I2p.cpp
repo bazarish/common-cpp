@@ -470,11 +470,6 @@ ProxyState Router::proxyState() const
     return impl_->transport->proxyState();
 }
 
-Keys Router::generateKeys()
-{
-    return impl_->transport->generateKeys();
-}
-
 std::shared_ptr<Endpoint> Router::createEndpoint(const EndpointConfig& config)
 {
     std::shared_ptr<Endpoint> endpoint(new Endpoint());

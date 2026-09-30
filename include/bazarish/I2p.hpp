@@ -170,8 +170,12 @@ enum class Traffic { eStream, eRaw };
 
 // Per-destination configuration.
 struct EndpointConfig {
-    // The destination identity. A generated key, a loaded master, or a transient.
-    Keys keys;
+    // The destination identity, for a caller that has one of its own: a loaded
+    // master, or a transient a server operates for somebody. A client has none -
+    // every destination it raises is one-time - so it leaves this empty and the
+    // transport mints. A gateway operates what it mints and nothing else, so
+    // handing one to that transport is asking for what it will not do.
+    std::optional<Keys> keys;
     // Tunnel privacy for this destination's pool.
     Privacy privacy = Privacy::eMax;
     // Parallel tunnels per direction (throughput/redundancy), clamped to [1, 16].
@@ -449,12 +453,6 @@ public:
     // What this transport can answer. Everything it cannot throws rather than
     // returning an empty or zero answer that reads like a fact.
     Capabilities capabilities() const;
-
-    // A fresh destination keypair. The embedded engine mints one locally; an
-    // external router mints its own, because a build without the engine has no
-    // way to make one. Either way the blob is the same format, so a profile
-    // moves between transports.
-    Keys generateKeys();
 
     // Create a destination on this router.
     std::shared_ptr<Endpoint> createEndpoint(const EndpointConfig& config);

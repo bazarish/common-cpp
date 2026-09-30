@@ -297,9 +297,12 @@ std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
         return nullptr;  // the caller starts the router first
     }
     const auto build = [router, &owner, privacy]() {
-        return router->createEndpoint(bazarish::i2p::EndpointConfig{
-            router->generateKeys(), privacy, bazarish::i2p::kDefaultTunnelQuantity,
-            /*published=*/false, "Facade link", owner});
+        bazarish::i2p::EndpointConfig config;
+        config.privacy = privacy;
+        config.published = false;
+        config.label = "Facade link";
+        config.owner = owner;
+        return router->createEndpoint(config);
     };
     // One per account. Both of an account's clients - the transport and the request
     // parked waiting for news - dial through it; they need their own request

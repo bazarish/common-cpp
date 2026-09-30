@@ -910,7 +910,6 @@ public:
     std::vector<LocalDestination> localDestinations() const override;
     void setSocksProxy(const std::string& host, int port) override;
     ProxyState proxyState() const override;
-    Keys generateKeys() override;
     std::shared_ptr<backend::EndpointBackend> createEndpoint(const EndpointConfig& config) override;
     void retagEndpoint(
         const backend::EndpointBackend& endpoint, std::string label, std::string owner) override;
@@ -1204,11 +1203,16 @@ std::vector<LocalDestination> EmbeddedRouter::localDestinations() const
 std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     const EndpointConfig& config)
 {
+    // A caller with no key of its own gets a one-time one. Every destination a
+    // client raises is one-time, so minting it here is what keeps key material
+    // out of the caller's hands entirely.
+    const Keys keys = config.keys.has_value() ? config.keys.value() : Keys::generate();
+
     auto impl = std::make_shared<EmbeddedEndpoint>();
     impl->label = config.label;
-    impl->publicDestination = config.keys.publicBase64();
+    impl->publicDestination = keys.publicBase64();
     impl->hostAddress = bazarish::i2p::routingHost(impl->publicDestination);
-    impl->keysBlob = config.keys.blob();
+    impl->keysBlob = keys.blob();
 
     i2pd::util::Mapping params;
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_TYPE,
@@ -1237,7 +1241,7 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     impl->io = io;
     impl->dest = std::make_shared<i2pd::client::ClientDestination>(
         config.realtime ? impl->io->reserved() : impl->io->next(),
-        parseKeys(config.keys.blob()), config.published, &params);
+        parseKeys(keys.blob()), config.published, &params);
     impl->dest->Start();
     {
         std::lock_guard<std::mutex> lock(destsMutex);
@@ -1303,11 +1307,6 @@ Capabilities EmbeddedRouter::capabilities() const
     what.proxy = true;
     what.offlineKeys = true;
     return what;
-}
-
-Keys EmbeddedRouter::generateKeys()
-{
-    return Keys::fromBlob(backend::generateKeysBlob());
 }
 
 namespace backend {

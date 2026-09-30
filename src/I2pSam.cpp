@@ -49,7 +49,7 @@ sam::RouterAddress addressOf(const RouterConfig& config)
 sam::SessionConfig sessionConfigFor(const EndpointConfig& config, const sam::Style style)
 {
     sam::SessionConfig session;
-    session.privateKeys = config.keys.privateBase64();
+    session.privateKeys = config.keys.value().privateBase64();
     session.style = style;
     session.privacy = config.privacy;
     session.tunnelQuantity = config.tunnelQuantity;
@@ -89,9 +89,9 @@ public:
     SamEndpoint(sam::RouterAddress router, const EndpointConfig& config)
         : router_(std::move(router))
         , config_(config)
-        , publicDestination_(config.keys.publicBase64())
+        , publicDestination_(config.keys.value().publicBase64())
         , hostAddress_(i2p::routingHost(publicDestination_))
-        , keysBlob_(config.keys.blob())
+        , keysBlob_(config.keys.value().blob())
         , label_(config.label)
     {
         // Building tunnels takes as long as it takes, and the caller asked for a
@@ -395,17 +395,16 @@ public:
 
     ProxyState proxyState() const override { notWithAnExternalRouter("the clearnet proxy"); }
 
-    Keys generateKeys() override
-    {
-        // A build with no engine cannot mint a destination, so the router does.
-        const sam::Destination destination = sam::generateDestination(address_);
-        return Keys::fromBlob(fromBase64(i2pToStandardBase64(destination.privateBase64)));
-    }
-
     std::shared_ptr<backend::EndpointBackend> createEndpoint(
         const EndpointConfig& config) override
     {
-        auto endpoint = std::make_shared<SamEndpoint>(address_, config);
+        EndpointConfig filled = config;
+        if (!filled.keys.has_value()) {
+            // The router operates what it is given, so a destination with no key
+            // of its own gets a one-time one here rather than from the caller.
+            filled.keys = Keys::generate();
+        }
+        auto endpoint = std::make_shared<SamEndpoint>(address_, filled);
         const std::lock_guard<std::mutex> lock(mutex_);
         std::erase_if(endpoints_,
             [](const std::weak_ptr<SamEndpoint>& held) { return held.expired(); });

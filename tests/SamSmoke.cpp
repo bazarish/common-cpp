@@ -32,10 +32,9 @@ constexpr int kTunnelQuantity = 2;
 // A blinded b33 label is 56 base32 characters, plus ".b32.i2p".
 constexpr std::size_t kB33HostLen = 56 + 8;
 
-i2p::EndpointConfig destinationFor(i2p::Router& router, const bool published,
-    const std::string& label)
+i2p::EndpointConfig destinationFor(const bool published, const std::string& label)
 {
-    i2p::EndpointConfig config{router.generateKeys()};
+    i2p::EndpointConfig config;
     config.privacy = i2p::Privacy::eMinimal;
     config.tunnelQuantity = kTunnelQuantity;
     config.published = published;
@@ -72,7 +71,9 @@ int main(int argc, char** argv)
     CHECK_THROWS(router.knownRouters());
     CHECK_THROWS(router.proxyState());
 
-    const i2p::Keys keys = router.generateKeys();
+    // A key of one's own is minted by the library, not by a router: a router
+    // mints for the destinations it operates.
+    const i2p::Keys keys = i2p::Keys::generate();
     CHECK(!keys.publicBase64().empty());
     const std::string host = i2p::routingHost(keys.publicBase64());
     CHECK(host.size() == kB33HostLen);
@@ -80,9 +81,9 @@ int main(int argc, char** argv)
 
     std::printf("building two destinations (tunnels take a while)...\n");
     const std::shared_ptr<i2p::Endpoint> server
-        = router.createEndpoint(destinationFor(router, true, "smoke server"));
+        = router.createEndpoint(destinationFor(true, "smoke server"));
     const std::shared_ptr<i2p::Endpoint> client
-        = router.createEndpoint(destinationFor(router, false, "smoke client"));
+        = router.createEndpoint(destinationFor(false, "smoke client"));
     CHECK(server->waitReady(kReady));
     CHECK(client->waitReady(kReady));
     std::printf("server is %s\nclient is up\n", server->routingHost().c_str());

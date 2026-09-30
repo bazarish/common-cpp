@@ -385,7 +385,6 @@ public:
     }
     ProxyState proxyState() const override { notWithAGateway("the clearnet proxy"); }
 
-    Keys generateKeys() override;
     std::shared_ptr<EndpointBackend> createEndpoint(const EndpointConfig& config) override;
     void retagEndpoint(
         const EndpointBackend& endpoint, std::string label, std::string owner) override;
@@ -1400,21 +1399,15 @@ void Link::forget(const std::uint32_t id)
     }
 }
 
-Keys GatewayRouter::generateKeys()
-{
-#ifdef BAZARISH_WITH_I2PD
-    // The transport will not use this key: the gateway mints the destination's
-    // own and never sends it. It is here because every caller mints before it
-    // creates, and because a build with the engine can answer without asking
-    // anybody.
-    return Keys::fromBlob(generateKeysBlob());
-#else
-    notWithAGateway("minting a key without the engine");
-#endif
-}
-
 std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointConfig& config)
 {
+    if (config.keys.has_value()) {
+        // The gateway operates what it mints and nothing else. A key handed to
+        // this transport would either travel - which is the one thing the trust
+        // model forbids - or be quietly ignored, leaving the caller believing an
+        // address is its key's when it is not.
+        notWithAGateway("a destination built from a key of your own");
+    }
     const std::uint32_t id = link_->nextId();
     const bool raw = config.traffic == Traffic::eRaw;
     const nlohmann::json ask = {{"kind", raw ? "raw" : "stream"},
