@@ -93,18 +93,15 @@ public:
 std::unique_ptr<RouterBackend> makeSamRouter(const RouterConfig& config);
 std::unique_ptr<RouterBackend> makeGatewayRouter(const RouterConfig& config);
 
-#ifdef BAZARISH_WITH_I2PD
 std::unique_ptr<RouterBackend> makeEmbeddedRouter(const RouterConfig& config);
 // The engine's own answers, which only it has.
 std::string embeddedRouterVersion();
 std::vector<Bytes> embeddedSampleRouterInfos(std::size_t count);
 std::size_t embeddedSeedRouterInfos(
     const std::filesystem::path& dataDir, const std::vector<Bytes>& routers);
-// Key material the embedded engine mints. Kept behind these two calls because
-// they are the whole of what a build without the engine cannot do.
+// Key material the engine mints, for the facade to hand out.
 Bytes generateKeysBlob();
 Bytes issueTransientBlob(const Bytes& master, int days);
 int b33OfflineKeyDays(const Bytes& blob);
-#endif
 
 }  // namespace bazarish::i2p::backend

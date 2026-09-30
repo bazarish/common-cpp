@@ -10,7 +10,7 @@ patch is never committed into the superproject - only the pristine gitlink is.
 ## Building
 
 ```
-cmake -S common -B build -DBAZARISH_WITH_I2PD=ON
+cmake -S common -B build
 cmake --build build --target i2pd_bazarish
 ```
 
@@ -26,7 +26,7 @@ client role).
 ```
 cd common/third_party/i2pd && git fetch origin openssl && git checkout <new-commit>
 cd - && git add common/third_party/i2pd            # record the new gitlink
-cmake -S common -B build -DBAZARISH_WITH_I2PD=ON    # re-applies the patches
+cmake -S common -B build                            # re-applies the patches
 ```
 
 If a patch no longer applies after a bump, refresh it: apply by hand against the

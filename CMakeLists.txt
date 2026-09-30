@@ -15,14 +15,10 @@ find_package(OpenSSL 3.5 REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
 
-# Embedded I2P transport. ON by default: I2P is the transport, so every consumer
-# of common needs it. Requires the i2pd submodule (recursive init) and Boost
-# program_options. Turn OFF only for builds that never touch the network, e.g.
-# air-gapped offline key tools: -DBAZARISH_WITH_I2PD=OFF.
-option(BAZARISH_WITH_I2PD "Build the embedded libi2pd_bazarish target" ON)
-if(BAZARISH_WITH_I2PD)
-    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/I2pdBazarish.cmake)
-endif()
+# The embedded I2P transport, which every consumer of common gets: I2P is the
+# transport, and a build without it would be a second kind of library to reason
+# about. Requires the i2pd submodule (recursive init) and Boost program_options.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/I2pdBazarish.cmake)
 
 # The client core: everything a Bazarish client is, with no user interface in it
 # - accounts and their encrypted store, the session, the courier, invites, calls
@@ -97,18 +93,14 @@ target_compile_options(bazarish_common PRIVATE -Wall -Wextra -Werror)
 set_source_files_properties(src/HttpServer.cpp src/HttpClient.cpp PROPERTIES
     COMPILE_OPTIONS -Wno-mismatched-new-delete)
 
-# The I2P transport wrapper compiles only against the embedded engine. Its i2pd
-# and Boost includes arrive (as SYSTEM) through Bazarish::I2pd, so they stay out
-# of our -Werror surface.
-if(BAZARISH_WITH_I2PD)
-    target_sources(bazarish_common PRIVATE src/I2pEmbedded.cpp)
-    target_compile_definitions(bazarish_common PUBLIC BAZARISH_WITH_I2PD)
-    target_link_libraries(bazarish_common PUBLIC Bazarish::I2pd)
-    # Manual end-to-end smoke over live I2P (not a unit test - needs the network).
-    add_executable(i2p_smoke tests/I2pSmoke.cpp)
-    target_link_libraries(i2p_smoke PRIVATE bazarish_common)
-    target_compile_options(i2p_smoke PRIVATE -Wall -Wextra)
-endif()
+# The I2P transport wrapper. Its i2pd and Boost includes arrive (as SYSTEM)
+# through Bazarish::I2pd, so they stay out of our -Werror surface.
+target_sources(bazarish_common PRIVATE src/I2pEmbedded.cpp)
+target_link_libraries(bazarish_common PUBLIC Bazarish::I2pd)
+# Manual end-to-end smoke over live I2P (not a unit test - needs the network).
+add_executable(i2p_smoke tests/I2pSmoke.cpp)
+target_link_libraries(i2p_smoke PRIVATE bazarish_common)
+target_compile_options(i2p_smoke PRIVATE -Wall -Wextra)
 
 enable_testing()
 
@@ -133,12 +125,8 @@ bazarish_add_test(TestRateLimiter)
 bazarish_add_test(TestErrors)
 bazarish_add_test(TestAddress)
 bazarish_add_test(TestI2pAddress)
-if(BAZARISH_WITH_I2PD)
-    # Both work the key material the embedded engine owns; without it there is
-    # nothing here to test rather than something failing.
-    bazarish_add_test(TestI2pDelegation)
-    bazarish_add_test(TestI2pKeyBlob)
-endif()
+bazarish_add_test(TestI2pDelegation)
+bazarish_add_test(TestI2pKeyBlob)
 
 # Live end-to-end over an external router reached by SAM (not a unit test - it
 # needs a running i2pd and the network), the counterpart of i2p_smoke.

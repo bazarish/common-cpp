@@ -35,14 +35,6 @@ constexpr std::size_t kOfflineExpiresBytes = 4;
 // so callers need not care which transport they got.
 std::atomic<bool> g_i2pLogging{false};
 
-#ifndef BAZARISH_WITH_I2PD
-[[noreturn]] void noEmbeddedEngine()
-{
-    throw std::runtime_error(
-        "bazarish::i2p: this build carries no embedded engine; the router is external");
-}
-#endif
-
 }  // namespace
 
 // Key material is held as the blob it is stored and transmitted as, and read
@@ -76,11 +68,7 @@ Keys::~Keys() = default;
 
 Keys Keys::generate()
 {
-#ifdef BAZARISH_WITH_I2PD
     return fromBlob(backend::generateKeysBlob());
-#else
-    noEmbeddedEngine();
-#endif
 }
 
 Keys Keys::fromBlob(const Bytes& blob)
@@ -141,53 +129,27 @@ std::int64_t Keys::transientExpires() const
 
 int Keys::b33OfflineKeyDays() const
 {
-#ifdef BAZARISH_WITH_I2PD
     return backend::b33OfflineKeyDays(impl_->blob);
-#else
-    noEmbeddedEngine();
-#endif
 }
 
 Keys Keys::issueTransient(const int days) const
 {
-#ifdef BAZARISH_WITH_I2PD
     return fromBlob(backend::issueTransientBlob(impl_->blob, days));
-#else
-    (void)days;
-    noEmbeddedEngine();
-#endif
 }
 
 std::string routerVersion()
 {
-#ifdef BAZARISH_WITH_I2PD
     return backend::embeddedRouterVersion();
-#else
-    // Nothing to name: the router this build talks to is somebody else's
-    // process, and SAM does not say what version it is.
-    return {};
-#endif
 }
 
 std::vector<Bytes> sampleRouterInfos(const std::size_t count)
 {
-#ifdef BAZARISH_WITH_I2PD
     return backend::embeddedSampleRouterInfos(count);
-#else
-    (void)count;
-    noEmbeddedEngine();
-#endif
 }
 
 std::size_t seedRouterInfos(const std::filesystem::path& dataDir, const std::vector<Bytes>& routers)
 {
-#ifdef BAZARISH_WITH_I2PD
     return backend::embeddedSeedRouterInfos(dataDir, routers);
-#else
-    (void)dataDir;
-    (void)routers;
-    noEmbeddedEngine();
-#endif
 }
 
 std::optional<Privacy> privacyFromString(const std::string_view text)
@@ -391,11 +353,7 @@ Router::Router(RouterConfig config) : impl_(std::make_unique<Impl>())
         impl_->transport = backend::makeGatewayRouter(config);
         return;
     }
-#ifdef BAZARISH_WITH_I2PD
     impl_->transport = backend::makeEmbeddedRouter(config);
-#else
-    noEmbeddedEngine();
-#endif
 }
 
 Router::~Router() = default;
