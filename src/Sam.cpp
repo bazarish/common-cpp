@@ -690,6 +690,12 @@ struct Session::Impl {
     std::string privateKeys;
 
     mutable std::mutex mutex;
+    // A session gets exactly one forward, and the router refuses a second with
+    // "Already accepting" - taking the first one down with it. Several threads
+    // serve one destination, so the one that forwards has to be settled here and
+    // not by a flag they can all read as false at once. Ordering: this before
+    // mutex, never the other way.
+    mutable std::mutex listenMutex;
     Held control;
     Held forward;
     Held listener;
@@ -788,8 +794,11 @@ struct Session::Impl {
                     config.privateKeys = privateKeys;
                 }
                 create();
-                if (listening) {
-                    startForwarding();
+                {
+                    const std::lock_guard<std::mutex> lock(listenMutex);
+                    if (listening) {
+                        startForwarding();
+                    }
                 }
                 bazarish::log::info("i2p: SAM session {} is back", id);
                 return;
@@ -866,6 +875,7 @@ std::unique_ptr<Stream> Session::connect(
 
 void Session::listen()
 {
+    const std::lock_guard<std::mutex> lock(impl_->listenMutex);
     if (impl_->listening) {
         return;
     }
