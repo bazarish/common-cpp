@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include <bazarish/HttpServer.hpp>
 
+#include <bazarish/Errors.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/WebSocket.hpp>
 
@@ -620,6 +621,20 @@ auth::Headers collectAuthHeaders(const Request& request)
         }
     }
     return headers;
+}
+
+std::optional<Response> operatorRefusal(
+    const Request& request, const std::int64_t now, const std::vector<std::string>& operators)
+{
+    try {
+        auth::authorizeRequest(collectAuthHeaders(request), now, request.method, request.path,
+            Bytes(request.body.begin(), request.body.end()), operators);
+        return std::nullopt;
+    } catch (const std::exception& error) {
+        log::debug("an operator call was refused: {}", error.what());
+        return Response{403, "application/json", {},
+            makeErrorEnvelope(ErrorCode::eDeliveryRejected, error.what()).dump()};
+    }
 }
 
 Handler filled(Filler handler)

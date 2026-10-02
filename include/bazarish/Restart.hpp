@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
@@ -14,6 +15,28 @@ namespace bazarish {
 // unit says on-failure or always. The panel is the only caller, and the request
 // is operator-signed.
 inline constexpr int kRestartExitCode = 90;
+
+// What a daemon's threads are stopped by: the flag a main() parks on until the
+// service ends, and the one a background sweep sleeps against so shutdown is
+// immediate rather than one interval away.
+//
+// The flag does not live in the HTTP engine because a stop can arrive before the
+// listener is bound - a signal during start-up - and it still has to be
+// remembered.
+class StopGate {
+public:
+    // Parks the caller until stop(), returning at once when stop() already came.
+    void wait();
+    // Parks for at most `timeout`; true when the service is stopping.
+    bool waitFor(std::chrono::nanoseconds timeout);
+    void stop();
+    bool stopped() const;
+
+private:
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    bool stopped_ = false;
+};
 
 // Stops a service on somebody else's thread.
 //

@@ -3,6 +3,8 @@
 
 #include "bazarish/Crypto.hpp"
 
+#include <stdexcept>
+
 namespace {
 
 bool isBase32Char(const char c)
@@ -30,6 +32,13 @@ bool isFingerprint(const std::string& text)
         }
     }
     return true;
+}
+
+void requireFingerprint(const std::string& text)
+{
+    if (!isFingerprint(text)) {
+        throw std::invalid_argument("not a fingerprint: " + text);
+    }
 }
 
 bool isAlias(const std::string& text)

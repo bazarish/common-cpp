@@ -37,6 +37,9 @@ std::string formatAddress(const Address& address);
 
 // True for a well-formed key fingerprint (52 chars of base32).
 bool isFingerprint(const std::string& text);
+// Throws unless `text` is one. Every store names its records after a fingerprint,
+// so a name that is not one could leave the directory it is joined to.
+void requireFingerprint(const std::string& text);
 // True for a well-formed alias: [a-z0-9] within the length limits. Separators
 // are deliberately absent - they would let two names differ only by a character
 // nobody reads, and the price of a name follows its length alone.

@@ -19,6 +19,21 @@
 
 namespace bazarish::http {
 
+// The port a URL means when it names none.
+inline constexpr int kDefaultHttpPort = 80;
+inline constexpr int kDefaultHttpsPort = 443;
+
+// Where a URL points, for a client that takes a host and a port rather than a
+// URL. A URL that names no port means its scheme's; everything after the
+// authority is the path a signature has to cover.
+struct Url {
+    std::string host;
+    int port = kDefaultHttpPort;
+    std::string path;
+    bool tls = false;
+};
+Url parseUrl(const std::string& url);
+
 // What to send upstream. The facade forwards verbatim, so the headers it was
 // given (signatures included) travel unchanged.
 struct ClientRequest {

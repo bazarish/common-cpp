@@ -15,6 +15,11 @@ namespace bazarish {
 inline constexpr int kMinPort = 1;
 inline constexpr int kMaxPort = 65535;
 
+// A JSON document on disk, as a store reads one of its records. Throws when the
+// file cannot be opened or does not parse: a record that will not read is not an
+// empty record.
+nlohmann::json readJsonFile(const std::filesystem::path& path);
+
 // A daemon's config file, which a control plane may change one value at a time.
 //
 // The file belongs to the operator: their key order, their indentation and their
@@ -81,6 +86,24 @@ private:
 
     nlohmann::json document_;
 };
+
+// Writes the value only when it differs from what the file already holds, so a
+// save patches the settings that changed and leaves the rest of the file alone.
+template <class T>
+void setIfChanged(ConfigFile& file, std::vector<std::string> keys, const T& wanted,
+    const T& current)
+{
+    if (!(wanted == current)) {
+        file.set(std::move(keys), wanted);
+    }
+}
+
+// Applies {"host", "port"} at `key` to a host and a port, leaving whichever of
+// the two the body does not name, and doing nothing at all when it does not name
+// `key`. Throws std::invalid_argument on an empty host or a port outside
+// kMinPort..kMaxPort: one place where every settings endpoint checks an address.
+void readEndpointInto(
+    const nlohmann::json& body, const std::string& key, std::string& host, int& port);
 
 // The patch itself, on text rather than a file: exposed for testing, and for a
 // caller holding the document in memory.

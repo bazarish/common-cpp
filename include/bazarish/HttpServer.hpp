@@ -70,6 +70,13 @@ struct SocketRoutes;
 // three copies of this in three components is how that happened in one of them.
 auth::Headers collectAuthHeaders(const Request& request);
 
+// Nothing when the request is signed by one of `operators`; otherwise the 403 to
+// send back. The one gate every operator-internal endpoint in the fleet stands
+// behind - a service that wrote its own grew a second idea of what a refusal looks
+// like. An empty list authorises nobody.
+std::optional<Response> operatorRefusal(
+    const Request& request, std::int64_t now, const std::vector<std::string>& operators);
+
 // Adapts a handler written as "fill in the response" to one that returns it.
 // Several services are written that way; the engine hands a response back.
 using Filler = std::function<void(const Request&, Response&)>;

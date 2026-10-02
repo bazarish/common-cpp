@@ -29,6 +29,30 @@
 
 namespace bazarish::http {
 
+Url parseUrl(const std::string& url)
+{
+    std::string rest = url;
+    Url parsed;
+    if (const std::string scheme = "https://"; rest.rfind(scheme, 0) == 0) {
+        rest = rest.substr(scheme.size());
+        parsed.tls = true;
+        parsed.port = kDefaultHttpsPort;
+    } else if (const std::string plain = "http://"; rest.rfind(plain, 0) == 0) {
+        rest = rest.substr(plain.size());
+    }
+    if (const auto slash = rest.find('/'); slash != std::string::npos) {
+        parsed.path = rest.substr(slash);
+        rest = rest.substr(0, slash);
+    }
+    if (const auto colon = rest.find(':'); colon == std::string::npos) {
+        parsed.host = rest;
+    } else {
+        parsed.host = rest.substr(0, colon);
+        parsed.port = std::stoi(rest.substr(colon + 1));
+    }
+    return parsed;
+}
+
 namespace {
 namespace asio = boost::asio;
 namespace beast = boost::beast;

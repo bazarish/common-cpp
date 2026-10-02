@@ -373,4 +373,33 @@ void ConfigFile::set(const std::vector<std::string>& keys, const nlohmann::json&
     writeWhole(path_, configWithValue(readWhole(path_), keys, value));
 }
 
+nlohmann::json readJsonFile(const std::filesystem::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw std::runtime_error("failed to open " + path.string());
+    }
+    return nlohmann::json::parse(in);
+}
+
+void readEndpointInto(
+    const nlohmann::json& body, const std::string& key, std::string& host, int& port)
+{
+    if (!body.contains(key)) {
+        return;
+    }
+    const nlohmann::json& endpoint = body.at(key);
+    const std::string wantedHost = endpoint.value("host", host);
+    const int wantedPort = endpoint.value("port", port);
+    if (wantedHost.empty()) {
+        throw std::invalid_argument("a " + key + " address needs a host");
+    }
+    if (wantedPort < kMinPort || wantedPort > kMaxPort) {
+        throw std::invalid_argument("a port is between " + std::to_string(kMinPort) + " and "
+            + std::to_string(kMaxPort));
+    }
+    host = wantedHost;
+    port = wantedPort;
+}
+
 }  // namespace bazarish
