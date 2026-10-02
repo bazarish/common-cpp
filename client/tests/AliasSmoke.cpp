@@ -10,9 +10,10 @@
 // built with rather than against a root the test handed itself.
 //
 // Run:  alias_smoke [alias-to-resolve] [router-data-dir]
-// The coordinate is the compiled-in one unless BAZARISH_RESOLVER_ROOT and
-// BAZARISH_RESOLVER_DEST are set. The router keeps its netDb under the data
-// directory, so a second run starts from peers it already knows.
+// The coordinate is the compiled-in one and cannot be pointed elsewhere - that
+// it is the shipped one is the whole point of the run. The router keeps its
+// netDb under the data directory, so a second run starts from peers it already
+// knows.
 
 #include "Client.hpp"
 #include "FederationFetch.hpp"
@@ -29,7 +30,6 @@
 
 #include <chrono>
 #include <cstdio>
-#include <cstdlib>
 #include <ctime>
 #include <exception>
 #include <string>
@@ -47,20 +47,6 @@ std::int64_t nowSeconds()
     return static_cast<std::int64_t>(std::time(nullptr));
 }
 
-ResolverCoordinate coordinate()
-{
-    ResolverCoordinate resolver = defaultResolverCoordinate();
-    if (const char* const root = std::getenv("BAZARISH_RESOLVER_ROOT");
-        root != nullptr && root[0] != '\0') {
-        resolver.rootFingerprint = root;
-    }
-    if (const char* const dest = std::getenv("BAZARISH_RESOLVER_DEST");
-        dest != nullptr && dest[0] != '\0') {
-        resolver.dest = dest;
-    }
-    return resolver;
-}
-
 }  // namespace
 
 int main(const int argc, const char** argv)
@@ -71,9 +57,9 @@ int main(const int argc, const char** argv)
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
     const std::string alias = argc > 1 ? argv[1] : "nobodyhasthis";
-    const ResolverCoordinate resolver = coordinate();
+    const ResolverCoordinate resolver = defaultResolverCoordinate();
     if (!resolver.configured()) {
-        std::printf("[alias] no resolver coordinate compiled in or in the environment\n");
+        std::printf("[alias] no resolver coordinate compiled in\n");
         return 2;
     }
     std::printf("[alias] root=%s\n[alias] dest=%s\n", resolver.rootFingerprint.c_str(),

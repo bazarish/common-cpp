@@ -30,7 +30,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdlib>
 #include <ctime>
 #include <fstream>
 #include <set>
@@ -410,17 +409,6 @@ Session::Session(fs::path accountFile, std::unique_ptr<Client> client, Key seali
     , sealingKey_(std::move(sealingKey))
     , contacts_(std::move(contacts))
 {
-    // The compiled-in resolver coordinate is empty until a developer-run resolver
-    // is deployed and baked in. It can be overridden from the environment so a
-    // freshly-built test or local resolver is exercised without a rebuild; both
-    // parts must be present or the alias path stays unconfigured.
-    if (const char* const root = std::getenv("BAZARISH_RESOLVER_ROOT");
-        root != nullptr && root[0] != '\0') {
-        const char* const dest = std::getenv("BAZARISH_RESOLVER_DEST");
-        if (dest != nullptr && dest[0] != '\0') {
-            resolverCoordinate_ = ResolverCoordinate{root, dest};
-        }
-    }
 }
 
 bazarish::i2p::Router& Session::i2pRouter() const

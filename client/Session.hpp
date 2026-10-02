@@ -735,9 +735,9 @@ public:
     // the contact. Returns the contact fingerprint. Throws on a delivery failure.
     std::string commitContactAdd(const ContactCardResolved& resolved);
 
-    // Overrides the central resolver coordinate (root fingerprint + destination +
-    // serving key). The shipped client bakes one in (defaultResolverCoordinate);
-    // this exists for deployments that point at a different resolver and for tests.
+    // Overrides the central resolver coordinate (root fingerprint + destination).
+    // The shipped client bakes one in (defaultResolverCoordinate); this is the only
+    // way to point a session at another resolver, and what the tests use.
     void setResolverCoordinate(ResolverCoordinate coordinate);
 
     // Emits, as JSON, the artifacts the central resolver's portal needs to claim

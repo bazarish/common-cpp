@@ -28,7 +28,6 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <map>
@@ -484,15 +483,12 @@ int main()
 
     // The name service this build talks to: an offline root, a delegated signing
     // key under it, and an address. A release bakes the first and third in; a test
-    // hands them over the environment, which is read when a session is opened, so
-    // this has to happen before any account exists.
+    // hands them to each session that resolves.
     const Identity resolverRoot = Identity::generate();
     const Identity resolverDelegated = Identity::generate();
     const Bytes resolverDelegationDer = DelegationCertificate::issue(resolverRoot,
         resolverDelegated, static_cast<std::int64_t>(std::time(nullptr)) - 60,
         static_cast<std::int64_t>(std::time(nullptr)) + 30 * 24 * 3600);
-    ::setenv("BAZARISH_RESOLVER_ROOT", resolverRoot.fingerprint().c_str(), 1);
-    ::setenv("BAZARISH_RESOLVER_DEST", kTestResolverDest, 1);
 
     const fs::path aDir = fs::temp_directory_path() / "bz-pass-a";
     const fs::path bDir = fs::temp_directory_path() / "bz-pass-b";
@@ -508,6 +504,9 @@ int main()
     {
         Session alice = Session::create(aDir, endpoint, std::string{});
         Session bob = Session::create(bDir, endpoint, std::string{});
+        const ResolverCoordinate resolver{resolverRoot.fingerprint(), kTestResolverDest};
+        alice.setResolverCoordinate(resolver);
+        bob.setResolverCoordinate(resolver);
         // Alice's own signing key, read the way another device of hers would
         // hold it: an envelope injected below has to be signed like a real one.
         const Identity aliceIdentity

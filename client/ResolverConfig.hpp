@@ -2,6 +2,7 @@
 #pragma once
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/ResolverAnchor.hpp>
 
 #include <string>
 
@@ -12,11 +13,10 @@ namespace bazarish::client {
 // the resolver's .b32.i2p destination. Exactly two values, because the resolver
 // signs and never encrypts: there is no third key to ship, and nothing here goes
 // stale when the resolver rotates its signing material behind the same root.
-// These are baked into the shipped client once the developer-run resolver is
-// deployed;
-// until then defaultResolverCoordinate() returns an unconfigured value and the
-// alias path reports that resolution is unavailable. The struct stays injectable
-// so the resolve logic can be exercised against a test resolver.
+// Both are baked into the shipped client; a coordinate with either half empty
+// leaves the alias path reporting that resolution is unavailable. The struct
+// stays injectable so the resolve logic can be exercised against a test
+// resolver.
 struct ResolverCoordinate {
     std::string rootFingerprint;  // resolver root identity fingerprint (trust anchor)
     std::string dest;             // the address the resolver answers at
@@ -24,21 +24,20 @@ struct ResolverCoordinate {
     bool configured() const { return !rootFingerprint.empty() && !dest.empty(); }
 };
 
-// The two values a build is shipped with. They are the developer-run resolver's,
-// and a release replaces exactly these two lines with the deployed one's - which
-// the daemon prints on its first line at start-up. Nothing else in the client
-// needs changing for that, because the resolver signs rather than encrypts and
-// can rotate its signing material behind the same root.
+// The address a build is shipped with: the i2pd server tunnel the deployed
+// daemon answers behind. The root fingerprint that anchors it is not repeated
+// here - it is bazarish::kResolverRootFingerprint, the same constant the resolver
+// is built with. Nothing else in the client needs changing when the resolver
+// rotates its signing material, because that happens behind the same root.
 //
-// These are the development resolver's. A release must not ship them.
-inline constexpr const char* kResolverRootFingerprint
-    = "fknq2ve6o3iuqzqu3ucllh7ozsxvsei457pe4rxsbwpm5lwdxrra";
+// A test or a differently-pointed client is handed its coordinate through
+// Session::setResolverCoordinate; there is no ambient second way in.
 inline constexpr const char* kResolverDest
-    = "zftxw3rxtsa7wconwzx6sxf6wqjnrumoqjajmreahzkoyuebhgfq.b32.i2p";
+    = "alias3huye47ahu2as5grktyc75w5wqr45elavek52t72vcooy3a.b32.i2p";
 
 inline ResolverCoordinate defaultResolverCoordinate()
 {
-    return ResolverCoordinate{kResolverRootFingerprint, kResolverDest};
+    return ResolverCoordinate{bazarish::kResolverRootFingerprint, kResolverDest};
 }
 
 }  // namespace bazarish::client
