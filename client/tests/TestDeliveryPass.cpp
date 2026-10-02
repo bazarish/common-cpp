@@ -88,7 +88,7 @@ void respondJson(http::Response& response, const nlohmann::json& body)
 }
 
 // A minimal but faithful stateful messaging server for two co-located users: it
-// stores per-mailbox blobs, tracks each mailbox's registered token hashes and
+// stores per-mailbox blobs, tracks each mailbox's registered pass hashes and
 // consumes exactly one on every content delivery (rejecting an unregistered
 // token), and hands back each user's self-signed subscription certificate. Every
 // handler runs on the server's own thread while the test drives the sessions on
@@ -116,7 +116,7 @@ struct Mock {
     // sender presents the pass and this is what a server holds.
     std::map<std::string, std::set<std::string>> registered;
     std::map<std::string, std::set<std::string>> seenIds;  // recipient fp -> admitted deliveryIds
-    // The biggest tokenless request this server was ever handed: what the
+    // The biggest passless request this server was ever handed: what the
     // protocol cap has to be, and no more.
     std::size_t largestContactRequest = 0;
     int nextId = 1;
@@ -895,7 +895,7 @@ int main()
         }
 
         // Nothing runs a pass down, so there is nothing to ask for and nothing to
-        // wait on. Send far past what a batch of 256 one-time tokens used to buy
+        // wait on. Send far past what a batch of 256 spent passes would have bought
         // and the same value still carries every one of them - and the mailbox
         // that admits them still holds exactly one.
         {
@@ -1351,7 +1351,7 @@ int main()
             CHECK(!dana.contactIsPending(alice.fingerprint()));
             CHECK(!dana.contactAcceptInFlight(alice.fingerprint()));
 
-            // Alice deletes Dana and adds her back. Her request is tokenless, so
+            // Alice deletes Dana and adds her back. Her request presents no pass, so
             // what Dana issued last time went with the contact Alice removed -
             // and Dana never sees a button, because the chat is already in her
             // book. Left to itself that is a one-way conversation: Dana's replies

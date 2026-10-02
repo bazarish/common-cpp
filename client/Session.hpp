@@ -246,7 +246,7 @@ using TransferEventFn = std::function<void(const TransferEvent&)>;
 // delivery pass with our own server and hand them the pass itself; to write to a
 // peer we present the pass they gave us. A pass does not expire and is not
 // spent, so there is one per correspondent and every device of ours presents the
-// same one. Contact bootstrap exchanges both directions over a tokenless contact
+// same one. Contact bootstrap exchanges both directions over a passless contact
 // request and its reply.
 class Session {
 public:
@@ -1300,7 +1300,7 @@ private:
 
     // Sends the user-owned I2P master to the account's other devices: a
     // service content message ("device.i2p-master") sealed to our own sealing
-    // key and delivered tokenlessly to our own destination, so it lands in our
+    // key and delivered with no pass to our own destination, so it lands in our
     // own mailbox and every device of this account picks it up on sync and
     // persists the same master (preserving the b32 across devices). Best effort;
     // a no-op when there is no master or our routing is not known yet.

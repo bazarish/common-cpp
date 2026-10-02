@@ -2240,14 +2240,14 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     }
     // Somebody already in the book is not asked again. A second request is a
     // fresh plate in their mailbox for a conversation this side already holds,
-    // and it costs them a tokenless delivery to be told nothing new. Checked
+    // and it costs them a passless delivery to be told nothing new. Checked
     // here, at the one funnel every way of adding runs through, rather than at
     // each of them. A request refused earlier leaves no contact behind - the
     // entry is written after the delivery - so this never blocks a retry.
     if (contacts_.find(peerFingerprint) != contacts_.end()) {
         throw std::runtime_error("they are already in your contacts");
     }
-    // A contact request is tokenless, so what a stranger may put in a mailbox is
+    // A contact request presents no pass, so what a stranger may put in a mailbox is
     // capped by the protocol. Hold the greeting to what the cap leaves room for
     // here, where the user can still be told, rather than letting the recipient's
     // server refuse a request they cannot see.
@@ -2262,7 +2262,7 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
 
     // Register the pass the peer will write back with and hand it over, with our
     // prekey and our routing (dest + serving sealing key), in the bootstrap. One
-    // value rather than a batch: this rides the tokenless path, and what it
+    // value rather than a batch: this rides the passless path, and what it
     // weighs is what a flood of requests costs the person being asked.
     const std::string replyPass = registerPassFor(peerFingerprint);
 
@@ -2286,7 +2286,7 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
             }},
     });
     // E2E-encrypted to the peer's prekey: the first message is confidential.
-    // Delivered tokenless under the "contact" admission class.
+    // Delivered with no pass, under the "contact" admission class.
     nlohmann::json request = payload;
     // With our keys: this is the first thing they ever hear from us, and every
     // message after it is checked against what they keep from here.
@@ -3441,7 +3441,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
             }
 
             // A request from somebody we have already issued a pass to says they
-            // hold nothing of ours any more: a request is tokenless, so what we
+            // hold nothing of ours any more: a request presents no pass, so what we
             // issued went with the contact they deleted. Answering is not a
             // question to put to the user - they agreed to this correspondent
             // when they issued that pass - but the pass has to be minted again,
@@ -5263,7 +5263,7 @@ void Session::exportAccount(const fs::path& outFile, const std::string& password
     nlohmann::json contacts = contactsToJson();
     // The pass of each conversation is copied rather than handed over: it is not
     // spent, so this device keeps writing and the restored one can write from its
-    // first sync. A one-time token could not be in two places, and a restored
+    // first sync. A pass that was spent could not be in two places, and a restored
     // device that "cannot send to anybody" was exactly that.
 
     // The keys are re-serialized unencrypted inside the bundle; the password

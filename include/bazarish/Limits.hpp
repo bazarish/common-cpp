@@ -61,7 +61,7 @@ inline constexpr const char* kContentDeliveryClass = "content";
 inline constexpr const char* kContactDeliveryClass = "contact";
 inline constexpr const char* kDeviceDeliveryClass = "device";
 
-// How many tokenless contact requests a destination accepts per minute. Real
+// How many passless contact requests a destination accepts per minute. Real
 // ones are a handful in an account's life; the cap is what stops a stranger who
 // rotates their own destination from filling a mailbox with them.
 //

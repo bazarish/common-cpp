@@ -270,7 +270,7 @@ public:
     // Writes a blob into this account's own mailbox for its other devices. The
     // request's signature is the whole admission check: the caller owns the
     // mailbox, so there is no token to spend, no destination to dial and nothing
-    // to federate - and it stays out of the tokenless budget, which is there to
+    // to federate - and it stays out of the contact-request budget, which is there to
     // bound strangers.
     // kind names what the sealed payload carries ("device.saved"), for the
     // connection log: from the outside every one of these is the same POST.
