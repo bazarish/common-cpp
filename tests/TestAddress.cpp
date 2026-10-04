@@ -30,6 +30,16 @@ int main()
     CHECK(!isAlias("alice-"));
     CHECK(!isAlias(std::string(kAliasMaxLength + 1, 'a')));
 
+    // normalizeAlias: what a person types, in the form the registry answers to.
+    CHECK(normalizeAlias("alice") == "alice");
+    CHECK(normalizeAlias("!Alice") == "alice");
+    CHECK(normalizeAlias(std::string(kAliasMaxLength, 'A')) == std::string(kAliasMaxLength, 'a'));
+    CHECK_THROWS(normalizeAlias(""));
+    CHECK_THROWS(normalizeAlias("!"));
+    CHECK_THROWS(normalizeAlias(std::string(kAliasMaxLength + 1, 'a')));
+    CHECK_THROWS(normalizeAlias("alice.bob"));
+    CHECK_THROWS(normalizeAlias("ali!ce"));
+
     // Fully qualified fingerprint address.
     const std::optional<Address> full = parseAddress(fingerprint + "@" + serverFingerprint);
     CHECK(full.has_value());

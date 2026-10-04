@@ -4,6 +4,7 @@
 #include "bazarish/Crypto.hpp"
 
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 
@@ -52,6 +53,26 @@ bool isAlias(const std::string& text)
         }
     }
     return true;
+}
+
+std::string normalizeAlias(const std::string& typed)
+{
+    const std::string_view name = (!typed.empty() && typed.front() == kAliasSigil)
+        ? std::string_view(typed).substr(1)
+        : std::string_view(typed);
+    if (name.size() < kAliasMinLength || name.size() > kAliasMaxLength) {
+        throw std::runtime_error("alias must be " + std::to_string(kAliasMinLength) + "-"
+            + std::to_string(kAliasMaxLength) + " characters");
+    }
+    std::string normalized;
+    normalized.reserve(name.size());
+    for (const char c : name) {
+        normalized.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c);
+    }
+    if (!isAlias(normalized)) {
+        throw std::runtime_error("alias may contain only a-z and 0-9");
+    }
+    return normalized;
 }
 
 std::optional<Address> parseAddress(const std::string& text)

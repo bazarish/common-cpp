@@ -45,4 +45,14 @@ void requireFingerprint(const std::string& text);
 // nobody reads, and the price of a name follows its length alone.
 bool isAlias(const std::string& text);
 
+// The sigil an alias is written with wherever a person reads one. Never part of
+// the name itself.
+inline constexpr char kAliasSigil = '!';
+
+// A typed alias in the form the registry answers to: sigil dropped, case folded,
+// anything else refused with the reason it is not a name. The bounds are this
+// header's, so a name a client accepts is one the registry would take. Throws
+// std::runtime_error, whose text is shown to whoever typed it.
+std::string normalizeAlias(const std::string& typed);
+
 }  // namespace bazarish

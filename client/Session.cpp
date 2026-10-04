@@ -10,6 +10,7 @@
 #include "I2pKeys.hpp"
 #include "I2pRouter.hpp"
 
+#include <bazarish/Address.hpp>
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Cms.hpp>
@@ -34,7 +35,6 @@
 #include <fstream>
 #include <set>
 #include <stdexcept>
-#include <string_view>
 #include <thread>
 
 namespace bazarish::client {
@@ -174,34 +174,6 @@ std::int64_t nowMillis()
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch())
         .count();
-}
-
-// Normalizes an alias to the resolver's canonical form: case-insensitive, 1-32
-// characters of a-z and 0-9 (api/AliasResolver.md). Throws on an invalid name so
-// a malformed query never reaches the resolver.
-std::string normalizeAlias(const std::string& alias)
-{
-    // The sigil is how an alias is written everywhere a person sees one, so it
-    // is accepted where one is typed; the name itself never contains it.
-    const std::string_view typed
-        = (!alias.empty() && alias.front() == '!') ? std::string_view(alias).substr(1) : alias;
-    if (typed.empty() || typed.size() > 32) {
-        throw std::runtime_error("alias must be 1-32 characters");
-    }
-    std::string normalized;
-    normalized.reserve(typed.size());
-    for (const char c : typed) {
-        char lower = c;
-        if (c >= 'A' && c <= 'Z') {
-            lower = static_cast<char>(c - 'A' + 'a');
-        }
-        const bool valid = (lower >= 'a' && lower <= 'z') || (lower >= '0' && lower <= '9');
-        if (!valid) {
-            throw std::runtime_error("alias may contain only a-z and 0-9");
-        }
-        normalized.push_back(lower);
-    }
-    return normalized;
 }
 
 // The protocol cap on an avatar's compressed size. The UI compresses a chosen
