@@ -17,6 +17,11 @@ namespace bazarish {
 // body. These centralize the request format and response parser that the client
 // and the messaging server would otherwise duplicate.
 
+// A head here is a status line and a handful of short headers - hundreds of
+// bytes. Bounded because an unbounded one is a peer deciding how much the reader
+// holds before it has said anything at all.
+inline constexpr std::size_t kMaxI2pHttpHeadBytes = 8 * 1024;
+
 // Builds the request head: "<method> <path> HTTP/1.1", a Host header, the
 // caller's extra headers (verbatim, in iteration order), then
 // "Content-Length: <bodySize>" and "Connection: close". Any body bytes are
@@ -62,6 +67,10 @@ I2pHttpHead readI2pHttpHead(Stream& stream)
                 + " bytes, before the response head was complete");
         }
         raw.append(buffer.data(), got);
+        if (raw.size() > kMaxI2pHttpHeadBytes) {
+            throw std::runtime_error(
+                "i2p response head is over " + std::to_string(kMaxI2pHttpHeadBytes) + " bytes");
+        }
     }
     const std::string headBlock = raw.substr(0, headerEnd);
     I2pHttpHead head;
@@ -78,14 +87,25 @@ struct I2pHttpResponse {
     std::map<std::string, std::string> headers;  // keys lowercased
     std::string body;
 };
+
+// Reads one whole response, refusing a body over `maxBodyBytes` - by what it
+// declares, before anything is read, and by what it actually sends. The bound has
+// no default because what an answer may weigh is a property of what was asked.
 template <class Stream>
-I2pHttpResponse readI2pHttpResponse(Stream& stream)
+I2pHttpResponse readI2pHttpResponse(Stream& stream, const std::size_t maxBodyBytes)
 {
+    const auto refuseOversized = [maxBodyBytes](const std::size_t got) {
+        if (got > maxBodyBytes) {
+            throw std::runtime_error("i2p response body is over " + std::to_string(maxBodyBytes)
+                + " bytes");
+        }
+    };
     I2pHttpHead head = readI2pHttpHead(stream);
     I2pHttpResponse response;
     response.status = head.status;
     response.headers = std::move(head.headers);
     response.body = std::move(head.leftover);
+    refuseOversized(response.body.size());
     // Content-Length decides where the body ends. Reading to EOF instead would
     // mean waiting for the other side to close - and a relay that waits for US to
     // close first (so the last write is not truncated) turns that into a stall
@@ -100,6 +120,9 @@ I2pHttpResponse readI2pHttpResponse(Stream& stream)
             framed = false;  // unparseable length: fall back to reading to EOF
         }
     }
+    if (framed) {
+        refuseOversized(expected);
+    }
     std::array<char, 65536> buffer{};
     while (!framed || response.body.size() < expected) {
         const std::size_t got = stream.readSome(buffer.data(), buffer.size());
@@ -107,6 +130,7 @@ I2pHttpResponse readI2pHttpResponse(Stream& stream)
             break;  // EOF: all there is, framed or not
         }
         response.body.append(buffer.data(), got);
+        refuseOversized(response.body.size());
     }
     if (framed && response.body.size() > expected) {
         response.body.resize(expected);  // a keep-alive relay may hand over more

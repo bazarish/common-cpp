@@ -47,6 +47,10 @@ FdStream streamFrom(const std::string& data)
     return FdStream(fds[0]);
 }
 
+// Above anything the other cases present, so the bound is only ever the subject
+// of the cases that are about it.
+constexpr std::size_t kSomeBodyBound = 64 * 1024;
+
 }  // namespace
 
 int main()
@@ -92,7 +96,7 @@ int main()
     {
         FdStream stream
             = streamFrom("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
-        const I2pHttpResponse response = readI2pHttpResponse(stream);
+        const I2pHttpResponse response = readI2pHttpResponse(stream, kSomeBodyBound);
         CHECK(response.status == 200);
         CHECK(response.headers.at("content-length") == "5");
         CHECK(response.body == "hello");
@@ -125,9 +129,34 @@ int main()
     // A head with no body (an empty 200).
     {
         FdStream stream = streamFrom("HTTP/1.1 200 OK\r\n\r\n");
-        const I2pHttpResponse response = readI2pHttpResponse(stream);
+        const I2pHttpResponse response = readI2pHttpResponse(stream, kSomeBodyBound);
         CHECK(response.status == 200);
         CHECK(response.body.empty());
+    }
+
+    // A body over the caller's bound is refused, by what it says it weighs...
+    {
+        FdStream stream = streamFrom("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n");
+        CHECK_THROWS(readI2pHttpResponse(stream, 10));
+    }
+
+    // ...and by what it actually sends, when it says nothing.
+    {
+        FdStream stream = streamFrom("HTTP/1.1 200 OK\r\n\r\n0123456789abc");
+        CHECK_THROWS(readI2pHttpResponse(stream, 10));
+    }
+
+    // A head over the bound is refused, and says so rather than as a dead route.
+    {
+        FdStream stream
+            = streamFrom("HTTP/1.1 200 OK\r\nX: " + std::string(kMaxI2pHttpHeadBytes, 'y'));
+        std::string said;
+        try {
+            (void)readI2pHttpHead(stream);
+        } catch (const std::exception& error) {
+            said = error.what();
+        }
+        CHECK(said.find("head is over") != std::string::npos);
     }
 
     std::printf("TestI2pHttp: all checks passed\n");

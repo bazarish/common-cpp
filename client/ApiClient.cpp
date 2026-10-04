@@ -10,6 +10,7 @@
 #include <bazarish/Log.hpp>
 #include <bazarish/ServerDescriptor.hpp>
 #include <bazarish/I2pHttp.hpp>
+#include <bazarish/Limits.hpp>
 
 #include <bazarish/HttpClient.hpp>
 
@@ -418,7 +419,8 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
             if (bodyLen > 0 && writeBody) {
                 writeBody(*i2pStream_);
             }
-            const bazarish::I2pHttpResponse parsed = readI2pHttpResponse(*i2pStream_);
+            const bazarish::I2pHttpResponse parsed
+                = readI2pHttpResponse(*i2pStream_, bazarish::kMaxFacadeAnswerBytes);
             if (const auto it = parsed.headers.find("connection");
                 it != parsed.headers.end() && it->second.find("close") != std::string::npos) {
                 i2pStream_.reset();  // the server is done with this one

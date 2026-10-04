@@ -102,4 +102,18 @@ inline constexpr std::size_t kMaxPassesPerMailbox = 4096;
 // server buy memory by the request.
 inline constexpr std::size_t kMaxRequestBodyBytes = 2 * 1024 * 1024;
 
+// The same in the other direction: what a client reads off a stream in one piece.
+// A listener bounds what it is sent; nothing bounds what a far side sends back, so
+// each leg names the largest answer it has a use for. A peer stays free to say
+// nothing, which it always is, but not to decide how much the reader holds.
+//
+// The name registry: a resolve measured at 37894 bytes (three hybrid-signed
+// documents - the record, the delegation and the owner's certificate), and an
+// alias.status answer adds a short line per name an account holds.
+inline constexpr std::size_t kMaxResolverAnswerBytes = 256 * 1024;
+// The account's own server: the heaviest single answer is one mailbox item (a
+// message sealed and padded, measured at 704577 bytes), the heaviest list the
+// pending index, one short line per item a mailbox holds.
+inline constexpr std::size_t kMaxFacadeAnswerBytes = 16 * 1024 * 1024;
+
 }  // namespace bazarish

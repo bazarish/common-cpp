@@ -5,6 +5,7 @@
 
 #include <bazarish/FederationFrame.hpp>
 #include <bazarish/I2pHttp.hpp>
+#include <bazarish/Limits.hpp>
 #include <bazarish/Log.hpp>
 
 #include <nlohmann/json.hpp>
@@ -123,7 +124,7 @@ FetchOutcome askResolver(bazarish::i2p::Stream& stream, const std::string& host,
     if (!payload.empty()) {
         stream.writeAll(payload.data(), payload.size());
     }
-    const I2pHttpResponse answer = readI2pHttpResponse(stream);
+    const I2pHttpResponse answer = readI2pHttpResponse(stream, kMaxResolverAnswerBytes);
 
     FetchOutcome outcome;
     outcome.ok = answer.status == kHttpOk;
