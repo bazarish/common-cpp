@@ -144,6 +144,11 @@ AliasStatus verifyAliasStatus(const Bytes& statusDer, const Bytes& delegationDer
     if (status.issuedAt > now + kClockSkewSeconds) {
         throw std::runtime_error("alias status: answer is dated in the future");
     }
+    // The window is the protocol's, not the answer's to name: one claiming a
+    // longer life is one a device could keep handing round indefinitely.
+    if (status.notAfter > status.issuedAt + kAliasStatusValiditySeconds) {
+        throw std::runtime_error("alias status: answer claims a longer life than the protocol's");
+    }
     if (now > status.notAfter) {
         throw std::runtime_error("alias status: answer has expired");
     }

@@ -131,12 +131,24 @@ int main()
             signAliasStatus(status, impostor), delegationDer, root.fingerprint(), now);
     }));
 
-    // An expired delegation stops vouching even for a fresh answer.
+    // The window an answer may stand in for a fresh one is the protocol's, not the
+    // answer's to name.
     CHECK(throws([&] {
+        AliasStatus roomy = status;
+        roomy.notAfter = now + kAliasStatusValiditySeconds + 1;
+        (void)verifyAliasStatus(
+            signAliasStatus(roomy, delegated), delegationDer, root.fingerprint(), now);
+    }));
+
+    // An expired delegation stops vouching even for an answer fresh by its own
+    // stamps - so what is refused here is the delegation and nothing else.
+    CHECK(throws([&] {
+        const std::int64_t afterDelegation = now + week + 1;
         AliasStatus later = status;
-        later.notAfter = now + week + 3600;
+        later.issuedAt = afterDelegation;
+        later.notAfter = afterDelegation + 3600;
         (void)verifyAliasStatus(signAliasStatus(later, delegated), delegationDer,
-            root.fingerprint(), now + week + 1);
+            root.fingerprint(), afterDelegation);
     }));
 
     std::printf("TestAliasMaintenance: all checks passed\n");

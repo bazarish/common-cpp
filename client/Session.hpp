@@ -1486,6 +1486,9 @@ private:
     // its own, because both halves live in the profile.
     std::vector<AliasHolding> aliasNames_;
     std::int64_t aliasCheckAfter_ = 0;
+    // When the answer now in force was signed, so a relayed one can be placed
+    // against it.
+    std::int64_t aliasStatusAt_ = 0;
     bool aliasDepositCovers_ = true;
     std::string aliasPushedDest_;
     std::string aliasPushedView_;

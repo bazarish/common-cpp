@@ -597,6 +597,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
                 held.value("bindingWanted", false), held.value("bound", false)});
     }
     session.aliasCheckAfter_ = meta.value("aliasCheckAfter", std::int64_t{0});
+    session.aliasStatusAt_ = meta.value("aliasStatusAt", std::int64_t{0});
     session.aliasDepositCovers_ = meta.value("aliasDepositCovers", true);
     session.aliasPushedDest_ = meta.value("aliasPushedDest", std::string{});
     session.aliasPushedView_ = meta.value("aliasPushedView", std::string{});
@@ -811,6 +812,7 @@ void Session::persistMeta() const
         {"contactsAskedBy", contactsAskedBy_},
         {"aliasNames", aliasNamesToJson()},
         {"aliasCheckAfter", aliasCheckAfter_},
+        {"aliasStatusAt", aliasStatusAt_},
         {"aliasDepositCovers", aliasDepositCovers_},
         {"aliasPushedDest", aliasPushedDest_},
         {"aliasPushedView", aliasPushedView_},
@@ -3622,7 +3624,11 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                             = verifyAliasStatus(fromBase64(body.at("status").get<std::string>()),
                                 fromBase64(body.at("delegation").get<std::string>()),
                                 resolverCoordinate_.rootFingerprint, nowSeconds());
-                        if (status.owner == fingerprint()) {
+                        // Ordered by the stamp the registry signed, not by which
+                        // copy arrived last: a device holding an older answer
+                        // would otherwise put this account's names back.
+                        if (status.owner == fingerprint()
+                            && status.issuedAt >= aliasStatusAt_) {
                             adoptAliasStatus(status);
                         }
                     } catch (const std::exception& error) {
@@ -4877,6 +4883,7 @@ void Session::adoptAliasStatus(const AliasStatus& status)
             entry.alias, entry.notAfter, entry.autoRenew, entry.bindingWanted, entry.bound});
     }
     aliasDepositCovers_ = status.depositCoversRenewals;
+    aliasStatusAt_ = status.issuedAt;
     scheduleNextAliasCheck(status.issuedAt);
     persistMeta();
 }
