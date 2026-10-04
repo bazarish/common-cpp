@@ -82,9 +82,9 @@ struct ResolveRecord {
 nlohmann::json toJson(const ResolveRecord& record);
 ResolveRecord resolveRecordFromJson(const nlohmann::json& body);
 
-// The descriptor as a JSON object { fp, srv, srv_key } - for embedding in a
-// record, distinct from the bazarish://invite URI form (Descriptor.hpp). The key
-// is standard base64 (a JSON binary field), not base64url (a URI field).
+// The descriptor as a JSON object { fp, dest, view } - for embedding in a record,
+// distinct from the bazarish://invite URI form (Descriptor.hpp), where the same
+// three fields are URI parameters.
 nlohmann::json descriptorToJson(const Descriptor& descriptor);
 Descriptor descriptorFromJson(const nlohmann::json& body);
 
