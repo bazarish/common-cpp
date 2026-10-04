@@ -2139,33 +2139,6 @@ void Session::setResolverCoordinate(ResolverCoordinate coordinate)
     resolverCoordinate_ = std::move(coordinate);
 }
 
-std::string Session::aliasBuyArtifacts(const std::string& alias) const
-{
-    // The artifacts the central resolver's portal needs to claim <alias> for this
-    // identity: the normalized name, this user's serving destination + sealing
-    // key (its descriptor, mirroring inviteUri), and a user-signed alias
-    // certificate binding the name to the identity. The portal buy is driven by
-    // POSTing this JSON to /portal/buy - the signing key never leaves the client,
-    // the resolver only verifies the signature against the descriptor fingerprint.
-    if (myDest_.empty() || myServingKeyB64_.empty()) {
-        // The card can only carry routing once the server operates this account's
-        // destination, which happens when the delegation is published - not at
-        // subscribe time. Name that, so the caller can offer the fix.
-        throw std::runtime_error(
-            "your destination is not published yet, so an invite would not be reachable");
-    }
-    const std::string normalized = normalizeAlias(alias);
-    const Bytes aliasCert
-        = AliasCertificate::issue(client_->identity(), normalized, nowSeconds());
-    const nlohmann::json artifacts = {
-        {"alias", normalized},
-        {"srv", myDest_},
-        {"srvKey", myServingKeyB64_},
-        {"aliasCert", toBase64(aliasCert)},
-    };
-    return artifacts.dump();
-}
-
 std::string Session::addByAlias(const std::string& alias, const std::string& text)
 {
     if (!resolverCoordinate_.configured()) {

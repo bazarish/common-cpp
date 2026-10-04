@@ -740,13 +740,6 @@ public:
     // way to point a session at another resolver, and what the tests use.
     void setResolverCoordinate(ResolverCoordinate coordinate);
 
-    // Emits, as JSON, the artifacts the central resolver's portal needs to claim
-    // <alias> for this identity: the normalized name, this user's serving
-    // destination + sealing key, and a user-signed alias certificate. The buy is
-    // driven by POSTing this to the resolver's /portal/buy; the signing key never
-    // leaves the client. Throws if the user has no serving destination yet.
-    std::string aliasBuyArtifacts(const std::string& alias) const;
-
     // Sends an E2E-encrypted message to an established contact, presenting the
     // pass they issued to us. Throws if the contact is unknown or has none.
     // When the peer holds no pass of ours yet (the first reply), ours is

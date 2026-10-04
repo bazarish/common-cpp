@@ -684,10 +684,6 @@ int main()
         CHECK(alice.aliasNames().size() == 1);
         CHECK(alice.aliasNames().front().alias == "alice");
 
-        // The sigil is how an alias is written wherever a person reads one, so
-        // it is taken where one is typed and never travels with the name.
-        CHECK(nlohmann::json::parse(alice.aliasBuyArtifacts("!Alice")).at("alias") == "alice");
-
         // Bought is not bound. Knowing of an alias whose owner has not asked it
         // to point here, the client publishes nothing at all - deciding that on
         // the owner's behalf is exactly what this flag exists to prevent.
