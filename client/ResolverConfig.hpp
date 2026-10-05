@@ -8,7 +8,7 @@
 
 namespace bazarish::client {
 
-// The coordinate of the single central alias resolver (api/AliasResolver.md):
+// The coordinate of the single central alias resolver (api/FederatedResolve.md):
 // the hardcoded root identity fingerprint that anchors every signed record and
 // the resolver's .b32.i2p destination. Exactly two values, because the resolver
 // signs and never encrypts: there is no third key to ship, and nothing here goes

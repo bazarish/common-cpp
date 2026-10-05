@@ -132,7 +132,7 @@ struct ServerCard {
 // delegated identity to sign on its behalf until notAfter. The central alias
 // resolver signs its resolve records with a delegated key and ships this cert;
 // clients verify the chain record -> delegated -> root against a hardcoded root
-// fingerprint (api/AliasResolver.md, api/FederatedResolve.md). The root key stays
+// fingerprint (api/FederatedResolve.md). The root key stays
 // offline; only the delegated key lives on the production box, so a prod
 // compromise is bounded to the delegation window.
 struct DelegationCertificate {

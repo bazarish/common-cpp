@@ -71,7 +71,7 @@ nlohmann::json toJson(const ResolveResponse& response);
 ResolveResponse resolveResponseFromJson(const nlohmann::json& body);
 
 // The resolver's record body, signed by its delegated key (see the delegation
-// chain in api/AliasResolver.md). Self-verifying and cacheable up to notAfter.
+// chain in api/FederatedResolve.md). Self-verifying and cacheable up to notAfter.
 struct ResolveRecord {
     std::string alias;
     Descriptor descriptor;
