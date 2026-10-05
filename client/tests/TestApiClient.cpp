@@ -139,7 +139,6 @@ int main()
         CHECK(threw);
     }
 
-    // A card that names another server is not this server's card.
     {
         ServerEndpoint impostor = endpoint;
         impostor.serverFingerprint = Identity::generate().fingerprint();

@@ -28,7 +28,6 @@ void signAuthorship(nlohmann::json& content, const Identity& identity, bool with
 
 IdentityKeys keysIn(const nlohmann::json& content);
 
-// The fingerprint whose keys signed this content, taken as received (block included).
 std::string authorOf(const nlohmann::json& content, const IdentityKeys& known = {});
 
 }  // namespace bazarish::client

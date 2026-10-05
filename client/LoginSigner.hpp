@@ -8,7 +8,6 @@
 
 namespace bazarish::client {
 
-// Signs sign-in-with-key challenges with one account's identity.
 std::string signLoginChallenge(const Identity& identity, const std::string& challenge);
 
 class LoginSigner {

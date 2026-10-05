@@ -103,7 +103,6 @@ struct Mock {
     std::map<std::string, std::string> pendingView;
     std::map<std::string, std::string> aliasOwner;
     std::map<std::string, Descriptor> aliasDescriptor;
-    // Which aliases their owner has asked to point at their client.
     std::set<std::string> aliasBindingWanted;
     int resolverStatusCalls = 0;
     int resolverUpdateCalls = 0;

@@ -13,7 +13,6 @@ namespace bazarish::client {
 
 class AccountDb {
 public:
-    // Opens (creating it when absent) the database at `file`.
     AccountDb(const std::filesystem::path& file, const std::string& passphrase);
     ~AccountDb();
 

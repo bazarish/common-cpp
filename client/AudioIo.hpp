@@ -10,7 +10,6 @@
 
 namespace bazarish {
 
-// Microphone abstraction: the call engine pulls one 20 ms PCM frame at a time.
 class AudioSource {
 public:
     virtual ~AudioSource() = default;

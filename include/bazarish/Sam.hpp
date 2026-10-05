@@ -13,26 +13,11 @@
 
 namespace bazarish::sam {
 
-// SAM v3 client for an I2P router running outside this process. The alternative
-// to the embedded engine: one router serves any number of processes, which is
-// what makes a host running many accounts affordable.
-//
-// This layer speaks the protocol and nothing else - it holds no policy, and the
-// destination it opens is described entirely by the caller. Nothing here needs
-// libi2pd; an address is derived from key material with the same code the rest
-// of the project uses.
-//
-// The router is handed the private keys of every destination it operates, so
-// this only ever talks to a loopback address, and refuses anything else.
-
 // Where i2pd listens unless its configuration says otherwise.
 inline constexpr const char* kDefaultHost = "127.0.0.1";
 inline constexpr std::uint16_t kDefaultControlPort = 7656;
-// With sam.portudp left at 0, i2pd puts the datagram port one below the control
-// port rather than at a fixed number.
 inline constexpr std::uint16_t kDatagramPortBelowControl = 1;
 
-// The router this process talks to.
 struct RouterAddress {
     std::string host = kDefaultHost;
     std::uint16_t controlPort = kDefaultControlPort;
@@ -42,30 +27,18 @@ struct RouterAddress {
     std::uint16_t resolvedDatagramPort() const;
 };
 
-// The result codes this router emits. i2pd declares more than it ever sends -
-// TIMEOUT, PEER_NOT_FOUND and KEY_NOT_FOUND never reach the wire - so they are
-// absent here rather than sitting unreachable.
 enum class Result {
     eOk,
-    // The session id is unknown to the router: the session died under us.
     eInvalidId,
     eDuplicatedId,
-    // Unparseable key material, an expired offline signature, or a destination
-    // the router could not read. Never worth retrying with the same input.
     eInvalidKey,
-    // No route to the peer, including a LeaseSet that could not be found.
     eCantReachPeer,
     eI2pError,
-    // A reply this client does not know. Kept apart from eI2pError so a router
-    // that grows a new code is not silently read as an error we understand.
     eUnknown,
 };
 
 std::string_view toString(Result result);
 
-// Every failure from this layer. Carries the router's own result code, because
-// what the caller does next depends on it: an unreachable peer is worth another
-// attempt, a rejected key never is.
 class Error : public std::runtime_error {
 public:
     Error(Result result, const std::string& message);
@@ -75,21 +48,14 @@ private:
     Result result_;
 };
 
-// What a session is for. A session carries exactly one of these, so a
-// destination that both streams and sends datagrams needs two sessions over the
-// same keys - which the router allows, and which share one destination.
 enum class Style { eStream, eDatagram, eRaw };
 
-// The destination a session operates.
 struct SessionConfig {
-    // The private keys as I2P base64. Empty asks the router for a transient
-    // destination, which is gone when the session ends.
+    // The private keys as I2P base64.
     std::string privateKeys;
     Style style = Style::eStream;
     i2p::Privacy privacy = i2p::Privacy::eMax;
     int tunnelQuantity = i2p::kDefaultTunnelQuantity;
-    // Whether the LeaseSet is published. A destination that only dials out stays
-    // unpublished and never appears in the netDb.
     bool published = true;
 };
 
@@ -99,21 +65,12 @@ struct Destination {
     std::string privateBase64;
 };
 
-// The handshake and nothing else, to learn whether a router is there at all.
-// Returns the negotiated SAM version; throws when the router does not answer.
 std::string probe(const RouterAddress& router);
 
-// DEST GENERATE on a connection of its own. Ed25519 always: the router's own
-// default is DSA-SHA1, and an unreadable signature type degrades to it silently.
 Destination generateDestination(const RouterAddress& router);
 
-// A socket, as this layer holds one. An int everywhere but Windows, where a
-// socket is a handle; intptr_t takes both without dragging the platform's
-// headers into this one.
 using Socket = std::intptr_t;
 
-// One I2P stream, taken over from the SAM connection that opened it. Blocking
-// byte I/O over the socket the router forwards.
 class Stream {
 public:
     explicit Stream(Socket socket);
@@ -122,18 +79,10 @@ public:
     Stream(const Stream&) = delete;
     Stream& operator=(const Stream&) = delete;
 
-    // How long a read may wait for data before it throws, in seconds. Zero, the
-    // default, waits for as long as the socket is open.
     void setReadTimeout(int seconds);
-    // Reads up to size bytes; returns the count, 0 on EOF.
     std::size_t readSome(void* buffer, std::size_t size);
-    // Reads exactly size bytes; throws on a short read.
     void readExact(void* buffer, std::size_t size);
     void writeAll(const void* data, std::size_t size);
-    // Bytes still queued in the local socket to the router. It says nothing
-    // about what the router has yet to put on the network - over SAM that queue
-    // is not observable - so it is a floor under what is outstanding, never the
-    // whole of it. Windows offers no way to ask at all, and answers zero.
     std::size_t pendingBytes() const;
     void close();
 
@@ -142,15 +91,6 @@ private:
     int readTimeoutSeconds_ = 0;
 };
 
-// A SAM session: one control connection, and the destination it operates for as
-// long as that connection lives. Creating one builds tunnels, which the router
-// waits for before answering, so construction blocks for as long as that takes
-// (a cold router: tens of seconds) or until the timeout.
-//
-// The router drops a session when its control connection closes, so the session
-// watches that connection and rebuilds itself from the same keys if the router
-// restarts. The address does not change; a stream open at that moment does not
-// survive.
 class Session {
 public:
     Session(RouterAddress router, SessionConfig config, std::chrono::seconds readyTimeout);
@@ -164,27 +104,19 @@ public:
     const std::string& privateKeys() const;
     std::string routingHost() const;
 
-    // True while the router holds this session. False between the router going
-    // away and the rebuild succeeding.
     bool alive() const;
 
     // Opens a stream to a ".b32.i2p" host (b32 or b33) or a base64 destination.
     std::unique_ptr<Stream> connect(
         const std::string& destination, std::chrono::seconds timeout);
 
-    // Starts accepting: the router connects to a local listener of ours for each
-    // incoming stream. Idempotent.
     void listen();
-    // Waits for an incoming stream and fills peerDestination with the caller's
-    // base64 destination. Returns nullptr on timeout.
+    // Waits for an incoming stream and fills peerDestination with the caller's base64 destination.
     std::unique_ptr<Stream> accept(
         std::string& peerDestination, std::chrono::milliseconds timeout);
 
-    // One datagram to a host or base64 destination. Best-effort, like UDP.
+    // One datagram to a host or base64 destination.
     void sendDatagram(const std::string& destination, const void* data, std::size_t size);
-    // One datagram, or an empty payload on timeout. peerDestination is filled
-    // for a repliable session and left alone for a raw one, which carries no
-    // sender.
     std::vector<std::uint8_t> receiveDatagram(
         std::string* peerDestination, std::chrono::milliseconds timeout);
 

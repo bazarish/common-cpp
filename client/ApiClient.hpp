@@ -31,7 +31,6 @@ struct Facade {
     bool tls = false;
     std::string host;
     int port = 0;
-    // Secret URI prefix the facade strips, e.g.
     std::string basePath;
 };
 

@@ -14,8 +14,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// How far in a nested object is indented from its parent when this code has to
-// write a key the file did not have.
 constexpr std::size_t kIndentWidth = 2;
 
 std::string readWhole(const fs::path& path)
@@ -29,8 +27,6 @@ std::string readWhole(const fs::path& path)
     return buffer.str();
 }
 
-// The file is replaced only once it is whole: a crash mid-write must not leave a
-// daemon without a config.
 void writeWhole(const fs::path& path, const std::string& text)
 {
     const fs::path temporary = path.string() + ".tmp";
@@ -47,7 +43,6 @@ void writeWhole(const fs::path& path, const std::string& text)
     fs::rename(temporary, path);
 }
 
-// Everything between tokens: whitespace and the comments the operator wrote.
 std::size_t skipGaps(const std::string& text, std::size_t at)
 {
     while (at < text.size()) {
@@ -71,8 +66,6 @@ std::size_t skipGaps(const std::string& text, std::size_t at)
     return at;
 }
 
-// The index just past a string token that starts at `at` (which must be its
-// opening quote), escapes included.
 std::size_t endOfString(const std::string& text, std::size_t at)
 {
     for (++at; at < text.size(); ++at) {
@@ -87,7 +80,6 @@ std::size_t endOfString(const std::string& text, std::size_t at)
     throw std::runtime_error("config ends inside a string");
 }
 
-// The index just past the value that starts at `at`, whatever kind it is.
 std::size_t endOfValue(const std::string& text, std::size_t at)
 {
     at = skipGaps(text, at);
@@ -121,7 +113,6 @@ std::size_t endOfValue(const std::string& text, std::size_t at)
         }
         throw std::runtime_error("config ends inside a value");
     }
-    // A number, true, false or null: it runs until the structure resumes.
     while (at < text.size() && text[at] != ',' && text[at] != '}' && text[at] != ']'
         && std::isspace(static_cast<unsigned char>(text[at])) == 0) {
         ++at;
@@ -134,8 +125,6 @@ struct Span {
     std::size_t to = 0;
 };
 
-// Where an object's key holds its value, or nothing when the object has no such
-// key. `object` is the index of the opening brace.
 std::optional<Span> valueOfKey(
     const std::string& text, const std::size_t object, const std::string& key)
 {
@@ -164,13 +153,10 @@ std::optional<Span> valueOfKey(
     return std::nullopt;
 }
 
-// The indentation of the first key of an object, so a key written into it lines
-// up with the ones already there.
 std::string indentOf(const std::string& text, const std::size_t object)
 {
     const std::size_t first = skipGaps(text, object + 1);
     if (first >= text.size() || text[first] == '}') {
-        // An empty object: indent one step past the line the brace sits on.
         const std::size_t lineStart = text.rfind('\n', object);
         std::string parent;
         for (std::size_t at = lineStart == std::string::npos ? 0 : lineStart + 1;
@@ -191,8 +177,6 @@ std::string indentOf(const std::string& text, const std::size_t object)
     return indent;
 }
 
-// Writes a key the object did not have, at its top, in the shape the rest of the
-// file is written in.
 std::string withNewKey(const std::string& text, const std::size_t object, const std::string& key,
     const nlohmann::json& value)
 {
@@ -225,8 +209,6 @@ std::string configWithValue(
     }
     std::string patched = text;
     std::size_t object = rootObject(patched);
-    // Walk down to the object that holds the last key, writing the objects the
-    // file does not have yet.
     for (std::size_t level = 0; level + 1 < keys.size(); ++level) {
         std::optional<Span> span = valueOfKey(patched, object, keys[level]);
         if (!span.has_value()) {
@@ -364,7 +346,6 @@ ConfigFile::ConfigFile(fs::path path)
 nlohmann::json ConfigFile::read() const
 {
     const std::string text = readWhole(path_);
-    // Comments are the operator's notes to themselves; a daemon reads past them.
     return nlohmann::json::parse(text, nullptr, true, true);
 }
 

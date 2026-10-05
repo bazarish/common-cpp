@@ -764,7 +764,6 @@ private:
     bool acceptCalls_ = true;
     bool sendReceipts_ = true;
     std::string passphrase_;
-    // This account's own I2P destination, empty until it is minted (subscribing mints one).
     struct EchoQueue {
         std::mutex mutex;
         std::vector<std::pair<std::string, nlohmann::json>> pending;

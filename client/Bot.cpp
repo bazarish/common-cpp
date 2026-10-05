@@ -136,7 +136,6 @@ std::size_t Bot::poll()
     const std::vector<IncomingMessage> updates = session_.sync();
     for (const IncomingMessage& update : updates) {
         dispatch(update);
-        // Acknowledge receipt so the sender's tick advances to delivered (the "green" state).
         if (warrantsReceipt(update.contentType) && !update.e2eId.empty()) {
             try {
                 session_.sendReceipt(update.fromFingerprint, update.e2eId);
@@ -154,7 +153,6 @@ void Bot::run(const int intervalMs)
         try {
             poll();
         } catch (const std::exception& error) {
-            // Transient (server momentarily unreachable, a handler throwing): skip this round and try again.
             bazarish::log::warn("bot: poll failed: {}", error.what());
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));

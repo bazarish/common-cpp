@@ -16,7 +16,6 @@
 
 namespace bazarish::client {
 
-// The process-wide embedded I2P router.
 bazarish::i2p::Router& sharedI2pRouter(const std::filesystem::path& dataDir);
 
 bazarish::i2p::Router* sharedI2pRouterIfRunning();

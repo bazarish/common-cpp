@@ -23,7 +23,6 @@ struct PreparedFile {
     std::uint64_t size = 0;
 };
 
-// Encrypts path into a temp ciphertext beside it.
 PreparedFile prepareFile(
     const std::filesystem::path& path, const std::filesystem::path& ciphertextPath);
 

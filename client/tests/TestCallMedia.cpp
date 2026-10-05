@@ -26,7 +26,6 @@ using namespace bazarish;
 
 namespace {
 
-// Audio devices that record which thread opened and closed them.
 class ThreadWatchingSource : public SineAudioSource {
 public:
     ThreadWatchingSource()

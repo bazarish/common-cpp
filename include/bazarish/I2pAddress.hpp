@@ -8,43 +8,16 @@
 
 namespace bazarish {
 
-// Derives the shareable .b32.i2p host for a destination published as an
-// ENCRYPTED LeaseSet2 - the blinded "b33" address (I2P proposals 123/149).
-//
-// This is NOT base32(sha256(destination)) (the standard-LeaseSet form): it is
-// base32 of {flags, sigType, blindedSigType, signingPublicKey} with a CRC-32
-// over the signing key XORed into the three-byte prefix, matching i2pd's
-// BlindedPublicKey::ToB33. An encrypted-LeaseSet destination is reachable only
-// via this b33; a connect to its raw destination fails (no plain leaseset is
-// published), so this is what callers route to.
-//
-// The input is the destination in I2P-base64 (the I2P-base64 alphabet). Only
-// Ed25519 (signature type 7) destinations are supported. Throws on a malformed or
-// unsupported destination.
 std::string encryptedLeaseSetHost(const std::string& i2pBase64Destination);
 
-// True iff host is a .b32.i2p address: it ends in ".b32.i2p" and the label is a
-// non-empty lowercase RFC-4648 base32 string. The label LENGTH is not constrained
-// - a blinded b33 and a plain b32 (and other signature types) legitimately differ
-// in length, and a peer may still name either. Short addressbook names (e.g.
-// "name.i2p") and raw base64 destinations are NOT valid. Project-wide invariant:
-// every routing/connection target is a .b32.i2p host - no poisonable addressbook
-// names, no raw destinations.
 bool isB32I2pHost(const std::string& host);
 
 // I2P's base64 alphabet is the standard one with '+' as '-' and '/' as '~'.
-// Key material and destinations travel in it; everything else here does not.
 std::string i2pToStandardBase64(const std::string& text);
 std::string standardToI2pBase64(const std::string& text);
 
-// The length of the public identity (KeysAndCert) that begins a destination or
-// a private-keys blob: the two fixed key fields plus the certificate. Reading it
-// is what lets a destination be derived from its own key material with no I2P
-// engine present. Throws on a buffer too short to hold one.
 std::size_t i2pIdentityLength(const Bytes& buffer);
 
-// Throws std::invalid_argument unless isB32I2pHost(host). Call at every point an
-// I2P address enters from outside (contact card, delivery envelope, config).
 void validateB32I2pHost(const std::string& host);
 
 }  // namespace bazarish

@@ -8,10 +8,6 @@
 #include <type_traits>
 #include <utility>
 
-// libstdc++ 13 is the first with <format>; Debian 12 ships 12, where the same
-// lines have to be assembled by hand. Everything this project logs uses plain
-// "{}" placeholders, so that is all the fallback fills in - and only the
-// compile-time checking of the format against its arguments is given up.
 #if __has_include(<format>)
 #    include <format>
 #    define BAZARISH_STD_FORMAT 1
@@ -23,9 +19,6 @@
 
 namespace bazarish::log {
 
-// Severity levels, ordered from most to least severe. The numeric order is
-// load-bearing: a level passes the threshold when it is at least as severe as
-// the configured minimum.
 enum class Level {
     eError,
     eWarn,
@@ -33,30 +26,17 @@ enum class Level {
     eDebug,
 };
 
-// Set once at startup, before any worker threads start. Prefixes every line
-// emitted by this process (e.g. "server-core").
 void setComponent(std::string_view component);
 
-// Process-wide minimum severity. Lines below it are dropped. Default is eInfo.
 void setLevel(Level level);
 Level level();
 
-// Parses "error" | "warn" | "info" | "debug"; nullopt for anything else.
 std::optional<Level> levelFromString(std::string_view text);
 
-// True when a line at this level passes the current threshold.
 bool enabled(Level level);
 
-// Emits one fully-formatted line to stderr as a single write (thread-safe, no
-// interleaving). Under systemd ($JOURNAL_STREAM set) the line carries a "<N>"
-// syslog-priority prefix so journald records the correct severity; otherwise
-// it carries a human-readable level tag. Most call sites use the level helpers
-// below instead of calling this directly.
 void emit(Level level, std::string_view message);
 
-// Shortens an identifier (fingerprint, destination) for debug diagnostics:
-// keeps a short prefix and elides the rest. This is NOT a tool to make message
-// content safe to log - content must never be logged at all.
 std::string redact(std::string_view identifier);
 
 #if BAZARISH_STD_FORMAT
@@ -74,7 +54,6 @@ using FormatString = std::string_view;
 
 namespace detail {
 
-// One argument as text, the way std::format would write it.
 template <typename T>
 std::string asText(const T& value)
 {
@@ -89,8 +68,6 @@ std::string asText(const T& value)
     }
 }
 
-// Replaces each "{}" with the next argument. "{{" and "}}" are the escapes
-// std::format uses, and are honoured here for the same reason.
 std::string fillBraces(std::string_view fmt, const std::vector<std::string>& args);
 
 }  // namespace detail
@@ -102,9 +79,6 @@ std::string formatLine(std::string_view fmt, Args&&... args)
 }
 #endif
 
-// Type-safe, level-gated entry points. Where the standard library has it,
-// std::format_string checks the format against its arguments at compile time;
-// formatting is skipped entirely when the level is suppressed.
 template <typename... Args>
 void error(FormatString<Args...> fmt, Args&&... args)
 {
@@ -137,10 +111,6 @@ void debug(FormatString<Args...> fmt, Args&&... args)
     }
 }
 
-// Says how long a stretch of work took, but only when it took long enough to
-// matter. What it is for: a thread that others queue behind, where the question
-// is never "how fast is this" but "which of these is the one being waited out".
-// Silent below the bound it is given, so it can be left in place.
 class Slow {
 public:
     Slow(std::string what, const std::chrono::milliseconds report)

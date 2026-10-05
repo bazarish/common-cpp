@@ -24,8 +24,6 @@ LoginConsumer panel()
     return LoginConsumer{"Bazarish admin panel", "http://127.0.0.1:8460", "Administrator"};
 }
 
-// A challenge issued here, signed by the user, verifies once and recovers the
-// fingerprint; replaying the same challenge is rejected (single use).
 void testHappyPathAndReplay()
 {
     const Identity identity = Identity::generate();
@@ -35,18 +33,15 @@ void testHappyPathAndReplay()
     const std::string challenge = portal.issue(t);
     const std::string blob = signLoginBlob(identity, t, challenge);
 
-    // What the portal checks is what the client would have shown the user.
     const LoginConsumer named = readLoginConsumer(challenge);
     CHECK(named.name == panel().name);
     CHECK(named.place == panel().place);
     CHECK(named.role == panel().role);
 
     CHECK(portal.verify(challenge, blob, t) == identity.fingerprint());
-    CHECK_THROWS(portal.verify(challenge, blob, t));  // replay
+    CHECK_THROWS(portal.verify(challenge, blob, t));
 }
 
-// Forged / mis-targeted / stale challenges and bad signatures are rejected; a
-// failed signature attempt does not burn an otherwise-valid challenge.
 void testRejections()
 {
     const Identity identity = Identity::generate();
@@ -56,16 +51,14 @@ void testRejections()
         LoginChallenge portal("portal-secret", panel());
         const std::string challenge = portal.issue(t);
         const std::string blob = signLoginBlob(identity, t, challenge);
-        CHECK_THROWS(portal.verify(challenge, "not-a-valid-blob", t));  // bad signature
-        CHECK(portal.verify(challenge, blob, t) == identity.fingerprint());  // nonce not burned
+        CHECK_THROWS(portal.verify(challenge, "not-a-valid-blob", t));
+        CHECK(portal.verify(challenge, blob, t) == identity.fingerprint());
     }
     {
         LoginChallenge issuer("portal-secret", panel());
         const std::string challenge = issuer.issue(t);
         const std::string blob = signLoginBlob(identity, t, challenge);
 
-        // A challenge for one consumer does not authenticate against another,
-        // and it is enough for any one of the three fields to differ.
         LoginConsumer other = panel();
         other.name = "Bazarish admin panel - south fleet";
         CHECK_THROWS(LoginChallenge("portal-secret", other).verify(challenge, blob, t));
@@ -76,17 +69,13 @@ void testRejections()
         other.role = "Account owner";
         CHECK_THROWS(LoginChallenge("portal-secret", other).verify(challenge, blob, t));
 
-        // A forged challenge (not HMAC'd by this portal's secret) is rejected.
         LoginChallenge otherSecret("different-secret", panel());
         CHECK_THROWS(otherSecret.verify(challenge, blob, t));
 
-        // Outside the freshness window.
         CHECK_THROWS(issuer.verify(challenge, blob, t + 100000));
     }
 }
 
-// Re-labelling a captured challenge is what the tag is for: whoever shows a user
-// one place cannot hand the signature to another.
 void testRelabelling()
 {
     const Identity identity = Identity::generate();
@@ -103,14 +92,10 @@ void testRelabelling()
     const std::string relabelled = toBase64(Bytes(text.begin(), text.end()));
     const std::string blob = signLoginBlob(identity, t, relabelled);
 
-    // The issuer sees a label that is not its own...
     CHECK_THROWS(issuer.verify(relabelled, blob, t));
-    // ...and a portal wearing the forged label cannot check the tag.
     CHECK_THROWS(LoginChallenge("portal-secret", forged).verify(relabelled, blob, t));
 }
 
-// A portal that will not say who it is has no business asking for a signature,
-// so an incomplete consumer stops it at construction rather than at login.
 void testIncompleteConsumerRefused()
 {
     LoginConsumer nameless = panel();
@@ -124,9 +109,6 @@ void testIncompleteConsumerRefused()
     CHECK_THROWS(LoginChallenge("portal-secret", roleless));
 }
 
-// An operator renames the deployment while it runs: new challenges carry the new
-// words, and one issued under the old ones stops verifying rather than buying a
-// session under a name nobody agreed to.
 void testConsumerChangedWhileRunning()
 {
     const Identity identity = Identity::generate();
@@ -147,16 +129,12 @@ void testConsumerChangedWhileRunning()
 
     CHECK_THROWS(portal.verify(before, blobBefore, t));
 
-    // A consumer the portal could not stand behind never replaces the one it has.
     LoginConsumer roleless = renamed;
     roleless.role.clear();
     CHECK_THROWS(portal.setConsumer(roleless));
     CHECK(portal.consumer() == renamed);
 }
 
-// The mistake every operator makes once: the challenge pasted back into the box
-// that wants the signature. Both are base64 of a JSON object, so the message has
-// to be the one that helps.
 void testChallengePastedAsBlob()
 {
     LoginChallenge portal("portal-secret", panel());

@@ -12,7 +12,6 @@ Bytes encodedContent(const nlohmann::json& content)
     return nlohmann::json::to_cbor(content);
 }
 
-// Keys and signatures ride as CBOR byte strings.
 nlohmann::json asBytes(const Bytes& data)
 {
     return nlohmann::json::binary(data);

@@ -137,7 +137,6 @@ fs::path AccountManager::dataRoot()
 fs::path AccountManager::defaultRoot()
 {
     const fs::path accounts = dataRoot() / "accounts";
-    // Accounts used to be called profiles, and the directory was named after them.
     std::error_code ec;
     const fs::path legacy = dataRoot() / "profiles";
     if (!fs::exists(accounts, ec) && fs::exists(legacy, ec)) {

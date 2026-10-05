@@ -127,11 +127,9 @@ public:
     std::vector<PendingEntry> waitForPending(int waitSeconds);
     Bytes fetchBlob(const std::string& blobId);
     void ack(const std::string& blobId);
-    // Writes a blob into this account's own mailbox for its other devices.
     void submitSelf(const std::string& deliveryId, const Bytes& payload,
         const std::string& kind = {});
 
-    // What this account did on the wire, for the connection log.
     WireLog& wireLog();
     std::shared_ptr<WireLog> wireLogHandle() const;
 

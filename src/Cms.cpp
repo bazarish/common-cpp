@@ -21,10 +21,6 @@ namespace {
 using bazarish::Bytes;
 using bazarish::Key;
 
-// Carrier certificates exist only to transport a public key through CMS
-// structures; validity is set wide so clock skew can never interfere.
-// Counted in days: a century of seconds does not fit the long that the
-// seconds-taking call has for it where long is 32 bits.
 constexpr int kCarrierCertValidityDays = 365 * 100;
 
 struct BioDeleter {
@@ -59,8 +55,6 @@ struct BnDeleter {
 };
 using BnPtr = std::unique_ptr<BIGNUM, BnDeleter>;
 
-// Frees the stack container only (sk_X509_free), not its elements - matching
-// both the get0 borrow (CMS_get0_signers) and the push-of-an-owned-cert case.
 struct StackOfX509Deleter {
     void operator()(STACK_OF(X509)* stack) const
     {
@@ -97,10 +91,6 @@ Bytes bioToBytes(BIO* const bio)
     return Bytes(data, data + size);
 }
 
-// CMS_add0_recipient_password takes ownership of the password buffer and frees it
-// with the structure, so it must be an OpenSSL allocation rather than the
-// std::string's storage. Default PBKDF2 iteration count and PWRI key wrap; the
-// password key encryption key is AES-256.
 void addPasswordRecipient(CMS_ContentInfo* const cms, const std::string& password)
 {
     unsigned char* const copy
@@ -116,9 +106,6 @@ void addPasswordRecipient(CMS_ContentInfo* const cms, const std::string& passwor
     }
 }
 
-// Builds a carrier X.509 certificate for subjectKey. The certificate is
-// signed by signerKey, which must be capable of signing; for self-signed
-// identity carriers signerKey == subjectKey.
 X509Ptr makeCarrierCert(const Key& subjectKey, const Key& signerKey)
 {
     X509Ptr cert(X509_new());
@@ -176,11 +163,6 @@ BioPtr makeWriteFileBio(const std::filesystem::path& path)
     return bio;
 }
 
-// Password-based CMS decrypt from input to output BIO; shared by the in-memory
-// and the streamed-to-file variants. The recipient key arguments are null: the
-// password set here is the key source. A wrong password surfaces as a decrypt
-// failure. CMS_decrypt streams the recovered content to the output BIO, so with
-// a file output BIO the cleartext is never buffered whole in memory.
 void unsealWithPasswordBio(BIO* const input, BIO* const output, const std::string& password)
 {
     const CmsPtr cms(d2i_CMS_bio(input, nullptr));
@@ -233,8 +215,6 @@ VerifiedJson verifyJson(const Bytes& der)
         throw std::runtime_error("d2i_CMS_bio failed");
     }
 
-    // The embedded certificate is a key carrier, not a chain: verify the
-    // signature only and let the caller judge the signer fingerprint.
     const BioPtr output = makeMemoryBio();
     if (CMS_verify(cms.get(), nullptr, nullptr, nullptr, output.get(),
             CMS_BINARY | CMS_NO_SIGNER_CERT_VERIFY)
@@ -320,25 +300,13 @@ VerifiedHybridJson verifyJsonHybrid(const Bytes& der)
 
 namespace {
 
-// The shape of a hybrid sealed blob, inside the CMS EnvelopedData. It is
-// versioned so the post-quantum half can move into CMS itself the day OpenSSL
-// grows KEMRecipientInfo (RFC 9629) without changing the container or breaking
-// anything already written:
-//
-//   v=1  the KEM ciphertext travels here and the payload is encrypted under the
-//        secret it carries (today: OpenSSL CMS has no KEM recipient - checked
-//        against 3.5, whose cms.h knows only TRANS/AGREE/KEK/PASS/OTHER).
-//   v=2  reserved: the KEM recipient sits in the CMS, and this wrapper carries
-//        the payload alone. Readers dispatch on `v`, so v=1 keeps opening.
+// The shape of a hybrid sealed blob, inside the CMS EnvelopedData.
 constexpr int kHybridSealVersion = 1;
 constexpr const char* kSealInfo = "bazarish-hybrid-seal-v1";
-// AES-256-GCM as used everywhere else in the project.
 constexpr int kSealKeyBytes = 32;
 constexpr int kSealNonceBytes = 12;
 constexpr int kSealTagBytes = 16;
 
-// HKDF-SHA256 over the KEM shared secret. The KEM ciphertext is the salt, so
-// the key is bound to the exact encapsulation it came from.
 Bytes sealKeyFrom(const Bytes& sharedSecret, const Bytes& kemCiphertext)
 {
     EVP_KDF* const kdf = EVP_KDF_fetch(nullptr, "HKDF", nullptr);
@@ -441,14 +409,8 @@ Bytes aesGcm(const Bytes& key, const Bytes& nonce, const Bytes& aad, const Bytes
 Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey)
 {
     if (!recipientPublicKey.hasKem()) {
-        // Sealing to a classical-only key would be confidentiality that a
-        // quantum adversary can harvest today and open later. There is no such
-        // sealing key in this protocol, so this is a programming error.
         throw std::logic_error("sealing requires a hybrid (ML-KEM) recipient key");
     }
-    // Post-quantum half: encapsulate to the recipient's ML-KEM key and encrypt
-    // the payload under the secret it yields. The classical CMS layer below
-    // then encrypts this whole wrapper, so opening it needs both private keys.
     EVP_PKEY_CTX* const kemCtx = EVP_PKEY_CTX_new(recipientPublicKey.kem().raw(), nullptr);
     if (kemCtx == nullptr || EVP_PKEY_encapsulate_init(kemCtx, nullptr) != 1) {
         EVP_PKEY_CTX_free(kemCtx);
@@ -482,8 +444,6 @@ Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey)
     };
     const Bytes wrapped = nlohmann::json::to_cbor(wrapper);
 
-    // The carrier certificate is signed by a throwaway signing key;
-    // only the embedded recipient public key matters.
     const Key throwaway = Key::generateSigning();
     const X509Ptr carrier = makeCarrierCert(recipientPublicKey, throwaway);
 
@@ -531,8 +491,6 @@ Bytes unseal(const Bytes& der, const Key& recipientPrivateKey)
     const nlohmann::json wrapper = nlohmann::json::from_cbor(wrapped);
     const int version = wrapper.at("v").get<int>();
     if (version != kHybridSealVersion) {
-        // A blob written by a build that carries the KEM recipient in the CMS
-        // itself: this one cannot open it, and must not pretend otherwise.
         throw std::runtime_error(
             "sealed blob is version " + std::to_string(version) + ", this build reads version "
                 + std::to_string(kHybridSealVersion));
@@ -573,8 +531,6 @@ Bytes sealWithPassword(const Bytes& plaintext, const std::string& password)
         throw std::invalid_argument("password must not be empty");
     }
     const BioPtr input = makeInputBio(plaintext);
-    // CMS_PARTIAL leaves the structure open so a password recipient can be
-    // added before finalizing; the content is AES-256-CBC.
     const CmsPtr cms(CMS_encrypt(nullptr, input.get(), EVP_aes_256_cbc(),
         CMS_BINARY | CMS_PARTIAL));
     if (cms == nullptr) {
@@ -600,17 +556,12 @@ void sealWithPasswordToFile(const std::filesystem::path& inPath,
     }
     const BioPtr input = makeReadFileBio(inPath);
     const BioPtr output = makeWriteFileBio(outPath);
-    // CMS_PARTIAL leaves the structure open for the password recipient; CMS_STREAM
-    // makes the content be pulled from `input` lazily during serialization, so the
-    // plaintext is never held whole in memory. AES-256-CBC content encryption.
     const CmsPtr cms(CMS_encrypt(
         nullptr, input.get(), EVP_aes_256_cbc(), CMS_BINARY | CMS_PARTIAL | CMS_STREAM));
     if (cms == nullptr) {
         throw std::runtime_error("CMS_encrypt failed");
     }
     addPasswordRecipient(cms.get(), password);
-    // Streams the plaintext from `input`, writing indefinite-length BER ciphertext
-    // to `output` (replaces the in-memory path's CMS_final + i2d_CMS_bio).
     if (i2d_CMS_bio_stream(output.get(), cms.get(), input.get(), CMS_BINARY | CMS_STREAM) != 1) {
         throw std::runtime_error("i2d_CMS_bio_stream failed");
     }

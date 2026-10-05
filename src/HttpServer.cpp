@@ -5,9 +5,6 @@
 #include <bazarish/Log.hpp>
 #include <bazarish/WebSocket.hpp>
 
-// Before any Boost.Asio header: awaitable.hpp (Boost 1.81, Debian 12) uses
-// std::exchange without including <utility>, which libstdc++ 12 does not pull in
-// on its own.
 #include <utility>
 
 #include <boost/asio/awaitable.hpp>
@@ -42,7 +39,6 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 using asio::ip::tcp;
 
-// The two hex digits of a "%XX" escape, and their base.
 constexpr std::size_t kEscapeDigits = 2;
 constexpr int kHexBase = 16;
 
@@ -53,9 +49,6 @@ std::string lowered(std::string text)
     return text;
 }
 
-// Percent-decoding, with "+" for a space: the encoding both a query string and
-// an urlencoded form body use. A stray "%" that does not start a valid pair is
-// kept as itself rather than swallowed.
 std::string urlDecoded(const std::string& text)
 {
     std::string out;
@@ -78,7 +71,6 @@ std::string urlDecoded(const std::string& text)
     return out;
 }
 
-// One value out of an "a=1&b=2" run, decoded; empty when the key is absent.
 std::string valueFrom(const std::string& encoded, const std::string& key)
 {
     std::string rest = encoded;
@@ -112,9 +104,6 @@ struct SocketRoute {
 
 namespace websocket = boost::beast::websocket;
 
-// One WebSocket. Reads run in a coroutine, writes are posted to the same
-// strand, and Beast permits those two to overlap while nothing else touches the
-// stream - which is why the connection was accepted onto a strand of its own.
 class SocketImpl : public Socket, public std::enable_shared_from_this<SocketImpl> {
 public:
     SocketImpl(websocket::stream<beast::tcp_stream> stream, SocketRoutes routes)
@@ -166,8 +155,6 @@ public:
     void markClosed() { open_.store(false); }
 
 private:
-    // On the strand. One message is in flight at a time, so the next one can
-    // still be reordered by whoever queued it while this one goes out.
     void write()
     {
         std::vector<unsigned char>* front = nullptr;
@@ -224,8 +211,6 @@ asio::awaitable<void> runSocket(std::shared_ptr<SocketImpl> socket, Request requ
             break;
         }
         if (!stream.got_binary()) {
-            // Not a mistake to be tolerated: a caller sending text is not
-            // speaking this protocol.
             break;
         }
         if (routes.message) {
@@ -288,8 +273,6 @@ std::string Request::param(const std::string& key) const
     if (!fromQuery.empty()) {
         return fromQuery;
     }
-    // An HTML form posts its fields as the body, in the same encoding as a query
-    // string; a handler reads either without caring which it was.
     if (lowered(header("content-type")).rfind("application/x-www-form-urlencoded", 0) != 0) {
         return {};
     }
@@ -356,7 +339,7 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
             co_await http::async_read(
                 stream, buffer, parser, asio::redirect_error(asio::use_awaitable, readError));
             if (readError) {
-                break;  // peer closed, timed out, or sent something unparseable
+                break;
             }
             const http::request<http::string_body> parsed = parser.release();
 
@@ -407,8 +390,6 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
                             out.set(header.first, header.second);
                         }
                         out.body() = refusal->body;
-                        // A refused upgrade ends the connection: the client asked
-                        // for a socket, and there is nothing else it wanted here.
                         out.keep_alive(false);
                         out.prepare_payload();
                         boost::system::error_code refusalError;
@@ -419,8 +400,6 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
                     websocket::stream<beast::tcp_stream> upgraded(std::move(stream));
                     websocket::stream_base::timeout timeouts{};
                     timeouts.handshake_timeout = options.readTimeout;
-                    // A socket that says nothing is pinged, and dropped if the
-                    // ping goes unanswered.
                     timeouts.idle_timeout = chosen.idleTimeout;
                     timeouts.keep_alive_pings = true;
                     upgraded.set_option(timeouts);
@@ -444,9 +423,6 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
                 }
             }
 
-            // The lock covers the lookup and nothing else. Holding it across the
-            // await below would have parked the whole table for as long as one
-            // client waited - which is what a long poll does by design.
             AsyncHandler handler;
             {
                 const std::lock_guard<std::mutex> lock(routesMutex);
@@ -458,31 +434,16 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
             }
             {
                 if (handler) {
-                    // A handler that answers later resumes this coroutine through
-                    // the timer below, which is what makes a long poll free.
-                    // Shared, not captured by reference: a responder may be called
-                    // after this connection is gone (a gate that fires late), and a
-                    // dangling timer would be a crash rather than a lost answer.
                     const auto executor = co_await asio::this_coro::executor;
                     const std::shared_ptr<asio::steady_timer> parked
                         = std::make_shared<asio::steady_timer>(executor);
                     parked->expires_at(std::chrono::steady_clock::time_point::max());
                     const std::shared_ptr<Response> answer = std::make_shared<Response>();
-                    // Answered, whether or not this coroutine has reached the wait
-                    // below yet: a handler may respond on the spot (a request
-                    // carried inside another one is dispatched and answers at
-                    // once), and cancelling a wait that has not started is a
-                    // cancel nobody hears - the connection would then hang until
-                    // the caller gave up.
                     const std::shared_ptr<std::atomic<bool>> answered
                         = std::make_shared<std::atomic<bool>>(false);
                     Responder respond = [parked, answer, executor, answered](Response response) {
                         *answer = std::move(response);
                         answered->store(true);
-                        // Bringing the deadline forward rather than cancelling:
-                        // it wakes a wait that is already running AND makes one
-                        // that starts afterwards return at once, so neither order
-                        // can lose the answer.
                         asio::post(executor,
                             [parked]() { parked->expires_at(std::chrono::steady_clock::now()); });
                     };
@@ -546,17 +507,10 @@ asio::awaitable<void> Server::Impl::accept()
 {
     while (!stopping.load()) {
         boost::system::error_code acceptError;
-        // Accepted onto a strand of its own, so everything derived from this
-        // socket runs serialized. A WebSocket reads and writes at the same
-        // time, and both touch one stream.
         tcp::socket socket(asio::make_strand(io));
         co_await acceptor->async_accept(
             socket, asio::redirect_error(asio::use_awaitable, acceptError));
         if (!acceptError) {
-            // Nagle holds a small write back until the last one is answered,
-            // and a small write is what a request, a reply and a credit all
-            // are. Measured on loopback: 80 ms a round trip with it, single
-            // digits without.
             boost::system::error_code ignored;
             socket.set_option(tcp::no_delay(true), ignored);
         }
@@ -663,11 +617,6 @@ void Server::dispatch(const Request& request, Responder respond)
     }
     Request routed = request;
     routed.captures = captures;
-    // The handler either answers now or takes the responder and answers later -
-    // a long poll carried in a tunnel parks exactly as it does on a connection.
-    // A handler that throws is answered for, exactly as the connection loop
-    // answers for one: an unanswered request here is a caller left waiting out
-    // its read timeout with nothing to show for it.
     std::optional<Response> answered;
     try {
         answered = route->handler(routed, respond);

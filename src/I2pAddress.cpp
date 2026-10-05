@@ -13,16 +13,14 @@
 
 namespace {
 
-// KeysAndCert layout: 256-byte encryption-key field + 128-byte signing-key
-// field + certificate.
 constexpr std::size_t kEncryptionFieldLen = 256;
 constexpr std::size_t kSigningFieldLen = 128;
-constexpr std::size_t kCertOffset = kEncryptionFieldLen + kSigningFieldLen;  // 384
+constexpr std::size_t kCertOffset = kEncryptionFieldLen + kSigningFieldLen;
 constexpr std::size_t kEd25519KeyLen = 32;
-constexpr std::size_t kCertHeaderLen = 3;  // type(1) + length(2)
+constexpr std::size_t kCertHeaderLen = 3;
 constexpr std::uint8_t kCertTypeKey = 5;
 constexpr std::uint8_t kSigTypeEd25519 = 7;
-constexpr std::uint8_t kBlindedSigTypeEd25519 = 11;  // RedDSA-SHA512-Ed25519
+constexpr std::uint8_t kBlindedSigTypeEd25519 = 11;
 
 constexpr char kB32Suffix[] = ".b32.i2p";
 constexpr std::size_t kB32SuffixLen = sizeof(kB32Suffix) - 1;
@@ -73,8 +71,6 @@ std::size_t i2pIdentityLength(const Bytes& buffer)
 
 namespace i2p {
 
-// Every destination this project publishes is an encrypted LeaseSet2, so there is
-// one address form. It is computed here, with no router of any kind behind it.
 std::string routingHost(const std::string& publicBase64)
 {
     return encryptedLeaseSetHost(publicBase64);
@@ -86,11 +82,9 @@ std::string encryptedLeaseSetHost(const std::string& i2pBase64Destination)
 {
     const Bytes destination = fromBase64(i2pToStandardBase64(i2pBase64Destination));
 
-    // Need the full key fields plus a 7-byte key certificate.
     if (destination.size() < kCertOffset + 7) {
         throw std::runtime_error("i2p destination too short");
     }
-    // Key certificate: type(1) | length(2) | sigType(2, big-endian) | encType(2).
     if (destination[kCertOffset] != kCertTypeKey) {
         throw std::runtime_error("i2p destination is not a key certificate");
     }
@@ -100,19 +94,16 @@ std::string encryptedLeaseSetHost(const std::string& i2pBase64Destination)
         throw std::runtime_error("only Ed25519 i2p destinations are supported");
     }
 
-    // The 32-byte Ed25519 signing key sits in the last bytes of the 128-byte
-    // signing-key field.
-    const std::size_t keyOffset = kCertOffset - kEd25519KeyLen;  // 352
+    const std::size_t keyOffset = kCertOffset - kEd25519KeyLen;
 
     std::array<std::uint8_t, 3 + kEd25519KeyLen> addr{};
-    addr[0] = 0;  // flags (no per-client auth)
+    addr[0] = 0;
     addr[1] = kSigTypeEd25519;
     addr[2] = kBlindedSigTypeEd25519;
     for (std::size_t i = 0; i < kEd25519KeyLen; ++i) {
         addr[3 + i] = destination[keyOffset + i];
     }
 
-    // CRC-32 (zlib) over the signing key, little-endian, XORed into the prefix.
     const uLong checksum = crc32(0L, addr.data() + 3, kEd25519KeyLen);
     addr[0] ^= static_cast<std::uint8_t>(checksum);
     addr[1] ^= static_cast<std::uint8_t>(checksum >> 8);
@@ -129,8 +120,6 @@ bool isB32I2pHost(const std::string& host)
     if (host.compare(host.size() - kB32SuffixLen, kB32SuffixLen, kB32Suffix) != 0) {
         return false;
     }
-    // Length is not constrained: a standard b32 (52) and a blinded b33 (56, and
-    // other sizes for other signature types) legitimately differ in length.
     const std::size_t labelLen = host.size() - kB32SuffixLen;
     for (std::size_t i = 0; i < labelLen; ++i) {
         const char c = host[i];

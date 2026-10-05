@@ -64,7 +64,6 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(
     return endpoint;
 }
 
-// What is spoken once the stream is open.
 enum class Face { eFederationFrame, eResolverHttp };
 
 FetchOutcome askResolver(bazarish::i2p::Stream& stream, const std::string& host,

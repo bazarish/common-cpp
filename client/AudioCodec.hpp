@@ -16,7 +16,6 @@ inline constexpr int kCallChannels = 1;
 inline constexpr int kCallFrameMs = 20;
 inline constexpr int kCallSamplesPerFrame = kCallSampleRate / 1000 * kCallFrameMs;
 
-// Opus encoder for one mono stream.
 class AudioEncoder {
 public:
     explicit AudioEncoder(int bitrateBps = 0);
@@ -33,7 +32,6 @@ private:
     OpusEncoder* encoder_;
 };
 
-// Opus decoder for one mono stream.
 class AudioDecoder {
 public:
     AudioDecoder();

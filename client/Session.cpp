@@ -64,7 +64,6 @@ constexpr std::size_t kDeliveryIdBytes = 16;
 constexpr std::size_t kContactBookChunkBytes = 128 * 1024;
 constexpr std::size_t kRequestIdBytes = 8;
 
-// How often a device asks the name service after its own names, and how widely that ask is spread.
 constexpr std::int64_t kAliasStatusIntervalSeconds = 24 * 3600;
 constexpr std::int64_t kAliasStatusJitterSeconds = 6 * 3600;
 static_assert(kAliasStatusIntervalSeconds + kAliasStatusJitterSeconds
@@ -211,7 +210,6 @@ std::string guessMime(const fs::path& path)
     return "application/octet-stream";
 }
 
-// The sealed message body, as bytes.
 bool echoesToOwnDevices(const std::string& type)
 {
     static const std::set<std::string> kEchoed{
@@ -340,7 +338,6 @@ Session Session::create(const fs::path& accountFile, const ServerEndpoint& endpo
 
 void Session::connectServer(const ServerEndpoint& endpoint)
 {
-    // Rebind the transport to the new server, reusing the identity and client id.
     client_ = std::make_unique<Client>(
         Identity::fromPrivatePem(client_->identity().privatePem()), client_->clientId(), endpoint,
         i2pDirFor(accountPath_));
@@ -1869,7 +1866,6 @@ bool Session::sendFile(const std::string& peerFingerprint, const fs::path& path,
 bool Session::sendPicture(const std::string& peerFingerprint, const fs::path& path,
     const std::string& e2eId, const DeliveryWatch& watch, const std::string& replyTo)
 {
-    // A picture rides inside the message.
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         throw std::runtime_error("cannot read the picture: " + path.string());
@@ -2863,7 +2859,6 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                         if (i2pMaster_.empty()) {
                             loadI2pDestination(master);
                         } else if (master != i2pMaster_) {
-                            // Another device published a different address for this account.
                             const std::string offered = i2pRoutingHost(master);
                             if (client_->myDestination().dest == offered) {
                                 replaceI2pMaster(master);
@@ -3693,7 +3688,6 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
     }
 
     if (type == "call.taken") {
-        // Another device of this account answered or declined the very call this one is showing.
         if (body.value("device", std::string()) != client_->clientId()
             && call_.state == CallState::eIncoming && call_.callId == message.callId) {
             clearCall();

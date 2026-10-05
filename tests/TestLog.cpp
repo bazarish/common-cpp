@@ -11,14 +11,12 @@ using namespace bazarish::log;
 
 int main()
 {
-    // String to level parsing.
     CHECK(levelFromString("error") == Level::eError);
     CHECK(levelFromString("warn") == Level::eWarn);
     CHECK(levelFromString("info") == Level::eInfo);
     CHECK(levelFromString("debug") == Level::eDebug);
     CHECK(!levelFromString("verbose").has_value());
 
-    // Threshold gating: a level passes only when at least as severe as the minimum.
     setLevel(Level::eWarn);
     CHECK(level() == Level::eWarn);
     CHECK(enabled(Level::eError));
@@ -26,14 +24,9 @@ int main()
     CHECK(!enabled(Level::eInfo));
     CHECK(!enabled(Level::eDebug));
 
-    // Redaction keeps a short prefix and elides the rest; short ids are untouched.
     CHECK(redact("short") == "short");
     CHECK(redact("0123456789abcdef") == "01234567...");
 
-    // Format capture. Redirect stderr to a file so we can read back the lines.
-    // Both the journald ("<N>...") and bare ("LEVEL ...") forms end with the
-    // identical "component: message" tail, so the assertions key off that tail
-    // and stay deterministic regardless of where the test runs.
     const std::string path
         = (std::filesystem::temp_directory_path() / "bazarish-testlog.txt").string();
     setComponent("unit");
