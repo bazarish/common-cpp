@@ -13,8 +13,6 @@ using namespace bazarish;
 
 int main()
 {
-    // Everything that fits under a step comes out at that step, so what an
-    // observer measures counts steps rather than bytes.
     std::set<std::size_t> sizes;
     for (std::size_t length = 0; length <= kPaddingLadder[0] - kLengthPrefixBytes; ++length) {
         const Bytes padded = padToLadder(Bytes(length, 0x41));
@@ -24,14 +22,11 @@ int main()
     CHECK(sizes.size() == 1);
     CHECK(*sizes.begin() == kPaddingLadder[0]);
 
-    // Each step is reached exactly at its own boundary, prefix included.
     for (const std::size_t step : kPaddingLadder) {
         CHECK(padToLadder(Bytes(step - kLengthPrefixBytes, 0x42)).size() == step);
         CHECK(padToLadder(Bytes(step - kLengthPrefixBytes + 1, 0x42)).size() > step);
     }
 
-    // Past the top step it is a whole multiple of it, so a large payload is
-    // still quantised rather than measured.
     const std::size_t top = kPaddingLadder[std::size(kPaddingLadder) - 1];
     for (std::size_t length = top; length < top * 3; length += top / 4) {
         const Bytes padded = padToLadder(Bytes(length, 0x43));
@@ -39,20 +34,15 @@ int main()
         CHECK(unpadFromLadder(padded).size() == length);
     }
 
-    // A ceiling stops a payload being rounded past what the protocol will
-    // accept: it is prefixed and left at its own length instead.
     {
         constexpr std::size_t kCeiling = 4096;
         const Bytes big(kCeiling, 0x44);
         const Bytes padded = padToLadder(big, kCeiling);
         CHECK(padded.size() == big.size() + kLengthPrefixBytes);
         CHECK(unpadFromLadder(padded) == big);
-        // Under the ceiling nothing changes.
         CHECK(padToLadder(Bytes(10, 0x45), kCeiling).size() == kPaddingLadder[0]);
     }
 
-    // What the prefix says is what comes back, and a prefix that lies is refused
-    // rather than trusted.
     {
         bool threw = false;
         try {
@@ -64,7 +54,7 @@ int main()
         threw = false;
         try {
             Bytes lying = padToLadder(Bytes(8, 0x46));
-            lying[3] = 0xFF;  // claims more content than the block holds
+            lying[3] = 0xFF;
             unpadFromLadder(lying);
         } catch (const std::exception&) {
             threw = true;

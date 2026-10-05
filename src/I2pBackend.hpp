@@ -14,11 +14,6 @@
 
 namespace bazarish::i2p::backend {
 
-// What the public facade delegates to. Two implementations: the engine inside
-// this process, and a router outside it reached over SAM. The split is here and
-// not in the header because it is nobody's business but this library's - a
-// caller writes the same code either way.
-
 class StreamBackend {
 public:
     virtual ~StreamBackend() = default;
@@ -35,9 +30,6 @@ public:
     virtual ~EndpointBackend() = default;
 
     virtual bool ready() const = 0;
-    // True when this destination is gone for good, so waiting for it to be ready
-    // again is waiting for nothing. Only a borrowed destination can be taken away:
-    // an engine in this process keeps its own until its owner stops it.
     virtual bool lost() const { return false; }
     virtual std::string publicBase64() const = 0;
     virtual std::string routingHost() const = 0;
@@ -89,17 +81,14 @@ public:
         = 0;
 };
 
-// Built in the transport's own translation unit, so the facade holds no engine.
 std::unique_ptr<RouterBackend> makeSamRouter(const RouterConfig& config);
 std::unique_ptr<RouterBackend> makeGatewayRouter(const RouterConfig& config);
 
 std::unique_ptr<RouterBackend> makeEmbeddedRouter(const RouterConfig& config);
-// The engine's own answers, which only it has.
 std::string embeddedRouterVersion();
 std::vector<Bytes> embeddedSampleRouterInfos(std::size_t count);
 std::size_t embeddedSeedRouterInfos(
     const std::filesystem::path& dataDir, const std::vector<Bytes>& routers);
-// Key material the engine mints, for the facade to hand out.
 Bytes generateKeysBlob();
 Bytes issueTransientBlob(const Bytes& master, int days);
 int b33OfflineKeyDays(const Bytes& blob);

@@ -44,8 +44,6 @@ std::shared_ptr<bazarish::i2p::Endpoint> WarmDestPool::acquire()
     std::shared_ptr<bazarish::i2p::Endpoint> dest;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        // A dest the transport lost while it waited here cannot dial, and handing
-        // it out costs the caller a failed lookup for nothing.
         while (!ready_.empty()) {
             dest = std::move(ready_.front());
             ready_.pop_front();
@@ -56,7 +54,7 @@ std::shared_ptr<bazarish::i2p::Endpoint> WarmDestPool::acquire()
         }
         refillWanted_ = true;
     }
-    cv_.notify_all();  // wake the warmer to refill
+    cv_.notify_all();
     return dest;
 }
 
@@ -73,7 +71,6 @@ void WarmDestPool::flush()
 
 void WarmDestPool::warmerLoop()
 {
-    // Destinations still warming, owned by this loop until ready or abandoned.
     std::vector<Building> building;
 
     while (running_.load()) {
@@ -89,10 +86,6 @@ void WarmDestPool::warmerLoop()
             toCreate = size_ > have ? size_ - have : 0;
         }
 
-        // Create the shortfall (createEndpoint returns at once; the tunnels build in
-        // the background, which is what waiting on ready() below tracks). A single-use
-        // outbound dest stays UNPUBLISHED - the reply rides the stream's inline
-        // leaseset - so it never touches the netDb.
         for (std::size_t i = 0; i < toCreate && running_.load(); ++i) {
             try {
                 bazarish::i2p::EndpointConfig config;
@@ -110,7 +103,6 @@ void WarmDestPool::warmerLoop()
             }
         }
 
-        // Promote any dest whose tunnels are up; abandon one that never warmed.
         const auto now = std::chrono::steady_clock::now();
         for (auto it = building.begin(); it != building.end();) {
             if (it->endpoint && it->endpoint->ready()) {
@@ -123,8 +115,6 @@ void WarmDestPool::warmerLoop()
                 bazarish::log::info("warm-pool: dest ready ({} warm, target {})", warm, size_);
                 it = building.erase(it);
             } else if (now - it->startedAt > buildTimeout_) {
-                // Best-effort: a dest that could not build tunnels in time (e.g. a
-                // firewalled router with no peers) is dropped; the loop retries.
                 bazarish::log::warn("warm-pool: abandoning a dest that never warmed");
                 it = building.erase(it);
             } else {
@@ -132,8 +122,6 @@ void WarmDestPool::warmerLoop()
             }
         }
 
-        // Sleep until the next tick (woken early by an acquire). A short tick keeps
-        // ready() polling responsive while still building in the background.
         std::unique_lock<std::mutex> lock(mutex_);
         cv_.wait_for(lock, std::chrono::milliseconds(building.empty() ? 1000 : 300),
             [this]() { return !running_.load() || refillWanted_; });

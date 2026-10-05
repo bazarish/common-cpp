@@ -12,7 +12,6 @@ typedef struct evp_pkey_st EVP_PKEY;
 
 namespace bazarish {
 
-// Size of a fingerprint source digest (SHA-256).
 inline constexpr std::size_t kFingerprintBytes = 32;
 // Text length of a fingerprint: base32 of 32 bytes, no padding.
 inline constexpr std::size_t kFingerprintTextLength = 52;
@@ -22,48 +21,25 @@ struct EvpPkeyDeleter {
 };
 using KeyPtr = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>;
 
-// A signing or sealing key. May hold only the public part.
 class Key {
 public:
-    // Classical signing keys: ECDSA P-256. Ed25519 is not usable here -
-    // OpenSSL CMS SignedData has no EdDSA support, and certificates are
-    // CMS-signed by these keys.
+    // Classical signing keys: ECDSA P-256.
     static Key generateSigning();
-    // Post-quantum signing keys: ML-DSA-65 (FIPS 204). Not usable as a CMS
-    // signer in OpenSSL, so the hybrid layering signs with it at the EVP level.
+    // Post-quantum signing keys: ML-DSA-65 (FIPS 204).
     static Key generateSigningPq();
-    // Sealing keys for envelopes: **hybrid** - ECDH P-256 plus ML-KEM-768
-    // (FIPS 203). A sealed blob can only be opened with both private halves, so
-    // breaking one scheme alone reveals nothing. A distinct key from the identity
-    // key by design.
-    //
-    // A sealing key is therefore the one shape of Key that holds two EVP keys.
-    // Its public form is not a bare SPKI but the pair, and its PEM is two
-    // blocks - fromPublicDer/fromPrivatePem read either shape.
+    // Sealing keys for envelopes: **hybrid** - ECDH P-256 plus ML-KEM-768 (FIPS 203).
     static Key generateSealing();
 
-    // When passphrase is non-empty the PEM is expected to be (or is written)
-    // encrypted with AES-256-CBC; an empty passphrase keeps the historical
-    // unencrypted form.
     static Key fromPrivatePem(const std::string& pem, const std::string& passphrase = {});
     static Key fromPublicDer(const Bytes& spkiDer);
 
     std::string privatePem(const std::string& passphrase = {}) const;
-    // The canonical public form: a SubjectPublicKeyInfo DER for a single key,
-    // and for a hybrid sealing key the CBOR pair {c: classical SPKI, q: ML-KEM
-    // SPKI} - opaque bytes to everything that only carries it.
     Bytes publicDer() const;
-    // base32(sha256(SubjectPublicKeyInfo DER)). Identifies a single key;
-    // identities are identified by Identity::fingerprint() instead.
+    // base32(sha256(SubjectPublicKeyInfo DER)).
     std::string fingerprint() const;
     bool hasPrivate() const;
-    // EVP algorithm match, e.g. isA("EC") or isA("ML-DSA-65").
     bool isA(const char* algorithmName) const;
-    // Whether this key carries the ML-KEM half - true for sealing keys, false
-    // for signing keys and for a bare SPKI read off the wire.
     bool hasKem() const;
-    // The ML-KEM half. Throws when there is none: sealing must never silently
-    // fall back to the classical half alone.
     const Key& kem() const;
 
     EVP_PKEY* raw() const;
@@ -75,52 +51,34 @@ private:
     Key(KeyPtr classical, KeyPtr kem, bool hasPrivate);
 
     KeyPtr key_;
-    // The ML-KEM half of a sealing key; null for every other kind.
     std::shared_ptr<Key> kem_;
     bool hasPrivate_;
 };
 
-// Signature over the data: ECDSA-SHA256 for EC keys (DER-encoded, variable
-// length), pure ML-DSA for ML-DSA keys.
 Bytes sign(const Key& key, const Bytes& data);
 bool verify(const Key& key, const Bytes& data, const Bytes& signature);
 
 Bytes sha256(const Bytes& data);
 
 // AES-256-GCM authenticated encryption with a 32-byte key and a 12-byte nonce.
-// Used for per-call media datagrams: the call key is exchanged inside the E2E
-// invite and the nonce is role||sequence, never reused. The sealed output is
-// ciphertext || 16-byte tag; aeadOpen returns nullopt on any authentication
-// failure (wrong key, tampering, truncation). Standard primitive (OpenSSL EVP),
-// no custom construction.
 inline constexpr std::size_t kAeadKeyBytes = 32;
 inline constexpr std::size_t kAeadNonceBytes = 12;
 inline constexpr std::size_t kAeadTagBytes = 16;
 Bytes aeadSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext);
 std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed);
 
-// Streaming SHA-256 of a file's contents, read in bounded chunks so a
-// multi-gigabyte file is never held whole in memory. Throws if the file cannot
-// be read.
 Bytes sha256File(const std::filesystem::path& path);
 
-// A hybrid post-quantum signing identity: ECDSA P-256 plus ML-DSA-65.
-// Every identity-level statement carries both signatures and is valid only
-// when both verify - forging requires breaking both schemes.
 class Identity {
 public:
     static Identity generate();
     // Reads two PEM blocks: the classical key first, the ML-DSA key second.
-    // A non-empty passphrase decrypts both blocks (AES-256-CBC).
     static Identity fromPrivatePem(const std::string& pem, const std::string& passphrase = {});
     Identity(Key classical, Key pq);
 
     const Key& classical() const;
     const Key& pq() const;
-    // Both private keys as two concatenated PEM blocks, encrypted with the
-    // passphrase (AES-256-CBC) when it is non-empty.
     std::string privatePem(const std::string& passphrase = {}) const;
-    // The canonical identity fingerprint, covering both public keys.
     std::string fingerprint() const;
 
 private:
@@ -128,8 +86,6 @@ private:
     Key pq_;
 };
 
-// base32(sha256(classical SPKI DER || ML-DSA SPKI DER)) - computable by
-// verifiers holding only public material.
 std::string hybridFingerprint(const Bytes& classicalPublicDer, const Bytes& pqPublicDer);
 
 }  // namespace bazarish

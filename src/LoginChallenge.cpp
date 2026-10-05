@@ -41,8 +41,6 @@ LoginConsumer LoginChallenge::consumer() const
 
 void LoginChallenge::setConsumer(LoginConsumer consumer)
 {
-    // Canonicalised (and so validated) before the lock: a consumer this portal
-    // cannot stand behind must not replace the one it is using.
     std::string canonical = canonicalConsumer(consumer);
     const std::lock_guard<std::mutex> lock(mutex_);
     consumer_ = std::move(consumer);
@@ -84,9 +82,6 @@ void LoginChallenge::pruneExpired(const std::int64_t now)
 std::string LoginChallenge::verify(
     const std::string& challenge, const std::string& loginBlob, const std::int64_t now)
 {
-    // 1. Decode and validate the challenge envelope. The consumer is read the
-    // same way the client reads it, so what is checked here is what the user was
-    // shown before signing.
     const std::string canonical = currentCanonical();
     if (canonicalConsumer(readLoginConsumer(challenge)) != canonical) {
         throw std::runtime_error("login challenge: it names another consumer");
@@ -104,12 +99,8 @@ std::string LoginChallenge::verify(
         throw std::runtime_error("login challenge: bad tag (not issued here)");
     }
 
-    // 2. Verify the user's signature over the whole challenge string. Throws on
-    // a bad signature, before any nonce is consumed (so a failed attempt cannot
-    // burn a valid challenge).
     const std::string fingerprint = verifyLoginBlob(loginBlob, now, challenge);
 
-    // 3. Enforce single use: consume the nonce on success.
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         pruneExpired(now);

@@ -14,13 +14,9 @@
 namespace bazarish::client {
 
 namespace {
-// A small, fixed warm pool of single-use throwaway dests (no demand-driven sizing),
-// with a small tunnel quantity - enough to cover the two direct fetches that want a
-// one-time dest (card + resolve) without paying cold tunnel-build latency.
 constexpr std::size_t kWarmPoolSize = 2;
 constexpr int kWarmPoolTunnelQuantity = 3;
 
-// Whether spares are wanted at all; see setWarmDestsWanted.
 std::atomic<bool> g_warmDestsWanted{true};
 
 std::mutex& routerMutex()
@@ -35,9 +31,6 @@ std::unique_ptr<bazarish::i2p::Router>& routerSlot()
     return router;
 }
 
-// Owned in this TU and constructed after routerSlot (its slot is first touched only
-// after the router exists), so at process exit it is destroyed first - its warmer
-// thread is joined while the router is still alive.
 std::unique_ptr<WarmDestPool>& warmPoolSlot()
 {
     static std::unique_ptr<WarmDestPool> pool;
@@ -50,14 +43,12 @@ std::mutex& facadeLinksMutex()
     return mutex;
 }
 
-// One facade link per account, by weak_ptr so it goes down with its last user.
 std::map<std::string, std::weak_ptr<bazarish::i2p::Endpoint>>& facadeLinks()
 {
     static std::map<std::string, std::weak_ptr<bazarish::i2p::Endpoint>> links;
     return links;
 }
 
-// Brings the warm pool up alongside a running router. Call under routerMutex.
 void ensureWarmPool(bazarish::i2p::Router& router)
 {
     if (!g_warmDestsWanted.load()) {
@@ -71,8 +62,6 @@ void ensureWarmPool(bazarish::i2p::Router& router)
     }
 }
 
-// Tears the warm pool down (joins its warmer) before the router stops. Call under
-// routerMutex.
 void stopWarmPool()
 {
     std::unique_ptr<WarmDestPool>& pool = warmPoolSlot();
@@ -84,16 +73,8 @@ void stopWarmPool()
 
 std::atomic<bool> g_i2pEnabled{true};
 std::atomic<bazarish::i2p::Privacy> g_tunnelPrivacy{bazarish::i2p::Privacy::eMinimal};
-// Strict by default: the netDb comes from our own server, not a public host.
-// The SOCKS5 proxy the router's clearnet side goes through, empty by default.
-// A string needs a mutex where a flag needs none.
 std::string g_proxyHost;
-// Where the external router is, when one is used at all. Empty means the engine
-// in this process. Shares the proxy mutex: both are settings read when a router
-// is built.
 std::string g_samHost;
-// The gateway, when one is named. Set once before the router is asked for, like
-// every other transport choice.
 std::optional<GatewayAddress> g_gateway;
 std::string g_gatewayPin;
 int g_samPort = 0;
@@ -116,9 +97,6 @@ ConnectProgressFn& progressSink()
     static ConnectProgressFn sink;
     return sink;
 }
-// Full privacy mode (default off): when on, the transport refuses every clearnet
-// facade, so all traffic runs over I2P (and an account with no I2P facade is
-// explicitly offline). Consulted at request time, like g_i2pEnabled.
 }  // namespace
 
 namespace {
@@ -184,8 +162,6 @@ std::size_t knownRouterCount(const std::filesystem::path& dataDir, const std::si
     if (!std::filesystem::exists(netDb, ec)) {
         return 0;
     }
-    // i2pd files them under one directory per leading character, so the count
-    // is of the leaves, not of the buckets.
     std::size_t count = 0;
     std::filesystem::recursive_directory_iterator entries(netDb, ec);
     if (ec) {
@@ -240,8 +216,6 @@ int samTransportPort()
     return g_samPort;
 }
 
-// Everything a router needs to know about which transport it is, in one place:
-// two call sites build one, and they must not drift apart.
 bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir)
 {
     bazarish::i2p::RouterConfig config;
@@ -278,7 +252,7 @@ bazarish::i2p::Router& sharedI2pRouter(const std::filesystem::path& dataDir)
     } else if (!router->running()) {
         router->start();
     }
-    ensureWarmPool(*router);  // keep a couple of throwaway dests warm for direct fetches
+    ensureWarmPool(*router);
     return *router;
 }
 
@@ -294,7 +268,7 @@ std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
 {
     bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
     if (router == nullptr) {
-        return nullptr;  // the caller starts the router first
+        return nullptr;
     }
     const auto build = [router, &owner, privacy]() {
         bazarish::i2p::EndpointConfig config;
@@ -304,19 +278,15 @@ std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
         config.owner = owner;
         return router->createEndpoint(config);
     };
-    // One per account. Both of an account's clients - the transport and the request
-    // parked waiting for news - dial through it; they need their own request
-    // queues, not their own addresses, and a destination carries many streams at
-    // once.
     if (owner.empty()) {
-        return build();  // nothing to share it with
+        return build();
     }
     const std::lock_guard<std::mutex> lock(facadeLinksMutex());
     if (const std::shared_ptr<bazarish::i2p::Endpoint> existing = facadeLinks()[owner].lock()) {
         if (!existing->lost()) {
             return existing;
         }
-        facadeLinks().erase(owner);  // the next ask gets an address that exists
+        facadeLinks().erase(owner);
     }
     const std::shared_ptr<bazarish::i2p::Endpoint> link = build();
     facadeLinks()[owner] = link;
@@ -333,12 +303,8 @@ void stopFacadeLinkFor(const std::string& owner)
             return;
         }
         link = found->second.lock();
-        // Dropped here rather than after: whatever asks next builds a live one
-        // instead of finding this one and waiting on a destination that is done.
         facadeLinks().erase(found);
     }
-    // Outside the lock: the thread this frees is often the one about to ask for
-    // another account's link.
     if (link) {
         link->stop();
     }
@@ -361,9 +327,8 @@ void setI2pSocksProxy(std::string host, const int port)
     const std::lock_guard<std::mutex> lock(routerMutex());
     const std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
     if (!router || !router->capabilities().proxy) {
-        return;  // the clearnet side of a router elsewhere is its operator's
+        return;
     }
-    // Written into the engine now; the transports read it as they come up.
     router->setSocksProxy(i2pSocksProxyHost(), i2pSocksProxyPort());
 }
 
@@ -386,10 +351,6 @@ std::optional<bazarish::i2p::ProxyState> i2pProxyState()
     if (!router || !router->running()) {
         return std::nullopt;
     }
-    // What the transport can answer, not which transport it is: a router
-    // outside this process has a clearnet side of its own and asking about it
-    // throws. Guessing by backend meant a third one arrived and the throw went
-    // out through whatever was reading the status.
     if (!router->capabilities().proxy) {
         return std::nullopt;
     }
@@ -400,14 +361,14 @@ void restartI2pRouter(const std::filesystem::path& dataDir)
 {
     (void)dataDir;
     if (usingSamTransport() || usingGatewayTransport()) {
-        return;  // the engine is not in this process, so there is none to cycle
+        return;
     }
     const std::lock_guard<std::mutex> lock(routerMutex());
     std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
     if (!router) {
-        return;  // nothing running: the next start reads the setting
+        return;
     }
-    stopWarmPool();  // join the warmer before the router's network stops
+    stopWarmPool();
     router->stop();
     if (router->capabilities().proxy) {
         router->setSocksProxy(i2pSocksProxyHost(), i2pSocksProxyPort());
@@ -421,17 +382,10 @@ void reconcileI2pRouter(const std::filesystem::path& dataDir)
     const std::lock_guard<std::mutex> lock(routerMutex());
     std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
     if (g_i2pEnabled.load()) {
-        // The engine bootstraps itself now: it is given the reseed addresses this
-        // account's server named, or - with none - the ones it carries. There is
-        // nothing to wait for before starting it, and waiting was what left a
-        // client with an empty netDb sitting there forever.
         if (!router) {
             try {
                 router = std::make_unique<bazarish::i2p::Router>(routerConfigFor(dataDir));
             } catch (const std::exception& error) {
-                // An external router that is not answering leaves this process
-                // with no transport at all, which is worth saying rather than
-                // retrying silently on every reconcile.
                 bazarish::log::warn("i2p: no transport: {}", error.what());
                 return;
             }
@@ -440,7 +394,7 @@ void reconcileI2pRouter(const std::filesystem::path& dataDir)
         }
         ensureWarmPool(*router);
     } else if (router) {
-        stopWarmPool();  // join the warmer before the router's network stops
+        stopWarmPool();
         router->stop();
     }
 }
@@ -462,8 +416,6 @@ void reportConnectProgress(const int percent, const std::string& text)
         sink(percent, text);
     }
 }
-
-
 
 void setI2pEnabled(bool enabled)
 {

@@ -14,10 +14,6 @@ using namespace bazarish;
 
 namespace {
 
-// Golden vectors from libi2pd itself: a generated Ed25519 destination and a
-// transient delegated from it. What is checked here is that the same answers
-// come out of this project's own reading of the blob, with no engine involved -
-// which is what a build without one depends on.
 const std::string kMasterBlob
     = "e32a7544d00db4c53f5959ce076439e6cadb169351bdb2db564d916c3f1e8174b65e8538460dfb23dc4c7158"
       "f53a63ea92857704e9feaefe5e671faedaa9f11ff602aa810d7ec2ad4a9a1a3c3414a79993879bc7d011d8d8"
@@ -62,10 +58,7 @@ const std::string kPublic
       "h7KU0eiJOa7IJpcdxpITVhunBADY2tr8to7pE7iLBGKwZyfCQFwDox6n8Lw5Gy1VrKh-UERLhnMX1RhNUbkfGxhF"
       "k16QP8la3HAtlD8eDHePCgK3RD-ppQmsGE1RuR8bGEWTXpA~yVrccC2UPx4Md48KArdEP6mlCawYTVG5HxsYRZNe"
       "kD~JWtxwLZQ~Hgx3jwoCt0Q~qaUJrN06HYbWuSy1VKVdixU1FuOt~XnOJs5XJDTt2gIFU9zNBQAEAAcAAA==";
-// The blinded address of that destination, computed independently (base64 decode
-// + zlib CRC-32 + base32) rather than by the code under test.
 const std::string kB33Host = "5jzslxj2dwdnnojmwvkkkxmlcu2rny5n7v444jwok4sdj3o2aicvhxgn.b32.i2p";
-// The expiry the golden transient was delegated with.
 constexpr std::int64_t kTransientExpires = 4102444800;
 const std::string kMasterPrivateBase64
     = "4yp1RNANtMU~WVnOB2Q55srbFpNRvbLbVk2RbD8egXS2XoU4Rg37I9xMcVj1OmPqkoV3BOn-rv5eZx-u2qnxH~YC"
@@ -93,20 +86,14 @@ int main()
     CHECK(!master.isOffline());
     CHECK(master.transientExpires() == 0);
 
-    // The address a peer routes to is the blinded one, derived from the same
-    // identity with no engine behind it.
     CHECK(i2p::routingHost(master.publicBase64()) == kB33Host);
 
-    // A delegated transient keeps the master's address - that is the whole point
-    // of offline delegation - and says so about itself. This one predates the b33
-    // offline keys, so it carries none.
     const i2p::Keys transient = i2p::Keys::fromBlob(bazarish::fromHex(kTransientBlob));
     CHECK(transient.publicBase64() == kPublic);
     CHECK(i2p::routingHost(transient.publicBase64()) == kB33Host);
     CHECK(transient.isOffline());
     CHECK(transient.transientExpires() == kTransientExpires);
 
-    // A blob too short to hold an identity is refused rather than half-read.
     bool refused = false;
     try {
         (void)i2p::Keys::fromBlob(Bytes(masterBlob.begin(), masterBlob.begin() + 100));

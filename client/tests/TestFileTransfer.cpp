@@ -35,8 +35,6 @@ Bytes readFile(const fs::path& path)
     return Bytes(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-// A fetch attempt served straight out of the prepared ciphertext, delivering at
-// most `limit` bytes per attempt so the resume path is actually exercised.
 FetchAttemptFn servingFrom(const Bytes& ciphertext, const std::size_t limit)
 {
     return [&ciphertext, limit](const std::uint64_t offset, TransferSink& sink) {
@@ -49,16 +47,12 @@ FetchAttemptFn servingFrom(const Bytes& ciphertext, const std::size_t limit)
 
 }  // namespace
 
-// The stub server these tests talk to is a plain HTTP listener on localhost -
-// the same shape as a stand on a LAN, and the reason that switch exists.
 int main()
 {
     bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
     const fs::path root = fs::temp_directory_path() / ("bazarish-xfer-" + toHex(randomBytes(8)));
     fs::create_directories(root);
 
-    // A file bigger than one transfer chunk, so a partial attempt is a real
-    // partial attempt rather than the whole thing.
     const Bytes original = randomBytes(300 * 1024);
     const fs::path source = root / "source.bin";
     writeFile(source, original);
@@ -78,7 +72,6 @@ int main()
     offer.sha256 = prepared.sha256;
     offer.size = prepared.size;
 
-    // The offer travels as JSON inside a sealed service message.
     const FileOffer roundTripped = fileOfferFromJson(fileOfferToJson(offer));
     CHECK(roundTripped.fileId == offer.fileId);
     CHECK(roundTripped.host == offer.host);
@@ -86,8 +79,6 @@ int main()
     CHECK(roundTripped.sha256 == offer.sha256);
     CHECK(roundTripped.size == offer.size);
 
-    // A transfer that keeps dropping still completes, and the result is
-    // byte-identical to what the sender had on disk.
     {
         const fs::path dest = root / "received.bin";
         std::uint64_t lastSeen = 0;
@@ -104,15 +95,12 @@ int main()
         CHECK(!fs::exists(dest.string() + ".part"));
     }
 
-    // A single-attempt transfer works too (no resume needed).
     {
         const fs::path dest = root / "received-oneshot.bin";
         receiveFile(servingFrom(ciphertext, ciphertext.size()), offer, dest);
         CHECK(readFile(dest) == original);
     }
 
-    // A tampered byte is caught before anything is decrypted: no destination
-    // file, no partial left behind.
     {
         Bytes tampered = ciphertext;
         tampered[tampered.size() / 2] ^= 0xFF;
@@ -128,7 +116,6 @@ int main()
         CHECK(!fs::exists(dest.string() + ".part"));
     }
 
-    // A sender that declares a different length than it offered is refused.
     {
         const fs::path dest = root / "wrongsize.bin";
         bool threw = false;
@@ -146,7 +133,6 @@ int main()
         CHECK(!fs::exists(dest));
     }
 
-    // A sender that goes quiet is abandoned rather than looping forever.
     {
         const fs::path dest = root / "stalled.bin";
         int attempts = 0;
@@ -164,7 +150,6 @@ int main()
         CHECK(!fs::exists(dest));
     }
 
-    // Cancelling stops the transfer and leaves nothing behind.
     {
         const fs::path dest = root / "cancelled.bin";
         std::atomic<bool> cancel{true};

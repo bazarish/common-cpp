@@ -22,7 +22,6 @@ WireEvent lineFor(const int number)
     return event;
 }
 
-// The window shows the tail: what fits is the newest, in the order it happened.
 void testRingKeepsTheNewest()
 {
     WireLog log;
@@ -35,15 +34,12 @@ void testRingKeepsTheNewest()
     CHECK(events.front().what == "line " + std::to_string(extra));
     CHECK(events.back().what
         == "line " + std::to_string(static_cast<int>(kWireLogCapacity) + extra - 1));
-    // Recording stamps the time when the caller did not.
     CHECK(events.front().atMillis > 0);
 
     log.clear();
     CHECK(log.snapshot().empty());
 }
 
-// Events arrive from the courier's threads, the sync thread and the network
-// thread while the window reads: neither side may see half of one.
 void testConcurrentRecordAndSnapshot()
 {
     WireLog log;
@@ -62,7 +58,6 @@ void testConcurrentRecordAndSnapshot()
     }
     stop.store(true);
     writer.join();
-    // How many the writer got in is its own business; the cap is not.
     CHECK(log.snapshot().size() <= kWireLogCapacity);
 }
 

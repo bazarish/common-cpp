@@ -1,6 +1,4 @@
 // Bazarish project (c) 2026
-// Two destinations on one external router, exchanging several streams: what a
-// daemon's federation does, with nothing else in the way.
 #include <bazarish/I2p.hpp>
 #include <bazarish/Log.hpp>
 
@@ -54,7 +52,7 @@ int main(int argc, char** argv)
                 }
                 std::vector<unsigned char> in(payload);
                 stream->readExact(in.data(), in.size());
-                stream->writeAll(in.data(), in.size());  // echo
+                stream->writeAll(in.data(), in.size());
                 stream->close();
                 ++served;
             } catch (const std::exception& error) {

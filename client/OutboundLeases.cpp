@@ -10,24 +10,14 @@
 
 namespace bazarish::client {
 
-// Making an address ready is instant when there is a warm one and tunnels when
-// there is not; past this it is the second kind, and the sender is waiting.
 constexpr std::chrono::milliseconds kSlowPrepare{300};
 
 namespace {
 
-// How often expired terms are swept. Well inside a term, so a destination is let
-// go close to when it should be rather than at the next message.
 constexpr std::chrono::seconds kSweepInterval{30};
-// What the router status view calls these destinations.
-// What one correspondent's outbound address is called in the status view. The
-// name is the local one this account knows them by; before there is a name (a
-// contact request precedes the contact) the address stands unnamed.
 constexpr char kLeaseLabel[] = "Outbound delivery";
 constexpr char kLeaseLabelPrefix[] = "Outbound for ";
 
-// One I2P stream, holding the destination it was opened on: the stream is only
-// good for as long as that destination lives.
 class I2pDeliveryStream final : public DeliveryStream {
 public:
     I2pDeliveryStream(std::shared_ptr<bazarish::i2p::Endpoint> endpoint,
@@ -82,9 +72,6 @@ void OutboundLeases::dropExpired(const std::chrono::steady_clock::time_point now
     const bazarish::i2p::Privacy privacy = tunnelPrivacy();
     for (auto it = leases_.begin(); it != leases_.end();) {
         if (it->second.expiresAt <= now || it->second.privacy != privacy) {
-            // Unconditionally: a destination that has carried one correspondent's
-            // mail is not handed to another, is not kept because it was busy, and
-            // does not outlive the tunnel profile it was built under.
             it = leases_.erase(it);
         } else {
             ++it;
@@ -111,12 +98,6 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
     bool making = false;
     {
         std::unique_lock<std::mutex> lock(mutex_);
-        // One preparation per correspondent. A reply to a message that has just
-        // arrived is always at least the second send to them - the receipt for
-        // it went first - and both used to make an address of their own: two
-        // sets of tunnels for one correspondent, with the second sender watching
-        // its own build from behind an empty circle while the first was long
-        // ready.
         prepared_.wait(lock, [this, &toDest]() { return preparing_.count(toDest) == 0; });
         endpoint = heldLocked(toDest);
         if (!endpoint) {
@@ -125,19 +106,10 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
         }
     }
     if (making) {
-        // Everything from here to the tunnels being up is what a person watches
-        // as an empty circle: the message has not started travelling yet. It is
-        // worth saying which of the two ways it went, because one of them is
-        // instant and the other builds tunnels.
         const log::Slow timed("making an address ready to send from", kSlowPrepare);
         try {
-            // Taken outside the lock: acquiring wakes the pool's warmer, and
-            // holding the lock across it would queue every other send behind one
-            // refill.
             endpoint = acquireWarmDest();
             if (endpoint) {
-                // A spare belongs to nobody while it waits; from here it carries
-                // one correspondent's mail, and the status view should say so.
                 router_.retagEndpoint(*endpoint, labelFor(peerName), owner_);
             } else {
                 log::info("no warm address for {}: building one, which is tunnels",
@@ -162,7 +134,7 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
             const auto now = std::chrono::steady_clock::now();
             const auto found = leases_.find(toDest);
             if (found != leases_.end() && found->second.expiresAt > now) {
-                endpoint = found->second.endpoint;  // a term that outlived the wait
+                endpoint = found->second.endpoint;
             } else {
                 leases_[toDest] = Lease{
                     endpoint, now + std::chrono::seconds(kLeaseTermSeconds), tunnelPrivacy()};
@@ -171,8 +143,6 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
         }
         prepared_.notify_all();
     }
-    // Waited for outside every lock: tunnels take what they take, and a send to
-    // one correspondent must not hold the book while another one builds.
     const bool ready = endpoint->waitReady(std::chrono::seconds(kOutboundDestReadySeconds));
     if (!ready) {
         log::warn("the address for {} has no tunnels after {} s", log::redact(toDest),
@@ -186,8 +156,6 @@ std::shared_ptr<DeliveryStream> OutboundLeases::openStream(
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint = held(toDest);
     if (!endpoint) {
-        // The term ran out between preparing an address and dialing from it; the
-        // next attempt takes a fresh one.
         return nullptr;
     }
     std::unique_ptr<bazarish::i2p::Stream> stream = endpoint->connect(toDest, timeout);
@@ -210,11 +178,6 @@ void OutboundLeases::sweeperLoop()
         if (cv_.wait_for(lock, kSweepInterval, [this]() { return !running_.load(); })) {
             return;
         }
-        // Retiring a lease tears a destination down, and the engine under it can
-        // fail at that - a router that has gone away, most of all. On this thread
-        // that is a sweep that did not happen, said out loud and tried again next
-        // time; without the catch it is the whole process going down because a
-        // lease could not be closed.
         try {
             dropExpired(std::chrono::steady_clock::now());
         } catch (const std::exception& error) {

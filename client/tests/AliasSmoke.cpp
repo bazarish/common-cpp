@@ -1,19 +1,4 @@
 // Bazarish project (c) 2026
-//
-// Live end-to-end against a running alias resolver, over real I2P. Not a unit
-// test - it needs the network and a resolver that is actually up - so it is
-// built but never registered with ctest, like i2p_smoke beside it.
-//
-// What no automated layer can reach is exactly this: that the coordinate a build
-// ships with names a daemon that answers, that the frame survives the real
-// transport, and that what comes back verifies against the root the client was
-// built with rather than against a root the test handed itself.
-//
-// Run:  alias_smoke [alias-to-resolve] [router-data-dir]
-// The coordinate is the compiled-in one and cannot be pointed elsewhere - that
-// it is the shipped one is the whole point of the run. The router keeps its
-// netDb under the data directory, so a second run starts from peers it already
-// knows.
 
 #include "Client.hpp"
 #include "FederationFetch.hpp"
@@ -51,9 +36,6 @@ std::int64_t nowSeconds()
 
 int main(const int argc, const char** argv)
 {
-    // Redirected output is block-buffered, and everything below waits on a router
-    // and then on tunnels: unbuffered, a run that is working looks like one that
-    // has hung for minutes.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
     const std::string alias = argc > 1 ? argv[1] : "nobodyhasthis";
@@ -78,9 +60,6 @@ int main(const int argc, const char** argv)
     }
     std::printf("[alias] router ready, knownRouters=%d\n", router.knownRouters());
 
-    // The transport a client really uses for the registry: a throwaway
-    // destination per exchange, dialled straight at it, with our own server
-    // nowhere in it, speaking the registry's own HTTP API.
     const FetchTransport transport = [&router](const std::string& host, const std::string& op,
                                          const Bytes& body) {
         return resolverFetchOverI2p(router, host, op, body, bazarish::i2p::Privacy::eMinimal,
@@ -89,10 +68,6 @@ int main(const int argc, const char** argv)
 
     int failures = 0;
 
-    // --- A resolve, over the real thing ---
-    // A name nobody holds is the useful negative here: the sentence a resolve
-    // throws for an unknown alias can only come from a daemon that received the
-    // request, parsed it and answered with that code.
     try {
         const Descriptor descriptor
             = Client::resolveAlias(alias, resolver, nowSeconds(), transport);
@@ -109,10 +84,6 @@ int main(const int argc, const char** argv)
         }
     }
 
-    // --- A signed status, verified against the compiled-in root ---
-    // This is the whole trust path in one exchange: our signature names us, the
-    // answer is signed by a key the root delegated, and the chain is checked
-    // against the root this binary was built with. No name and no money needed.
     try {
         const Identity me = Identity::generate();
         AliasMaintenanceRequest asking;

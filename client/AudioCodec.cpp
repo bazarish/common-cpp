@@ -12,20 +12,10 @@ namespace bazarish {
 
 namespace {
 
-// Opus packets for one 20 ms mono frame are well under this; the buffer only
-// bounds a single encode call.
 constexpr int kMaxPacketBytes = 4000;
 
-// Full scale of a signed-16 sample, the reference every level is measured
-// against.
 constexpr double kFullScale = 32768.0;
 
-// WSOLA settings. The window is long enough to hold a pitch period of any voice
-// (a low male voice is around 12 ms) and short enough that the audio inside it
-// does not change character. Windows are laid down half a window apart, where a
-// Hann pair sums to one and needs no further correction. The search is what
-// keeps the pitch: the next window is taken from within this much of where it
-// would ideally fall, wherever it best continues the last one.
 constexpr int kStretchWindowMs = 30;
 constexpr int kStretchSearchMs = 5;
 constexpr int kStretchMatchMs = 5;
@@ -127,7 +117,6 @@ AudioDecoder& AudioDecoder::operator=(AudioDecoder&& other) noexcept
 std::vector<std::int16_t> AudioDecoder::decode(const Bytes& packet)
 {
     std::vector<std::int16_t> pcm(kCallSamplesPerFrame);
-    // An empty packet signals a lost frame: pass null/0 so Opus runs PLC.
     const unsigned char* const data = packet.empty() ? nullptr : packet.data();
     const opus_int32 dataSize = static_cast<opus_int32>(packet.size());
     const int samples = opus_decode(decoder_, data, dataSize, pcm.data(), kCallSamplesPerFrame, 0);
@@ -140,8 +129,6 @@ std::vector<std::int16_t> AudioDecoder::decode(const Bytes& packet)
 
 namespace {
 
-// Each frame is preceded by its length. Opus frames at these settings are well
-// under a kilobyte, so two bytes carry any of them.
 constexpr std::size_t kFrameLengthBytes = 2;
 constexpr unsigned kByteBits = 8;
 constexpr std::size_t kMaxFrameBytes = 0xFFFF;
@@ -168,8 +155,6 @@ TimeStretch::TimeStretch(std::vector<std::int16_t> pcm, const double speed)
     , hopSynthesis_(samplesOf(kStretchWindowMs) / 2)
 {
     hopAnalysis_ = static_cast<int>(std::lround(hopSynthesis_ * speed));
-    // Nothing to stretch: at normal speed, or when the recording is shorter than
-    // a single window, the audio is handed over as it is.
     stretching_ = speed > 1.0 && pcm_.size() > static_cast<std::size_t>(window_);
     if (!stretching_) {
         return;
@@ -197,8 +182,6 @@ bool TimeStretch::step()
     }
     ready_ += static_cast<std::size_t>(hopSynthesis_);
 
-    // What would have followed this window is the sound the next one has to
-    // continue; the search picks the start that matches it best.
     const std::size_t natural = read_ + static_cast<std::size_t>(hopSynthesis_);
     if (natural + match > pcm_.size()) {
         read_ = pcm_.size();
@@ -264,8 +247,6 @@ std::vector<std::uint8_t> voiceWaveform(const Bytes& packed, const int bars)
     if (frames.empty()) {
         return {};
     }
-    // One RMS per 20 ms frame first, then frames folded into bars: the fold is
-    // over a whole number of frames however long the message is.
     AudioDecoder decoder;
     std::vector<double> frameLevels;
     frameLevels.reserve(frames.size());
@@ -288,7 +269,7 @@ std::vector<std::uint8_t> voiceWaveform(const Bytes& packed, const int bars)
     const double peak = *std::max_element(barLevels.begin(), barLevels.end());
     std::vector<std::uint8_t> out(static_cast<std::size_t>(bars), 0);
     if (peak < kWaveformSilence) {
-        return out;  // nothing was recorded loud enough to draw
+        return out;
     }
     for (std::size_t i = 0; i < barLevels.size(); ++i) {
         const double scaled = barLevels[i] / peak * (kWaveformLevels - 1);
@@ -311,7 +292,7 @@ void normalizeVoicePcm(std::vector<std::int16_t>& pcm)
     }
     const double rms = std::sqrt(square / static_cast<double>(pcm.size()));
     if (rms < kVoiceSilenceRms || peak == 0) {
-        return;  // a room, not a voice: raising it would only send the room
+        return;
     }
     const double peakScale = static_cast<double>(peak) / kFullScale;
     const double gain = std::min({kVoiceTargetRms / rms, kVoiceTargetPeak / peakScale,

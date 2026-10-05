@@ -39,8 +39,6 @@ std::string text(const std::vector<unsigned char>& data)
     return std::string(data.begin(), data.end());
 }
 
-// Everything the handlers saw, so the test can wait for it rather than sleep
-// for it: a test that sleeps is a test that is flaky on a loaded machine.
 struct Seen {
     std::mutex mutex;
     std::condition_variable changed;
@@ -65,7 +63,6 @@ struct Seen {
     }
 };
 
-// The status an ordinary request gets, which is what a prober sees.
 unsigned plainGet(const int port, const std::string& path, const std::string& token)
 {
     asio::io_context io;
@@ -84,7 +81,6 @@ unsigned plainGet(const int port, const std::string& path, const std::string& to
     return in.result_int();
 }
 
-// Opens a socket to the server, or reports how it was refused.
 struct Dialled {
     std::unique_ptr<websocket::stream<tcp::socket>> socket;
     unsigned refusedWith = 0;
@@ -128,8 +124,6 @@ int main()
     SocketRoutes routes;
     routes.subprotocol = kProtocol;
     routes.maxMessageBytes = 4096;
-    // An unauthorised upgrade is refused with an ordinary response, which is how
-    // it becomes the same 404 as everything else on a host.
     routes.admit = [](const Request& request) -> std::optional<Response> {
         if (request.header(kTokenHeader) != kToken) {
             return Response{404, "text/html", {}, "<html>nothing here</html>"};
@@ -144,8 +138,6 @@ int main()
     };
     routes.message = [&seen](const SocketPtr& socket, const std::vector<unsigned char>& message) {
         seen.note([&]() { seen.messages.push_back(text(message)); });
-        // Answer with the same bytes turned round, so the test proves the
-        // payload survived rather than that something arrived.
         std::vector<unsigned char> reply(message.rbegin(), message.rend());
         socket->send(std::move(reply));
     };
@@ -160,34 +152,23 @@ int main()
 
     asio::io_context io;
 
-    // An upgrade with no token is refused. What it is refused WITH is checked
-    // over a plain request below: not every Beast version fills the response
-    // object on a handshake that fails, and it is the plain request that a
-    // prober makes anyway.
+    // An upgrade with no token is refused.
     const Dialled unauthorised = dial(io, port, kPath, "wrong");
     CHECK(unauthorised.socket == nullptr);
 
-    // An upgrade at a path nobody serves is refused too, and asking for a
-    // socket does not make a host answer differently: the page a stranger gets
-    // at the socket's own path is the one below.
     const Dialled nowhere = dial(io, port, "/nothing", kToken);
     CHECK(nowhere.socket == nullptr);
 
-    // Refused as a page rather than as a protocol error, so a client that
-    // guessed the path learns nothing from what came back.
     CHECK(plainGet(port, kPath, "wrong") == 404);
     CHECK(plainGet(port, "/nothing", kToken) == 404);
-    // A path that has an ordinary route answers as the request it also is.
     CHECK(plainGet(port, "/plain", kToken) == 200);
 
-    // An authorised upgrade opens, and the protocol the client named comes back.
     Dialled dialled = dial(io, port, kPath, kToken);
     CHECK(dialled.socket != nullptr);
     CHECK(dialled.negotiated == kProtocol);
     CHECK(seen.waitFor([&]() { return seen.opened == 1; }));
     CHECK(seen.protocolHeader == kProtocol);
 
-    // Binary in, binary out, payload intact.
     dialled.socket->binary(true);
     dialled.socket->write(asio::buffer(std::string("hello")));
     CHECK(seen.waitFor([&]() { return seen.messages.size() == 1; }));
@@ -197,8 +178,6 @@ int main()
     CHECK(dialled.socket->got_binary());
     CHECK(beast::buffers_to_string(buffer.data()) == "olleh");
 
-    // Several messages keep their order, because a queue that reorders is a
-    // stream that corrupts.
     buffer.consume(buffer.size());
     for (int i = 0; i < 8; ++i) {
         const std::string message = "message-" + std::to_string(i);
@@ -212,13 +191,10 @@ int main()
         CHECK(got == std::string(sent.rbegin(), sent.rend()));
     }
 
-    // Closing from the client end is noticed once.
     boost::system::error_code ignored;
     dialled.socket->close(websocket::close_code::normal, ignored);
     CHECK(seen.waitFor([&]() { return seen.closed == 1; }));
 
-    // A text frame is not tolerated: a caller sending one is not speaking this
-    // protocol, and the socket ends rather than guessing what was meant.
     Dialled talker = dial(io, port, kPath, kToken);
     CHECK(talker.socket != nullptr);
     CHECK(seen.waitFor([&]() { return seen.opened == 2; }));
@@ -227,7 +203,6 @@ int main()
     CHECK(seen.waitFor([&]() { return seen.closed == 2; }));
     talker.socket->close(websocket::close_code::normal, ignored);
 
-    // The server sends of its own accord, and the client hears it.
     Dialled listener = dial(io, port, kPath, kToken);
     CHECK(listener.socket != nullptr);
     CHECK(seen.waitFor([&]() { return seen.opened == 3; }));

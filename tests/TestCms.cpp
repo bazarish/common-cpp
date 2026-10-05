@@ -14,7 +14,6 @@ using namespace bazarish;
 
 int main()
 {
-    // SignedData round trip: body comes back intact, signer is identified.
     const Key user = Key::generateSigning();
     const nlohmann::json body = {{"v", 1}, {"hello", "world"}, {"n", 42}};
     const Bytes der = cms::signJson(body, user);
@@ -24,10 +23,7 @@ int main()
     CHECK(verified.body == body);
     CHECK(verified.signerFingerprint == user.fingerprint());
 
-    // Corrupting the signed payload must fail verification. The JSON
-    // content is embedded verbatim in the DER; flip a byte inside it.
-    // (Bytes elsewhere may land in the carrier certificate's own fields,
-    // which are deliberately not verified.)
+    // Corrupting the signed payload must fail verification.
     const std::string marker = "world";
     const auto markerStart = std::search(der.begin(), der.end(), marker.begin(), marker.end());
     CHECK(markerStart != der.end());
@@ -36,15 +32,12 @@ int main()
     CHECK_THROWS(cms::verifyJson(corrupted));
     CHECK_THROWS(cms::verifyJson(Bytes{0x00, 0x01, 0x02}));
 
-    // Hybrid round trip: body intact, identity fingerprint covers both keys.
     const Identity identity = Identity::generate();
     const Bytes hybridDer = cms::signJsonHybrid(body, identity);
     const cms::VerifiedHybridJson hybridVerified = cms::verifyJsonHybrid(hybridDer);
     CHECK(hybridVerified.body == body);
     CHECK(hybridVerified.identityFingerprint == identity.fingerprint());
 
-    // A wrapper with a valid classical signature but a broken pq signature
-    // must fail: flip a byte inside the base64 of the pq signature.
     {
         const cms::VerifiedJson wrapper = cms::verifyJson(hybridDer);
         nlohmann::json tamperedWrapper = wrapper.body;
@@ -55,8 +48,6 @@ int main()
         CHECK_THROWS(cms::verifyJsonHybrid(resigned));
     }
 
-    // Downgrade: an EC key smuggled into the pq slot must fail even with
-    // a consistent signature.
     {
         const std::string serialized = body.dump();
         const Bytes bodyBytes(serialized.begin(), serialized.end());
@@ -74,7 +65,6 @@ int main()
         CHECK_THROWS(cms::verifyJsonHybrid(downgradedDer));
     }
 
-    // Envelope round trip with a sealing key.
     const Key sealing = Key::generateSealing();
     const Key sealingPublic = Key::fromPublicDer(sealing.publicDer());
     const Bytes plaintext = {'s', 'e', 'a', 'l', 'e', 'd'};
@@ -89,8 +79,6 @@ int main()
     corruptedEnvelope[corruptedEnvelope.size() - 1] ^= 0x01;
     CHECK_THROWS(cms::unseal(corruptedEnvelope, sealing));
 
-    // Password-based envelope: round trips with the password and rejects the
-    // wrong one. Used by the encrypted state export.
     const std::string password = "open sesame";
     const Bytes secret = {'b', 'a', 'c', 'k', 'u', 'p'};
     const Bytes passEnvelope = cms::sealWithPassword(secret, password);
@@ -99,10 +87,6 @@ int main()
     CHECK_THROWS(cms::unsealWithPassword(passEnvelope, "guess"));
     CHECK_THROWS(cms::sealWithPassword(secret, ""));
 
-    // Streaming password unseal (the large-blob recipient path): write the
-    // envelope to a file, decrypt it file-to-file and check the plaintext round
-    // trips over many cipher blocks; a wrong password fails. A larger payload
-    // exercises the streamed decrypt rather than a single-block one.
     {
         Bytes bigSecret;
         for (int i = 0; i < 100000; ++i) {
@@ -121,8 +105,6 @@ int main()
         cms::unsealWithPasswordToFile(derPath, outPath, password);
         Bytes recovered;
         {
-            // Closed before the file is removed: an open file is not one every
-            // platform lets go of.
             std::ifstream in(outPath, std::ios::binary);
             recovered.assign(
                 (std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -134,10 +116,6 @@ int main()
         std::filesystem::remove(outPath);
     }
 
-    // Streaming password seal (the large-blob upload path): encrypt a plaintext
-    // file to a ciphertext file without holding it whole in memory, then decrypt
-    // it back (both file-to-file and via the in-memory path) and check it round
-    // trips over many blocks; an empty password fails.
     {
         Bytes bigPlain;
         for (int i = 0; i < 100000; ++i) {
@@ -156,12 +134,10 @@ int main()
         }
         cms::sealWithPasswordToFile(plainPath, cipherPath, password);
 
-        // Decrypts file-to-file...
         cms::unsealWithPasswordToFile(cipherPath, outPath, password);
         Bytes recovered;
         Bytes envelope;
         {
-            // Closed before the files are removed, as above.
             std::ifstream fromFile(outPath, std::ios::binary);
             recovered.assign(
                 (std::istreambuf_iterator<char>(fromFile)), std::istreambuf_iterator<char>());

@@ -9,15 +9,9 @@ namespace bazarish::client {
 
 namespace {
 
-// The largest standard symbol with the lowest error correction gives the most
-// bytes per symbol, so the full chain needs the fewest frames. Structured
-// append requires a fixed version (it cannot auto-size).
 constexpr int kQrVersion = 40;
-// Modules of white margin around the symbol, required for a scanner to lock.
 constexpr int kQuietModules = 2;
 
-// Two terminal columns per module keep the symbol roughly square in a cell
-// grid that is taller than it is wide.
 const char* const kDark = "██";
 const char* const kLight = "  ";
 
@@ -75,7 +69,6 @@ std::vector<QrSymbol> encodeQrSymbols(const std::string& payload)
         symbol.width = qr->width;
         symbol.modules.resize(static_cast<std::size_t>(qr->width) * qr->width);
         for (std::size_t i = 0; i < symbol.modules.size(); ++i) {
-            // The least significant bit of each module byte is the dark flag.
             symbol.modules[i] = qr->data[i] & 1;
         }
         symbols.push_back(std::move(symbol));

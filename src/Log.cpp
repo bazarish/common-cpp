@@ -13,18 +13,15 @@ std::atomic<bazarish::log::Level> gLevel{bazarish::log::Level::eInfo};
 std::string gComponent = "bazarish";
 std::mutex gWriteMutex;
 
-// Captured once at static-init time: true when our stderr is wired to the
-// journal, in which case systemd parses a leading "<N>" priority prefix.
 const bool kUnderJournald = std::getenv("JOURNAL_STREAM") != nullptr;
 
-// Syslog numeric priority for the "<N>" stderr prefix systemd understands.
 int syslogPriority(const bazarish::log::Level level)
 {
     switch (level) {
-        case bazarish::log::Level::eError: return 3;  // LOG_ERR
-        case bazarish::log::Level::eWarn:  return 4;  // LOG_WARNING
-        case bazarish::log::Level::eInfo:  return 6;  // LOG_INFO
-        case bazarish::log::Level::eDebug: return 7;  // LOG_DEBUG
+        case bazarish::log::Level::eError: return 3;
+        case bazarish::log::Level::eWarn:  return 4;
+        case bazarish::log::Level::eInfo:  return 6;
+        case bazarish::log::Level::eDebug: return 7;
     }
     return 6;
 }
@@ -56,7 +53,7 @@ std::string fillBraces(const std::string_view fmt, const std::vector<std::string
         const char c = fmt[i];
         const bool doubled = i + 1 < fmt.size() && fmt[i + 1] == c;
         if ((c == '{' || c == '}') && doubled) {
-            out.push_back(c);  // "{{" and "}}" stand for one brace
+            out.push_back(c);
             ++i;
             continue;
         }
@@ -73,7 +70,6 @@ std::string fillBraces(const std::string_view fmt, const std::vector<std::string
 
 }  // namespace detail
 #endif
-
 
 void setComponent(const std::string_view component)
 {
@@ -117,8 +113,6 @@ void emit(const Level level, const std::string_view message)
     const std::string line = kUnderJournald
         ? formatLine("<{}>{}: {}\n", syslogPriority(level), gComponent, message)
         : formatLine("{} {}: {}\n", levelTag(level), gComponent, message);
-    // stderr is unbuffered, so a single fwrite is one write syscall; the mutex
-    // serializes lines from concurrent threads so they never interleave.
     const std::lock_guard<std::mutex> guard(gWriteMutex);
     std::fwrite(line.data(), 1, line.size(), stderr);
 }

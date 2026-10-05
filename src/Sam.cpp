@@ -30,29 +30,18 @@ namespace bazarish::sam {
 
 namespace {
 
-// EdDSA-SHA512-Ed25519 per the I2P common structures specification. Always sent:
-// the router's own default is DSA-SHA1, and a signature type it cannot read
-// degrades to that default with nothing but a log line.
 constexpr int kEd25519SignatureType = 7;
 
-// The NETDB_STORE_TYPE value for i2cp.leaseSetType. Every destination this
-// project publishes is an encrypted LeaseSet2, reached at its blinded address.
+// The NETDB_STORE_TYPE value for i2cp.leaseSetType.
 constexpr int kEncryptedLeaseSetType = 5;
 
-// A control reply cannot exceed the router's own line buffer, so anything longer
-// is not a reply. Without a bound, whatever holds the port decides how much
-// memory this process spends.
 constexpr std::size_t kMaxReplyLineBytes = 8192;
 
-// Bound on a control exchange that is not waiting for tunnels. Only stops a
-// wedged router from hanging a caller; it is not a latency target.
 constexpr int kControlIoTimeoutSeconds = 240;
 
 // i2pd drops anything larger rather than fragmenting it.
 constexpr std::size_t kMaxDatagramBytes = 32768;
 
-// How often the watch looks at the control connection, and how long it waits
-// before trying to rebuild a session the router has dropped.
 constexpr int kWatchPollMs = 1000;
 constexpr int kRebuildDelaySeconds = 5;
 
@@ -60,22 +49,14 @@ constexpr int kListenBacklog = 16;
 
 constexpr int kMillisecondsPerSecond = 1000;
 
-// The version line of the datagram header. The router skips this token without
-// reading it, but the field is part of the format.
 constexpr const char* kDatagramHeaderVersion = "3.0";
 
 constexpr const char* kTransientDestination = "TRANSIENT";
 
-// Half of the first byte of a loopback address in host order.
 constexpr std::uint32_t kLoopbackFirstOctet = 127;
 
-// The platform's sockets, behind the few calls this layer makes of them. Only
-// the differences are here; nothing below this block knows which system it is
-// being built for.
 #ifdef _WIN32
 
-// Winsock answers nothing until it has been started, and once per process is
-// the whole of that requirement.
 void ensureSockets()
 {
     struct Winsock {
@@ -93,7 +74,6 @@ void ensureSockets()
 
 constexpr Socket kInvalidSocket = static_cast<Socket>(INVALID_SOCKET);
 
-// What the platform's own calls take, for the few made directly below.
 using NativeSocket = SOCKET;
 
 void closeSocket(const Socket socket) { ::closesocket(static_cast<SOCKET>(socket)); }
@@ -112,7 +92,6 @@ std::ptrdiff_t socketWrite(const Socket socket, const void* const data, const st
 
 void setTimeoutOption(const Socket socket, const int option, const int seconds)
 {
-    // Milliseconds in a DWORD here, a timeval everywhere else.
     const DWORD milliseconds = static_cast<DWORD>(seconds * kMillisecondsPerSecond);
     if (::setsockopt(static_cast<SOCKET>(socket), SOL_SOCKET, option,
             reinterpret_cast<const char*>(&milliseconds), sizeof milliseconds)
@@ -138,8 +117,6 @@ bool socketReadable(const Socket socket, const int timeoutMs)
 
 std::size_t socketSendQueue(Socket)
 {
-    // Windows has no equivalent of TIOCOUTQ, so the honest answer is that this
-    // layer does not know.
     return 0;
 }
 
@@ -204,8 +181,6 @@ NativeSocket native(const Socket socket)
     return static_cast<NativeSocket>(socket);
 }
 
-// One byte, looked at without taking it: what the watch uses to tell a closed
-// connection from a quiet one.
 std::ptrdiff_t peekByte(const Socket socket)
 {
     char probe = 0;
@@ -256,8 +231,6 @@ sockaddr_in loopbackAddress(const std::string& host, const std::uint16_t port)
     if (::inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
         throw Error(Result::eI2pError, "SAM: " + host + " is not an IPv4 address");
     }
-    // The router is handed the private keys of every destination it operates.
-    // That is a thing to do on this machine and nowhere else.
     if ((ntohl(addr.sin_addr.s_addr) >> 24) != kLoopbackFirstOctet) {
         throw Error(Result::eI2pError, "SAM: " + host + " is not a loopback address");
     }
@@ -338,8 +311,6 @@ void writeAllSocket(const Socket socket, const void* data, const std::size_t siz
     }
 }
 
-// One line, a byte at a time: the socket carries stream payload right after the
-// reply, and a read that overshoots would swallow it.
 std::string readLineSocket(const Socket socket)
 {
     std::string line;
@@ -386,8 +357,6 @@ Result resultFromString(const std::string& text)
     return Result::eUnknown;
 }
 
-// Splits a reply into key=value pairs after the two reply words. A value may be
-// quoted, which is how a MESSAGE with spaces in it arrives.
 std::map<std::string, std::string> parseReply(const std::string& line)
 {
     std::map<std::string, std::string> values;
@@ -484,8 +453,7 @@ std::string styleName(const Style style)
     throw Error(Result::eI2pError, "SAM: unknown session style");
 }
 
-// The tunnel profile as I2CP options. The mapping is the one the embedded engine
-// uses, so a destination means the same thing on either transport.
+// The tunnel profile as I2CP options.
 std::string privacyOptions(const i2p::Privacy privacy)
 {
     int length = 0;
@@ -528,8 +496,6 @@ std::string sessionCreateLine(const std::string& id, const SessionConfig& config
          << " SIGNATURE_TYPE=" << kEd25519SignatureType
          << " i2cp.leaseSetType=" << kEncryptedLeaseSetType;
     if (!config.published) {
-        // SAM creates every destination as public, so this option is the only way
-        // to keep a dial-out destination out of the netDb.
         line << " i2cp.dontPublishLeaseSet=true";
     }
     line << " " << privacyOptions(config.privacy) << " "
@@ -541,7 +507,6 @@ std::string sessionCreateLine(const std::string& id, const SessionConfig& config
     return line.str();
 }
 
-// Waits for one of the socket's events; false on timeout.
 bool waitReadable(const Socket socket, const int timeoutMs)
 {
     return socketReadable(socket, timeoutMs);
@@ -628,10 +593,6 @@ std::size_t Stream::readSome(void* buffer, const std::size_t size)
     if (socket_ == kInvalidSocket) {
         return 0;
     }
-    // Waited for here rather than through SO_RCVTIMEO: a router that takes a
-    // request and says nothing is the case this exists for, and the wait has to
-    // end in a failure the caller sees rather than in a socket error it has to
-    // guess at.
     if (readTimeoutSeconds_ > 0
         && !socketReadable(socket_, readTimeoutSeconds_ * kMillisecondsPerSecond)) {
         throw Error(Result::eI2pError,
@@ -690,11 +651,6 @@ struct Session::Impl {
     std::string privateKeys;
 
     mutable std::mutex mutex;
-    // A session gets exactly one forward, and the router refuses a second with
-    // "Already accepting" - taking the first one down with it. Several threads
-    // serve one destination, so the one that forwards has to be settled here and
-    // not by a flag they can all read as false at once. Ordering: this before
-    // mutex, never the other way.
     mutable std::mutex listenMutex;
     Held control;
     Held forward;
@@ -708,9 +664,6 @@ struct Session::Impl {
     std::atomic<bool> stopping{false};
     std::thread watch;
 
-    // Opens the control connection and creates the session on it. The router
-    // answers only once the destination has tunnels, so this is also the wait
-    // for readiness.
     void create()
     {
         Held control(openControlSocket(router.host, router.controlPort));
@@ -723,8 +676,6 @@ struct Session::Impl {
         if (keys == created.end()) {
             throw Error(Result::eUnknown, "SAM: SESSION STATUS carried no destination");
         }
-        // What comes back is the private blob. The shareable half has to be
-        // asked for separately.
         const std::map<std::string, std::string> naming
             = commandSocket(control.get(), "NAMING LOOKUP NAME=ME\n", "NAMING REPLY");
         const auto value = naming.find("VALUE");
@@ -738,8 +689,6 @@ struct Session::Impl {
         alive = true;
     }
 
-    // STREAM FORWARD on a connection of its own: the command claims the socket
-    // it arrives on, and the session's own connection must stay a session.
     void startForwarding()
     {
         Held forwarder(openControlSocket(router.host, router.controlPort));
@@ -752,8 +701,6 @@ struct Session::Impl {
         forward.reset(forwarder.release());
     }
 
-    // The router drops a session with its control connection, so losing that
-    // connection is the one thing worth watching for.
     void watchLoop()
     {
         while (!stopping) {
@@ -770,7 +717,7 @@ struct Session::Impl {
             }
             const std::ptrdiff_t got = peekByte(fd);
             if (got > 0) {
-                continue;  // an unsolicited line; nothing this session asked for
+                continue;
             }
             if (stopping) {
                 break;
@@ -789,8 +736,6 @@ struct Session::Impl {
                     const std::lock_guard<std::mutex> lock(mutex);
                     control.reset();
                     forward.reset();
-                    // The keys the router handed back keep the address across the
-                    // rebuild, even for a destination that started out transient.
                     config.privateKeys = privateKeys;
                 }
                 create();
@@ -818,7 +763,6 @@ Session::Session(RouterAddress router, SessionConfig config, const std::chrono::
     impl_->router = std::move(router);
     impl_->config = std::move(config);
     impl_->readyTimeout = readyTimeout;
-    // Unique per router, not just per process: several daemons share one router.
     impl_->id = "bazarish-" + toHex(randomBytes(8));
     if (impl_->config.style != Style::eStream) {
         impl_->datagrams.reset(openLocalUdpSocket(impl_->datagramPort));
@@ -867,8 +811,6 @@ std::unique_ptr<Stream> Session::connect(
     (void)commandSocket(stream.get(),
         "STREAM CONNECT ID=" + impl_->id + " DESTINATION=" + destination + " SILENT=false\n",
         "STREAM STATUS");
-    // From here the socket is the stream itself, and a read blocks for as long
-    // as the caller is willing to wait rather than for a control timeout.
     setSocketTimeouts(stream.get(), 0);
     return std::make_unique<Stream>(stream.release());
 }
@@ -898,7 +840,6 @@ std::unique_ptr<Stream> Session::accept(
         throw Error(Result::eI2pError, "SAM: could not take a forwarded stream");
     }
     setSocketTimeouts(incoming.get(), kControlIoTimeoutSeconds);
-    // The router names the caller on the first line and then gets out of the way.
     const std::string peerLine = readLineSocket(incoming.get());
     peerDestination = peerLine.substr(0, peerLine.find(' '));
     setSocketTimeouts(incoming.get(), 0);
@@ -949,10 +890,8 @@ std::vector<std::uint8_t> Session::receiveDatagram(
     }
     buffer.resize(static_cast<std::size_t>(got));
     if (impl_->config.style == Style::eRaw) {
-        return buffer;  // raw carries the payload and nothing else
+        return buffer;
     }
-    // A repliable datagram arrives as the sender's destination, a newline, and
-    // then the payload.
     const auto newline = std::find(buffer.begin(), buffer.end(), '\n');
     if (newline == buffer.end()) {
         throw Error(Result::eUnknown, "SAM: a repliable datagram named no sender");

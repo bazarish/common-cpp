@@ -11,10 +11,6 @@ namespace {
 
 using bazarish::cms::VerifiedHybridJson;
 
-// Verifies the hybrid container, then reads what the body says it is - before
-// any other field of it is touched. Without the tag one signed document parses
-// as another whenever the fields it lacks are optional, and the only thing
-// standing in the way is which fields the reader happens to look at.
 VerifiedHybridJson verifyTagged(const bazarish::Bytes& der, const char* const type)
 {
     VerifiedHybridJson verified = bazarish::cms::verifyJsonHybrid(der);
@@ -38,8 +34,6 @@ void requireSigner(const VerifiedHybridJson& verified, const std::string& expect
 
 namespace {
 
-// What each document calls itself, so no signed thing here can be read as
-// another. Checked before any field of the body is used.
 const char* const kContactCardType = "contact-card";
 const char* const kAliasCertificateType = "alias-certificate";
 const char* const kServerCardType = "server-card";
@@ -53,8 +47,6 @@ Bytes ContactCard::issue(const Identity& userIdentity, const std::int64_t issued
     const std::string& dest, const Bytes& sealingPublicKeyDer,
     const Bytes& servingSealingKeyDer)
 {
-    // No subject field: whoever signs this is its subject, and verify() reads
-    // that from the signature.
     nlohmann::json body = {
         {"v", kCertificateFormatVersion},
         {"t", kContactCardType},
@@ -76,9 +68,6 @@ ContactCard ContactCard::verify(const Bytes& der)
 {
     const VerifiedHybridJson verified = verifyTagged(der, kContactCardType);
     ContactCard card;
-    // Required, unlike everything below it: a card that cannot be placed in time
-    // cannot be compared with the one already held, which is the whole reason it
-    // is here. Said in the protocol's own words rather than as a missing key.
     if (!verified.body.contains("issuedAt")) {
         throw std::runtime_error("a contact card must say when it was signed");
     }

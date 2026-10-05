@@ -26,8 +26,6 @@ std::int64_t nowSeconds()
 
 namespace {
 
-// The card query as it goes on the wire: plain CBOR, because the stream it
-// travels on is already encrypted to the destination.
 Bytes cardQueryBytes(const CardFetchQuery& query)
 {
     const std::string text = toJson(query).dump();
@@ -99,19 +97,11 @@ void Client::releaseI2pLink()
     api_.releaseI2pLink();
 }
 
-
 PublishResult Client::publishCard(const Bytes& sealingPrekeyDer, const std::string& ownDest,
     const std::int64_t notBefore)
 {
-    // Ask the messaging server which destination + serving sealing key it has
-    // assigned us, then sign both into the card alongside the sealing prekey.
-    // While the destination is still building the server reports no address yet,
-    // so the card carries ours: the destination is ours, and its address is the
-    // master b32 we already hold.
     const DestinationInfo destination = myDestination();
     const std::string dest = destination.dest.empty() ? ownDest : destination.dest;
-    // Strictly after whatever this card replaces: the server orders cards by the
-    // second, and refuses one that is not newer than the card it already holds.
     const std::int64_t issuedAt = std::max(nowSeconds(), notBefore + 1);
     const Bytes card = ContactCard::issue(
         identity_, issuedAt, dest, sealingPrekeyDer, destination.servingSealingKeyDer);
@@ -139,8 +129,6 @@ Client::PreparedServingKey Client::prepareServingKey()
 
 void Client::commitServingKey(const Bytes& cardDer)
 {
-    // The answer is the ack: anything else throws, and the caller keeps what it
-    // had rather than acting on a rotation that did not happen.
     (void)api_.postJson("/v1/account/serving-key/commit", {{"card", toBase64(cardDer)}}).json();
 }
 
@@ -167,17 +155,11 @@ PortalInfo Client::fetchPortalInfo()
 
 void Client::registerHere()
 {
-    // The answer is the ack: a refusal - a banned key - throws. A moderated
-    // server accepts and holds the account until an operator approves it, which
-    // the account's own state reports later, not this call.
     (void)api_.postJson("/v1/account/registration", nlohmann::json::object()).json();
 }
 
 void Client::sendI2pTransient(const std::string& transientB64, const std::int64_t expiresUnix)
 {
-    // Raises on refusal (a moderated server withholds the destination until an
-    // operator approves the account), which the caller must not hide: without a
-    // delegation the user has no routing at all.
     api_.postJson(
         "/v1/account/i2p-dest", {{"transient", transientB64}, {"expiresUnix", expiresUnix}});
 }
@@ -197,41 +179,27 @@ I2pDestStatus Client::i2pStatus()
 StorageUsage Client::storageUsage()
 {
     StorageUsage usage;
-    // Best effort: a server that does not answer leaves the figures stale rather
-    // than failing the settings page they are shown on.
     try {
         const nlohmann::json body = api_.get("/v1/messaging/storage-usage").json();
         usage.mailboxUsedBytes = body.value("usedBytes", std::uint64_t{0});
         usage.mailboxQuotaBytes = body.value("quotaBytes", std::uint64_t{0});
         usage.mailboxOk = true;
     } catch (const std::exception& error) {
-        // Unreachable / unauthorized: leave the mailbox half stale (ok=false).
         bazarish::log::warn("storage usage unavailable: {}", error.what());
     }
     return usage;
 }
 
-
-
 ContactInfo Client::fetchCard(const Descriptor& descriptor, const FetchTransport& transport)
 {
-    // The query names the fingerprint and hands back the descriptor's view
-    // capability, and travels in the clear: the transport dials the destination
-    // directly over I2P, whose stream is already encrypted and authenticated to
-    // it, and no relayed path is allowed - that would tell our own server who is
-    // being added.
     const FetchOutcome outcome = transport(descriptor.dest, "card",
         cardQueryBytes(CardFetchQuery{descriptor.fingerprint, descriptor.view}));
     if (!outcome.ok) {
-        // The one answer for "no such user here" and "that is not the capability
-        // I issued": from where the asker stands, both mean the same thing.
         throw std::runtime_error("that invite is out of date - ask for a new one");
     }
 
     ContactInfo info;
     info.card = ContactCard::verify(outcome.sealed);
-    // The fingerprint is the trust anchor: the card is user-signed, so a wrong
-    // server can only withhold, never forge a card for someone else's fingerprint.
     if (info.card.fingerprint() != descriptor.fingerprint) {
         throw std::runtime_error("fetched card is for a different fingerprint");
     }
@@ -242,18 +210,10 @@ ContactInfo Client::fetchCard(const Descriptor& descriptor, const FetchTransport
 Descriptor Client::resolveAlias(const std::string& alias, const ResolverCoordinate& resolver,
     const std::int64_t now, const FetchTransport& transport)
 {
-    // The query names the alias and travels in the clear: the transport dials the
-    // resolver's destination directly over I2P, whose stream is already encrypted
-    // and authenticated to it, and there is no relayed path to hide the name from.
-    // What comes back is trusted for its signature, not for its secrecy.
     const std::string queryJson = toJson(ResolveQuery{alias}).dump();
     const FetchOutcome outcome
         = transport(resolver.dest, "resolve", Bytes(queryJson.begin(), queryJson.end()));
     if (!outcome.ok) {
-        // The code is what the registry answered and what a log needs; what is
-        // thrown is the sentence, because this lands in front of whoever typed
-        // the alias. A registry that says nothing is read as ALIAS_UNKNOWN: it
-        // is the only negative a resolve has.
         const std::string code
             = outcome.errorCode.empty() ? std::string(toString(ErrorCode::eAliasUnknown))
                                         : outcome.errorCode;
@@ -265,9 +225,6 @@ Descriptor Client::resolveAlias(const std::string& alias, const ResolverCoordina
     const ResolveResponse fetched
         = resolveResponseFromJson(nlohmann::json::parse(outcome.sealed));
 
-    // Verify the signature chain (record -> delegated key -> hardcoded root) and
-    // that the record is for the alias we asked for. This is the integrity
-    // anchor: even a malicious relay can only withhold, never forge a binding.
     const ResolveRecord record = verifyResolveRecord(fetched.recordDer, fetched.delegationDer,
         fetched.aliasCertDer, resolver.rootFingerprint, now);
     if (record.alias != alias) {
@@ -283,8 +240,6 @@ DestinationInfo Client::myDestination()
     DestinationInfo info;
     info.dest = body.at("dest").get<std::string>();
     info.state = body.value("state", std::string());
-    // The dest is empty while a personal destination is still building or has
-    // gone offline; only validate (and later publish) a present address.
     if (!info.dest.empty()) {
         validateB32I2pHost(info.dest);
     }
@@ -341,8 +296,6 @@ std::size_t Client::revokePasses(const std::vector<Bytes>& handles)
 
 std::vector<PendingEntry> Client::waitForPending(const int waitSeconds)
 {
-    // The read timeout outlasts the wait: the answer comes when the wait ends,
-    // and the transport must not give up first.
     constexpr int kReadSlackSeconds = 20;
     const ApiResponse response = api_.getWaiting(
         kEventsPath, "wait=" + std::to_string(waitSeconds), waitSeconds + kReadSlackSeconds);
@@ -352,8 +305,6 @@ std::vector<PendingEntry> Client::waitForPending(const int waitSeconds)
         entries.push_back(
             {entry.at("id").get<std::string>(), entry.at("class").get<std::string>()});
     }
-    // A poll that waited and heard nothing says nothing: it happens all day and
-    // would be the only thing the connection log ever showed.
     if (!entries.empty()) {
         log_->record({0, false, "poll: " + std::to_string(entries.size()) + " waiting", "200", {}});
     }
@@ -376,8 +327,6 @@ std::vector<PendingEntry> Client::listPending()
 std::string deliveryIdFor(
     const std::string& secretKey, const std::string& e2eId, const std::string& mailbox)
 {
-    // Half a SHA-256 is what the id has always been the size of; the other half
-    // adds nothing to a name.
     constexpr std::size_t kDeliveryIdHexChars = 32;
     return bazarish::service::hmacSha256Hex(secretKey, e2eId + "|" + mailbox)
         .substr(0, kDeliveryIdHexChars);

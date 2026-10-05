@@ -68,7 +68,6 @@ bool Bot::parseSlashCommand(const std::string& text, std::string& name, std::str
         return !name.empty();
     }
     name = text.substr(1, space - 1);
-    // Trim the single separating space; keep the rest verbatim.
     std::size_t start = space;
     while (start < text.size() && text[start] == ' ') {
         ++start;
@@ -120,21 +119,12 @@ void Bot::dispatch(const IncomingMessage& update)
         }
         return;
     }
-    // Control and media types (receipt, token-refill, file, unsupported, ...)
-    // are not dispatched: a bot that cares about them can read poll()'s return
-    // and the session directly. Ignoring them keeps the common case simple.
 }
 
 namespace {
 
-// Whether an incoming type warrants a delivery receipt: user-visible lines the
-// sender shows a tick for. Control content (receipt, edit, token-refill,
-// callbacks/commands raised by silent button taps) does not.
 bool warrantsReceipt(const std::string& contentType)
 {
-    // The names the protocol actually uses. This list carried "photo" and
-    // "audio", which nothing sends, and omitted "image", which is what a picture
-    // is - so the reference bot never acknowledged one.
     return contentType == "text" || contentType == "file" || contentType == "image"
         || contentType == "voice";
 }
@@ -146,13 +136,11 @@ std::size_t Bot::poll()
     const std::vector<IncomingMessage> updates = session_.sync();
     for (const IncomingMessage& update : updates) {
         dispatch(update);
-        // Acknowledge receipt so the sender's tick advances to delivered (the
-        // "green" state). Best-effort: a failed receipt must not stop the bot.
+        // Acknowledge receipt so the sender's tick advances to delivered (the "green" state).
         if (warrantsReceipt(update.contentType) && !update.e2eId.empty()) {
             try {
                 session_.sendReceipt(update.fromFingerprint, update.e2eId);
             } catch (const std::exception& error) {
-                // Non-fatal: the sender simply stays at the "yellow" state.
                 bazarish::log::warn("bot: receipt not sent: {}", error.what());
             }
         }
@@ -166,8 +154,7 @@ void Bot::run(const int intervalMs)
         try {
             poll();
         } catch (const std::exception& error) {
-            // Transient (server momentarily unreachable, a handler throwing):
-            // skip this round and try again. A bot must not die on one bad poll.
+            // Transient (server momentarily unreachable, a handler throwing): skip this round and try again.
             bazarish::log::warn("bot: poll failed: {}", error.what());
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));

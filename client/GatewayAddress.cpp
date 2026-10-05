@@ -80,9 +80,6 @@ std::string GatewayAddress::toString() const
     text += host;
     const int standard = tls ? kHttpsPort : kHttpPort;
     if (port != standard) {
-        // Appended rather than built with +: GCC 12, which is the base the
-        // portable build is made on, misreads a literal added to a string and
-        // refuses it as a memcpy of the whole address space.
         text += ':';
         text += std::to_string(port);
     }
@@ -113,8 +110,6 @@ GatewayCheck checkGateway(const GatewayAddress& address, const std::string& pin)
         return check;
     }
     if (probe.status != 200) {
-        // The host answered, and answered that this is not its gateway. Most
-        // often that is a token or a path with a character missing.
         check.error = "that address and token open nothing here";
         return check;
     }

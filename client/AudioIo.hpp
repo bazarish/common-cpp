@@ -11,10 +11,6 @@
 namespace bazarish {
 
 // Microphone abstraction: the call engine pulls one 20 ms PCM frame at a time.
-// readFrame blocks until a frame is available (self-paced) and returns an empty
-// vector once stopped, so the engine's capture loop needs no clock of its own.
-// The real backend (Qt Multimedia) lives in the GUI; the lib ships only
-// device-free backends so the pipeline is testable headless.
 class AudioSource {
 public:
     virtual ~AudioSource() = default;
@@ -23,7 +19,6 @@ public:
     virtual std::vector<std::int16_t> readFrame() = 0;
 };
 
-// Speaker abstraction: the call engine pushes decoded 20 ms PCM frames.
 class AudioSink {
 public:
     virtual ~AudioSink() = default;
@@ -32,9 +27,6 @@ public:
     virtual void writeFrame(const std::vector<std::int16_t>& pcm) = 0;
 };
 
-// A device-free source that synthesises a sine tone, paced at one frame per
-// 20 ms. Stands in for a microphone on headless builds and integration tests
-// (a known signal that survives the Opus round trip).
 class SineAudioSource : public AudioSource {
 public:
     explicit SineAudioSource(double frequencyHz = 440.0);
@@ -48,8 +40,6 @@ private:
     std::atomic<bool> running_;
 };
 
-// A sink that counts and (optionally) retains frames, for headless runs and
-// tests. Thread-safe; the call engine writes from its receive thread.
 class CapturingAudioSink : public AudioSink {
 public:
     explicit CapturingAudioSink(bool retain = false);

@@ -25,145 +25,70 @@
 
 namespace bazarish::client {
 
-// Reports upload progress as (bytes sent so far, total bytes). Invoked from the
-// thread driving the upload; called repeatedly as the body streams out.
 using UploadProgressFn = std::function<void(std::uint64_t sent, std::uint64_t total)>;
 
-// One facade entry point, parsed from a single URL. A server may expose several
-// facades; the client tries them in order and fails over (see ServerEndpoint).
 struct Facade {
-    bool tls = false;          // https vs http
+    bool tls = false;
     std::string host;
-    int port = 0;              // defaults to 443 (https) / 80 (http) when omitted
-    // Secret URI prefix the facade strips, e.g. "/s/9f3c". Empty when the
-    // reverse proxy owns the secret.
+    int port = 0;
+    // Secret URI prefix the facade strips, e.g.
     std::string basePath;
 };
 
-// Parses "http[s]://host[:port][/base/path]" into a Facade. Throws on a malformed
-// URL. A bare "host:port" with no scheme is treated as http.
 Facade parseFacadeUrl(const std::string& url);
-// Formats a Facade back into its canonical URL string.
 std::string facadeToUrl(const Facade& facade);
 
-// Where the client reaches the infrastructure: the serving server's fingerprint
-// (the trust anchor) and an ordered list of facades the transport tries and
-// fails over across. A facade's secret base path is prepended to every request
-// URL but excluded from the signed canonical path (the facade strips it before
-// forwarding, and the server verifies the stripped path).
 struct ServerEndpoint {
-    // Fingerprint of the server root key (from the registration info). Used to
-    // name subscription certificates and as the local mailbox server.
     std::string serverFingerprint;
-    // The ordered facades; empty means "not connected to a server yet". Every one
-    // of them is an I2P address: this client talks to its server over I2P and
-    // nothing else.
     std::vector<Facade> facades;
-    // Where a router with no peers bootstraps from: full https URLs of su3 reseed
-    // archives, kept verbatim because nothing here is a Bazarish API - the engine
-    // fetches and loads them itself, and once it has a netDb they are not asked
-    // again. Empty leaves the engine its own built-in hosts.
     std::vector<std::string> reseeds;
 };
 
-
-// The long poll: a call that waits on purpose, and the one the connection log
-// leaves out until it brings something back.
 inline constexpr const char* kEventsPath = "/v1/messaging/events";
 
-// A server response. Non-2xx statuses are turned into ApiError by ApiClient,
-// so callers only ever see successful responses here.
 struct ApiResponse {
     int status = 0;
     Bytes body;
     std::string contentType;
-    // Response header names lowercased (e.g. the blob proxy's "x-blob-total").
     std::map<std::string, std::string> headers;
 
     nlohmann::json json() const;
 };
 
-// Raised for every non-success outcome: typed server error envelopes and
-// transport-level failures alike. code is set only when the body carried a
-// recognized error envelope; transport failures and unrecognized bodies
-// leave it empty.
 class ApiError : public std::runtime_error {
 public:
     ApiError(std::optional<ErrorCode> code, int httpStatus, const std::string& message);
 
     std::optional<ErrorCode> code;
-    // 0 when there was no HTTP response at all (transport failure).
     int httpStatus = 0;
 };
 
-// Low-level signed HTTP transport for the client API. Holds a reference to
-// the caller's identity (which must outlive the transport) and signs every
-// authenticated request with both identity keys.
 class ApiClient {
 public:
-    // Read timeout (seconds) for a normal request. Generous because a mailbox
-    // fetch travels to this account's server over I2P (tens of seconds).
     static constexpr int kDefaultReadTimeoutSeconds = 240;
-    // Connecting is local (the facade is one TCP hop away), so a connect that
-    // takes this long is a dead facade, not a slow one. Writing gets the same
-    // budget as reading: an upload streams for as long as a response may take.
     static constexpr int kConnectTimeoutSeconds = 30;
     static constexpr int kWriteTimeoutSeconds = kDefaultReadTimeoutSeconds;
 
-    // i2pDataDir is the embedded router's data directory; it enables routing
-    // facades whose host ends in ".b32.i2p" over I2P. When empty, only clearnet
-    // facades are usable (i2p facades are treated as unreachable) - the CLI and
-    // tests that never touch I2P leave it unset.
     ApiClient(const Identity& identity, std::string clientId, ServerEndpoint endpoint,
         std::filesystem::path i2pDataDir = {});
 
-    // Authenticated requests. path is the server-visible path (no base path,
-    // no query string); query, when non-empty, is appended to the URL only.
-    // Every non-2xx response throws ApiError.
     ApiResponse get(const std::string& path, const std::string& query = "");
-    // A GET the server is expected to hold open (the event face). The read
-    // timeout has to outlast the wait the server was asked for, or the client
-    // would tear down its own long poll.
     ApiResponse getWaiting(const std::string& path, const std::string& query, int readTimeoutSeconds);
-    // readTimeoutSeconds bounds how long to wait for the response.
-    // note, when given, is what the call is for in the connection log: the path
-    // alone cannot say which kind of device sync a self-message carries, because
-    // that is inside the sealed payload.
     ApiResponse postJson(const std::string& path, const nlohmann::json& body,
         int readTimeoutSeconds = kDefaultReadTimeoutSeconds, const std::string& note = {});
     ApiResponse del(const std::string& path, const nlohmann::json& body = nlohmann::json());
 
-    // Where this transport writes what it did, for the account's connection log.
-    // Null (the default) records nothing; the client sets it to its own log.
     void setWireLog(WireLog* log);
 
     const std::string& clientId() const;
     const ServerEndpoint& endpoint() const;
-    // The facade the transport is currently using (last one that worked), as a
-    // URL - for the GUI's "connected via" display.
     std::string activeFacadeUrl() const;
-    // Names this account on the destinations this client creates, so a router
-    // shared by several accounts says whose dialer is whose.
     void setDestinationOwner(std::string owner);
-    // Drops this client's I2P destination, tearing down its tunnels. The next
-    // request over an I2P facade builds a fresh one. Used when an account goes
-    // offline: an account that is not talking should not be holding tunnels open.
     void releaseI2pLink();
 
-    // How long a failed tunnel open stops this client from asking again. A server
-    // that answered is arguing about tunnels and will answer the same way next
-    // time, so it is asked again only much later; a status of 0 is nobody
-    // answering at all, which is the network and not an argument - that wait is
-    // short, because it is over as soon as the network is back.
     static std::int64_t sessionBackoffSeconds(int httpStatus);
-    // What this client's outbound destination is called in the router status
-    // view. An account keeps two: the one its session dials with, and the one that
-    // holds the long poll open (they are separate so a wait never blocks a send).
 
 private:
-    // One line for one call: what was asked, what came back, how big and how
-    // long. The long poll is left out on success - it would be the only thing
-    // the log ever showed - and its caller records it when it brought something.
     void noteWire(const std::string& method, const std::string& path, const std::string& note,
         const std::string& status, std::size_t bytes, std::int64_t elapsedMillis);
 
@@ -172,28 +97,13 @@ private:
         bool authenticate, const std::map<std::string, std::string>& extraHeaders = {},
         int readTimeoutSeconds = kDefaultReadTimeoutSeconds,
         const std::string& note = {});
-    // The transport half of send: everything from the request lock onward, with
-    // the headers already decided. Opening a session reuses it while the lock is
-    // held, which is why it is separate.
     ApiResponse transmitLocked(const std::string& method, const std::string& path,
         const std::string& query, const Bytes& body, const std::string& contentType,
         const std::map<std::string, std::string>& headers, int readTimeoutSeconds);
 
-
-    // True if a facade's host ends in ".b32.i2p" (reached over the embedded I2P
-    // transport rather than clearnet).
     static bool facadeIsI2p(const Facade& facade);
-    // Whether this facade is one this process serves itself, on loopback.
     static bool facadeIsOwnLoopback(const Facade& facade);
-    // The order facades are tried in: I2P facades first (preferred), then
-    // clearnet, preserving each group's configured order.
     std::vector<std::size_t> facadeOrder() const;
-    // Performs one HTTP/1.1 exchange to an I2P facade over the persistent
-    // outbound destination. writeBody streams the request body onto the stream
-    // after the head (bodyLen must equal the bytes it writes). readTimeoutSeconds
-    // bounds the wait for the answer, as it does on the clearnet leg. Returns
-    // nullopt when the facade is unreachable or did not answer in time. Throws
-    // only on a malformed response.
     std::optional<ApiResponse> i2pExchange(const Facade& facade, const std::string& method,
         const std::string& fullPath, const std::map<std::string, std::string>& headers,
         std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody,
@@ -202,68 +112,30 @@ private:
     const Identity& identity_;
     const std::string clientId_;
     const ServerEndpoint endpoint_;
-    // The embedded router's data dir (empty -> no I2P transport; i2p facades are
-    // then unreachable).
     const std::filesystem::path i2pDataDir_;
-    // Account name carried onto this client's destinations (status view only).
     std::string destinationOwner_;
 
-    // Session authentication. sessionUntil_ is what the server told us, so a
-    // client renews before it lapses rather than after a refusal. sessionBlocked_
-    // is the loop guard: a server that refuses a freshly issued session is not
-    // arguing about this session, so we stop asking for a while and keep signing.
-    // The server's own sealing key, taken from its card. What a tunnel hello is
-    // sealed to, and the reason a client needs nothing of its own before it can
-    // speak in private: the card is public, signed, and verified against the
-    // fingerprint the user already had.
     Bytes serverSealingKeyDer_;
     std::string sessionId_;
     Bytes sessionSecret_;
     Bytes sessionKey_;
-    // What the frames of this tunnel are encrypted under.
     Bytes tunnelKey_;
     std::int64_t sessionUntil_ = 0;
     std::uint64_t sessionSeq_ = 0;
     std::int64_t sessionBlockedUntil_ = 0;
-    // Consecutive sessions refused on their first use. A server that issues
-    // sessions and then rejects them is not going to be argued out of it, so the
-    // client stops opening them for a while instead of one per request.
     int sessionRefusals_ = 0;
-    // Why the last attempt to open one failed, carried out to whoever asks for a
-    // request: "connecting" with no reason is undiagnosable, and the reason is
-    // often not the network at all.
     std::string lastTunnelError_;
-    // Opens a tunnel if one is due and possible. Returns whether a usable one is
-    // in hand. Called with netMutex_ held.
     bool ensureSessionLocked();
-    // Fetches and verifies the server card, so a hello has something to seal to.
-    // Called with netMutex_ held; does nothing once the key is in hand.
     void ensureServerKeyLocked();
-    // One exchange through the tunnel: seals the request, sends the one request
-    // this program ever sends, and opens what comes back.
     ApiResponse tunnelledLocked(const std::string& method, const std::string& path,
         const std::string& query, const Bytes& body, const std::string& contentType,
         const std::map<std::string, std::string>& headers, int readTimeoutSeconds);
 
     WireLog* wireLog_ = nullptr;
-    // A persistent unpublished outbound destination that dials I2P facades; its
-    // tunnels stay warm across requests (a fresh transient per call would rebuild
-    // a destination on every poll). Created lazily on first I2P facade use.
     std::shared_ptr<bazarish::i2p::Endpoint> i2pOut_;
-    // The connection to the facade, kept between requests. Every request of this
-    // client is serialized on netMutex_, so one is enough; a stale one is dropped
-    // and redialled on its next use.
     std::unique_ptr<bazarish::i2p::Stream> i2pStream_;
-    // When that connection last carried anything. A kept stream is only good
-    // while the far side keeps its end, and past a quiet spell it no longer does.
     std::chrono::steady_clock::time_point i2pStreamUsedAt_;
-    // Index of the last facade that worked; the GUI "connected via" reads it.
     std::size_t activeFacade_ = 0;
-    // Serializes the two network entry points (send / putFile) so the client is
-    // safe to call from more than one thread: a blob download running off the main
-    // worker thread may take the own-server proxy fallback, which goes through this
-    // client concurrently with the worker's sync/sends. Guards the shared lazily
-    // created outbound endpoint and the active-facade index.
     mutable std::mutex netMutex_;
 };
 

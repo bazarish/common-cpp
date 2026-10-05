@@ -10,11 +10,7 @@ namespace {
 
 constexpr int kBitsPerByte = 8;
 constexpr std::uint32_t kByteMask = 0xFF;
-// The client takes even identifiers and the gateway odd ones, so each side
-// allocates without asking.
 constexpr std::uint32_t kIdStep = 2;
-// A credit is one cumulative count; a datagram names its destination with a
-// length that fits any I2P host.
 constexpr std::size_t kCreditBytes = 8;
 constexpr std::size_t kHostLengthBytes = 2;
 
@@ -56,9 +52,7 @@ std::uint16_t readBigEndian16(const unsigned char* const at)
         (static_cast<std::uint16_t>(at[0]) << kBitsPerByte) | static_cast<std::uint16_t>(at[1]));
 }
 
-// A frame whose body is a document. The rest carry bytes, because base64
-// over a 16 KiB chunk of a file would be a third of the connection spent
-// on nothing.
+// A frame whose body is a document.
 bool carriesJson(const FrameType type)
 {
     switch (type) {
@@ -268,8 +262,6 @@ RawSend decodeRawSend(const Frame& frame)
     return out;
 }
 
-// Zero is not an identifier: it is what a frame with no subject of its own
-// carries, and keeping it out of the space is what lets that stay unambiguous.
 Ids::Ids(const bool odd)
     : next_(odd ? 1 : kIdStep)
 {

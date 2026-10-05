@@ -1,15 +1,4 @@
 // Bazarish project (c) 2026
-//
-// What a send costs, against a real account and a real server. Not a unit test:
-// it opens an account that exists, brings up the transport that account is
-// configured for and puts a message on its way, printing what happened and when.
-// The question it answers is the one no unit test can: where the seconds go
-// between a person pressing send and the interface saying the message is on its
-// way.
-//
-// Run:  send_smoke <account.db> <peer-fingerprint> [text]
-// The transport is read from the application's own settings.json beside the
-// accounts directory, so it is whatever the client itself would use.
 #include "GatewayAddress.hpp"
 #include "I2pRouter.hpp"
 #include "Session.hpp"
@@ -37,7 +26,6 @@ namespace {
 
 Clock::time_point gStart;
 
-// Milliseconds since this run began, which is what every line here is about.
 long long sinceStart()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - gStart).count();
@@ -49,9 +37,6 @@ void say(const std::string& what)
     std::fflush(stdout);
 }
 
-// The transport the application itself is set to use, read from the file it
-// keeps it in. Nothing is guessed: a smoke that dials differently from the
-// client measures a path nobody uses.
 void useConfiguredTransport(const fs::path& settingsFile, const fs::path& i2pDir)
 {
     std::ifstream in(settingsFile);
@@ -105,8 +90,6 @@ int main(int argc, char** argv)
                                   : "the account says it is NOT connected");
 
         if (peer == "list") {
-            // Who this account can write to, since a fingerprint is 52
-            // characters and nobody types one from a log.
             for (const std::string& known : session.contactFingerprints()) {
                 say("  contact " + known + "  " + session.contactDisplayName(known));
             }
@@ -117,8 +100,6 @@ int main(int argc, char** argv)
         const std::vector<IncomingMessage> mail = session.sync(false, 5);
         say("mailbox pass done, " + std::to_string(mail.size()) + " item(s)");
 
-        // What the interface draws its circle from: the phases the courier
-        // reports, and the outcome it ends on.
         DeliveryWatch watch;
         watch.onPhase = [](const std::string& phase) { say("  phase: " + phase); };
         watch.onOutcome = [](const OutboundCourier::Outcome& outcome) {
@@ -126,9 +107,6 @@ int main(int argc, char** argv)
                                                              : "not stored"));
         };
 
-        // Twice, a few seconds apart: the first send makes an address ready for
-        // this correspondent and the second should find it held. A second one
-        // that pays again is the thing being looked for.
         for (int round = 1; round <= 2; ++round) {
             say("sending " + std::to_string(round));
             session.sendMessage(peer, text + " (" + std::to_string(round) + ")", {}, watch);
@@ -138,8 +116,6 @@ int main(int argc, char** argv)
             }
         }
 
-        // The courier carries it on its own threads; this is how long the
-        // interface would be watching a grey circle.
         for (int waited = 0; waited < 120; ++waited) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }

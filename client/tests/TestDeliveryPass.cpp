@@ -44,9 +44,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// Who the tunnel said this is. The transport authenticates the caller once, when
-// it opens; a route behind it is told, exactly as the real server tells one from
-// the session it holds.
 std::string requireCaller(const http::Request& request)
 {
     const std::string caller = request.header(bazarish::teststub::kCallerHeader);
@@ -56,8 +53,6 @@ std::string requireCaller(const http::Request& request)
     return caller;
 }
 
-// The tests write handlers the way the stub server used to take them - fill in
-// a response - while the server hands one back; this bridges the two shapes.
 using StubHandler = std::function<void(const http::Request&, http::Response&)>;
 
 http::Handler stub(StubHandler handler)
@@ -72,10 +67,7 @@ http::Handler stub(StubHandler handler)
 http::Server::Options localOptions()
 {
     http::Server::Options options;
-    options.port = 0;  // the kernel picks one
-    // Every route here locks one mutex, and the tunnel means each client holds a
-    // connection for a whole exchange: with the default four, five accounts and
-    // their couriers can occupy every thread and wait on each other.
+    options.port = 0;
     options.threads = 16;
     return options;
 }
@@ -86,59 +78,37 @@ void respondJson(http::Response& response, const nlohmann::json& body)
     response.body = body.dump();
 }
 
-// A minimal but faithful stateful messaging server for two co-located users: it
-// stores per-mailbox blobs, tracks each mailbox's registered pass hashes and
-// consumes exactly one on every content delivery (rejecting an unregistered
-// token), and hands back each user's self-signed subscription certificate. Every
-// handler runs on the server's own thread while the test drives the sessions on
-// the main thread, so all state is guarded by one mutex.
-// Where the name service answers in this test, standing in for the address baked
-// into a release build.
 constexpr const char* kTestResolverDest
     = "flkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
 
 struct Mock {
     std::mutex mu;
     std::string serverFp;
-    Key serverSealing = Key::generateSealing();  // one serving key shared by both dests
-    std::map<std::string, std::string> destFor;  // fingerprint -> serving destination
+    Key serverSealing = Key::generateSealing();
+    std::map<std::string, std::string> destFor;
     std::map<std::string, std::string> certFor;  // fingerprint -> contact card (base64 DER)
-    std::map<std::string, std::string> viewFor;  // fingerprint -> card-read capability
-    std::set<std::string> delegated;             // accounts that have handed over a transient
+    std::map<std::string, std::string> viewFor;
+    std::set<std::string> delegated;
     struct Item {
         std::string id;
         std::string cls;
         Bytes payload;
     };
-    std::map<std::string, std::vector<Item>> mailbox;         // recipient fp -> stored items
-    // Owner fp -> the pass handles that mailbox admits. Handles, not passes: the
-    // sender presents the pass and this is what a server holds.
+    std::map<std::string, std::vector<Item>> mailbox;
     std::map<std::string, std::set<std::string>> registered;
-    std::map<std::string, std::set<std::string>> seenIds;  // recipient fp -> admitted deliveryIds
-    // The biggest passless request this server was ever handed: what the
-    // protocol cap has to be, and no more.
+    std::map<std::string, std::set<std::string>> seenIds;
     std::size_t largestContactRequest = 0;
     int nextId = 1;
-    // What the far side answers instead of "delivered", when a test wants to see
-    // what a client does with a refusal. Empty means it accepts, as before.
     std::string refuseWith;
-    // A serving-key rotation in two steps: the server mints the pair, the client
-    // signs a card over it, and only the commit puts it in force.
-    std::map<std::string, std::string> pendingView;  // fingerprint -> view minted, not yet in force
-    // The central name registry, as far as this test is concerned: who owns a
-    // name, and where it currently says that name is answered.
-    std::map<std::string, std::string> aliasOwner;       // alias -> owner fingerprint
-    std::map<std::string, Descriptor> aliasDescriptor;   // alias -> binding
-    // Which aliases their owner has asked to point at their client. Bought is
-    // not bound: the registry refuses a binding nobody asked for, and a client
-    // that has not been told to publish one must not try.
+    std::map<std::string, std::string> pendingView;
+    std::map<std::string, std::string> aliasOwner;
+    std::map<std::string, Descriptor> aliasDescriptor;
+    // Which aliases their owner has asked to point at their client.
     std::set<std::string> aliasBindingWanted;
     int resolverStatusCalls = 0;
     int resolverUpdateCalls = 0;
 };
 
-// A send leaves on the courier's own thread, so a test that wants to see the far
-// side of one waits for it rather than assuming it has landed.
 bool waitFor(const std::function<bool()>& done)
 {
     constexpr int kWaitMs = 5000;
@@ -152,10 +122,6 @@ bool waitFor(const std::function<bool()>& done)
     return done();
 }
 
-// The recipient's server at the other end of a delivery, in process. It reads
-// the frame the courier really writes, unseals the envelope, checks the pass the
-// way a delivery engine does, and signs the confirmation the same way -
-// so what is exercised here is the delivery, not a stub of one.
 class MockServerStream final : public DeliveryStream {
 public:
     MockServerStream(Mock& mock, const Key& signingKey)
@@ -202,25 +168,15 @@ private:
         {
             std::lock_guard<std::mutex> lock(mock_.mu);
             if (!mock_.refuseWith.empty()) {
-                // Refused before anything is stored, the way a server refuses a
-                // pass it does not know.
                 const nlohmann::json refusal = {{"delivered", false},
                     {"errorCode", mock_.refuseWith}, {"errorMessage", "refused by the test"}};
                 return refusal.dump() + "\n";
             }
             const bool fresh = mock_.seenIds[mailbox].count(deliveryId) == 0;
             if (cls == "content" && fresh) {
-                // The pass presented must be one this mailbox admits - and it is
-                // still admitted afterwards. Nothing is taken here, and that is
-                // the whole change: what used to be a one-time capability is now
-                // a standing one, so the same value carries every message this
-                // test sends.
                 const Bytes presented = fromBase64(inner.at("pass").get<std::string>());
                 if (mock_.registered[mailbox].count(toBase64(deliveryPassHandle(presented)))
                     != 1) {
-                    // A pass this mailbox does not hold is refused, and nothing
-                    // is written down about the attempt - the way a revoked
-                    // correspondent is turned away.
                     const nlohmann::json refusal = {{"delivered", false},
                         {"errorCode", "DELIVERY_REJECTED"},
                         {"errorMessage", "delivery rejected"}};
@@ -256,8 +212,6 @@ private:
 
 }  // namespace
 
-// The stub server these tests talk to is a plain HTTP listener on localhost -
-// the same shape as a stand on a LAN, and the reason that switch exists.
 int main()
 {
     bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
@@ -271,11 +225,6 @@ int main()
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
             std::lock_guard<std::mutex> lock(m.mu);
-            // A server has no address for an account until that account has
-            // delegated one to it - which is what makes registering circular: the
-            // first card is published before there is any address to put in it,
-            // and only the second one carries the routing. A stub that answered
-            // with an address straight away hid that whole sequence.
             const bool delegated = m.delegated.count(caller) > 0;
             respondJson(response,
                 {{"dest", delegated ? m.destFor[caller] : std::string()},
@@ -287,17 +236,10 @@ int main()
               const std::string caller = requireCaller(request);
               const std::string cardB64
                   = nlohmann::json::parse(request.body).at("card").get<std::string>();
-              // Faithful: verify the user-signed card and keep it verbatim to hand
-              // back on a card fetch (the routing + prekey a peer needs).
               const ContactCard card = ContactCard::verify(fromBase64(cardB64));
               CHECK(card.fingerprint() == caller);
               {
                   std::lock_guard<std::mutex> lock(m.mu);
-                  // Faithful in the way that matters most here: a card is only
-                  // published forwards, and "forwards" is counted in whole
-                  // seconds. A stub that accepted anything let a client publish
-                  // its routing card in the same second as its first one and
-                  // never notice that a real server refuses exactly that.
                   const auto held = m.certFor.find(caller);
                   if (held != m.certFor.end() && !held->second.empty()) {
                       const ContactCard previous = ContactCard::verify(fromBase64(held->second));
@@ -314,8 +256,6 @@ int main()
                   }
                   m.certFor[caller] = cardB64;
               }
-              // Hex, and different per user: the descriptor codec insists on
-              // both, exactly as the real capability does.
               const std::string view = toHex(sha256(Bytes(caller.begin(), caller.end())))
                                            .substr(0, bazarish::kViewCapabilityChars);
               {
@@ -326,14 +266,9 @@ int main()
           };
     server.post("/v1/account/card", stub(handlePublishCard));
 
-    // Rotating the serving key: the server mints a fresh pair and holds the new
-    // capability aside until the client commits a card signed over it.
     server.post("/v1/account/serving-key",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
-            // A fresh capability of the full width, as a real server mints: a
-            // short one is not a capability at all and the client would refuse to
-            // publish it, which would make the check below pass for nothing.
             const std::string view = toHex(randomBytes(bazarish::kViewCapabilityBytes));
             CHECK(isViewCapability(view));
             {
@@ -355,8 +290,6 @@ int main()
             respondJson(response, {{"ok", true}});
         }));
 
-    // Registering delegates this account's offline transient before republishing
-    // the card with its routing, so the account API must take one.
     server.post("/v1/account/i2p-dest",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
@@ -368,8 +301,6 @@ int main()
             respondJson(response, {{"ok", true}});
         }));
 
-    // Device self-sync: one device writing into its own account's mailbox. No
-    // token, no destination - the signature on the request is the whole check.
     server.post("/v1/messaging/self",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
@@ -386,8 +317,6 @@ int main()
             respondJson(response, {{"ok", true}});
         }));
 
-    // The card is answered only to a caller that brings back the key from the
-    // descriptor, exactly as the node does.
     server.get("/v1/account/card",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string user = request.query("user");
@@ -469,8 +398,6 @@ int main()
             respondJson(response, {{"ok", true}});
         }));
 
-    // The stub speaks the tunnel, because that is the only transport a client
-    // has: one sealed path in, sealed frames out, and these routes behind it.
     const Identity stubServerIdentity = Identity::generate();
     const Key stubServerSealing = Key::generateSealing();
     bazarish::teststub::Tunnel tunnelStub(server, stubServerIdentity, stubServerSealing);
@@ -481,9 +408,6 @@ int main()
     endpoint.serverFingerprint = stubServerIdentity.fingerprint();
     endpoint.facades = {Facade{false, "127.0.0.1", port, {}}};
 
-    // The name service this build talks to: an offline root, a delegated signing
-    // key under it, and an address. A release bakes the first and third in; a test
-    // hands them to each session that resolves.
     const Identity resolverRoot = Identity::generate();
     const Identity resolverDelegated = Identity::generate();
     const Bytes resolverDelegationDer = DelegationCertificate::issue(resolverRoot,
@@ -495,25 +419,17 @@ int main()
     fs::remove_all(aDir);
     fs::remove_all(bDir);
 
-    // Reported after the accounts are closed and removed.
     int bobSent = 0;
     int aliceSent = 0;
 
-    // Both accounts go once the sessions holding them are gone: an open database
-    // file is not one every platform lets go of.
     {
         Session alice = Session::create(aDir, endpoint, std::string{});
         Session bob = Session::create(bDir, endpoint, std::string{});
         const ResolverCoordinate resolver{resolverRoot.fingerprint(), kTestResolverDest};
         alice.setResolverCoordinate(resolver);
         bob.setResolverCoordinate(resolver);
-        // Alice's own signing key, read the way another device of hers would
-        // hold it: an envelope injected below has to be signed like a real one.
         const Identity aliceIdentity
             = Identity::fromPrivatePem(AccountDb(aDir, std::string{}).text("identity.pem"));
-        // A backup taken before she had anybody: restored later, it is a device
-        // that holds the account and knows nobody, which is the case the address
-        // book exists for.
         const fs::path earlyBundle = fs::temp_directory_path() / "bz-pass-early.bundle";
         fs::remove(earlyBundle);
         alice.exportAccount(earlyBundle, "bundle-password");
@@ -523,7 +439,6 @@ int main()
             m.destFor[bob.fingerprint()] = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
         }
 
-        // A switched-off account announces nothing, itself included.
         alice.setSwitchedOff(true);
         bool announceRefused = false;
         try {
@@ -537,26 +452,13 @@ int main()
         alice.registerAccount();
         bob.registerAccount();
 
-        // Registering has to leave an account reachable. It publishes its card
-        // twice in a row - once to exist, once to carry the routing it only has
-        // by then - and a card is ordered against its predecessor in whole
-        // seconds, so the second one lands in the same second as the first. When
-        // that second card was refused, the account kept the first: no address in
-        // it, no invite to give out, no way for anyone to route to it, and
-        // nothing anywhere that tried again.
         CHECK(!alice.inviteUri().empty());
         CHECK(alice.inviteUri().find(m.destFor[alice.fingerprint()]) != std::string::npos);
         CHECK(!bob.inviteUri().empty());
 
-        // A card fetch dials the peer's destination directly over I2P; there is no
-        // router here, so the harness stands in for that dial. It answers exactly as
-        // a serving destination does: the card when the query brings back the view
-        // capability, and the same nothing otherwise.
         const auto directDial = [&m, &resolverRoot, &resolverDelegated, &resolverDelegationDer](
                                     const std::string& toDest, const std::string& op,
                                     const Bytes& query) {
-            // The central resolver answers on the same dial. Its ops are signed by
-            // the owner, and its answers are signed by its delegated key.
             if (op == kAliasStatusOp || op == kAliasUpdateOp) {
                 CHECK(toDest == kTestResolverDest);
                 FetchOutcome outcome;
@@ -577,8 +479,6 @@ int main()
                         return outcome;
                     }
                     CHECK(asked.request.descriptor.fingerprint == asked.owner);
-                    // The owner's own claim over the alias travels with the
-                    // binding; the registry stores it as the proof.
                     CHECK(!asked.request.aliasCertDer.empty());
                     const AliasCertificate claim
                         = AliasCertificate::verify(asked.request.aliasCertDer);
@@ -604,9 +504,6 @@ int main()
                 }
                 status.issuedAt = now;
                 status.notAfter = now + kAliasStatusValiditySeconds;
-                // No alias certificate: a status is about every name an account
-                // holds, and the owner's claim belongs to a resolve, which is
-                // about one.
                 const ResolveResponse answer{
                     signAliasStatus(status, resolverDelegated), resolverDelegationDer, Bytes{}};
                 const std::string json = toJson(answer).dump();
@@ -632,9 +529,6 @@ int main()
         alice.setFetchTransport(directDial);
         bob.setFetchTransport(directDial);
 
-        // Outgoing mail leaves the client itself, so the harness stands in for the
-        // dial as well: every delivery reaches the mock server above over the real
-        // frame, with no router and no waiting.
         const Key ackSigning = Key::generateSigning();
         const auto courierFor = [&m, &ackSigning]() {
             return std::make_unique<OutboundCourier>([](const std::string&, const std::string&) { return true; },
@@ -646,9 +540,6 @@ int main()
         alice.setOutboundCourier(courierFor());
         bob.setOutboundCourier(courierFor());
 
-        // Establish the contact both ways: Alice adds Bob from his invite (the only
-        // way in - a bare fingerprint would need a server to say who it hosts), Bob
-        // accepts. Now each holds the other's delivery pass.
         alice.addByInvite(bob.inviteUri(), "hi bob");
         bob.sync();
         bob.acceptContactRequest(alice.fingerprint());
@@ -656,16 +547,11 @@ int main()
         CHECK(alice.hasContact(bob.fingerprint()));
         CHECK(bob.hasContact(alice.fingerprint()));
 
-        // The acceptance leaves on the courier's thread, so this waits for it
-        // rather than assuming it has landed.
         CHECK(waitFor([&]() {
             alice.sync();
             return alice.canWriteTo(bob.fingerprint());
         }));
 
-        // --- The account's own name in the central registry -------------------
-        // A client that knows of no name of its own tells the name service
-        // nothing, on any schedule: this is the whole of the quiet case.
         CHECK(alice.aliasNames().empty());
         alice.serviceAliases();
         {
@@ -674,8 +560,6 @@ int main()
             CHECK(m.resolverUpdateCalls == 0);
         }
 
-        // Alice bought an alias in the browser; the registry knows it, this
-        // client does not. Activation is the one way in.
         {
             std::lock_guard<std::mutex> lock(m.mu);
             m.aliasOwner["alice"] = alice.fingerprint();
@@ -684,9 +568,6 @@ int main()
         CHECK(alice.aliasNames().size() == 1);
         CHECK(alice.aliasNames().front().alias == "alice");
 
-        // Bought is not bound. Knowing of an alias whose owner has not asked it
-        // to point here, the client publishes nothing at all - deciding that on
-        // the owner's behalf is exactly what this flag exists to prevent.
         CHECK(!alice.aliasNames().front().bindingWanted);
         CHECK(!alice.aliasUpdatePending());
         const int updatesBeforeAsking = m.resolverUpdateCalls;
@@ -697,8 +578,6 @@ int main()
             CHECK(m.aliasDescriptor.count("alice") == 0);
         }
 
-        // The owner asks on the website, and the next status says so. Only then
-        // does the client have an alias of its own to keep pointing here.
         {
             std::lock_guard<std::mutex> lock(m.mu);
             m.aliasBindingWanted.insert("alice");
@@ -706,17 +585,12 @@ int main()
         CHECK(alice.refreshAliasStatus());
         CHECK(alice.aliasNames().front().bindingWanted);
         CHECK(alice.aliasUpdatePending());
-        // Reading the status binds nothing. The activation button used to stop
-        // here, and the alias went on answering nobody while the client happily
-        // listed it - which is what the website meant by "still waiting".
         {
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.aliasDescriptor.count("alice") == 0);
         }
         CHECK(alice.pushAliasDescriptor());
         CHECK(!alice.aliasUpdatePending());
-        // And a second press asks the registry nothing: there is nothing new to
-        // say, so there is nothing to send.
         const int updatesBeforePressingAgain = m.resolverUpdateCalls;
         CHECK(!alice.pushAliasDescriptor());
         {
@@ -726,10 +600,6 @@ int main()
             CHECK(m.aliasDescriptor.at("alice").view == m.viewFor[alice.fingerprint()]);
         }
 
-        // THE REGRESSION THIS WHOLE PATH EXISTS FOR: rotating the serving key
-        // retires the capability the registry holds. Before, the name went on
-        // pointing at a capability the server had stopped honouring and simply
-        // stopped working, silently. Now the rotation tells the registry.
         const std::string viewBefore = m.viewFor[alice.fingerprint()];
         alice.rotateServingKey(nullptr);
         const std::string viewAfter = m.viewFor[alice.fingerprint()];
@@ -740,12 +610,6 @@ int main()
             CHECK(m.aliasDescriptor.at("alice").view == viewAfter);
         }
 
-        // The website's own switch, thrown twice. Withdrawing the binding drops
-        // the descriptor at the registry, and asking for it again does not bring
-        // one back - while this client's own descriptor has not moved at all.
-        // Nothing here used to notice: the name sat answering nobody and pressing
-        // the button changed nothing, because the only question asked was whether
-        // WE had moved.
         {
             const std::lock_guard<std::mutex> lock(m.mu);
             m.aliasBindingWanted.erase("alice");
@@ -753,7 +617,7 @@ int main()
         }
         CHECK(alice.refreshAliasStatus());
         CHECK(!alice.aliasNames().front().bindingWanted);
-        CHECK(!alice.aliasUpdatePending());  // nothing is asked for, so nothing is owed
+        CHECK(!alice.aliasUpdatePending());
         {
             const std::lock_guard<std::mutex> lock(m.mu);
             m.aliasBindingWanted.insert("alice");
@@ -775,9 +639,6 @@ int main()
             m.aliasOwner["bob"] = bob.fingerprint();
         }
         CHECK(bob.aliasNames().empty());
-        // Bob never activated, so his rotation asks once - the safety net - and
-        // finds the alias he did buy. Finding it is as far as it goes: he has not
-        // asked it to point at him, so nothing is published.
         const int statusBefore = m.resolverStatusCalls;
         bob.rotateServingKey(nullptr);
         CHECK(m.resolverStatusCalls == statusBefore + 1);
@@ -788,15 +649,10 @@ int main()
             CHECK(m.aliasDescriptor.at("alice").fingerprint == alice.fingerprint());
         }
 
-        // Once he asks for it on the website, the next pass publishes it.
         {
             std::lock_guard<std::mutex> lock(m.mu);
             m.aliasBindingWanted.insert("bob");
         }
-        // Run the way the app runs it: a snapshot taken on the thread that owns
-        // the session, the whole exchange - the ask and every repointing after it
-        // - run somewhere else over one destination, and the answer applied back
-        // here. Nothing in between touches the session.
         const int bobStatusBefore = m.resolverStatusCalls;
         const Session::AliasErrandResult errand
             = Session::runAliasErrand(bob.aliasErrandContext());
@@ -812,18 +668,12 @@ int main()
             CHECK(m.aliasDescriptor.at("bob").fingerprint == bob.fingerprint());
         }
         CHECK(bob.canWriteTo(alice.fingerprint()));
-        // One pass each way, and one is all there will ever be: this is the count
-        // that used to grow by 256 on every refill.
         {
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.registered[alice.fingerprint()].size() == 1);
             CHECK(m.registered[bob.fingerprint()].size() == 1);
         }
 
-        // The connection log: what the account did on the wire, which is the one
-        // place a user can see a delivery nobody signed for. One send has to
-        // leave three marks - the send itself, the far side's answer, and the
-        // server call underneath - and the receiving side has to see the arrival.
         {
             const auto logHas = [](const std::vector<WireEvent>& events,
                                     const std::string& whatPrefix, const std::string& status) {
@@ -844,28 +694,18 @@ int main()
             const std::vector<WireEvent> aliceLog = alice.connectionLog();
             CHECK(logHas(aliceLog, "text to", "sending"));
             CHECK(stored);
-            // The account's own server, spoken to over HTTP: its status is the
-            // only confirmation this side gets for what it uploaded.
             CHECK(logHas(aliceLog, "POST /v1/messaging/", "200"));
-            // Nothing here may carry what was written.
             for (const WireEvent& event : aliceLog) {
                 CHECK(event.what.find("logged") == std::string::npos);
                 CHECK(event.detail.find("logged") == std::string::npos);
             }
             bob.sync();
             CHECK(logHas(bob.connectionLog(), "text from", {}));
-            // A self-message names the kind it carries on the call that carries
-            // it: from the outside every one of them is the same POST, and a
-            // line of its own would have no status to report.
             alice.setDisplayName("Alice of the log");
             CHECK(logHas(alice.connectionLog(),
                 "POST /v1/messaging/self (device.account-name)", "200"));
         }
 
-        // An interactive message: the buttons a bot attaches ride on an ordinary
-        // text message, and the far side has to be handed them as their wire form.
-        // Checked here because a keyboard that goes missing between the two shows
-        // up as a bot whose buttons simply are not there.
         {
             const InlineKeyboard keyboard{
                 {{"Ping", "ping", {}}, {"Time", "time", {}}},
@@ -889,10 +729,6 @@ int main()
             CHECK(rows.at(1).at(0).at("command") == "help");
         }
 
-        // Nothing runs a pass down, so there is nothing to ask for and nothing to
-        // wait on. Send far past what a batch of 256 spent passes would have bought
-        // and the same value still carries every one of them - and the mailbox
-        // that admits them still holds exactly one.
         {
             constexpr int kFarPastABatch = 400;
             for (int i = 0; i < kFarPastABatch; ++i) {
@@ -910,10 +746,6 @@ int main()
         alice.sync();
         bob.sync();
 
-        // What the recipient's server measures is a step, not the message. Two
-        // texts of very different length must weigh the same on the wire: the
-        // authorship block is a fixed weight, so without padding the remainder
-        // would be the message itself - and for text, the number of bytes typed.
         {
             const auto weighOf = [&](const std::string& text) {
                 const std::size_t before = [&]() {
@@ -928,10 +760,6 @@ int main()
                 std::lock_guard<std::mutex> lock(m.mu);
                 return m.mailbox[bob.fingerprint()].back().payload.size();
             };
-            // What is left is the seal's own DER framing, which wobbles by a
-            // byte or two from one seal to the next whatever is inside it - so
-            // the same text twice spreads as much as two different texts do.
-            // That is the residual, and it carries nothing about the message.
             constexpr std::size_t kSealFramingWobble = 8;
             const std::size_t small = weighOf("hi");
             const std::size_t again = weighOf("hi");
@@ -944,14 +772,8 @@ int main()
         }
         bob.sync();
 
-        // A routing push carries a routing block and nothing else. It is applied
-        // like the one on any other message and shows nothing - but it has to be
-        // named on arrival, or it falls through to "unsupported", which is what a
-        // client says about a message it cannot read.
         {
             CHECK(alice.pushRoutingToContacts({}).told > 0);
-            // The push leaves on the courier's thread, so this waits for it
-            // rather than assuming one sync is late enough to see it.
             bool sawRouting = false;
             CHECK(waitFor([&]() {
                 for (const IncomingMessage& item : bob.sync()) {
@@ -964,22 +786,15 @@ int main()
             }));
         }
 
-        // Every content kind goes out the same way, and none of them has a price
-        // to run out of. What used to be checked here - that each kind asks for a
-        // refill before its stash empties - is a question that no longer exists.
         {
             const std::string ref = toHex(randomBytes(8));
             alice.sendReaction(bob.fingerprint(), ref, "\xf0\x9f\x91\x8d");
-            // The one path that deliberately establishes no dialog.
             alice.sendReceipt(bob.fingerprint(), ref);
             alice.sendDelete(bob.fingerprint(), ref);
             bob.sync();
             CHECK(alice.canWriteTo(bob.fingerprint()));
         }
 
-        // Removing an avatar travels like setting one. Bob holds Alice's until she
-        // takes it back; a removal that is never sent would leave him holding it for
-        // good, which is what used to happen.
         {
             const Bytes face = {0xFF, 0xD8, 0xFF, 0xE0, 'j', 'p', 'g'};
             alice.setAvatar(face, "image/jpeg");
@@ -992,16 +807,9 @@ int main()
             CHECK(bob.contactAvatar(alice.fingerprint()).empty());
         }
 
-        // --- The saved chat ---
-        //
-        // Addressed to herself, a message is kept rather than delivered: nothing
-        // is presented, nothing is dialled, and it goes to her own mailbox for her
-        // other devices to pick up.
         {
             alice.sendMessage(alice.fingerprint(), "note to self");
 
-            // It went into her own mailbox as a device notice, for her other
-            // devices to pick up.
             std::size_t deviceItems = 0;
             {
                 std::lock_guard<std::mutex> lock(m.mu);
@@ -1011,9 +819,6 @@ int main()
             }
             CHECK(deviceItems >= 1);
 
-            // And what another device does with one: the same line, in the same
-            // chat, as one of her own. Built here as the wire carries it, under
-            // another device id - the device that saved it skips its own echo.
             nlohmann::json saved = {
                 {"v", 1},
                 {"type", "device.saved"},
@@ -1032,11 +837,7 @@ int main()
                     }},
             };
             {
-                // Signed as that other device of hers would have signed it: an
-                // envelope that cannot name its author is dropped before it is
-                // read, which is the whole point of the signature.
                 signAuthorship(saved, aliceIdentity, /*withKeys=*/false);
-                // The wire carries CBOR, which is what the reader expects.
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"saved-echo", "device",
                     cms::seal(padToLadder(nlohmann::json::to_cbor(saved)),
@@ -1051,7 +852,6 @@ int main()
             }
             CHECK(sawSaved);
 
-            // A file has no bytes to fetch on another device, so it is refused.
             bool refused = false;
             try {
                 alice.sendFile(alice.fingerprint(), aDir / "meta", "", {}, "");
@@ -1061,7 +861,6 @@ int main()
             CHECK(refused);
         }
 
-        // --- The one name a contact may not have ---
         {
             alice.renameContact(bob.fingerprint(), "Saved messages");
             CHECK(alice.contactDisplayName(bob.fingerprint()) == "(Contact) Saved messages");
@@ -1071,7 +870,6 @@ int main()
             CHECK(alice.contactDisplayName(bob.fingerprint()) == "Bob");
         }
 
-        // --- Per-contact switches ---
         {
             CHECK(alice.contactCalls(bob.fingerprint()));
             CHECK(alice.contactNotifications(bob.fingerprint()));
@@ -1083,10 +881,6 @@ int main()
             alice.setContactNotifications(bob.fingerprint(), true);
         }
 
-        // --- Blocking ---
-        //
-        // What a block means where the message is read: Bob still holds the pass
-        // and still delivers, and none of it reaches her.
         {
             bob.sendMessage(alice.fingerprint(), "before the block");
             alice.setBlocked(bob.fingerprint(), true);
@@ -1101,13 +895,11 @@ int main()
                 }
             }
             CHECK(!heardBlocked);
-            // Her own mailbox is not left holding it either: it was acked away.
             {
                 std::lock_guard<std::mutex> lock(m.mu);
                 CHECK(m.mailbox[alice.fingerprint()].empty());
             }
 
-            // And she cannot write to them while the block stands.
             bool sendRefused = false;
             try {
                 alice.sendMessage(bob.fingerprint(), "still there?");
@@ -1116,26 +908,17 @@ int main()
             }
             CHECK(sendRefused);
 
-            // Blocking took the pass out of her mailbox, so his deliveries stop
-            // being admitted at all.
             const auto held = [&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
                 return m.registered[alice.fingerprint()].size();
             };
             CHECK(held() == 0);
 
-            // Lifting it gives back exactly what it took: the same pass, still in
-            // his hands, registered again. Nothing is sent to him, nothing waits
-            // for a message to ride on, and he can answer at once - which is the
-            // whole of what a block being lifted has to mean.
             alice.setBlocked(bob.fingerprint(), false);
             CHECK(!alice.isBlocked(bob.fingerprint()));
             CHECK(held() == 1);
             CHECK(bob.canWriteTo(alice.fingerprint()));
 
-            // What a client does with a refusal. There is no capability to lose,
-            // so no refusal costs anything: the same pass carries the next
-            // message whatever the far side said about the last one.
             {
                 const auto refuseOnce = [&](const std::string& code) {
                     {
@@ -1145,8 +928,6 @@ int main()
                     try {
                         alice.sendMessage(bob.fingerprint(), "into a refusal");
                     } catch (const std::exception&) {
-                        // The send failing is the point; what it did to the pass
-                        // is what is being checked.
                     }
                     std::lock_guard<std::mutex> lock(m.mu);
                     m.refuseWith.clear();
@@ -1170,10 +951,6 @@ int main()
             CHECK(heardAgain);
         }
 
-        // A contact who holds our pass can put an envelope in our mailbox - that
-        // is what a pass is for - but he cannot put another name on it.
-        // Admission is not authorship, and the signature is what tells them
-        // apart.
         {
             const Identity bobIdentity
                 = Identity::fromPrivatePem(AccountDb(bDir, std::string{}).text("identity.pem"));
@@ -1190,23 +967,14 @@ int main()
                     {"sentAt", 1}, {"text", body}};
             };
 
-            // Bob signs, but writes somebody else's name on it.
             nlohmann::json forged = text(strangerFingerprint, "forged-1", "trust me, I am them");
             signAuthorship(forged, bobIdentity, /*withKeys=*/true);
             intoAliceMailbox("forged-1", forged);
-            // Bob does not sign at all.
             intoAliceMailbox("unsigned-1", text(bob.fingerprint(), "unsigned-1", "no signature"));
-            // And the same message, honestly signed, to prove the gate is not
-            // simply dropping everything.
             nlohmann::json honest = text(bob.fingerprint(), "honest-1", "this one is mine");
             signAuthorship(honest, bobIdentity, /*withKeys=*/false);
             intoAliceMailbox("honest-1", honest);
 
-            // And what he cannot do at all: talk on the channel this account
-            // uses to talk to itself. A device message is a message from one of
-            // her own devices; his signature proves he is not one, whatever the
-            // type says. Two of them are worth the check by themselves - one
-            // changes a setting of hers, the other writes into her address book.
             const std::string plantedPeer = Identity::generate().fingerprint();
             const auto deviceNotice = [&](const std::string& id, nlohmann::json extra) {
                 extra["v"] = 1;
@@ -1237,18 +1005,12 @@ int main()
                 sawHonest = sawHonest || item.text == "this one is mine";
             }
             CHECK(!sawForged);
-            // Neither notice was his to send.
             CHECK(alice.delegationDays() == termBefore);
             CHECK(!alice.hasContact(plantedPeer));
             CHECK(!sawUnsigned);
             CHECK(sawHonest);
         }
 
-        // The one thing a stranger may put in a mailbox is a contact request, so
-        // its size has to be a known number rather than a generous one: the cap
-        // is what the worst case actually weighs. Build that worst case - the
-        // longest name this account may carry and the longest greeting a user may
-        // write - and measure it where the server sees it.
         {
             const fs::path cDir = fs::temp_directory_path() / "bz-pass-c";
             fs::remove(cDir);
@@ -1274,18 +1036,9 @@ int main()
             }();
             std::printf("TestDeliveryPass: the largest contact request is %zu bytes\n", largest);
             CHECK(largest <= kMaxContactRequestBytes);
-            // And no slack: room above the worst case is room for a stranger to
-            // fill a mailbox with. A drift either way has to be noticed here.
             CHECK(kMaxContactRequestBytes - largest < 64);
         }
 
-        // --- A request buys nothing until it is agreed to ---
-        //
-        // Two requests from one stranger used to be exactly what it took to make
-        // this side answer: each carries an unaddressed reply batch, a device that
-        // is one of several takes one token out of each, and the errand that buys a
-        // batch of its own fires at two. That errand carried the bootstrap, so it
-        // was an acceptance nobody gave - and the Agree button went with it.
         {
             const fs::path dDir = fs::temp_directory_path() / "bz-pass-d";
             fs::remove(dDir);
@@ -1305,9 +1058,6 @@ int main()
             };
             const std::size_t beforeRequests = heldForAlice();
             alice.addByInvite(dana.inviteUri(), "let me in");
-            // Pressed again, Dana is not asked again: she is in the book now, and
-            // a second request would be a fresh plate in her mailbox saying
-            // nothing the first did not.
             bool askedTwice = true;
             try {
                 alice.addByInvite(dana.inviteUri(), "let me in again");
@@ -1320,39 +1070,24 @@ int main()
                 dana.sync();
             }
             CHECK(dana.hasContact(alice.fingerprint()));
-            // Unanswered, so the button is still there to press...
             CHECK(dana.contactIsPending(alice.fingerprint()));
-            // ...and nothing at all has gone back to her.
             CHECK(heldForAlice() == beforeRequests);
 
-            // Reading the request is not answering it: no receipt goes back, so a
-            // requester learns nothing about a stranger's client from having
-            // asked.
             dana.sendReceipt(alice.fingerprint(), "whatever-they-sent");
             CHECK(heldForAlice() == beforeRequests);
 
-            // Agreeing is what opens the way back - once the batch it carries is
-            // in her mailbox, and not on the strength of a send that left here.
             dana.acceptContactRequest(alice.fingerprint());
             CHECK(dana.contactIsPending(alice.fingerprint()));
             CHECK(dana.contactAcceptInFlight(alice.fingerprint()));
-            // A second Agree while the first is in the air mints no second batch.
             dana.acceptContactRequest(alice.fingerprint());
             CHECK(waitFor([&]() { return heldForAlice() > beforeRequests; }));
             for (int round = 0; round < 3 && dana.contactIsPending(alice.fingerprint());
                 ++round) {
-                dana.sync();  // where a confirmed acceptance is written down
+                dana.sync();
             }
             CHECK(!dana.contactIsPending(alice.fingerprint()));
             CHECK(!dana.contactAcceptInFlight(alice.fingerprint()));
 
-            // Alice deletes Dana and adds her back. Her request presents no pass, so
-            // what Dana issued last time went with the contact Alice removed -
-            // and Dana never sees a button, because the chat is already in her
-            // book. Left to itself that is a one-way conversation: Dana's replies
-            // would carry no bootstrap and Alice could never write. So a request
-            // from someone we have already issued a pass to is agreed to by
-            // itself, and a fresh batch goes back.
             alice.removeContact(dana.fingerprint());
             CHECK(!alice.hasContact(dana.fingerprint()));
             const std::size_t beforeReturn = heldForAlice();
@@ -1367,23 +1102,13 @@ int main()
                 dana.sync();
             }
             CHECK(!dana.contactIsPending(alice.fingerprint()));
-            // The point of all of it: Alice can write to her again.
             CHECK(waitFor([&]() {
                 alice.sync();
                 return alice.canWriteTo(dana.fingerprint());
             }));
         }
 
-        // --- A second device of this account asks for the address book ---
-        //
-        // The one thing a fresh device cannot get from the network: no lookup
-        // turns a fingerprint into a destination, and the capability to read a
-        // card is held by the devices that already have the contact. So it asks,
-        // and the device that has the book answers over the account's own
-        // mailbox.
         {
-            // Bob's face reaches Alice the ordinary way, so the book has one to
-            // carry.
             const Bytes face = {0xFF, 0xD8, 0xFF, 0xE0, 'b', 'o', 'b'};
             bob.setAvatar(face, "image/jpeg");
             for (int round = 0; round < 3 && alice.contactAvatar(bob.fingerprint()).empty();
@@ -1397,30 +1122,18 @@ int main()
             fs::remove(secondDir);
             Session::importAccount(earlyBundle, secondDir, "bundle-password");
             Session second = Session::open(secondDir, std::string{});
-            // A device id is drawn fresh on import, which is what makes the two
-            // devices distinguishable at all.
             CHECK(second.fingerprint() == alice.fingerprint());
             CHECK(!second.hasContact(bob.fingerprint()));
 
-            // First sync: the question goes out (once per device, automatically).
             second.sync();
-            // Alice answers it.
             alice.sync();
-            // And the book arrives.
             for (int round = 0; round < 3 && !second.hasContact(bob.fingerprint()); ++round) {
                 second.sync();
             }
             CHECK(second.hasContact(bob.fingerprint()));
             CHECK(second.contactDisplayName(bob.fingerprint()) == "Bob of the book");
             CHECK(second.contactAvatar(bob.fingerprint()) == face);
-            // The pass travels with the book, so a device that has just learned a
-            // contact can write to them at once. This is the inversion: what was
-            // deliberately withheld - a one-time capability cannot be in two
-            // places - is now the thing that must be carried.
             CHECK(second.canWriteTo(bob.fingerprint()));
-            // What arrived is enough to check what Bob writes: his keys came with
-            // the book, so the second device can read him without them on the
-            // wire. A message he sends now is verified against exactly those.
             bob.sendMessage(alice.fingerprint(), "hello, second device");
             bool sawBob = false;
             for (int round = 0; round < 3 && !sawBob; ++round) {
@@ -1430,9 +1143,6 @@ int main()
             }
             CHECK(sawBob);
 
-            // An avatar too big for one message is left behind rather than
-            // splitting the contact across two: the face arrives again from the
-            // correspondent, the address it is reached at cannot.
             {
                 const Bytes huge(200 * 1024, 0x41);
                 bob.setAvatar(huge, "image/jpeg");
@@ -1456,7 +1166,6 @@ int main()
                 CHECK(third.contactDisplayName(bob.fingerprint()) == "Bob of the book");
             }
 
-            // Asked once: a second sync does not ask again.
             const std::size_t before = [&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
                 return m.mailbox[alice.fingerprint()].size();
@@ -1466,20 +1175,12 @@ int main()
                 std::lock_guard<std::mutex> lock(m.mu);
                 return m.mailbox[alice.fingerprint()].size();
             }();
-            // Nothing new is written by that sync: the question is asked once
-            // per device. Items may still be consumed by it - this device's own
-            // token asks are addressed to the account, so it fetches them too.
             CHECK(after <= before);
-            // And Alice does not answer a question that was not asked again: the
-            // book stays one contact, not two copies of one.
             alice.sync();
             second.sync();
             CHECK(second.hasContact(bob.fingerprint()));
             CHECK(second.contactDisplayName(bob.fingerprint()) == "Bob of the book");
 
-            // A backup taken with contacts in place copies each conversation's
-            // pass rather than handing it over: the exporting device keeps
-            // writing and the restored one can write from its first sync.
             CHECK(alice.canWriteTo(bob.fingerprint()));
             const fs::path laterBundle = fs::temp_directory_path() / "bz-pass-later.bundle";
             fs::remove(laterBundle);
@@ -1496,14 +1197,8 @@ int main()
             CHECK(fourth.canWriteTo(bob.fingerprint()));
         }
 
-        // --- What another device of ours says, and what this one does with it ---
-        //
-        // Each notice is built as the wire carries it, under another device id,
-        // and handed to her: what matters is that it is applied here.
         {
             const auto fromAnotherDevice = [&](nlohmann::json notice) {
-                // Signed with this account's key, which is what a device of hers
-                // holds: unsigned, it would be dropped before it is read.
                 signAuthorship(notice, aliceIdentity, /*withKeys=*/false);
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"self-" + notice.at("id").get<std::string>(),
@@ -1521,14 +1216,11 @@ int main()
                 return extra;
             };
 
-            // The account was renamed there.
             CHECK(alice.displayName() != "renamed elsewhere");
             fromAnotherDevice(notice("device.account-name", {{"name", "renamed elsewhere"}}));
             alice.sync();
             CHECK(alice.displayName() == "renamed elsewhere");
 
-            // It stopped taking calls there, and stopped telling correspondents
-            // when it reads them.
             CHECK(alice.acceptCalls());
             CHECK(alice.sendReceipts());
             fromAnotherDevice(notice("device.account-prefs",
@@ -1536,21 +1228,18 @@ int main()
             alice.sync();
             CHECK(!alice.acceptCalls());
             CHECK(!alice.sendReceipts());
-            // A notice that says nothing about one of them leaves it alone.
             fromAnotherDevice(notice("device.account-prefs", {{"acceptCalls", true}}));
             alice.sync();
             CHECK(alice.acceptCalls());
             CHECK(!alice.sendReceipts());
             alice.setSendReceipts(true);
 
-            // A contact's switches were changed there.
             fromAnotherDevice(notice("device.contact-prefs",
                 {{"peer", bob.fingerprint()}, {"notifications", false}, {"allowCalls", false}}));
             alice.sync();
             CHECK(!alice.contactNotifications(bob.fingerprint()));
             CHECK(!alice.contactCalls(bob.fingerprint()));
 
-            // Somebody was blocked there.
             const std::string stranger = std::string(52, 'y');
             fromAnotherDevice(notice("device.contact-block",
                 {{"peer", stranger}, {"blocked", true}}));
@@ -1561,8 +1250,6 @@ int main()
             alice.sync();
             CHECK(!alice.isBlocked(stranger));
 
-            // A conversation was emptied there: the core hands it to the interface
-            // to wipe, and says which one.
             fromAnotherDevice(notice("device.chat-clear", {{"peer", bob.fingerprint()}}));
             bool sawClear = false;
             for (const IncomingMessage& item : alice.sync()) {
@@ -1573,7 +1260,6 @@ int main()
             }
             CHECK(sawClear);
 
-            // And a contact was removed there.
             CHECK(alice.hasContact(bob.fingerprint()));
             fromAnotherDevice(notice("device.contact-remove", {{"peer", bob.fingerprint()}}));
             bool sawRemove = false;
@@ -1587,10 +1273,6 @@ int main()
             CHECK(!alice.hasContact(bob.fingerprint()));
         }
 
-        // --- A stranger writing content ---
-        //
-        // Nobody without a contact row may put a message in front of the user; the
-        // item is consumed where it is read, and no contact is created for them.
         {
             const std::string stranger = std::string(52, 'z');
             const nlohmann::json inner = {

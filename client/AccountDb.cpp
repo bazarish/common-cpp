@@ -15,16 +15,8 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// How long a writer waits for another connection to finish before giving up. The
-// transcript and this store are two connections on one file, so a write can meet
-// a lock; they are both in-process and short, so the wait is a formality.
 constexpr int kBusyTimeoutMs = 5000;
 
-// The database is opened with a raw key, so SQLCipher derives nothing: the
-// passphrase guards the key file beside it, and that is where the expensive
-// derivation lives (see AccountKey).
-
-// A raw key is given to SQLCipher as hex in a blob literal: x'<64 hex chars>'.
 std::string rawKeyLiteral(const Bytes& key)
 {
     return "x'" + toHex(key) + "'";
@@ -40,8 +32,6 @@ void run(sqlite3* const db, const std::string& sql)
     }
 }
 
-// Opens the file and unlocks it. The key pragma has to be the first statement on
-// the connection.
 sqlite3* openKeyed(const fs::path& file, const Bytes& key)
 {
     sqlite3* db = nullptr;
@@ -49,8 +39,6 @@ sqlite3* openKeyed(const fs::path& file, const Bytes& key)
         sqlite3_close(db);
         return nullptr;
     }
-    // SQLCipher reports a failed decryption on stderr; callers report it through
-    // their own return values instead.
     sqlite3_exec(db, "PRAGMA cipher_log_level = NONE", nullptr, nullptr, nullptr);
     const std::string pragma = "PRAGMA key = \"" + rawKeyLiteral(key) + "\"";
     if (sqlite3_exec(db, pragma.c_str(), nullptr, nullptr, nullptr) != SQLITE_OK) {
@@ -58,7 +46,6 @@ sqlite3* openKeyed(const fs::path& file, const Bytes& key)
         return nullptr;
     }
     sqlite3_busy_timeout(db, kBusyTimeoutMs);
-    // With the wrong key the pages do not decrypt and the first read fails.
     if (sqlite3_exec(db, "SELECT count(*) FROM sqlite_master", nullptr, nullptr, nullptr)
         != SQLITE_OK) {
         sqlite3_close(db);
@@ -66,9 +53,6 @@ sqlite3* openKeyed(const fs::path& file, const Bytes& key)
     }
     return db;
 }
-
-
-
 
 }  // namespace
 
@@ -78,7 +62,6 @@ AccountDb::AccountDb(const fs::path& file, const std::string& passphrase)
     if (file.has_parent_path()) {
         fs::create_directories(file.parent_path());
     }
-    // Unwrapping the key is where a wrong passphrase is caught; this throws.
     db_ = openKeyed(file, accountkey::keyFor(file, passphrase));
     if (db_ == nullptr) {
         throw std::runtime_error("account database: " + file.string() + " is unreadable");
@@ -124,16 +107,12 @@ void AccountDb::put(const std::string& name, const Bytes& value)
 {
     sqlite3_stmt* statement = nullptr;
     if (sqlite3_prepare_v2(db_,
-            // Not an UPSERT: it arrived in SQLite 3.24, and the SQLCipher some
-            // distributions ship is older. The table is a key and its value, so
-            // replacing the row says exactly the same thing.
             "INSERT OR REPLACE INTO state (name, value) VALUES (?, ?)",
             -1, &statement, nullptr)
         != SQLITE_OK) {
         throw std::runtime_error(std::string("account database: ") + sqlite3_errmsg(db_));
     }
     sqlite3_bind_text(statement, 1, name.c_str(), static_cast<int>(name.size()), SQLITE_TRANSIENT);
-    // A zero-length blob still needs a non-null pointer.
     const unsigned char empty = 0;
     sqlite3_bind_blob(statement, 2, value.empty() ? &empty : value.data(),
         static_cast<int>(value.size()), SQLITE_TRANSIENT);
@@ -171,8 +150,6 @@ bool AccountDb::has(const std::string& name) const
 
 void AccountDb::rekey(const std::string& passphrase)
 {
-    // Only the hundred bytes beside the database change: the database key stays
-    // what it was, so not a page of it is rewritten.
     accountkey::rewrap(file_, passphrase);
 }
 

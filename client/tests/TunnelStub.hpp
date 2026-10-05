@@ -16,15 +16,8 @@
 #include <string>
 #include <vector>
 
-// Test support: makes a stub server speak the tunnel, so a test drives the
-// client over the transport it really uses rather than a plainer one that would
-// pass while the real path was broken. It terminates the frame and runs what was
-// inside through the server's own routes, which is what the messaging server
-// does - the routes a test registers do not know they are behind a tunnel.
 namespace bazarish::teststub {
 
-// The caller the tunnel authenticated, handed to the route behind it. A stub
-// stands in for the session the real server keeps.
 inline constexpr const char* kCallerHeader = "x-bazarish-test-caller";
 
 class Tunnel {
@@ -47,8 +40,6 @@ public:
                 try {
                     serve(server, request, std::move(respond));
                 } catch (const std::exception& error) {
-                    // A stub that died quietly would look like an unreachable
-                    // server, and the test would blame the wrong thing.
                     std::fprintf(stderr, "tunnel stub: %s\n", error.what());
                     bazarish::http::Response failed;
                     failed.status = 500;
@@ -58,22 +49,14 @@ public:
             });
     }
 
-    // How many tunnels this stub has opened, so a test can tell one that was
-    // reused from one that was opened again.
     int opened() const
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         return opened_;
     }
 
-    // Answers the next carried frame with SESSION_INVALID, as a server whose
-    // session went away would.
     void refuseNext() { refuseNext_ = true; }
 
-    // Answers the next carried frame the way the real server refuses one: the
-    // same outer status every answer gets, under no key the caller holds. A
-    // status that differed would say to whoever forwards it when a session
-    // lapsed, so the client has nothing to read but the frame itself.
     void refuseNextOpaquely() { refuseOpaquely_ = true; }
 
 private:
@@ -81,10 +64,6 @@ private:
         bazarish::http::Responder respond)
     {
         const Bytes frame(request.body.begin(), request.body.end());
-        // By value, not by reference: a route behind this may answer after serve()
-        // has returned (that is what a long poll does), and a responder captured
-        // by reference would be gone by then - the caller would wait out its read
-        // timeout for an answer nobody could send.
         const auto sealed = [respond](const Bytes& body) {
             bazarish::http::Response response;
             response.contentType = "application/octet-stream";
@@ -112,12 +91,6 @@ private:
         std::string caller;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            // A handle is HMAC(secret, seq): the server that holds the secret
-            // recognises it, and nobody else can. The window moves with the
-            // tunnel, exactly as the server's own store moves it - a fixed range
-            // from the first counter would cost more with every request and then
-            // run out the moment a long-lived tunnel passed its end, which is
-            // what it did.
             for (Opened& open : secrets_) {
                 for (std::uint64_t seq = open.lastSeq + 1;
                     seq <= open.lastSeq + kHandleWindow; ++seq) {
@@ -174,8 +147,6 @@ private:
             }
             inner.headers[lowered] = value;
         }
-        // Who this is was settled when the tunnel opened - the real server
-        // remembers it on the session, and a route behind it is simply told.
         inner.headers[kCallerHeader] = caller;
         server.dispatch(inner, [sealed, handle, key](bazarish::http::Response answer) {
             bazarish::tunnel::Response out;
@@ -186,12 +157,8 @@ private:
         });
     }
 
-    // How far ahead of where a tunnel stands its handles are recognised. The
-    // same width the server's session store publishes, and for the same reason:
-    // a client's requests can arrive slightly out of order.
     static constexpr std::uint64_t kHandleWindow = 64;
 
-    // Enough to be a plausible frame and not enough to be one.
     static constexpr std::size_t kOpaqueRefusalBytes = 64;
 
     struct Opened {

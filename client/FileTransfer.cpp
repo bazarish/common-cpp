@@ -19,7 +19,6 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr std::size_t kChunkBytes = 64 * 1024;
-// Consecutive attempts that move no bytes before a transfer is abandoned.
 constexpr int kMaxStalledAttempts = 5;
 
 void encodeBigEndian64(const std::uint64_t value, std::array<std::uint8_t, 8>& out)
@@ -38,8 +37,6 @@ std::uint64_t decodeBigEndian64(const std::array<std::uint8_t, 8>& in)
     return value;
 }
 
-// Appends to a partial ciphertext file, tracking its length so a resumed
-// transfer knows where it stopped.
 class PartialFile {
 public:
     explicit PartialFile(fs::path path)
@@ -117,8 +114,6 @@ FileOffer fileOfferFromJson(const nlohmann::json& json)
 
 namespace {
 
-// Appends a fetch attempt's bytes to the partial file and records the total the
-// sender declared, so the driver can tell progress from a stall.
 class PartialSink : public TransferSink {
 public:
     PartialSink(PartialFile& part, TransferProgressFn onProgress)
@@ -162,9 +157,6 @@ void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer, const fs::
             try {
                 fetch(before, sink);
             } catch (const std::exception& error) {
-                // A dropped stream is what this loop exists for: the next attempt
-                // resumes from the bytes already on disk. Only a run of attempts
-                // that moves nothing at all ends the transfer.
                 log::warn("file-fetch: attempt failed: {}", error.what());
                 if (++stalled >= kMaxStalledAttempts) {
                     throw;
@@ -187,8 +179,6 @@ void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer, const fs::
         }
         part.finish();
 
-        // Verify-then-decrypt: a tampered or truncated transfer never yields
-        // cleartext.
         if (toHex(sha256File(partPath)) != offer.sha256) {
             throw std::runtime_error("file digest mismatch");
         }
@@ -202,19 +192,11 @@ void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer, const fs::
     fs::remove(partPath, ec);
 }
 
-// How long the serving side waits for the receiver to close after the last byte
-// is written, so nothing is torn down with data still queued.
 constexpr int kDrainSeconds = 120;
-// How much of the file may sit in the router's send queue at once. A write
-// returns as soon as the bytes are queued, so without this the whole file is
-// "sent" in milliseconds and the sender's progress bar is a lie that sits at
-// 100% for the length of the transfer.
 constexpr std::size_t kMaxQueuedBytes = 128 * 1024;
 constexpr int kQueuePollMillis = 100;
 
 namespace {
-// Bytes that have actually left the device. The queue also holds the framing
-// this counter never saw, so the subtraction saturates instead of wrapping.
 std::uint64_t onTheWire(const std::uint64_t written, const std::size_t queued)
 {
     return written > queued ? written - queued : 0;
@@ -239,9 +221,6 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
             continue;
         }
         try {
-            // A peer that opens a stream and then says nothing must not hold this
-            // thread: every wait on this side is bounded by the same span the
-            // drain below is given.
             stream->setReadTimeout(std::chrono::seconds(kDrainSeconds));
             std::array<std::uint8_t, 8> header{};
             stream->readExact(header.data(), header.size());
@@ -271,8 +250,6 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
                 }
                 stream->writeAll(buffer.data(), static_cast<std::size_t>(got));
                 sent += static_cast<std::uint64_t>(got);
-                // Wait for the queue to drain below the cap before reading more,
-                // so progress follows what has actually left the device.
                 while (stream->pendingBytes() > kMaxQueuedBytes) {
                     if (cancel != nullptr && cancel->load()) {
                         return false;
@@ -286,13 +263,7 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
                     onProgress(onTheWire(sent, stream->pendingBytes()), total);
                 }
             }
-            // Closing straight after the last write throws away whatever i2pd has
-            // not put on the wire yet - with a file that is the whole transfer.
-            // Wait for the receiver to close its side (it does when it has the
-            // bytes), which is the only signal that they arrived.
             if (sent >= total) {
-                // Everything is written; what is left is the queue emptying and
-                // the receiver closing. Keep reporting the real figure.
                 std::array<char, 64> drain{};
                 const auto until = std::chrono::steady_clock::now()
                     + std::chrono::seconds(kDrainSeconds);
@@ -302,13 +273,9 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
                     }
                     try {
                         if (stream->readSome(drain.data(), drain.size()) == 0) {
-                            break;  // the receiver closed: everything was delivered
+                            break;
                         }
                     } catch (const std::exception& error) {
-                        // The receiver never closed. The bytes are written either
-                        // way, and it is the receiver that decides the transfer is
-                        // complete, so this is the end of the wait and not of the
-                        // attempt.
                         log::debug("file-serve: the receiver did not close: {}", error.what());
                         break;
                     }
@@ -321,20 +288,14 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
             }
             stream->close();
         } catch (const std::exception& error) {
-            // A dropped peer is normal: it reconnects with the next offset.
             log::debug("file-serve: attempt failed: {}", error.what());
         }
     }
     return false;
 }
 
-// A fetch dials from a one-time destination built for the attempt, so it waits
-// for its own tunnels before deciding the sender is unreachable.
 constexpr int kOwnTunnelsSeconds = 180;
 constexpr int kDialSeconds = 90;
-// How long the sender may go without sending a byte before the attempt is given
-// up on. A transfer that is running sends continuously; one that has stopped
-// would otherwise hold this thread for as long as the stream looks open.
 constexpr int kSenderQuietSeconds = 120;
 
 void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
@@ -342,8 +303,6 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
     const TransferProgressFn& onProgress, const std::atomic<bool>* cancel,
     const std::string& owner)
 {
-    // Each attempt dials from a fresh one-time destination, so a resumed transfer
-    // is not linkable to the attempt it continues.
     const FetchAttemptFn fetch
         = [&router, &offer, privacy, &owner](const std::uint64_t offset, TransferSink& sink) {
               bazarish::i2p::EndpointConfig config;
@@ -355,9 +314,6 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
               config.owner = owner;
               const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
                   = router.createEndpoint(config);
-              // Our own tunnels first. Dialing from a destination that is still
-              // building them fails for a reason that has nothing to do with the
-              // sender, and was reported as "cannot reach the sender".
               if (!endpoint->waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
                   throw std::runtime_error("this device could not build I2P tunnels");
               }
@@ -375,16 +331,12 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
               const std::uint64_t declared = decodeBigEndian64(header);
               sink.total(declared);
 
-              // Stop at the length the sender declared rather than waiting for it
-              // to close: it is waiting for US to close, so that nothing is torn
-              // down with bytes still queued. Both sides waiting is a deadlock
-              // that ends only when one of the timeouts does.
               std::vector<std::uint8_t> buffer(kChunkBytes);
               std::uint64_t received = offset;
               while (declared == 0 || received < declared) {
                   const std::size_t got = stream->readSome(buffer.data(), buffer.size());
                   if (got == 0) {
-                      break;  // the sender ended the attempt; the driver resumes
+                      break;
                   }
                   sink.append(buffer.data(), got);
                   received += got;

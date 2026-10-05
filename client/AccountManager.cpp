@@ -25,11 +25,8 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// The extension every account file carries.
 constexpr const char* kFileSuffix = ".db";
 
-// An account is a pair: the database and the small key file beside it. They move
-// and go away together, or the database is left with nothing to open it.
 void movePair(const fs::path& from, const fs::path& to)
 {
     fs::rename(from, to);
@@ -43,11 +40,6 @@ void removePair(const fs::path& file)
     fs::remove(accountkey::sidecarFor(file));
 }
 
-// How an account is named on disk. Not by its own name: a directory listing is
-// readable without any passphrase, so naming the file after the account handed
-// the whole roster to anyone who could see the folder - which is the one thing
-// the comment below promises it does not do. The name lives inside the keyed
-// database with everything else.
 constexpr std::size_t kAccountIdBytes = 8;
 
 std::string newAccountId()
@@ -55,32 +47,20 @@ std::string newAccountId()
     return toHex(randomBytes(kAccountIdBytes));
 }
 
-// What can be told about an account without opening it fully. An account with a
-// passphrase gives up nothing until it is unlocked - not its name, not its
-// fingerprint - which is the point of keeping everything in one keyed file. It
-// is listed by its directory id and marked locked.
 AccountInfo readInfo(const std::string& id, const fs::path& file, const std::string& passphrase = {})
 {
     AccountInfo info;
     info.id = id;
     info.file = file;
-    // One open, not two: unlocking an account database runs its key derivation,
-    // which is deliberately expensive.
     std::unique_ptr<AccountDb> db;
     try {
         db = std::make_unique<AccountDb>(file, passphrase);
     } catch (const std::exception& error) {
-        // Locked is one reason a database does not open; a build that cannot read
-        // it at all is another, and the two look identical from here. Say which
-        // one it was, or an account that is merely unreadable reads to the user
-        // as an account they have forgotten the passphrase for.
         bazarish::log::info("account {} did not open: {}", id, error.what());
         info.encrypted = true;
         return info;
     }
     const nlohmann::json meta = nlohmann::json::parse(db->text("meta"));
-    // The name is inside, so a locked account has none to give - which is what
-    // the caller shows as "locked" rather than as a name it does not have.
     info.name = meta.value("name", std::string{});
     if (info.name.find_first_not_of(" \t\r\n") == std::string::npos) {
         info.name.clear();
@@ -95,8 +75,6 @@ AccountInfo readInfo(const std::string& id, const fs::path& file, const std::str
 fs::path AccountManager::globalRoot()
 {
 #ifdef _WIN32
-    // The roaming application data directory, which is where a Windows user's
-    // own data belongs and what the environment names.
     if (const char* const appData = std::getenv("APPDATA");
         appData != nullptr && appData[0] != '\0') {
         return fs::path(appData) / "Bazarish";
@@ -111,15 +89,9 @@ fs::path AccountManager::globalRoot()
 
 namespace {
 
-// The directory the application lives in, which is where portable data goes.
-// Read from the process itself rather than argv[0], which a caller can set to
-// anything - except inside an AppImage, where the executable is on a read-only
-// mount of its own and the file the user actually launched is the one named by
-// APPIMAGE (set by the AppImage runtime).
 fs::path executableDir()
 {
 #ifdef _WIN32
-    // The module path is the only thing that names this process's own file.
     std::string path(MAX_PATH, '\0');
     const DWORD written = ::GetModuleFileNameA(nullptr, path.data(),
         static_cast<DWORD>(path.size()));
@@ -165,10 +137,7 @@ fs::path AccountManager::dataRoot()
 fs::path AccountManager::defaultRoot()
 {
     const fs::path accounts = dataRoot() / "accounts";
-    // Accounts used to be called profiles, and the directory was named after
-    // them. Renaming the word must not lose what is in it: an installation that
-    // still has the old directory and none of the new one keeps its accounts,
-    // moved once, here.
+    // Accounts used to be called profiles, and the directory was named after them.
     std::error_code ec;
     const fs::path legacy = dataRoot() / "profiles";
     if (!fs::exists(accounts, ec) && fs::exists(legacy, ec)) {
@@ -218,17 +187,10 @@ AccountInfo AccountManager::create(const std::string& name, const std::string& p
     if (name.find_first_not_of(" \t\r\n") == std::string::npos) {
         throw std::runtime_error("an account needs a name");
     }
-    // The name travels: it is the label a contact request seeds the recipient's
-    // address book with, and that request is the one thing a stranger may put in
-    // a mailbox. Bounded here as well as where it is set, so an account cannot be
-    // created with a name that would not fit.
     if (name.size() > kMaxAccountNameBytes) {
         throw std::runtime_error("an account name may be at most "
             + std::to_string(kMaxAccountNameBytes) + " bytes");
     }
-    // No check for a name already in use: a locked account will not say what it
-    // is called, so the only honest answer would come from opening every one of
-    // them. Two accounts may share a name; they never share a file.
     std::string id = newAccountId();
     while (exists(id)) {
         id = newAccountId();
@@ -245,10 +207,6 @@ Session AccountManager::open(const std::string& id, const std::string& passphras
 AccountInfo AccountManager::import(const std::string& name, const fs::path& bundleFile,
     const std::string& password, const std::string& atRestPassphrase)
 {
-    // The display name is restored from the bundle (importAccount writes the bundled
-    // meta verbatim). An explicit name, when given, only chooses the on-disk id;
-    // when omitted the id is derived from the restored name. So import into a temp
-    // dir first, read the restored name, then move it into place under its final id.
     const fs::path tmp = root_ / ".import-tmp.db";
     removePair(tmp);
     Session::importAccount(bundleFile, tmp, password, atRestPassphrase);

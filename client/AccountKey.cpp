@@ -22,52 +22,24 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// The sidecar's own format. Everything but the sealed key is public: it has to
-// be, since it is what says how to derive the wrapping key in the first place.
 constexpr char kMagic[4] = {'B', 'Z', 'K', '1'};
-constexpr std::size_t kKeyBytes = 32;      // AES-256 for the database
-constexpr std::size_t kSaltBytes = 16;     // Argon2id salt
-constexpr std::size_t kNonceBytes = 12;    // AES-GCM nonce
-constexpr std::size_t kTagBytes = 16;      // AES-GCM tag
+constexpr std::size_t kKeyBytes = 32;
+constexpr std::size_t kSaltBytes = 16;
+constexpr std::size_t kNonceBytes = 12;
+constexpr std::size_t kTagBytes = 16;
 
-// Argon2id cost for an account the user gave a passphrase: memory-hard, so a
-// stolen sidecar is expensive to attack with a GPU rather than merely slow.
-// Roughly a third of a second on a desktop; the numbers are written into the
-// sidecar, so they can be raised later without stranding existing accounts.
 constexpr std::uint32_t kMemoryKiB = 64 * 1024;
 constexpr std::uint32_t kPasses = 3;
-// An account with no passphrase has nothing to stretch - the wrapping "secret" is
-// a constant in this file - so it pays the smallest cost the format allows
-// instead of a third of a second for nothing.
 constexpr std::uint32_t kOpenMemoryKiB = 8 * 1024;
 constexpr std::uint32_t kOpenPasses = 1;
-// Argon2id in OpenSSL runs multi-lane only with a thread pool on the library
-// context; one lane needs no such setup.
 constexpr std::uint32_t kLanes = 1;
 
-// The whole record: magic, the two cost values, and the fixed fields. The size
-// is exact, so a file of any other length is not this format whatever its first
-// bytes say.
 constexpr std::size_t kSidecarBytes = sizeof kMagic + 2 * sizeof(std::uint32_t) + kSaltBytes
     + kNonceBytes + kKeyBytes + kTagBytes;
 
-// The most the file is allowed to ask the derivation for. The cost lives in the
-// sidecar so it can be raised later, but the sidecar is a file on disk: what it
-// asks for has to be something this machine can actually spend, or opening an
-// account is however much memory the file names. Raising the cost above these
-// means raising these first.
-constexpr std::uint32_t kMaxMemoryKiB = 1024 * 1024;  // 1 GiB
+constexpr std::uint32_t kMaxMemoryKiB = 1024 * 1024;
 constexpr std::uint32_t kMaxPasses = 16;
 
-// What an account with no passphrase is wrapped under. It is not a secret - it is
-// right here - so it protects nothing; it keeps one code path and stops the file
-// from being readable by accident.
-//
-// That an account may be made without a passphrase at all is a decision, not an
-// omission: the cost of a forgotten one is an account nobody can open ever again,
-// and for most people that is the likelier loss. Anyone who wants the file itself
-// protected sets a passphrase, and then the key is derived from it. Do not
-// "fix" this into a requirement without deciding that trade afresh.
 constexpr const char* kOpenSecret = "bazarish";
 
 struct Sidecar {
@@ -79,10 +51,6 @@ struct Sidecar {
     std::array<unsigned char, kTagBytes> tag{};
 };
 
-// The unwrapped keys of the accounts opened in this process: an account is opened
-// by more than one connection (its state and its transcript), and the derivation
-// is the whole cost of opening it. The entry remembers which passphrase produced
-// it, so the cache can never hand the key to a caller that does not have it.
 struct Cached {
     Bytes verifier;
     Bytes key;
@@ -90,7 +58,6 @@ struct Cached {
 std::mutex g_cacheMutex;
 std::map<fs::path, Cached> g_cache;
 
-// What the cache compares a passphrase against. Never written anywhere.
 Bytes verifierOf(const std::string& passphrase)
 {
     Bytes digest(EVP_MAX_MD_SIZE);
@@ -116,7 +83,6 @@ void fill(unsigned char* const out, const std::size_t size)
     }
 }
 
-// Argon2id over the passphrase, giving the key the sidecar is sealed with.
 Bytes wrappingKey(const std::string& passphrase, const Sidecar& sidecar)
 {
     EVP_KDF* const kdf = EVP_KDF_fetch(nullptr, "ARGON2ID", nullptr);
@@ -152,8 +118,6 @@ Bytes wrappingKey(const std::string& passphrase, const Sidecar& sidecar)
     return derived;
 }
 
-// AES-256-GCM both ways. The sealed value is exactly the database key, so a
-// wrong passphrase fails on the tag rather than handing back rubbish.
 void seal(const Bytes& wrapping, Sidecar& sidecar, const Bytes& key)
 {
     EVP_CIPHER_CTX* const ctx = EVP_CIPHER_CTX_new();
@@ -193,7 +157,6 @@ bool unseal(const Bytes& wrapping, const Sidecar& sidecar, Bytes& key)
                const_cast<unsigned char*>(sidecar.tag.data()))
             == 1;
     if (ok) {
-        // A failure here is the tag check: this passphrase is not the one.
         ok = EVP_DecryptFinal_ex(ctx, key.data() + length, &length) == 1;
     }
     EVP_CIPHER_CTX_free(ctx);
@@ -265,8 +228,6 @@ Sidecar read(const fs::path& file)
     return sidecar;
 }
 
-// New salt and nonce, and the cost this passphrase gets: an empty one has nothing
-// to slow down, so it takes the open profile.
 Sidecar freshSidecar(const std::string& passphrase)
 {
     Sidecar sidecar;
@@ -279,7 +240,6 @@ Sidecar freshSidecar(const std::string& passphrase)
     return sidecar;
 }
 
-// Creates the sidecar for an account that has none: a fresh database key, sealed.
 Bytes create(const fs::path& file, const std::string& passphrase)
 {
     Sidecar sidecar = freshSidecar(passphrase);
@@ -322,9 +282,6 @@ Bytes keyFor(const fs::path& databaseFile, const std::string& passphrase)
         }
     }
     const fs::path sidecar = sidecarFor(databaseFile);
-    // A database with no key beside it is not a new account: minting one here
-    // would hand back a key the database was never written with, and the account
-    // would be lost behind an "unreadable database" that no passphrase can fix.
     if (!fs::exists(sidecar) && fs::exists(databaseFile)) {
         throw std::runtime_error("account key: " + sidecarFor(databaseFile).string()
             + " is missing - the account cannot be opened without it");
@@ -341,7 +298,7 @@ bool unlocks(const fs::path& databaseFile, const std::string& passphrase)
         (void)keyFor(databaseFile, passphrase);
         return true;
     } catch (const std::exception&) {
-        return false;  // the caller asked precisely so it would not have to catch
+        return false;
     }
 }
 

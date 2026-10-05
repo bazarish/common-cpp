@@ -21,11 +21,8 @@ namespace {
 
 // A blinded b33 label is 56 base32 characters, plus ".b32.i2p".
 constexpr std::size_t kB33HostLen = 56 + 8;
-// Delegation terms, in whole days: what the b33 offline keys are counted in.
 constexpr int kTermDays = 2;
 
-// A fresh master is well-formed and its serialized form re-derives the same
-// stable address.
 void testMasterRoundTrip()
 {
     const I2pMasterKey master = generateI2pMaster();
@@ -34,7 +31,6 @@ void testMasterRoundTrip()
     CHECK(i2pRoutingHost(master.privateKeys) == master.host);
 }
 
-// Two masters are different identities.
 void testMastersDiffer()
 {
     const I2pMasterKey a = generateI2pMaster();
@@ -42,9 +38,6 @@ void testMastersDiffer()
     CHECK(a.host != b.host);
 }
 
-// Offline (transient) keys operate the SAME destination as the master, and a
-// second transient yields the same address again - the migration property:
-// the user keeps one address while each operator gets its own short-lived key.
 void testOfflineKeepsAddress()
 {
     const I2pMasterKey master = generateI2pMaster();
@@ -53,23 +46,19 @@ void testOfflineKeepsAddress()
     const Bytes operatorB = issueI2pOfflineKeys(master.privateKeys, kTermDays);
     CHECK(!operatorA.empty());
     CHECK(!operatorB.empty());
-    CHECK(operatorA != operatorB);  // distinct transients
+    CHECK(operatorA != operatorB);
     CHECK(i2pRoutingHost(operatorA) == master.host);
     CHECK(i2pRoutingHost(operatorB) == master.host);
-    // The term lives in the delegation, and covers whole days from this one.
     CHECK(i2pDelegationExpires(operatorA) == i2pDelegationExpires(operatorB));
     CHECK(i2pDelegationExpires(operatorA) > 0);
     CHECK(i2pDelegationExpires(master.privateKeys) == 0);
 
-    // The base64 form (the blob handed to the serving server's I2P router) is
-    // non-empty, deterministic for a given transient, and distinct per transient.
     const std::string b64A = i2pPrivateKeysBase64(operatorA);
     CHECK(!b64A.empty());
     CHECK(i2pPrivateKeysBase64(operatorA) == b64A);
     CHECK(i2pPrivateKeysBase64(operatorB) != b64A);
 }
 
-// Malformed input is rejected, not silently accepted.
 void testMalformedRejected()
 {
     bool threw = false;
@@ -82,8 +71,6 @@ void testMalformedRejected()
     CHECK(threw);
 }
 
-// An existing master blob (a user's ".dat") loads back to the same identity,
-// and a malformed blob is rejected.
 void testLoadMaster()
 {
     const I2pMasterKey master = generateI2pMaster();
@@ -100,9 +87,6 @@ void testLoadMaster()
     CHECK(threw);
 }
 
-// A account with no destination adopts an existing master from a .dat blob; the
-// address persists across reopen, and a second load is refused (a different key
-// would change the user's address).
 void testSessionLoadsDat()
 {
     namespace fs = std::filesystem;
@@ -122,17 +106,15 @@ void testSessionLoadsDat()
         } catch (const std::exception&) {
             threw = true;
         }
-        CHECK(threw);  // already configured
+        CHECK(threw);
     }
     {
         const Session session = Session::open(dir, "pw");
-        CHECK(session.i2pAddress() == existing.host);  // adopted key persisted
+        CHECK(session.i2pAddress() == existing.host);
     }
     fs::remove_all(dir);
 }
 
-// A session opts into a user-owned destination, the master persists sealed at
-// rest across reopen, and the transient delegation tracks the same address.
 void testSessionPersistsAndDelegates()
 {
     namespace fs = std::filesystem;
@@ -154,8 +136,8 @@ void testSessionPersistsAndDelegates()
     {
         const Session session = Session::open(dir, "pw");
         CHECK(session.hasI2pDestination());
-        CHECK(session.i2pAddress() == address);  // master persisted, same address
-        CHECK(i2pRoutingHost(session.i2pTransient()) == address);  // transient restored
+        CHECK(session.i2pAddress() == address);
+        CHECK(i2pRoutingHost(session.i2pTransient()) == address);
     }
     fs::remove_all(dir);
 }

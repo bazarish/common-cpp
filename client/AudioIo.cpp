@@ -10,7 +10,7 @@ namespace bazarish {
 namespace {
 
 constexpr double kTwoPi = 6.283185307179586;
-constexpr double kSineAmplitude = 8000.0;  // comfortably inside int16 range
+constexpr double kSineAmplitude = 8000.0;
 
 }  // namespace
 
@@ -36,7 +36,6 @@ std::vector<std::int16_t> SineAudioSource::readFrame()
     if (!running_) {
         return {};
     }
-    // Pace at the frame duration so the synthetic mic produces real-time audio.
     std::this_thread::sleep_for(std::chrono::milliseconds(kCallFrameMs));
     if (!running_) {
         return {};

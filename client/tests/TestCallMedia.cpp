@@ -26,10 +26,7 @@ using namespace bazarish;
 
 namespace {
 
-// Audio devices that record which thread opened and closed them. Qt's real ones
-// hand their work back to the thread that owns them, so a device opened or closed
-// from a media thread blocks that thread on the call's own thread - the one that
-// then joins it, which is a hang-up that never finishes.
+// Audio devices that record which thread opened and closed them.
 class ThreadWatchingSource : public SineAudioSource {
 public:
     ThreadWatchingSource()
@@ -79,7 +76,6 @@ private:
     std::atomic<std::thread::id> stoppedOn_{};
 };
 
-// A thread-safe in-memory datagram queue: one direction of a loopback link.
 class LoopbackChannel {
 public:
     void push(const std::vector<std::uint8_t>& packet)
@@ -109,8 +105,6 @@ private:
     std::deque<std::vector<std::uint8_t>> queue_;
 };
 
-// Sends into one channel, receives from the other; a pair forms a full-duplex
-// loopback link standing in for two I2P datagram endpoints.
 class LoopbackTransport : public CallTransport {
 public:
     LoopbackTransport(LoopbackChannel& out, LoopbackChannel& in)
@@ -148,7 +142,6 @@ double frameEnergy(const std::vector<std::int16_t>& pcm)
 
 namespace {
 
-// A tone at a chosen amplitude, the shape a levelling pass is judged on.
 std::vector<std::int16_t> tone(const std::size_t samples, const double amplitude)
 {
     std::vector<std::int16_t> pcm(samples);
@@ -179,34 +172,26 @@ std::int32_t peakOf(const std::vector<std::int16_t>& pcm)
     return peak;
 }
 
-// A recording is levelled before it is sent: what the microphone was set to must
-// not decide how loud the message arrives.
 void testVoiceNormalization()
 {
     const std::size_t samples = static_cast<std::size_t>(bazarish::kCallSampleRate);
 
-    // Recorded far too quietly: brought up to the target, and not past the peak
-    // ceiling that keeps it from clipping.
     std::vector<std::int16_t> quiet = tone(samples, 0.02);
     bazarish::normalizeVoicePcm(quiet);
     CHECK(rmsOf(quiet) > 0.05);
     CHECK(peakOf(quiet) <= static_cast<std::int32_t>(bazarish::kVoiceTargetPeak * 32768.0) + 1);
 
-    // Recorded hot: brought down rather than left to clip on the way out.
     std::vector<std::int16_t> loud = tone(samples, 0.99);
     const double loudBefore = rmsOf(loud);
     bazarish::normalizeVoicePcm(loud);
     CHECK(rmsOf(loud) < loudBefore);
     CHECK(peakOf(loud) <= static_cast<std::int32_t>(bazarish::kVoiceTargetPeak * 32768.0) + 1);
 
-    // A quiet room is not a quiet voice: silence stays silent instead of being
-    // lifted into a message of noise.
     std::vector<std::int16_t> silence = tone(samples, 0.0002);
     const std::vector<std::int16_t> before = silence;
     bazarish::normalizeVoicePcm(silence);
     CHECK(silence == before);
 
-    // The gain is bounded, so a whisper is not multiplied without limit.
     std::vector<std::int16_t> whisper = tone(samples, 0.002);
     bazarish::normalizeVoicePcm(whisper);
     CHECK(rmsOf(whisper) <= 0.002 * bazarish::kVoiceMaxGain / std::sqrt(2.0) + 0.001);
@@ -221,8 +206,6 @@ void testVoiceNormalization()
 int main()
 {
     testVoiceNormalization();
-    // 1) Opus round trip: a 440 Hz frame encodes to a compact packet and decodes
-    //    back to a full frame whose energy is preserved (the tone survives).
     {
         SineAudioSource source(440.0);
         source.start();
@@ -234,23 +217,19 @@ int main()
         AudioDecoder decoder;
         const Bytes packet = encoder.encode(frame.data(), static_cast<int>(frame.size()));
         CHECK(!packet.empty());
-        CHECK(packet.size() < frame.size() * sizeof(std::int16_t));  // actually compressed
+        CHECK(packet.size() < frame.size() * sizeof(std::int16_t));
         const std::vector<std::int16_t> decoded = decoder.decode(packet);
         CHECK(decoded.size() == static_cast<std::size_t>(kCallSamplesPerFrame));
-        CHECK(frameEnergy(decoded) > 100.0);  // signal, not silence
+        CHECK(frameEnergy(decoded) > 100.0);
 
-        // An empty packet runs packet-loss concealment, still a full frame.
         const std::vector<std::int16_t> concealed = decoder.decode(Bytes{});
         CHECK(concealed.size() == static_cast<std::size_t>(kCallSamplesPerFrame));
         source.stop();
     }
 
-    // 1b) The waveform a voice bubble draws comes from the audio itself: a tone
-    //     that plays only in the second half draws a quiet first half and a loud
-    //     second one, and pure silence draws flat.
     {
         constexpr int kBars = 8;
-        constexpr int kFramesPerHalf = 25;  // half a second at 20 ms a frame
+        constexpr int kFramesPerHalf = 25;
         AudioEncoder encoder;
         SineAudioSource source(440.0);
         source.start();
@@ -268,10 +247,8 @@ int main()
         const std::vector<std::uint8_t> wave = voiceWaveform(packOpusFrames(frames), kBars);
         CHECK(wave.size() == static_cast<std::size_t>(kBars));
         CHECK(wave.front() < wave.back());
-        CHECK(wave.back() == kWaveformLevels - 1);  // the loudest slice tops out
+        CHECK(wave.back() == kWaveformLevels - 1);
 
-        // Its own encoder: a codec stream carries the tail of what came before,
-        // and every recording starts one of its own.
         AudioEncoder quietEncoder;
         std::vector<Bytes> quiet;
         for (int i = 0; i < kFramesPerHalf; ++i) {
@@ -282,14 +259,10 @@ int main()
         CHECK(std::all_of(flat.begin(), flat.end(), [](std::uint8_t bar) { return bar == 0; }));
     }
 
-    // 1c) Faster playback keeps the voice: a 440 Hz tone played at 2x comes out
-    //     half as long, and still 440 Hz. Pitch is counted by zero crossings,
-    //     which is what would double if the audio were merely resampled.
     {
         constexpr double kSpeed = 2.0;
-        constexpr int kToneFrames = 100;  // two seconds
+        constexpr int kToneFrames = 100;
         constexpr double kToneHz = 440.0;
-        // A tone rings either side of zero twice a period.
         constexpr double kCrossingsPerPeriod = 2.0;
         constexpr double kPitchTolerance = 0.05;
         constexpr double kLengthTolerance = 0.05;
@@ -312,11 +285,9 @@ int main()
                 chunk.begin() + static_cast<std::ptrdiff_t>(produced));
         }
 
-        // Half the samples, within a window's worth of rounding.
         const double ratio = static_cast<double>(fast.size()) / static_cast<double>(tone.size());
         CHECK(std::abs(ratio - 1.0 / kSpeed) < kLengthTolerance);
 
-        // And the same pitch: crossings per second, not per sample.
         const auto pitchOf = [](const std::vector<std::int16_t>& pcm) {
             int crossings = 0;
             for (std::size_t i = 1; i < pcm.size(); ++i) {
@@ -331,8 +302,6 @@ int main()
         CHECK(std::abs(heard - kToneHz) / kToneHz < kPitchTolerance);
     }
 
-    // 2) Full media pipeline over a loopback link: both sides capture a tone,
-    //    seal/encode it, and the peer decrypts/decodes and plays real frames.
     {
         LoopbackChannel aToB;
         LoopbackChannel bToA;
@@ -356,18 +325,14 @@ int main()
         caller.stop();
         callee.stop();
 
-        // ~20 frames each way in 400 ms; allow generous slack for scheduling.
         CHECK(caller.packetsSent() >= 5);
         CHECK(callee.packetsSent() >= 5);
         CHECK(callerSinkRaw->frameCount() >= 5);
         CHECK(calleeSinkRaw->frameCount() >= 5);
-        // Played frames roughly track received datagrams (PLC may add a few).
         CHECK(caller.packetsReceived() >= 5);
         CHECK(callee.packetsReceived() >= 5);
     }
 
-    // 3) AEAD gate: a peer with the wrong key receives datagrams but cannot open
-    //    any, so nothing is ever played (a forged stream is silently dropped).
     {
         LoopbackChannel aToB;
         LoopbackChannel bToA;
@@ -375,7 +340,7 @@ int main()
         LoopbackTransport calleeTransport(bToA, aToB);
 
         const Bytes callerKey(kAeadKeyBytes, 0x11);
-        const Bytes calleeKey(kAeadKeyBytes, 0x22);  // mismatched
+        const Bytes calleeKey(kAeadKeyBytes, 0x22);
         auto calleeSink = std::make_unique<CapturingAudioSink>();
         CapturingAudioSink* const calleeSinkRaw = calleeSink.get();
 
@@ -390,13 +355,11 @@ int main()
         caller.stop();
         callee.stop();
 
-        CHECK(caller.packetsSent() >= 5);       // datagrams really were sent
-        CHECK(calleeSinkRaw->frameCount() == 0);  // none opened with the wrong key
+        CHECK(caller.packetsSent() >= 5);
+        CHECK(calleeSinkRaw->frameCount() == 0);
         CHECK(callee.packetsReceived() == 0);
     }
 
-    // 4) The audio devices are opened and closed by the thread that drives the
-    //    call, never by the media threads: anything else can wedge the teardown.
     {
         LoopbackChannel aToB;
         LoopbackChannel bToA;

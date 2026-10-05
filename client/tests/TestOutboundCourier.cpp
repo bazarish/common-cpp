@@ -25,9 +25,6 @@ using namespace bazarish::client;
 
 namespace {
 
-// A stream that answers one deliver frame from memory: the request is written
-// into a buffer, and the reply is whatever the case under test wants said back.
-// No sockets and no router - what is being tested is the schedule, not I2P.
 class ScriptedStream final : public DeliveryStream {
 public:
     ScriptedStream(std::string reply, const bool answer)
@@ -45,8 +42,6 @@ public:
     void readExact(void* const buffer, const std::size_t size) override
     {
         if (!answer_) {
-            // The peer took the envelope and said nothing; the courier's watchdog
-            // closes the stream, which is what this throw stands for.
             throw std::runtime_error("no answer");
         }
         if (sent_ == 0) {
@@ -68,8 +63,6 @@ private:
     bool answer_ = true;
 };
 
-// A reply a recipient's server would send: delivered, signed over the delivery id
-// with the key of the destination that took it.
 std::string signedDeliveredReply(const Key& signingKey, const std::string& deliveryId)
 {
     const Bytes signedBytes(deliveryId.begin(), deliveryId.end());
@@ -82,7 +75,6 @@ std::string signedDeliveredReply(const Key& signingKey, const std::string& deliv
     return reply.dump();
 }
 
-// Fast enough to run in a test, same shape as the real one.
 DeliverySchedule quickSchedule()
 {
     DeliverySchedule schedule;
@@ -110,8 +102,6 @@ int main()
     const Key signingKey = Key::generateSigning();
     const std::string dest = "recipient.b32.i2p";
 
-    // A delivery the far side signs for: one dial, and the phases the chip and the
-    // activity row are drawn from.
     {
         std::vector<std::string> phases;
         int dials = 0;
@@ -133,8 +123,6 @@ int main()
         CHECK(phases.at(2) == kPhaseSending);
     }
 
-    // A "delivered" nobody signed is not an answer: it is retried like an
-    // unreachable peer and ends failed, because anyone on the path could say it.
     {
         int dials = 0;
         OutboundCourier courier([](const std::string&, const std::string&) { return true; },
@@ -149,8 +137,6 @@ int main()
         CHECK(dials == kDeliveryAttempts);
     }
 
-    // A peer that cannot be reached is tried exactly as many times as the
-    // protocol says, and the retries are reported so the bubble can say so.
     {
         int dials = 0;
         std::vector<std::string> retries;
@@ -174,16 +160,10 @@ int main()
         CHECK(outcome.errorCode == "RECIPIENT_SERVER_UNREACHABLE");
     }
 
-    // A run whose budget cannot pay for every try makes fewer of them - and says
-    // so, instead of announcing tries it then skips. A dial that spends its
-    // whole timeout is what eats the budget, which is exactly what an
-    // unreachable destination does.
     {
         int dials = 0;
         std::vector<std::string> retries;
         DeliverySchedule schedule = quickSchedule();
-        // Two dials fit and a third does not, with a second of slack either way
-        // so the boundary is never a race with the clock.
         schedule.dial = std::chrono::seconds{2};
         schedule.run = std::chrono::seconds{5};
         OutboundCourier courier([](const std::string&, const std::string&) { return true; },
@@ -203,18 +183,14 @@ int main()
         const OutboundCourier::Outcome outcome = courier.deliverNow(task);
         CHECK(!outcome.stored);
         CHECK(dials == 2);
-        // One retry announced, because one retry was made.
         CHECK(static_cast<int>(retries.size()) == dials - 1);
         CHECK(outcome.errorCode == "RECIPIENT_SERVER_UNREACHABLE");
         CHECK(outcome.errorMessage.find("2 of 4 tries") != std::string::npos);
     }
 
-    // A far side that takes the envelope and then says nothing is a different
-    // failure from one that never answered a dial, and is reported as one.
     {
         OutboundCourier courier([](const std::string&, const std::string&) { return true; },
             [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                // Opens, takes the write, and says nothing back.
                 return std::make_shared<ScriptedStream>(std::string(), false);
             },
             quickSchedule());
@@ -224,7 +200,6 @@ int main()
         CHECK(outcome.errorMessage.find("did not answer") != std::string::npos);
     }
 
-    // A refusal is an answer: it is not repeated, and it carries its own reason.
     {
         int dials = 0;
         OutboundCourier courier([](const std::string&, const std::string&) { return true; },
@@ -243,8 +218,6 @@ int main()
         CHECK(outcome.errorCode == "DELIVERY_REJECTED");
     }
 
-    // No address to send from is this device's problem, not the recipient's: it
-    // fails at once rather than spending four attempts on it.
     {
         int dials = 0;
         OutboundCourier courier([](const std::string&, const std::string&) { return false; },
@@ -259,9 +232,6 @@ int main()
         CHECK(!outcome.errorMessage.empty());
     }
 
-    // Two messages to one correspondent are delivered one after the other, so
-    // they arrive in the order they were written; a third to somebody else does
-    // not wait behind them.
     {
         std::mutex mutex;
         std::condition_variable cv;
@@ -287,14 +257,11 @@ int main()
                     signedDeliveredReply(signingKey, "d-6"), true);
             },
             quickSchedule());
-        // One id for all three: what this case watches is who dials when, and a
-        // reply signed for one delivery would be refused for another.
         courier.submit(taskTo(dest, "d-6"));
         courier.submit(taskTo(dest, "d-6"));
         courier.submit(taskTo("other.b32.i2p", "d-6"));
         {
             std::unique_lock<std::mutex> lock(mutex);
-            // The other correspondent goes through while this one is held.
             cv.wait(lock, [&otherDials]() { return otherDials == 1; });
             release = true;
         }

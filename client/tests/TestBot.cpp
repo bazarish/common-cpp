@@ -19,13 +19,12 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// Records what a handler saw, so dispatch routing can be asserted.
 struct Trace {
-    std::vector<std::string> commands;   // "name|args"
-    std::vector<std::string> texts;      // received text
-    std::vector<std::string> callbacks;  // "data|ref"
-    std::vector<std::string> contacts;   // intro text of a new contact
-    std::vector<std::string> unknown;    // unknown command names
+    std::vector<std::string> commands;
+    std::vector<std::string> texts;
+    std::vector<std::string> callbacks;
+    std::vector<std::string> contacts;
+    std::vector<std::string> unknown;
 };
 
 IncomingMessage make(const std::string& type, const std::string& from)
@@ -49,7 +48,6 @@ void testKeyboardJson()
     CHECK(json[0].size() == 2);
     CHECK(json[0][0].at("text") == "Yes");
     CHECK(json[0][0].at("data") == "yes");
-    // A callback button carries no "command", and vice versa - minimal shape.
     CHECK(!json[0][0].contains("command"));
     CHECK(json[1][0].at("text") == "Help");
     CHECK(json[1][0].at("command") == "help");
@@ -60,11 +58,7 @@ void testDispatch()
 {
     const fs::path accountDir = fs::temp_directory_path() / "bz-testbot-state";
     fs::remove_all(accountDir);
-    // The account is removed once the session holding it is gone: an open
-    // database file is not one every platform lets go of.
     {
-        // A connection-less Session is enough to construct a Bot; dispatch never
-        // touches the network, and the recording handlers never send a reply.
         Session session = Session::create(accountDir, std::string{}, "testbot");
 
         Trace trace;
@@ -89,7 +83,6 @@ void testDispatch()
             trace.contacts.push_back(intro);
         });
 
-        // bot.command routes to the named command handler with its args.
         {
             IncomingMessage message = make("bot.command", "peer1");
             message.commandName = "echo";
@@ -99,7 +92,6 @@ void testDispatch()
             CHECK(trace.commands[0] == "echo|hello world");
         }
 
-        // A plain "/command args" text line routes to the same command handler.
         {
             IncomingMessage message = make("text", "peer1");
             message.text = "/echo from text";
@@ -108,7 +100,6 @@ void testDispatch()
             CHECK(trace.commands[1] == "echo|from text");
         }
 
-        // A "/command" with no args dispatches with an empty argument string.
         {
             IncomingMessage message = make("text", "peer1");
             message.text = "/start";
@@ -117,7 +108,6 @@ void testDispatch()
             CHECK(trace.commands[2] == "start|");
         }
 
-        // Non-command text routes to the text handler verbatim.
         {
             IncomingMessage message = make("text", "peer1");
             message.text = "just chatting";
@@ -126,7 +116,6 @@ void testDispatch()
             CHECK(trace.texts[0] == "just chatting");
         }
 
-        // An unknown command routes to the unknown-command handler.
         {
             IncomingMessage message = make("text", "peer1");
             message.text = "/nope arg";
@@ -135,7 +124,6 @@ void testDispatch()
             CHECK(trace.unknown[0] == "nope");
         }
 
-        // A callback carries the button data and the referenced keyboard message.
         {
             IncomingMessage message = make("bot.callback", "peer1");
             message.callbackData = "ping";
@@ -145,7 +133,6 @@ void testDispatch()
             CHECK(trace.callbacks[0] == "ping|kbmsg42");
         }
 
-        // A new contact routes to the contact handler with the intro text.
         {
             IncomingMessage message = make("contact.request", "peer2");
             message.text = "hi bot";
@@ -154,7 +141,6 @@ void testDispatch()
             CHECK(trace.contacts[0] == "hi bot");
         }
 
-        // Control/media types are ignored by dispatch (no handler fires).
         {
             const std::size_t commandsBefore = trace.commands.size();
             const std::size_t textsBefore = trace.texts.size();
@@ -172,13 +158,10 @@ void testDispatch()
     fs::remove_all(accountDir);
 }
 
-// Without an explicit contact handler, a new contact falls back to the "start"
-// command when one is registered.
 void testContactFallsBackToStart()
 {
     const fs::path accountDir = fs::temp_directory_path() / "bz-testbot-state2";
     fs::remove_all(accountDir);
-    // Removed after the session, as above.
     {
         Session session = Session::create(accountDir, std::string{}, "testbot2");
 
@@ -196,8 +179,6 @@ void testContactFallsBackToStart()
 
 }  // namespace
 
-// The stub server these tests talk to is a plain HTTP listener on localhost -
-// the same shape as a stand on a LAN, and the reason that switch exists.
 int main()
 {
     bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);

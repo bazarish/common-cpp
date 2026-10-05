@@ -5,18 +5,10 @@
 #include <bazarish/I2p.hpp>
 #include <bazarish/I2pAddress.hpp>
 
-// User-owned I2P key custody, now a thin shim over the shared bazarish::i2p::Keys
-// (the embedded libi2pd in common) - the previously-vendored trimmed libi2pd
-// "keys" lib is gone. The serialized blob is the i2pd-native PrivateKeys form;
-// the base64 a server consumes is standard base64 of that blob (the server
-// decodes it with fromBase64 + Keys::fromBlob).
 namespace bazarish::client {
 
 I2pMasterKey generateI2pMaster()
 {
-    // Minted locally rather than through the router, unlike every other
-    // destination this client makes: the master is what delegation withholds
-    // from whoever operates the address, so it must never leave this process.
     const bazarish::i2p::Keys keys = bazarish::i2p::Keys::generate();
     return {keys.blob(), bazarish::i2p::routingHost(keys.publicBase64())};
 }

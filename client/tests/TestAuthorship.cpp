@@ -30,7 +30,6 @@ nlohmann::json message(const std::string& from, const std::string& text)
     };
 }
 
-// What the block is for: the content answers for its own author.
 void testSignedContentNamesItsAuthor()
 {
     const Identity author = Identity::generate();
@@ -40,8 +39,6 @@ void testSignedContentNamesItsAuthor()
     CHECK(authorOf(content) == author.fingerprint());
 }
 
-// Changing anything at all invalidates it - the whole envelope is signed, not a
-// chosen part of it.
 void testTamperedContentIsRefused()
 {
     const Identity author = Identity::generate();
@@ -52,19 +49,15 @@ void testTamperedContentIsRefused()
     edited["text"] = "pay me 500";
     CHECK_THROWS(authorOf(edited));
 
-    // The name on it is part of what is signed, so a message cannot be re-labelled
-    // as somebody else's - which is the forgery this exists to stop.
     nlohmann::json relabelled = content;
     relabelled["from"] = Identity::generate().fingerprint();
     CHECK_THROWS(authorOf(relabelled));
 
-    // Fields added after signing are not signed, and so are not accepted either.
     nlohmann::json extended = content;
     extended["bootstrap"] = {{"dest", "somewhere.b32.i2p"}};
     CHECK_THROWS(authorOf(extended));
 }
 
-// Somebody else's block does not travel: the signature is over these bytes.
 void testAnotherAuthorsBlockIsRefused()
 {
     const Identity author = Identity::generate();
@@ -78,13 +71,10 @@ void testAnotherAuthorsBlockIsRefused()
     stolen[kAuthorshipField] = theirs.at(kAuthorshipField);
     CHECK_THROWS(authorOf(stolen));
 
-    // A signature from one identity never names another: the fingerprint comes
-    // out of the keys that signed, not out of the message.
     CHECK(authorOf(theirs) == stranger.fingerprint());
     CHECK(authorOf(theirs) != author.fingerprint());
 }
 
-// No block at all, or a broken one: there is no author to name.
 void testMissingOrBrokenBlockIsRefused()
 {
     const Identity author = Identity::generate();
@@ -95,14 +85,11 @@ void testMissingOrBrokenBlockIsRefused()
     nlohmann::json halved = content;
     halved[kAuthorshipField].erase("p");
     CHECK_THROWS(authorOf(halved));
-    // A classical signature alone is not enough - both halves or nothing.
     nlohmann::json classicalOnly = content;
     classicalOnly[kAuthorshipField]["p"] = content.at(kAuthorshipField).at("c");
     CHECK_THROWS(authorOf(classicalOnly));
 }
 
-// Keys the reader already has do not travel: a correspondent needs them once,
-// and they are a quarter of the block.
 void testKeysTravelOnlyWhenAskedFor()
 {
     const Identity author = Identity::generate();
@@ -115,19 +102,14 @@ void testKeysTravelOnlyWhenAskedFor()
     nlohmann::json later = message(author.fingerprint(), "hello again");
     signAuthorship(later, author, /*withKeys=*/false);
     CHECK(keysIn(later).empty());
-    // Nothing to check it against on its own...
     CHECK_THROWS(authorOf(later));
-    // ...but the keys the reader kept name the same author.
     CHECK(authorOf(later, carried) == author.fingerprint());
-    // Somebody else's keys do not.
     const Identity stranger = Identity::generate();
     nlohmann::json theirs = message(stranger.fingerprint(), "x");
     signAuthorship(theirs, stranger, /*withKeys=*/true);
     CHECK_THROWS(authorOf(later, keysIn(theirs)));
 }
 
-// What it costs, said out loud: every message pays the first figure, and every
-// size limit has to leave room for the second.
 void testWhatTheBlockCosts()
 {
     const Identity author = Identity::generate();

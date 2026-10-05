@@ -7,16 +7,12 @@ namespace bazarish::client {
 
 namespace {
 
-// The content as it travels: CBOR, the same encoding the message itself is
-// carried in, so what is signed is byte-for-byte what is sent.
 Bytes encodedContent(const nlohmann::json& content)
 {
     return nlohmann::json::to_cbor(content);
 }
 
-// Keys and signatures ride as CBOR byte strings. Base64 inside a CBOR document
-// would be a third bigger for nothing, and this block is the largest thing on
-// most messages.
+// Keys and signatures ride as CBOR byte strings.
 nlohmann::json asBytes(const Bytes& data)
 {
     return nlohmann::json::binary(data);
@@ -74,7 +70,6 @@ std::string authorOf(const nlohmann::json& content, const IdentityKeys& known)
 
     const Key classical = Key::fromPublicDer(keys.classicalDer);
     const Key pq = Key::fromPublicDer(keys.pqDer);
-    // Key-type checks close the downgrade hole, exactly as the request auth does.
     if (!classical.isA("EC")) {
         throw std::runtime_error("author's classical key is not EC");
     }

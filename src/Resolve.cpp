@@ -10,8 +10,6 @@
 
 namespace {
 
-// What each signed body here calls itself. Read before any other field of it,
-// so no signed document can be parsed as a different one.
 const char* const kResolveRecordType = "resolve-record";
 
 void requireTypeAndVersion(const nlohmann::json& body, const char* type, const char* what)
@@ -50,11 +48,6 @@ Descriptor descriptorFromJson(const nlohmann::json& body)
     descriptor.fingerprint = body.at("fp").get<std::string>();
     descriptor.dest = body.at("dest").get<std::string>();
     descriptor.view = body.at("view").get<std::string>();
-    // Wholly empty is a descriptor that is not there: an alias.status request
-    // carries the field and nothing in it. Anything else is checked here rather
-    // than by whoever happens to use it first - a malformed destination that
-    // merely fails to dial is a refusal arriving minutes late and in the wrong
-    // words.
     if (descriptor.fingerprint.empty() && descriptor.dest.empty()
         && descriptor.view.empty()) {
         return descriptor;
@@ -208,9 +201,6 @@ ResolveRecord verifyResolveRecord(const Bytes& recordDer, const Bytes& delegatio
         throw std::runtime_error("resolve record: record has expired");
     }
 
-    // The owner's half. Folded rather than compared byte for byte: the registry
-    // canonicalizes a name before it accepts a certificate over it, so a
-    // certificate that differs only in case is one it would have taken.
     const AliasCertificate claim = AliasCertificate::verify(aliasCertDer);
     if (claim.issuedAt > now + kClockSkewSeconds) {
         throw std::runtime_error("resolve record: the owner's certificate is dated in the future");

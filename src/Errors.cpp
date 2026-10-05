@@ -7,9 +7,6 @@
 
 namespace {
 
-// Sized to what is in it. Declared wider, the spare slots were value-initialised
-// to {ErrorCode(0), ""} - so errorCodeFromString("") matched one of them and
-// answered QUOTA_EXCEEDED.
 constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErrorNames = {{
     {bazarish::ErrorCode::eQuotaExceeded, "QUOTA_EXCEEDED"},
     {bazarish::ErrorCode::eStorageFull, "STORAGE_FULL"},
@@ -26,9 +23,6 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErro
     {bazarish::ErrorCode::eAccountPendingApproval, "ACCOUNT_PENDING_APPROVAL"},
 }};
 
-// What each fault reads as on a screen, kept beside the wire names so the two
-// are edited together. A code with no sentence here throws, the same way an
-// unmapped name does, rather than reaching a person as SCREAMING_SNAKE_CASE.
 constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErrorTexts = {{
     {bazarish::ErrorCode::eQuotaExceeded, "There is no room left for this on the server."},
     {bazarish::ErrorCode::eStorageFull, "The server has run out of storage."},
@@ -61,7 +55,6 @@ std::string_view toString(const ErrorCode code)
             return name;
         }
     }
-    // All enumerators are present in the table; reaching here is a bug.
     throw std::logic_error("unmapped error code");
 }
 

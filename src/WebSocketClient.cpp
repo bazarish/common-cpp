@@ -5,9 +5,6 @@
 #include "bazarish/Crypto.hpp"
 #include "bazarish/Log.hpp"
 
-// Before any Boost.Asio header: awaitable.hpp (Boost 1.81, Debian 12) uses
-// std::exchange without including <utility>, which libstdc++ 12 does not pull in
-// on its own.
 #include <utility>
 
 #include <boost/asio/connect.hpp>
@@ -42,9 +39,7 @@ using asio::ip::tcp;
 
 using TlsStream = beast::ssl_stream<beast::tcp_stream>;
 
-// The key a certificate carries, which is what a pin names. The certificate
-// around it may be reissued, renamed or self-signed without the pin caring:
-// what must not change is the key.
+// The key a certificate carries, which is what a pin names.
 std::string spkiFingerprint(SSL* const connection)
 {
     X509* const certificate = SSL_get1_peer_certificate(connection);
@@ -62,11 +57,6 @@ std::string spkiFingerprint(SSL* const connection)
     return fingerprint;
 }
 
-// One socket the client owns. Both directions are synchronous, each on a thread
-// of its own: Beast permits one read and one write at a time, and nothing else
-// touches the stream. There is no event loop here on purpose - an io_context
-// with no asynchronous work returns from run() at once, and posts made after
-// that are queued for nobody.
 template <class Stream>
 class ClientSocket : public Socket, public std::enable_shared_from_this<ClientSocket<Stream>> {
 public:
@@ -84,9 +74,6 @@ public:
         if (!writer_.joinable()) {
             return;
         }
-        // The writer holds a reference of its own, so the last one to go is
-        // often its: when it is, this destructor is running on the writer's own
-        // thread and joining it would be joining itself.
         if (writer_.get_id() == std::this_thread::get_id()) {
             writer_.detach();
             return;
@@ -120,7 +107,6 @@ public:
         }
         waiting_.notify_all();
         boost::system::error_code ignored;
-        // Shutting the socket down is what gets the reader out of its wait.
         beast::get_lowest_layer(*stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
     }
 
@@ -150,7 +136,6 @@ private:
                 break;
             }
             if (!stream_->got_binary()) {
-                // A caller sending text is not speaking this protocol.
                 break;
             }
             if (message) {
@@ -194,8 +179,6 @@ private:
         }
     }
 
-    // Held because the stream refers to its executor, not because anything runs
-    // on it.
     std::unique_ptr<asio::io_context> loop_;
     std::unique_ptr<ssl::context> tls_;
     std::unique_ptr<websocket::stream<Stream>> stream_;
@@ -207,8 +190,6 @@ private:
     std::atomic<bool> open_{true};
 };
 
-// Connects and shakes hands. Over TLS the pin is what decides whether the peer
-// is the right one; nothing else does.
 struct Connected {
     std::unique_ptr<asio::io_context> loop;
     std::unique_ptr<ssl::context> tls;
@@ -240,16 +221,12 @@ Connected connect(const SocketDial& dial)
             return out;
         }
         out.plain->expires_never();
-        // Small frames are the whole of this protocol; Nagle would hold each
-        // one until the last was answered.
         boost::system::error_code ignoredOption;
         out.plain->socket().set_option(tcp::no_delay(true), ignoredOption);
         return out;
     }
 
     out.tls = std::make_unique<ssl::context>(ssl::context::tlsv12_client);
-    // The pin is the whole of the check, so the chain is not one: a gateway
-    // needs no CA-issued certificate and no real host name.
     out.tls->set_verify_mode(ssl::verify_none);
     out.secure = std::make_unique<TlsStream>(*out.loop, *out.tls);
 
@@ -276,7 +253,6 @@ Connected connect(const SocketDial& dial)
         return out;
     }
     if (!dial.pin.empty() && dial.pin != out.pin) {
-        // Not a warning and not a question: this is a different peer.
         out.error = "the peer's key is not the pinned one";
         return out;
     }
@@ -287,7 +263,6 @@ Connected connect(const SocketDial& dial)
     return out;
 }
 
-// The upgrade, once a stream of either kind is standing.
 template <class Stream>
 std::string upgrade(websocket::stream<Stream>& stream, const SocketDial& dial)
 {
