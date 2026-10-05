@@ -36,7 +36,6 @@ add_library(bazarish_common STATIC
     src/Certificates.cpp
     src/Pass.cpp
     src/Padding.cpp
-    src/RateLimiter.cpp
     src/ConfigFile.cpp
     src/PrivateFile.cpp
     src/WebAssets.cpp
@@ -56,7 +55,6 @@ add_library(bazarish_common STATIC
     src/Reactions.cpp
     src/Log.cpp
     src/ReseedSu3.cpp
-    src/Health.cpp
     src/HttpClient.cpp
     src/GatewayProtocol.cpp
     src/GatewayStreamBook.cpp
@@ -120,7 +118,6 @@ bazarish_add_test(TestReseedSu3)
 bazarish_add_test(TestCertificates)
 bazarish_add_test(TestPass)
 bazarish_add_test(TestPadding)
-bazarish_add_test(TestRateLimiter)
 bazarish_add_test(TestErrors)
 bazarish_add_test(TestAddress)
 bazarish_add_test(TestI2pAddress)
@@ -140,7 +137,6 @@ bazarish_add_test(TestServerDescriptor)
 bazarish_add_test(TestResolve)
 bazarish_add_test(TestAliasMaintenance)
 bazarish_add_test(TestLog)
-bazarish_add_test(TestHealth)
 bazarish_add_test(TestHttpClient)
 bazarish_add_test(TestGatewayProtocol)
 bazarish_add_test(TestGatewayStreamBook)
