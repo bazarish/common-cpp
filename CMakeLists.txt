@@ -57,7 +57,6 @@ add_library(bazarish_common STATIC
     src/Log.cpp
     src/ReseedSu3.cpp
     src/Health.cpp
-    src/Restart.cpp
     src/HttpClient.cpp
     src/GatewayProtocol.cpp
     src/GatewayStreamBook.cpp
@@ -142,7 +141,6 @@ bazarish_add_test(TestResolve)
 bazarish_add_test(TestAliasMaintenance)
 bazarish_add_test(TestLog)
 bazarish_add_test(TestHealth)
-bazarish_add_test(TestRestart)
 bazarish_add_test(TestHttpClient)
 bazarish_add_test(TestGatewayProtocol)
 bazarish_add_test(TestGatewayStreamBook)
