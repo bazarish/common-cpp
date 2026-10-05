@@ -66,6 +66,7 @@ constexpr std::size_t kSessionIdChars = 32;
                     : parsed->message);
         }
     } catch (const nlohmann::json::exception&) {
+        // error-hiding: allowed - not an error envelope; the ApiError below carries status and text.
     }
     throw ApiError(std::nullopt, status,
         text.empty() ? ("server answered status " + std::to_string(status) + " with no body")
