@@ -83,7 +83,8 @@ std::string lowercased(std::string text)
 enum class Phase { eConnect, eWrite, eRead };
 
 template <class Body>
-void applyHead(beasthttp::request<Body>& out, const std::string& host, const ClientRequest& request)
+void applyHead(beasthttp::request<Body>& out, const std::string& host,
+    const ClientRequest& request, const bool keepAlive)
 {
     const beasthttp::verb verb = beasthttp::string_to_verb(request.method);
     if (verb == beasthttp::verb::unknown) {
@@ -94,7 +95,7 @@ void applyHead(beasthttp::request<Body>& out, const std::string& host, const Cli
     out.target(request.target);
     out.version(kHttpVersion11);
     out.set(beasthttp::field::host, host);
-    out.keep_alive(false);
+    out.keep_alive(keepAlive);
     for (const auto& [name, value] : request.headers) {
         out.set(name, value);
     }
@@ -122,19 +123,20 @@ ClientResponse fromBeast(const beasthttp::response<beasthttp::string_body>& in)
 template <class Stream>
 asio::awaitable<ClientResponse> exchangeOn(Stream& stream, const std::string& host,
     const ClientRequest& request, const ClientOptions& options, const std::uint64_t length,
-    const BodyProvider* const provider, Phase& phase)
+    const BodyProvider* const provider, Phase& phase, beast::flat_buffer& buffer,
+    const bool keepAlive)
 {
     phase = Phase::eWrite;
     beast::get_lowest_layer(stream).expires_after(options.writeTimeout);
     if (provider == nullptr) {
         beasthttp::request<beasthttp::string_body> out;
-        applyHead(out, host, request);
+        applyHead(out, host, request, keepAlive);
         out.body() = request.body;
         out.prepare_payload();
         co_await beasthttp::async_write(stream, out, asio::use_awaitable);
     } else {
         beasthttp::request<beasthttp::buffer_body> out;
-        applyHead(out, host, request);
+        applyHead(out, host, request, keepAlive);
         out.content_length(length);
         out.body().data = nullptr;
         out.body().more = true;
@@ -173,66 +175,10 @@ asio::awaitable<ClientResponse> exchangeOn(Stream& stream, const std::string& ho
     }
 
     phase = Phase::eRead;
-    beast::flat_buffer buffer;
     beasthttp::response<beasthttp::string_body> in;
     beast::get_lowest_layer(stream).expires_after(options.readTimeout);
     co_await beasthttp::async_read(stream, buffer, in, asio::use_awaitable);
     co_return fromBeast(in);
-}
-
-asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const std::string& host,
-    const int port, const ClientRequest& request, const ClientOptions& options,
-    const std::uint64_t length, const BodyProvider* const provider)
-{
-    ClientResponse answer;
-    Phase phase = Phase::eConnect;
-    try {
-        tcp::resolver resolver(executor);
-        const auto endpoints
-            = co_await resolver.async_resolve(host, std::to_string(port), asio::use_awaitable);
-        if (options.tls) {
-            ssl::context context(ssl::context::tls_client);
-            context.set_options(ssl::context::default_workarounds | ssl::context::no_sslv2
-                | ssl::context::no_sslv3);
-            beast::ssl_stream<beast::tcp_stream> stream(executor, context);
-            if (options.verifyPeer) {
-                context.set_default_verify_paths();
-                stream.set_verify_mode(ssl::verify_peer);
-                stream.set_verify_callback(ssl::host_name_verification(host));
-            } else {
-                stream.set_verify_mode(ssl::verify_none);
-            }
-            // Without SNI a virtual host answers with the wrong certificate, and
-            // some fronts refuse the handshake outright.
-            if (SSL_set_tlsext_host_name(stream.native_handle(), host.c_str()) != 1) {
-                throw std::runtime_error("could not set the TLS server name for " + host);
-            }
-            beast::get_lowest_layer(stream).expires_after(options.connectTimeout);
-            co_await beast::get_lowest_layer(stream).async_connect(endpoints, asio::use_awaitable);
-            co_await stream.async_handshake(ssl::stream_base::client, asio::use_awaitable);
-            answer = co_await exchangeOn(stream, host, request, options, length, provider, phase);
-            boost::system::error_code ignored;
-            co_await stream.async_shutdown(asio::redirect_error(asio::use_awaitable, ignored));
-        } else {
-            beast::tcp_stream stream(executor);
-            stream.expires_after(options.connectTimeout);
-            co_await stream.async_connect(endpoints, asio::use_awaitable);
-            answer = co_await exchangeOn(stream, host, request, options, length, provider, phase);
-            boost::system::error_code ignored;
-            stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
-        }
-    } catch (const boost::system::system_error& error) {
-        // The code's own message ("Connection refused"), not what(): Beast puts
-        // the throwing source location in there, which is noise in a log line.
-        answer = ClientResponse{};
-        answer.error = error.code().message();
-        answer.readTimedOut = phase == Phase::eRead;
-    } catch (const std::exception& error) {
-        answer = ClientResponse{};
-        answer.error = error.what();
-        answer.readTimedOut = phase == Phase::eRead;
-    }
-    co_return answer;
 }
 
 // Hex MD5, the one digest RFC 7616 names for its default algorithm. Used only
@@ -309,6 +255,90 @@ std::string digestAuthorization(const ClientOptions& options, const std::string&
     return header;
 }
 
+// A server may hand out a nonce that is only good on the connection that asked
+// for it - monero-wallet-rpc answers stale=true to an answer arriving on a new
+// one - so the challenge and its answer go over the same stream. An upload is
+// not answered: its body cannot be produced twice.
+template <class Stream>
+asio::awaitable<ClientResponse> exchangeAuthorized(Stream& stream, const std::string& host,
+    const ClientRequest& request, const ClientOptions& options, const std::uint64_t length,
+    const BodyProvider* const provider, Phase& phase)
+{
+    beast::flat_buffer buffer;
+    const bool answerable = provider == nullptr && !options.digestUser.empty();
+    ClientResponse answer = co_await exchangeOn(
+        stream, host, request, options, length, provider, phase, buffer, answerable);
+    if (!answerable || answer.status != kUnauthorizedStatus) {
+        co_return answer;
+    }
+    const auto challenge = answer.headers.find("www-authenticate");
+    if (challenge == answer.headers.end() || challenge->second.rfind("Digest", 0) != 0) {
+        co_return answer;
+    }
+    ClientRequest authorized = request;
+    authorized.headers["Authorization"] = digestAuthorization(
+        options, request.method, request.target, challengeFields(challenge->second));
+    co_return co_await exchangeOn(
+        stream, host, authorized, options, length, provider, phase, buffer, false);
+}
+
+asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const std::string& host,
+    const int port, const ClientRequest& request, const ClientOptions& options,
+    const std::uint64_t length, const BodyProvider* const provider)
+{
+    ClientResponse answer;
+    Phase phase = Phase::eConnect;
+    try {
+        tcp::resolver resolver(executor);
+        const auto endpoints
+            = co_await resolver.async_resolve(host, std::to_string(port), asio::use_awaitable);
+        if (options.tls) {
+            ssl::context context(ssl::context::tls_client);
+            context.set_options(ssl::context::default_workarounds | ssl::context::no_sslv2
+                | ssl::context::no_sslv3);
+            beast::ssl_stream<beast::tcp_stream> stream(executor, context);
+            if (options.verifyPeer) {
+                context.set_default_verify_paths();
+                stream.set_verify_mode(ssl::verify_peer);
+                stream.set_verify_callback(ssl::host_name_verification(host));
+            } else {
+                stream.set_verify_mode(ssl::verify_none);
+            }
+            // Without SNI a virtual host answers with the wrong certificate, and
+            // some fronts refuse the handshake outright.
+            if (SSL_set_tlsext_host_name(stream.native_handle(), host.c_str()) != 1) {
+                throw std::runtime_error("could not set the TLS server name for " + host);
+            }
+            beast::get_lowest_layer(stream).expires_after(options.connectTimeout);
+            co_await beast::get_lowest_layer(stream).async_connect(endpoints, asio::use_awaitable);
+            co_await stream.async_handshake(ssl::stream_base::client, asio::use_awaitable);
+            answer = co_await exchangeAuthorized(
+                stream, host, request, options, length, provider, phase);
+            boost::system::error_code ignored;
+            co_await stream.async_shutdown(asio::redirect_error(asio::use_awaitable, ignored));
+        } else {
+            beast::tcp_stream stream(executor);
+            stream.expires_after(options.connectTimeout);
+            co_await stream.async_connect(endpoints, asio::use_awaitable);
+            answer = co_await exchangeAuthorized(
+                stream, host, request, options, length, provider, phase);
+            boost::system::error_code ignored;
+            stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
+        }
+    } catch (const boost::system::system_error& error) {
+        // The code's own message ("Connection refused"), not what(): Beast puts
+        // the throwing source location in there, which is noise in a log line.
+        answer = ClientResponse{};
+        answer.error = error.code().message();
+        answer.readTimedOut = phase == Phase::eRead;
+    } catch (const std::exception& error) {
+        answer = ClientResponse{};
+        answer.error = error.what();
+        answer.readTimedOut = phase == Phase::eRead;
+    }
+    co_return answer;
+}
+
 ClientResponse runOnce(const std::string& host, const int port, const ClientRequest& request,
     const ClientOptions& options, const std::uint64_t length, const BodyProvider* const provider)
 {
@@ -365,20 +395,7 @@ ClientResponse request(const std::string& host, const int port, const ClientRequ
         outgoing.headers["Authorization"]
             = "Basic " + toBase64(Bytes(pair.begin(), pair.end()));
     }
-    const ClientResponse first = runOnce(host, port, outgoing, options, 0, nullptr);
-    if (first.status != kUnauthorizedStatus || options.digestUser.empty()) {
-        return first;
-    }
-    const auto challenge = first.headers.find("www-authenticate");
-    if (challenge == first.headers.end() || challenge->second.rfind("Digest", 0) != 0) {
-        return first;
-    }
-    // The challenge is what the credentials are computed against, so this second
-    // attempt is the first one that could carry them.
-    ClientRequest authorized = outgoing;
-    authorized.headers["Authorization"] = digestAuthorization(options, request.method,
-        request.target, challengeFields(challenge->second));
-    return runOnce(host, port, authorized, options, 0, nullptr);
+    return runOnce(host, port, outgoing, options, 0, nullptr);
 }
 
 ClientResponse upload(const std::string& host, const int port, const ClientRequest& request,

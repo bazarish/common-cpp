@@ -7,6 +7,9 @@
 
 #include "TestUtil.hpp"
 
+#include <boost/asio.hpp>
+
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <thread>
@@ -20,6 +23,27 @@ namespace {
 constexpr int kTimeoutSeconds = 10;
 // Bigger than one write, so a streamed body has to come back in several chunks.
 constexpr std::size_t kUploadBytes = 300 * 1024;
+
+// One request head off a raw socket, empty when the peer closed instead.
+std::string readHead(boost::asio::ip::tcp::socket& peer)
+{
+    std::string head;
+    char byte = 0;
+    boost::system::error_code error;
+    while (head.find("\r\n\r\n") == std::string::npos) {
+        const std::size_t got = peer.read_some(boost::asio::buffer(&byte, 1), error);
+        if (error || got == 0) {
+            return {};
+        }
+        head.push_back(byte);
+    }
+    return head;
+}
+
+std::string rawResponse(const std::string& head, const std::string& body)
+{
+    return head + "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+}
 
 http::Server::Options serverOptions()
 {
@@ -250,6 +274,57 @@ int main()
         CHECK(bare.status == 401);
         CHECK(sawAuthorization.empty());
         server.stop();
+    }
+
+    // --- A nonce that is good only on the connection that issued it ---
+    {
+        // monero-wallet-rpc refuses an answer arriving on a second connection
+        // (stale=true), so the challenge and its answer have to share one. This
+        // server is that server in the small: it offers a single connection and
+        // accepts only the nonce it handed out on it.
+        using boost::asio::ip::tcp;
+        boost::asio::io_context loop;
+        tcp::acceptor door(loop, tcp::endpoint(boost::asio::ip::make_address("127.0.0.1"), 0));
+        const int port = door.local_endpoint().port();
+        std::atomic<int> accepted{0};
+        std::thread serving([&door, &accepted] {
+            tcp::socket peer = door.accept();
+            ++accepted;
+            door.close();
+            const std::string nonce = "boundtothisone";
+            for (;;) {
+                const std::string head = readHead(peer);
+                if (head.empty()) {
+                    return;
+                }
+                const bool carried = head.find("Authorization: Digest") != std::string::npos
+                    && head.find("nonce=\"" + nonce + "\"") != std::string::npos;
+                const std::string answer = carried
+                    ? rawResponse("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n", "welcome")
+                    : rawResponse("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Digest "
+                                  "realm=\"monero-rpc\", nonce=\"" + nonce + "\", qop=\"auth\"\r\n",
+                        "who goes there");
+                boost::asio::write(peer, boost::asio::buffer(answer));
+                if (carried) {
+                    return;
+                }
+            }
+        });
+
+        http::ClientOptions bound;
+        bound.digestUser = "walletuser";
+        bound.digestPassword = "walletpass";
+        bound.connectTimeout = std::chrono::seconds(kTimeoutSeconds);
+        bound.readTimeout = std::chrono::seconds(kTimeoutSeconds);
+        http::ClientRequest ask;
+        ask.method = "GET";
+        ask.target = "/json_rpc";
+        const http::ClientResponse welcomed = http::request("127.0.0.1", port, ask, bound);
+        serving.join();
+        CHECK(welcomed.status == 200);
+        CHECK(welcomed.body == "welcome");
+        // Two connections would have left the nonce stale on the second.
+        CHECK(accepted == 1);
     }
 
     std::printf("TestHttpClient: all checks passed\n");
