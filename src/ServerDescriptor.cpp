@@ -35,6 +35,7 @@ bool selfHostedFacadeOnLoopback()
     return g_selfHostedFacadeOnLoopback.load();
 }
 
+
 bool allowFacadeWithoutI2pForDevPurposes()
 {
     return g_allowFacadeWithoutI2p.load();
@@ -43,6 +44,7 @@ bool allowFacadeWithoutI2pForDevPurposes()
 bool isI2pFacadeUrl(const std::string& url)
 {
     static const std::string kSuffix = ".b32.i2p";
+    // The host is what decides it: between the scheme and the first ':' or '/'.
     const std::size_t schemeEnd = url.find("://");
     const std::size_t hostStart = schemeEnd == std::string::npos ? 0 : schemeEnd + 3;
     const std::size_t hostEnd = url.find_first_of(":/", hostStart);
@@ -70,6 +72,8 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
         throw std::invalid_argument("not a bazarish://server descriptor");
     }
 
+    // The values are URL-safe by construction (base32 fingerprint, plain facade
+    // URLs), so a split on '&' and '=' needs no percent-decoding.
     ServerDescriptor descriptor;
     std::string version;
     bool haveVersion = false;
@@ -111,6 +115,7 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
                 descriptor.reseeds.push_back(value);
             }
         }
+        // Unknown keys are ignored for forward compatibility.
         if (amp == std::string::npos) {
             break;
         }

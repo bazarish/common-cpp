@@ -15,6 +15,9 @@ namespace {
 constexpr char kPrefix[] = "bazarish://invite?";
 constexpr std::size_t kPrefixLen = sizeof(kPrefix) - 1;
 
+// Percent-encodes a free-form value (the display name) so arbitrary text -
+// spaces, '&', '=', UTF-8 - survives the '&'/'=' split with no ambiguity. Only
+// the RFC-3986 unreserved set is left as-is.
 std::string percentEncode(const std::string& value)
 {
     static const char kHex[] = "0123456789ABCDEF";
@@ -34,6 +37,8 @@ std::string percentEncode(const std::string& value)
     return out;
 }
 
+// Decodes a percent-encoded value. A malformed escape is left verbatim rather
+// than throwing: the name is cosmetic, never a trust anchor.
 std::string percentDecode(const std::string& value)
 {
     const auto hexValue = [](const char c) -> int {
@@ -81,6 +86,7 @@ std::string encodeDescriptor(const Descriptor& descriptor)
 {
     std::string uri = std::string(kPrefix) + "v=1&fp=" + descriptor.fingerprint
         + "&dest=" + descriptor.dest + "&view=" + descriptor.view;
+    // The name is optional and percent-encoded; older invites simply omit it.
     if (!descriptor.name.empty()) {
         uri += "&name=" + percentEncode(descriptor.name);
     }
@@ -93,6 +99,8 @@ Descriptor parseDescriptor(const std::string& uri)
         throw std::invalid_argument("not a bazarish://invite descriptor");
     }
 
+    // The values are URL-safe by construction (base32 fingerprint, .b32.i2p host,
+    // base64url key), so a plain split on '&' and '=' needs no percent-decoding.
     std::map<std::string, std::string> params;
     const std::string query = uri.substr(kPrefixLen);
     std::size_t pos = 0;
@@ -133,6 +141,7 @@ Descriptor parseDescriptor(const std::string& uri)
     if (!isViewCapability(descriptor.view)) {
         throw std::invalid_argument("descriptor view is not 32 hex characters");
     }
+    // The name is optional: a descriptor minted before names existed has none.
     const auto nameParam = params.find("name");
     if (nameParam != params.end()) {
         descriptor.name = percentDecode(nameParam->second);

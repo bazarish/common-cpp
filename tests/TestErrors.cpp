@@ -7,6 +7,7 @@ using namespace bazarish;
 
 int main()
 {
+    // String mapping round trip for every code.
     const ErrorCode codes[] = {
         ErrorCode::eQuotaExceeded,
         ErrorCode::eStorageFull,
@@ -30,6 +31,8 @@ int main()
     CHECK(toString(ErrorCode::eQuotaExceeded) == "QUOTA_EXCEEDED");
     CHECK(!errorCodeFromString("NO_SUCH_CODE").has_value());
 
+    // Every code has a sentence for a person, and no sentence is a wire name in
+    // disguise: a code that reaches a screen is the bug this guards against.
     for (const ErrorCode code : codes) {
         const std::string_view text = readable(code);
         CHECK(!text.empty());
@@ -39,6 +42,7 @@ int main()
     }
     CHECK(readable(ErrorCode::eAliasUnknown).find("Nobody answers") == 0);
 
+    // Envelope round trip with details.
     const nlohmann::json details = {{"limit", 10485760}, {"size", 12582912}};
     const nlohmann::json envelope
         = makeErrorEnvelope(ErrorCode::eQuotaExceeded, "blob too large", details);
@@ -48,6 +52,7 @@ int main()
     CHECK(parsed->message == "blob too large");
     CHECK(parsed->details == details);
 
+    // Envelope without details.
     const nlohmann::json bare
         = makeErrorEnvelope(ErrorCode::eClientUnregistered, "register this device first");
     CHECK(!bare.at("error").contains("details"));
@@ -55,6 +60,7 @@ int main()
     CHECK(bareParsed.has_value());
     CHECK(bareParsed->code == ErrorCode::eClientUnregistered);
 
+    // Non-error documents and unknown codes are not coerced.
     CHECK(!parseErrorEnvelope(nlohmann::json{{"ok", true}}).has_value());
     CHECK(!parseErrorEnvelope(nlohmann::json::array()).has_value());
     const nlohmann::json unknownCode = {{"error", {{"code", "FUTURE_CODE"}, {"message", "?"}}}};

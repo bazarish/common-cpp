@@ -19,6 +19,8 @@ using namespace bazarish;
 
 namespace {
 
+// One end of a socket pair, with the two methods the frame needs. The whole
+// point of the frame being a template: this stands in for an I2P stream.
 class SocketStream {
 public:
     explicit SocketStream(const int fd)
@@ -59,12 +61,14 @@ private:
     const int fd_;
 };
 
+// A deliver payload big enough that it cannot ride inside the header line.
 constexpr std::size_t kPayloadBytes = 4096;
 
 }  // namespace
 
 int main()
 {
+    // The deliver header names the envelope and the payload length that follows.
     {
         const Bytes sealed{1, 2, 3, 4};
         const nlohmann::json header
@@ -74,6 +78,7 @@ int main()
         CHECK(header.at("len") == kPayloadBytes);
     }
 
+    // A signed confirmation comes back whole.
     {
         const nlohmann::json reply = {{"delivered", true}, {"deliveryId", "abc123"},
             {"signerPub", toBase64(Bytes{7, 7})}, {"sig", toBase64(Bytes{9, 9, 9})}};
@@ -85,6 +90,7 @@ int main()
         CHECK(parsed.errorCode.empty());
     }
 
+    // A refusal carries its typed reason and no confirmation.
     {
         const nlohmann::json reply = {{"delivered", false}, {"errorCode", "DELIVERY_REJECTED"},
             {"errorMessage", "delivery rejected"}};
@@ -95,6 +101,7 @@ int main()
         CHECK(parsed.signature.empty());
     }
 
+    // The fetch frame, both ways.
     {
         const Bytes sealed{5, 6};
         const nlohmann::json header
@@ -113,6 +120,8 @@ int main()
         CHECK(unknown.errorCode == "CARD_UNKNOWN");
     }
 
+    // A header line with no end to it is refused rather than grown without
+    // bound: what arrives is a peer's say-so, not this process's.
     {
         int fds[2];
         CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
@@ -126,6 +135,7 @@ int main()
                     writer.writeAll(chunk.data(), chunk.size());
                 }
             } catch (const std::exception&) {
+                // The reader gave up and closed: that is the case under test.
             }
         });
         bool refused = false;
@@ -138,6 +148,8 @@ int main()
         flood.join();
     }
 
+    // And the whole exchange over a pair of sockets: header out, payload out,
+    // one line back.
     {
         int fds[2];
         CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);

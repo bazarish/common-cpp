@@ -62,8 +62,12 @@ using asio::ip::tcp;
 
 // HTTP/1.1, as an integer, the way Beast spells a version.
 constexpr int kHttpVersion11 = 11;
+// Bytes handed to the body provider per write while streaming an upload.
 constexpr std::size_t kUploadChunkBytes = 64 * 1024;
+// The status a server answers with when it wants credentials.
 constexpr int kUnauthorizedStatus = 401;
+// A digest exchange is one request per set of credentials, so the nonce count
+// never advances past the first.
 constexpr const char* kFirstNonceCount = "00000001";
 constexpr std::size_t kClientNonceBytes = 8;
 
@@ -74,6 +78,8 @@ std::string lowercased(std::string text)
     return text;
 }
 
+// Which part of the exchange was running, so a timeout is reported as the thing
+// it actually was: a backend that never answered is not an unreachable host.
 enum class Phase { eConnect, eWrite, eRead };
 
 template <class Body>
@@ -112,6 +118,8 @@ ClientResponse fromBeast(const beasthttp::response<beasthttp::string_body>& in)
     return out;
 }
 
+// Everything after the connection is up, for either kind of stream: write the
+// request (from memory or from the provider), read the answer.
 template <class Stream>
 asio::awaitable<ClientResponse> exchangeOn(Stream& stream, const std::string& host,
     const ClientRequest& request, const ClientOptions& options, const std::uint64_t length,
@@ -157,7 +165,8 @@ asio::awaitable<ClientResponse> exchangeOn(Stream& stream, const std::string& ho
             beast::get_lowest_layer(stream).expires_after(options.writeTimeout);
             co_await beasthttp::async_write(
                 stream, serializer, asio::redirect_error(asio::use_awaitable, error));
-            // Beast reports a consumed buffer as need_buffer: it is asking for the next chunk, not failing.
+            // Beast reports a consumed buffer as need_buffer: it is asking for the
+            // next chunk, not failing.
             if (error && error != beasthttp::error::need_buffer) {
                 throw boost::system::system_error(error);
             }
@@ -172,6 +181,8 @@ asio::awaitable<ClientResponse> exchangeOn(Stream& stream, const std::string& ho
     co_return fromBeast(in);
 }
 
+// Hex MD5, the one digest RFC 7616 names for its default algorithm. Used only
+// to answer a server's authentication challenge, never to protect anything.
 std::string md5Hex(const std::string& text)
 {
     std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
@@ -182,6 +193,7 @@ std::string md5Hex(const std::string& text)
     return toHex(Bytes(digest.begin(), digest.begin() + size));
 }
 
+// The comma-separated "key=value" pairs of a WWW-Authenticate: Digest header.
 std::map<std::string, std::string> challengeFields(const std::string& header)
 {
     std::map<std::string, std::string> fields;
@@ -211,6 +223,9 @@ std::map<std::string, std::string> challengeFields(const std::string& header)
     return fields;
 }
 
+// The Authorization header that answers a Digest challenge (RFC 7616 section
+// 3.4, MD5 with qop=auth). One exchange per credentials, so the nonce count is
+// always the first.
 std::string digestAuthorization(const ClientOptions& options, const std::string& method,
     const std::string& target, const std::map<std::string, std::string>& fields)
 {
@@ -240,6 +255,10 @@ std::string digestAuthorization(const ClientOptions& options, const std::string&
     return header;
 }
 
+// A server may hand out a nonce that is only good on the connection that asked
+// for it - monero-wallet-rpc answers stale=true to an answer arriving on a new
+// one - so the challenge and its answer go over the same stream. An upload is
+// not answered: its body cannot be produced twice.
 template <class Stream>
 asio::awaitable<ClientResponse> exchangeAuthorized(Stream& stream, const std::string& host,
     const ClientRequest& request, const ClientOptions& options, const std::uint64_t length,
@@ -285,6 +304,8 @@ asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const s
             } else {
                 stream.set_verify_mode(ssl::verify_none);
             }
+            // Without SNI a virtual host answers with the wrong certificate, and
+            // some fronts refuse the handshake outright.
             if (SSL_set_tlsext_host_name(stream.native_handle(), host.c_str()) != 1) {
                 throw std::runtime_error("could not set the TLS server name for " + host);
             }
@@ -305,6 +326,8 @@ asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const s
             stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
         }
     } catch (const boost::system::system_error& error) {
+        // The code's own message ("Connection refused"), not what(): Beast puts
+        // the throwing source location in there, which is noise in a log line.
         answer = ClientResponse{};
         answer.error = error.code().message();
         answer.readTimedOut = phase == Phase::eRead;
@@ -350,6 +373,8 @@ asio::awaitable<Response> fetch(asio::any_io_executor executor, const std::strin
     const ClientResponse result
         = co_await exchange(executor, host, port, request, options, 0, nullptr);
     if (result.status == 0) {
+        // Status 0 is "the backend did not answer", which the caller turns into a
+        // gateway failure - not a protocol error of its own.
         bazarish::log::warn("upstream {}:{} failed: {}", host, port, result.error);
     }
     Response answer;
@@ -364,6 +389,8 @@ ClientResponse request(const std::string& host, const int port, const ClientRequ
 {
     ClientRequest outgoing = request;
     if (!options.basicUser.empty()) {
+        // Basic is sent unasked: a backend that takes it does not challenge for
+        // it, and waiting to be challenged would only cost a round trip.
         const std::string pair = options.basicUser + ":" + options.basicPassword;
         outgoing.headers["Authorization"]
             = "Basic " + toBase64(Bytes(pair.begin(), pair.end()));

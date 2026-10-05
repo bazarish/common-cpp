@@ -107,6 +107,7 @@ Bytes fromBase32(const std::string& text)
             out.push_back(static_cast<unsigned char>((buffer >> bits) & 0xff));
         }
     }
+    // Leftover bits are padding produced by the encoder; they must be zero.
     if (bits > 0 && (buffer & ((1u << bits) - 1)) != 0) {
         throw std::invalid_argument("invalid base32 trailing bits");
     }
@@ -143,6 +144,7 @@ Bytes fromBase64(const std::string& text)
     if (written < 0) {
         throw std::invalid_argument("invalid base64 input");
     }
+    // EVP_DecodeBlock does not account for '=' padding; trim it manually.
     std::size_t padding = 0;
     if (text.size() >= 2 && text[text.size() - 1] == '=') {
         padding = text[text.size() - 2] == '=' ? 2 : 1;

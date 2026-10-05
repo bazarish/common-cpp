@@ -17,21 +17,36 @@ namespace bazarish::i2p {
 
 namespace {
 
+// How often readiness is re-checked while waiting for it. A destination comes up
+// in seconds and the router in minutes, so they are not asked at the same rate.
 constexpr auto kEndpointReadyPoll = std::chrono::milliseconds(200);
 constexpr auto kRouterReadyPoll = std::chrono::milliseconds(500);
 
+// The two fixed-size private fields that follow the identity in a private-keys
+// blob, for the only key types this project uses: ElGamal encryption and an
+// Ed25519 signature.
 constexpr std::size_t kElGamalPrivateKeyBytes = 256;
 constexpr std::size_t kEd25519PrivateKeyBytes = 32;
 // The expiry that opens an offline signature block, big-endian unix seconds.
 constexpr std::size_t kOfflineExpiresBytes = 4;
 
+// libi2pd log output gate. OFF by default: the engine's logging is suppressed
+// until a caller turns it on, and a build with no engine keeps the flag anyway
+// so callers need not care which transport they got.
 std::atomic<bool> g_i2pLogging{false};
 
 }  // namespace
 
+// Key material is held as the blob it is stored and transmitted as, and read
+// with this project's own parser. Only minting a destination and delegating a
+// transient need the engine, which is why they are the two calls a build
+// without it cannot serve.
 struct Keys::Impl {
     ~Impl()
     {
+        // The blob is a private key. A freed buffer keeps its bytes until
+        // something else takes the page, and this one names an address somebody
+        // may still be operating.
         if (!blob.empty()) {
             OPENSSL_cleanse(blob.data(), blob.size());
         }
@@ -59,6 +74,7 @@ Keys Keys::generate()
 Keys Keys::fromBlob(const Bytes& blob)
 {
     Keys keys;
+    // Reading the identity is what rejects a blob that is not one.
     (void)i2pIdentityLength(blob);
     keys.impl_->blob = blob;
     return keys;
@@ -87,6 +103,8 @@ bool Keys::isOffline() const
     if (impl_->blob.size() < signingAt + kEd25519PrivateKeyBytes) {
         throw std::runtime_error("bazarish::i2p: truncated private keys blob");
     }
+    // A delegated blob carries the transient after a zeroed signing key: the
+    // master's own signing key is exactly what offline delegation withholds.
     return std::all_of(impl_->blob.begin() + signingAt,
         impl_->blob.begin() + signingAt + kEd25519PrivateKeyBytes,
         [](const std::uint8_t byte) { return byte == 0; });
@@ -95,6 +113,8 @@ bool Keys::isOffline() const
 std::int64_t Keys::transientExpires() const
 {
     if (!isOffline()) { return 0; }
+    // The offline block opens the delegation, right where the withheld signing
+    // key would be: expires(4) || transient signature type(2) || transient key.
     const std::size_t expiresAt
         = i2pIdentityLength(impl_->blob) + kElGamalPrivateKeyBytes + kEd25519PrivateKeyBytes;
     if (impl_->blob.size() < expiresAt + kOfflineExpiresBytes) {
@@ -236,6 +256,8 @@ bool Endpoint::waitReady(const std::chrono::seconds timeout)
             return true;
         }
         if (lost()) {
+            // Tunnels that are not coming back. Whoever holds this builds
+            // another rather than waiting out a deadline for nothing.
             return false;
         }
         std::this_thread::sleep_for(kEndpointReadyPoll);
@@ -268,6 +290,9 @@ void Endpoint::refreshOfflineSignature(const Keys& newTransient)
     impl_->transport->refreshOfflineSignature(newTransient);
 }
 
+// A Stream is minted by an Endpoint and by nothing else, which is why the two
+// dialling paths wrap it here rather than through a helper that would need the
+// same access.
 std::unique_ptr<Stream> Endpoint::connect(
     const std::string& host, const std::chrono::seconds timeout)
 {

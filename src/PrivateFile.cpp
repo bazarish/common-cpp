@@ -12,6 +12,8 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// Beside the target, so the rename that puts it in place stays on one filesystem
+// and is therefore atomic.
 fs::path writtenTemporary(const fs::path& path, const std::string_view bytes)
 {
     const fs::path temporary = path.parent_path() / (path.filename().string() + ".tmp");
@@ -19,6 +21,8 @@ fs::path writtenTemporary(const fs::path& path, const std::string_view bytes)
     if (!out) {
         throw std::runtime_error("failed to open " + temporary.string());
     }
+    // An empty marker file is a record too, and the data() of an empty container
+    // is a null pointer no stream may be handed.
     if (!bytes.empty()) {
         out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     }

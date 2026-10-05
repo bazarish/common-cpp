@@ -21,6 +21,8 @@ using namespace bazarish;
 
 namespace {
 
+// The golden destination from TestI2pAddress, so the address this session
+// reports can be checked against a known b33.
 const std::string kDestination
     = "GmVBArK-6asEg1BTOKbZ9O7c9VFbbm6g4TVPBrmuNyIcD0t-2kEJy39~dawKvPQsNJyTLK5eJi1S8jadM~z"
       "TNEpb5KHKLw6dXxgnWHw2rOVl5MXT7a96ovHhfkiaiSQQc4HIwQJhOg6hwbbhwNNs-QBLA47l5g9008tq1m"
@@ -30,6 +32,7 @@ const std::string kDestination
       "eO3UC~1RLLUqHs2-gUldSWpcyewR0alYxOpwJ5Vg12Z47dQL~VEstSkf0nWn19OasjC6~ojqwvCfoe9asYV"
       "cikv94jT~PdFrxBQAEAAcAAA==";
 const std::string kB33 = "a2pbgr7utvu7l5hgvsgc5p5chkylyj7ipplkyykxekjp66enh7hxiwxr.b32.i2p";
+// Opaque to this layer: the client only ever hands it back to the router.
 const std::string kPrivateKeys = kDestination + "cHJpdmF0ZQ==";
 
 constexpr int kPollSliceMs = 50;
@@ -79,6 +82,8 @@ std::string valueOf(const std::string& line, const std::string& key)
     return line.substr(from, to == std::string::npos ? std::string::npos : to - from);
 }
 
+// A SAM router that answers by script. Enough of the protocol to drive the
+// client through every path it has, and nothing more: no tunnels, no I2P.
 class FakeRouter {
 public:
     FakeRouter()
@@ -113,6 +118,7 @@ public:
         return sam::RouterAddress{"127.0.0.1", controlPort_, udpPort_};
     }
 
+    // The reply to the next STREAM CONNECT, so a refusal can be scripted.
     void setStreamStatus(const std::string& line)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -139,6 +145,8 @@ public:
         return {};
     }
 
+    // Closes every live connection, which is what a router restart looks like
+    // from the other side.
     void dropConnections()
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -148,6 +156,8 @@ public:
         live_.clear();
     }
 
+    // Delivers one incoming stream the way STREAM FORWARD does: connect to the
+    // port the client asked for, name the caller, then the payload.
     void deliverIncoming(const std::string& peer, const std::string& payload)
     {
         const std::uint16_t port = forwardPort_;
@@ -163,6 +173,7 @@ public:
         ::close(fd);
     }
 
+    // One datagram as the client handed it to the router.
     std::string takeDatagram()
     {
         pollfd watched{};
@@ -285,7 +296,7 @@ private:
                 }
                 writeAll(fd, status);
                 if (status.find("RESULT=OK") == std::string::npos) {
-                    break;
+                    break;  // a refusal closes the socket, as the router's does
                 }
                 echo(fd);
                 break;
@@ -297,6 +308,8 @@ private:
         ::close(fd);
     }
 
+    // Once a stream is up the socket carries bytes, so the far end is whatever
+    // the test needs it to be: here, an echo.
     void echo(const int fd)
     {
         std::string buffer(1024, '\0');
@@ -342,11 +355,13 @@ constexpr std::chrono::milliseconds kAcceptWait{5000};
 void testProbe()
 {
     FakeRouter router;
+    // The handshake alone, which is how a client learns whether a router is there
+    // at all without asking it for anything.
     CHECK(sam::probe(router.address()) == "3.3");
     CHECK(contains(router.waitForCommand("HELLO VERSION"), "MAX=3.3"));
 
     sam::RouterAddress nobody = router.address();
-    nobody.controlPort = 1;
+    nobody.controlPort = 1;  // nothing listens here
     bool refused = false;
     try {
         (void)sam::probe(nobody);
@@ -362,6 +377,7 @@ void testGenerateDestination()
     const sam::Destination destination = sam::generateDestination(router.address());
     CHECK(destination.publicBase64 == kDestination);
     CHECK(destination.privateBase64 == kPrivateKeys);
+    // Ed25519 is named every time: the router's own default is DSA-SHA1.
     CHECK(contains(router.waitForCommand("DEST GENERATE"), "SIGNATURE_TYPE=7"));
 }
 
@@ -375,10 +391,13 @@ void testSessionCreate()
     CHECK(contains(create, "DESTINATION=" + kPrivateKeys));
     CHECK(contains(create, "SIGNATURE_TYPE=7"));
     CHECK(contains(create, "i2cp.leaseSetType=5"));
+    // SAM publishes every destination unless told otherwise, and a dial-out
+    // destination must stay out of the netDb.
     CHECK(contains(create, "i2cp.dontPublishLeaseSet=true"));
     CHECK(contains(create, "inbound.length=1"));
     CHECK(contains(create, "outbound.lengthVariance=0"));
     CHECK(contains(create, "inbound.quantity=2"));
+    // A stream session takes no datagram forwarding.
     CHECK(!contains(create, "PORT="));
 
     CHECK(session.publicDestination() == kDestination);
@@ -417,6 +436,8 @@ void testRefusalCarriesItsCode()
     } catch (const sam::Error& error) {
         unreachable = error.result();
     }
+    // What the caller does next hangs on this: an unreachable peer is worth
+    // another attempt, a rejected key never is.
     CHECK(unreachable == sam::Result::eCantReachPeer);
 
     router.setStreamStatus("STREAM STATUS RESULT=INVALID_KEY\n");
@@ -450,6 +471,7 @@ void testForwardedAccept()
     stream->readExact(body.data(), body.size());
     CHECK(body == payload);
 
+    // Nothing arriving is a timeout, not a failure.
     std::string nobody;
     CHECK(session.accept(nobody, std::chrono::milliseconds(100)) == nullptr);
 }
@@ -471,9 +493,11 @@ void testRawDatagrams()
     const std::string payload = "audio frame";
     session.sendDatagram(kB33, payload.data(), payload.size());
     const std::string handed = router.takeDatagram();
+    // Version, session and destination on one line, then the payload.
     CHECK(handed.rfind("3.0 ", 0) == 0);
     CHECK(contains(handed, " " + kB33 + "\n" + payload));
 
+    // Raw forwarding carries the payload and nothing else.
     router.forwardDatagram(payload);
     const std::vector<std::uint8_t> received
         = session.receiveDatagram(nullptr, std::chrono::milliseconds(5000));
@@ -504,8 +528,11 @@ void testSessionComesBackAfterTheRouterDoes()
     session.listen();
     CHECK(router.waitForCommand("SESSION CREATE", 1) != "");
 
+    // The router drops everything, which is what a restart looks like here.
     router.dropConnections();
 
+    // The session rebuilds itself from the keys it holds, so the address is the
+    // one peers already have - and accepting resumes with it.
     CHECK(router.waitForCommand("SESSION CREATE", 2) != "");
     CHECK(router.waitForCommand("STREAM FORWARD", 2) != "");
     for (int waited = 0; waited < kWaitSeconds * 1000 / kPollSliceMs && !session.alive();
@@ -526,11 +553,14 @@ void testRefusesWhatIsNotLoopback()
     } catch (const sam::Error&) {
         refused = true;
     }
+    // The router is handed private keys; that is a loopback-only conversation.
     CHECK(refused);
 }
 
 void testRefusesAnEndlessReply()
 {
+    // A router that answers with a line that never ends must not be able to
+    // decide how much memory this process spends.
     std::uint16_t port = 0;
     const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
     CHECK(listener >= 0);

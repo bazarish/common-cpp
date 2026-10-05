@@ -11,41 +11,101 @@
 
 namespace bazarish::cms {
 
-// Signs a JSON document as CMS SignedData (DER).
+// Signs a JSON document as CMS SignedData (DER). A self-signed X.509
+// certificate wrapping the signer's public key is embedded so the receiver
+// can verify the signature and derive the signer fingerprint with no other
+// context. The certificate is a key carrier only; its own validity fields
+// carry no meaning in the protocol.
 Bytes signJson(const nlohmann::json& body, const Key& signingKey);
 
 struct VerifiedJson {
     nlohmann::json body;
+    // Fingerprint of the embedded signer public key. The caller decides
+    // whether this fingerprint is the one it expects.
     std::string signerFingerprint;
     // SubjectPublicKeyInfo DER of the signer.
     Bytes signerPublicDer;
 };
 
-// Verifies the CMS signature against the embedded certificate and returns the payload.
+// Verifies the CMS signature against the embedded certificate and returns
+// the payload. Throws on any structural or cryptographic failure.
 VerifiedJson verifyJson(const Bytes& der);
 
+// Hybrid post-quantum signing: the exact body bytes are signed with the
+// identity's ML-DSA-65 key at the EVP level (OpenSSL CMS cannot carry
+// ML-DSA signers), wrapped together with the public key and signature,
+// and the wrapper is CMS-signed with the classical key. A statement is
+// valid only when BOTH signatures verify.
+//
+// Wrapper layout (the CMS payload):
+//   { "body": base64(bodyBytes),
+//     "pq": { "alg": "ML-DSA-65", "pub": base64(SPKI), "sig": base64(sig) } }
 Bytes signJsonHybrid(const nlohmann::json& body, const Identity& identity);
 
 struct VerifiedHybridJson {
     nlohmann::json body;
+    // The hybrid identity fingerprint covering both public keys.
     std::string identityFingerprint;
-    // The keys that signed, as SubjectPublicKeyInfo DER.
+    // The keys that signed, as SubjectPublicKeyInfo DER. Handed out because a
+    // statement is also how a reader learns the signer's keys: a contact card
+    // is where the identity of a correspondent is first met, and the messages
+    // they send afterwards are verified against these.
     Bytes signerClassicalDer;
     Bytes signerPqDer;
 };
 
+// Verifies both layers and the key types (an EC key smuggled into the pq
+// slot is a downgrade and must fail). Throws on any failure.
 VerifiedHybridJson verifyJsonHybrid(const Bytes& der);
 
-// Hybrid envelope (encryption) to a sealing key.
+// Hybrid envelope (encryption) to a sealing key. Used for the sealed part of
+// delivery envelopes, for message bodies end to end, and for sealed federation
+// queries - so this is where the project's confidentiality lives.
+//
+// Two layers, and opening the result needs **both** private halves:
+//   * the payload is encrypted with AES-256-GCM under a key HKDF'd from an
+//     ML-KEM-768 encapsulation to the recipient's post-quantum half (the KEM
+//     ciphertext is the salt and the AEAD's associated data, so the two are
+//     bound);
+//   * that wrapper is then CMS-encrypted (EnvelopedData, ECDH P-256 recipient)
+//     to the classical half, exactly as before.
+//
+// The layering exists because OpenSSL CMS still has no KEMRecipientInfo (RFC
+// 9629): checked against 3.5, whose cms.h knows only TRANS/AGREE/KEK/PASS/OTHER
+// and whose `cms -encrypt` refuses an ML-KEM recipient. Every primitive here is
+// OpenSSL's; only the arrangement is ours, and the wrapper is versioned so the
+// KEM recipient can move into the CMS itself the day OpenSSL supports it,
+// without changing the container.
+//
+// Sealing to a key that carries no ML-KEM half throws: classical-only
+// confidentiality is harvest-now-decrypt-later, and there is no such sealing
+// key in this protocol.
 Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey);
 Bytes unseal(const Bytes& der, const Key& recipientPrivateKey);
 
+// Password-based CMS envelope (RFC 3211 PWRI): the content is encrypted with
+// AES-256-CBC under a key derived from the password (PBKDF2). Used for the
+// encrypted state export, where there is no recipient key - only a passphrase
+// the user remembers. No custom key derivation or cipher: OpenSSL primitives
+// only.
 Bytes sealWithPassword(const Bytes& plaintext, const std::string& password);
 Bytes unsealWithPassword(const Bytes& der, const std::string& password);
 
+// Streaming variant of sealWithPassword for large blobs: reads the plaintext
+// from inPath and writes the PWRI envelope to outPath without holding either
+// whole in memory (CMS_STREAM emits indefinite-length BER and pulls the content
+// lazily during serialization). The output is a valid CMS envelope and decrypts
+// with unsealWithPassword / unsealWithPasswordToFile. Throws on a read/write or
+// encryption error.
 void sealWithPasswordToFile(const std::filesystem::path& inPath,
     const std::filesystem::path& outPath, const std::string& password);
 
+// Streaming variant of unsealWithPassword for large blobs: reads the DER
+// envelope from derPath and writes the recovered plaintext to outPath, so the
+// cleartext is never held whole in memory. OpenSSL still materializes the
+// encrypted content once while parsing the envelope (inherent to the high-level
+// CMS decrypt API). Throws on a read/write error or a decryption failure (e.g. a
+// wrong password).
 void unsealWithPasswordToFile(const std::filesystem::path& derPath,
     const std::filesystem::path& outPath, const std::string& password);
 

@@ -13,6 +13,8 @@ namespace bazarish {
 
 namespace {
 
+// What is served out of an asset directory, and as what. A file of any other
+// type is not published: the directory holds a site, not a file share.
 const std::map<std::string, std::string>& contentTypes()
 {
     static const std::map<std::string, std::string> kTypes = {
@@ -27,9 +29,12 @@ const std::map<std::string, std::string>& contentTypes()
     return kTypes;
 }
 
+// Templates are poured into pages by the service, so they are never served as
+// files of their own.
 const char* const kTemplateExtension = ".html";
 const char* const kTemplateContentType = "text/html; charset=utf-8";
 
+// HTTP status for a caller that already holds the body it asked for.
 constexpr int kNotModified = 304;
 
 std::string readFile(const std::filesystem::path& path)
@@ -47,6 +52,11 @@ WebAssets::File loadFile(const std::filesystem::path& path, const std::string& c
 {
     std::string body = readFile(path);
     const Bytes bytes(body.begin(), body.end());
+    // The tag is the content itself, hashed: two servers handed the same file
+    // answer with the same tag, and a redeploy that does not change a file does
+    // not invalidate anybody's copy of it. Appended rather than concatenated with
+    // operator+, which GCC 12 - the compiler of the oldest base this project
+    // builds on - reports a false -Wrestrict overlap for.
     std::string etag = "\"";
     etag += toHex(sha256(bytes));
     etag += '"';
@@ -62,6 +72,10 @@ std::string trimmed(const std::string& text)
     return text.substr(first, text.find_last_not_of(" \t") - first + 1);
 }
 
+// Whether an If-None-Match header names the tag we hold. The header is a list,
+// "*" stands for any representation, and a weak tag (W/"...") is compared as it
+// is written: these files are served whole, so they have no weaker form for the
+// distinction to be about.
 bool namesEtag(const std::string& header, const std::string& etag)
 {
     std::size_t at = 0;
@@ -143,6 +157,10 @@ http::Response serveWebAsset(const WebAssets::File& file, const http::Request& r
     http::Response response;
     response.contentType = file.contentType;
     response.headers["ETag"] = file.etag;
+    // Ask every time. These files are read once and change only when the operator
+    // edits them and restarts the service, which is exactly what a browser cannot
+    // know: left to its own heuristics it would go on drawing the old page for as
+    // long as it liked. Revalidating costs a header, because the answer is a 304.
     response.headers["Cache-Control"] = "no-cache";
     if (namesEtag(request.header("if-none-match"), file.etag)) {
         response.status = kNotModified;

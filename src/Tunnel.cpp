@@ -15,6 +15,8 @@ namespace bazarish::tunnel {
 
 namespace {
 
+// Frame fields, kept to one letter each: every byte here is carried on every
+// request, and none of them means anything to the facade.
 const char* const kVersionField = "v";
 const char* const kTypeField = "t";
 const char* const kSealedField = "s";
@@ -24,6 +26,9 @@ const char* const kCipherField = "c";
 
 const char* const kHelloType = "h";
 const char* const kCarryType = "c";
+
+// The length prefix in front of a padded payload: four bytes, big-endian, so
+// the padding that follows is not part of what is decoded.
 
 Bytes toCbor(const nlohmann::json& value)
 {
@@ -45,6 +50,7 @@ Bytes fromBinary(const nlohmann::json& value)
     const nlohmann::json::binary_t& binary = value.get_binary();
     return Bytes(binary.begin(), binary.end());
 }
+
 
 nlohmann::json frameOf(const Bytes& frame)
 {
@@ -77,6 +83,8 @@ std::map<std::string, std::string> headersFromJson(const nlohmann::json& value)
 
 Bytes deriveTunnelKey(const Bytes& secret, const std::string& sessionId)
 {
+    // The same shape as the session MAC key derivation, with its own label: one
+    // secret, two keys, and neither is computable from the other.
     const std::string material = toHex(secret) + "|" + sessionId + "|bazarish tunnel v1";
     return sha256(Bytes(material.begin(), material.end()));
 }
@@ -128,6 +136,9 @@ Welcome openWelcome(const Bytes& sealed, const Key& replyKeyPrivate)
 Bytes carry(const std::string& handle, const Bytes& tunnelKey, const Bytes& plaintext)
 {
     const Bytes nonce = randomBytes(kAeadNonceBytes);
+    // Padded here rather than by whoever built the payload: this is the one
+    // place that decides what the wire carries, and so the only place that can
+    // decide what its length says.
     const nlohmann::json frame = {
         {kVersionField, kFrameVersion},
         {kTypeField, kCarryType},

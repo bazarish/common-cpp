@@ -53,24 +53,38 @@
 #include <thread>
 #include <vector>
 
-// Reach the embedded i2pd engine.
+// Reach the embedded i2pd engine. Inside namespace bazarish::i2p the bare name
+// "i2p" resolves to our own namespace, so the engine must be addressed through
+// this alias.
 namespace i2pd = ::i2p;
 
 namespace bazarish::i2p {
 namespace {
 
 constexpr i2pd::data::SigningKeyType kSigType = i2pd::data::SIGNING_KEY_TYPE_EDDSA_SHA512_ED25519;
+// The outer layer of an encrypted LeaseSet is signed under a blinded key, and
+// blinding yields a scalar - which is what RedDSA's private key already is.
 constexpr i2pd::data::SigningKeyType kB33SigType
     = i2pd::data::SIGNING_KEY_TYPE_REDDSA_SHA512_ED25519;
+// The batch counts its days in two bytes, which is the ceiling on a delegation.
 constexpr int kMaxB33Days = 0xFFFF;
-constexpr std::size_t kB32SuffixLen = 8;
+constexpr std::size_t kB32SuffixLen = 8;  // ".b32.i2p"
+// How long one receive waits on the engine before the caller looks up again:
+// long enough not to spin, short enough that a closed stream and an expired read
+// deadline are both noticed promptly.
 constexpr int kReceivePollSeconds = 5;
+// How long to wait for a transport server to hand back a snapshot of its
+// session map; it is answered on that server's own service thread.
 constexpr int kSessionSnapshotSeconds = 2;
+// One round of asking the network for a destination, and how finely that round is
+// waited out so a stopped endpoint is noticed inside it. The pause is what
+// separates two rounds when the first came back empty.
 constexpr int kDialRoundMillis = 30000;
 constexpr int kDialSliceMillis = 250;
 constexpr int kDialRetryPauseMillis = 2000;
 
-// libi2pd's crypto state must be initialised once before any key operation.
+// libi2pd's crypto state must be initialised once before any key operation. With
+// precomputation=false this is a cheap no-op-safe call; the guard keeps it once.
 void ensureCryptoInit()
 {
     static const bool kInit = []() { i2pd::crypto::InitCrypto(false); return true; }();
@@ -90,6 +104,8 @@ bazarish::log::Level mapLevel(LogLevel level)
     }
 }
 
+// The start of the current UTC day. The b33 batch holds one key per day, so a
+// delegation covers whole days counted from here and ends at a midnight.
 std::uint64_t currentMidnight()
 {
     return (i2pd::util::GetSecondsSinceEpoch()/i2pd::data::SECONDS_PER_DAY)
@@ -115,6 +131,10 @@ Bytes serializeKeys(const i2pd::data::PrivateKeys& keys)
     return out;
 }
 
+// The b33 offline keys that let a server publish this destination as an encrypted
+// LeaseSet2 without holding its signing key: one transient per day, each
+// authorized by the blinded key of its own day. Generation lives here because
+// libi2pd only reads the batch; the primitives are its own.
 Bytes createB33OfflineKeys(
     const i2pd::data::PrivateKeys& master, const int days, const std::uint64_t midnight)
 {
@@ -125,6 +145,8 @@ Bytes createB33OfflineKeys(
     }
     if (master.IsOfflineSignature())
     {
+        // Blinding the transient of an existing delegation yields a key the
+        // address does not belong to, and a LeaseSet nobody can read.
         throw std::runtime_error("bazarish::i2p: only the destination's own key can delegate");
     }
     const auto identity = master.GetPublic();
@@ -161,6 +183,7 @@ Bytes createB33OfflineKeys(
         char date[9];
         i2pd::util::GetDateString(midnight + day*i2pd::data::SECONDS_PER_DAY, date);
         std::uint8_t* const entry = batch.data() + offset;
+        // The first two fields are byte for byte the offline block of the LeaseSet.
         htobe32buf(entry, midnight + (day + 1)*i2pd::data::SECONDS_PER_DAY);
         htobe16buf(entry + 4, kB33SigType);
         std::uint8_t blindedPrivate[i2pd::crypto::EDDSA25519_PRIVATE_KEY_LENGTH];
@@ -172,6 +195,8 @@ Bytes createB33OfflineKeys(
         }
         const std::unique_ptr<i2pd::crypto::Signer> signer(
             i2pd::data::PrivateKeys::CreateSigner(blinded.GetBlindedSigType(), blindedPrivate));
+        // The blinded private key would give the destination's own key away: alpha
+        // is derived from public data, so subtracting it recovers the master.
         OPENSSL_cleanse(blindedPrivate, sizeof blindedPrivate);
         if (!signer)
         {
@@ -203,7 +228,21 @@ bool isClosedStatus(i2pd::stream::StreamStatus status)
         || status == i2pd::stream::eStreamStatusTerminated;
 }
 
-// A pool of single-threaded asio io_contexts ("lanes").
+// A pool of single-threaded asio io_contexts ("lanes"). Each i2pd
+// ClientDestination is pinned to ONE lane for its lifetime, so every handler of a
+// given destination (garlic/leaseset/streaming/datagram) runs on that lane's one
+// thread and never two at once. This is required: an i2pd destination is not safe
+// under concurrent handler execution - its per-destination state (e.g. the
+// ECIES-X25519 tag map) has no internal locking and assumes a single service
+// thread, so running one destination across several threads corrupts it. New
+// destinations are handed out round-robin across the lanes, so a router still
+// hosts many destinations and uses several cores in parallel - it just never runs
+// two threads inside the same destination. Each destination used to be a
+// RunnableClientDestination (its own thread), which capped a server at one OS
+// thread per destination; the lane pool keeps that scaling without the per-dest
+// thread and without the cross-thread races a single shared multi-thread context
+// caused. Held via shared_ptr by both the Router and every Endpoint it spawns, so
+// the pool outlives the destinations regardless of teardown order.
 class IoService {
 public:
     explicit IoService(std::size_t lanes)
@@ -214,11 +253,17 @@ public:
         {
             lanes_.push_back(std::make_unique<Lane>());
         }
+        // Start the threads only after all lanes exist, so the vector never
+        // reallocates under a running worker (the worker captures a stable Lane*).
         for (auto& lane : lanes_)
         {
             Lane* const l = lane.get();
             l->worker = std::thread([l]
             {
+                // The work guard keeps run() blocked while idle; it returns only
+                // on shutdown (guard released + stop) or when a handler throws, in
+                // which case we log and resume so one bad packet cannot permanently
+                // kill the lane.
                 while (l->running)
                 {
                     try
@@ -249,6 +294,13 @@ public:
         }
     }
 
+    // The io_context a new destination should run on (round-robin across lanes).
+    // The chosen lane's single thread serializes all of that destination's
+    // handlers, while different destinations spread across lanes run in parallel.
+    // The first lane is not handed out here: it is kept for real-time media (see
+    // reserved()), because a lane is one thread and a file moving on it is a
+    // call stuttering on it. With a single lane there is nothing to keep apart
+    // and everything shares it.
     boost::asio::io_context& next()
     {
         if (lanes_.size() == 1) {
@@ -259,6 +311,9 @@ public:
         return lanes_[i]->ctx;
     }
 
+    // The lane kept for real-time media. Calls are the only thing on it, and a
+    // call has one media destination at a time, so it is a lane with one
+    // destination on it for as long as the call lasts.
     boost::asio::io_context& reserved()
     {
         return lanes_.front()->ctx;
@@ -276,6 +331,12 @@ private:
     std::atomic<std::size_t> nextLane_{0};
 };
 
+// Number of lanes (single-threaded io_contexts) for the destination pool: half
+// the hardware concurrency, clamped to [2, 8]. The destination layer (streaming,
+// datagrams, leaseset/garlic handling) runs here alongside the i2pd engine's own
+// transport and tunnel threads, so a fraction of the cores is plenty and leaves
+// headroom for the engine. One of them is kept for real-time media and the rest
+// carry everything else, which is why the floor is two rather than one.
 std::size_t ioContextCount()
 {
     const unsigned hw = std::thread::hardware_concurrency();
@@ -286,16 +347,21 @@ std::size_t ioContextCount()
 // One embedded router per process (the i2pd engine is process-global).
 std::atomic<bool> g_routerLive{false};
 
+// libi2pd log output gate. OFF by default: the engine's logging is fully
+// suppressed (nothing reaches bazarish::log) until a caller turns it on.
+
 }  // namespace
 
 std::string backend::embeddedRouterVersion()
 {
-    // The upstream i2pd version baked into the embedded engine (e.g.
+    // The upstream i2pd version baked into the embedded engine (e.g. "2.60.0").
     return I2PD_VERSION;
 }
 
 std::vector<Bytes> backend::embeddedSampleRouterInfos(const std::size_t count)
 {
+    // GetRandomRouter may repeat, so collect by identity until the netDb has
+    // nothing new left to give rather than looping forever on a small netDb.
     std::map<std::string, Bytes> unique;
     const std::size_t attempts = count * 8;
     for (std::size_t i = 0; i < attempts && unique.size() < count; ++i)
@@ -324,6 +390,8 @@ std::size_t backend::embeddedSeedRouterInfos(
     for (const Bytes& buffer : routers)
     {
         if (buffer.empty()) { continue; }
+        // Parsing validates the RouterInfo (including its signature) and gives us
+        // the identity the on-disk layout is keyed by; a bad entry is skipped.
         const i2pd::data::RouterInfo router(buffer.data(), buffer.size());
         const std::string ident = router.GetIdentHashBase64();
         if (ident.empty()) { continue; }
@@ -357,9 +425,17 @@ public:
     void close() override;
 
     std::shared_ptr<i2pd::stream::Stream> stream;
+    // The destination this stream belongs to, held for as long as the stream is.
+    // Closing is posted to that destination's service, so letting the
+    // destination go first would leave the close to run against a torn-down
+    // streaming layer.
     std::shared_ptr<i2pd::client::ClientDestination> owner;
+    // Raised when the whole destination is stopped, and shared with it: a read
+    // must end when the endpoint is told to give up, not only when this one
+    // stream is closed.
     std::shared_ptr<std::atomic<bool>> stopped;
     std::atomic<bool> closed{false};
+    // Zero waits for as long as the stream is open.
     std::atomic<int> readTimeoutSeconds{0};
 };
 
@@ -380,6 +456,10 @@ std::size_t EmbeddedStream::readSome(void* buffer, std::size_t size)
         const std::size_t received = future.get();
         if (received > 0) { return received; }
         if (isClosedStatus(stream->GetStatus())) { return 0; }
+        // Otherwise a poll timeout on a stream the engine still calls open. That
+        // is also what a stream whose far side has gone away looks like - the
+        // close travels through tunnels and need not arrive - so a caller that
+        // set a deadline is told rather than left waiting on it.
         if (timeout.count() > 0 && std::chrono::steady_clock::now() - started >= timeout)
         {
             throw std::runtime_error("bazarish::i2p: nothing read within "
@@ -407,6 +487,12 @@ std::size_t EmbeddedStream::pendingBytes() const
     if (!stream || closed) {
         return 0;
     }
+    // Two queues, not one: bytes still in the send buffer, and packets already
+    // sent that the far side has not acknowledged. Counting only the first made a
+    // sender's progress run far ahead of the receiver's, because the engine
+    // drains the buffer into its unacknowledged window immediately. The in-flight
+    // half is an upper bound (packet count times the streaming MTU), so progress
+    // errs behind rather than ahead.
     return stream->GetSendBufferSize()
         + stream->GetSendQueueSize() * i2pd::stream::STREAMING_MTU;
 }
@@ -415,6 +501,12 @@ void EmbeddedStream::close()
 {
     if (stream && !closed.exchange(true))
     {
+        // Asynchronously, which is what the engine requires of every thread but
+        // the destination's own - and what makes "write, then close" mean it. A
+        // write is queued onto that same service; closing from this thread runs
+        // first, finds the send buffer still empty and puts the close packet on
+        // the wire ahead of the data, so the last thing written never leaves.
+        // That is a federation reply the far side is waiting for.
         stream->AsyncClose();
     }
 }
@@ -440,12 +532,22 @@ public:
     std::vector<std::uint8_t> receiveRawDatagram(std::chrono::milliseconds timeout) override;
     void stop() override;
 
+    // Raised once, by stop(). Every wait this endpoint owns watches it, and so do
+    // the streams it handed out - which is what lets a thread be taken out of a
+    // dial that still has a minute of deadline to spend. Held by shared_ptr
+    // because a stream outlives the call that made it and may outlive nothing
+    // else of this endpoint.
     std::shared_ptr<std::atomic<bool>> stopped = std::make_shared<std::atomic<bool>>(false);
 
+    // Keeps the router's shared service alive for as long as this endpoint (and its
+    // destination's reference to the io_context) exists. Declared first so it is
+    // destroyed last, after dest below.
     std::shared_ptr<IoService> io;
     std::shared_ptr<i2pd::client::ClientDestination> dest;
     std::shared_ptr<i2pd::datagram::DatagramDestination> datagram;
 
+    // What this destination is for, as the caller named it: only ever used to say
+    // which one a log line is about.
     std::string label;
     std::string publicDestination;
     std::string hostAddress;
@@ -467,6 +569,14 @@ public:
     std::condition_variable rawCv;
     std::deque<std::vector<std::uint8_t>> rawQueue;
 
+    // Where raw datagrams go, once. A blinded (b33) address is not the hash it
+    // routes to: it has to be looked up, and call media sends fifty datagrams a
+    // second - one lookup each is a lookup storm, and every packet sent before
+    // the first answer arrives is a packet that never left.
+    //
+    // Held by shared_ptr because the answer arrives on an engine thread and the
+    // call it belongs to may be over by then: the lookup writes into this, never
+    // into the endpoint.
     struct RawTargets {
         std::mutex mutex;
         std::map<std::string, i2pd::data::IdentHash> resolved;
@@ -480,9 +590,19 @@ EmbeddedEndpoint::~EmbeddedEndpoint()
     if (!dest) {
         return;
     }
+    // Stop the destination on the lane that services it, holding it alive until
+    // that runs. Releasing it from this thread stops it while the lane may still
+    // be sending queued packets, and the streaming layer it tears down is read by
+    // that very handler - a use-after-free ASAN catches in
+    // Stream::SendPackets -> StreamingDestination::GetOwner().
     const std::shared_ptr<i2pd::client::ClientDestination> closing = dest;
     bazarish::log::info("i2p: closing destination {} ({})",
         label.empty() ? std::string("unnamed") : label, hostAddress);
+    // Streams accepted but never taken belong to that same lane: it may be
+    // sending on them at this moment. Dropping the last reference here destroys
+    // them under the lane's feet, and the lane then writes through what it is
+    // holding - a crash inside Stream::SendPackets, seen while an account was
+    // being closed. They go back to the lane with the destination.
     std::deque<std::shared_ptr<i2pd::stream::Stream>> pending;
     {
         const std::lock_guard<std::mutex> lock(acceptMutex);
@@ -493,6 +613,13 @@ EmbeddedEndpoint::~EmbeddedEndpoint()
     datagram.reset();
     boost::asio::post(closing->GetService(),
         [closing, closingDatagram = closingDatagram, pending = std::move(pending)]() mutable {
+            // Held across the stop. Stopping a destination drops its streaming
+            // destination, and every stream still queued on this lane reaches
+            // its owner through a reference to that object - not a pointer it
+            // could check - so freeing it here is read back by the next queued
+            // packet. AddressSanitizer names it exactly: freed in
+            // ClientDestination::Stop, read in Stream::SendPackets ->
+            // StreamingDestination::GetOwner.
             const std::shared_ptr<i2pd::stream::StreamingDestination> streaming
                 = closing->GetStreamingDestination();
             for (const std::shared_ptr<i2pd::stream::Stream>& stream : pending) {
@@ -503,6 +630,9 @@ EmbeddedEndpoint::~EmbeddedEndpoint()
             pending.clear();
             closingDatagram.reset();
             closing->Stop();
+            // Everything those streams left on this lane runs before this last
+            // handler, and the references go with it - after the lane has
+            // nothing of theirs left to run.
             boost::asio::post(closing->GetService(), [closing, streaming]() {});
         });
 }
@@ -516,6 +646,8 @@ Bytes EmbeddedEndpoint::privateBlob() const { return keysBlob; }
 void EmbeddedEndpoint::stop()
 {
     stopped->store(true);
+    // The waiters are asleep on their own condition variables, and the flag alone
+    // does not reach them: each is woken so its predicate is looked at again.
     acceptCv.notify_all();
     dgCv.notify_all();
     rawCv.notify_all();
@@ -530,6 +662,8 @@ void EmbeddedEndpoint::refreshOfflineSignature(const Keys& newTransient)
 std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::connect(
     const std::string& host, const std::chrono::seconds timeout)
 {
+    // Resolve the target once into a request issuer (b32 ident, b33 blinded key,
+    // or a raw base64 destination).
     const std::shared_ptr<i2pd::client::ClientDestination> destination = dest;
     std::function<void(i2pd::client::StreamRequestComplete)> issue;
     if (isB32I2pHost(host))
@@ -562,6 +696,8 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::connect(
             };
     }
 
+    // Retry the lookup-and-connect until the deadline: a freshly published remote
+    // LeaseSet can lag the remote's readiness, so one attempt may miss it.
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline && !*stopped)
     {
@@ -574,6 +710,9 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::connect(
             std::chrono::duration_cast<std::chrono::milliseconds>(remaining),
             std::chrono::milliseconds(kDialRoundMillis));
         if (attempt.count() <= 0) { break; }
+        // Waited for in slices so stop() is noticed while a round is still in the
+        // air: the deadline is a minute, and a caller that has given up must not
+        // be held for the rest of it.
         std::future_status waited = std::future_status::timeout;
         for (auto spent = std::chrono::milliseconds(0);
              spent < attempt && waited == std::future_status::timeout && !*stopped;
@@ -593,7 +732,7 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::connect(
             }
             if (*stopped) { break; }
             std::this_thread::sleep_for(
-                std::chrono::milliseconds(kDialRetryPauseMillis));
+                std::chrono::milliseconds(kDialRetryPauseMillis));  // failed round; re-request
         }
     }
     return nullptr;
@@ -612,7 +751,7 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::accept(
     {
         return nullptr;
     }
-    if (acceptQueue.empty()) { return nullptr; }
+    if (acceptQueue.empty()) { return nullptr; }  // woken by stop()
     auto stream = acceptQueue.front();
     acceptQueue.pop_front();
     lock.unlock();
@@ -641,6 +780,7 @@ void EmbeddedEndpoint::sendDatagram(const std::string& host, const void* data, s
         }
         else
         {
+            // Encrypted-LS peer: resolve the blinded leaseset, then send (best-effort).
             auto blinded = std::make_shared<i2pd::data::BlindedPublicKey>(std::string_view(label));
             const std::shared_ptr<i2pd::datagram::DatagramDestination> sender = datagram;
             std::vector<std::uint8_t> copy(payload, payload + size);
@@ -693,6 +833,8 @@ void EmbeddedEndpoint::sendRawDatagram(const std::string& host, const void* data
         }
         else
         {
+            // A blinded address. Looked up once and remembered: what follows is a
+            // stream of media, not one message.
             const std::shared_ptr<RawTargets> targets = rawTargets;
             {
                 const std::lock_guard<std::mutex> lock(targets->mutex);
@@ -704,7 +846,7 @@ void EmbeddedEndpoint::sendRawDatagram(const std::string& host, const void* data
                 }
                 if (!targets->lookups.insert(host).second)
                 {
-                    return;
+                    return;  // a lookup is already out; this datagram waits for nobody
                 }
             }
             bazarish::log::info("i2p: looking up {} to send it datagrams", host);
@@ -716,6 +858,8 @@ void EmbeddedEndpoint::sendRawDatagram(const std::string& host, const void* data
                     targets->lookups.erase(host);
                     if (!ls)
                     {
+                        // Said out loud: without it a call with nothing to route
+                        // to is a call with no sound and no reason given.
                         bazarish::log::warn("i2p: {} has no leaseset; datagrams to it go nowhere",
                             host);
                         return;
@@ -775,6 +919,9 @@ public:
     bool started = false;
     std::shared_ptr<IoService> io;
 
+    // Every destination created on this router, weakly held so an Endpoint the
+    // caller dropped (a one-time dest) disappears from the status view by
+    // itself. Only createEndpoint and localDestinations touch it.
     struct DestEntry {
         std::weak_ptr<i2pd::client::ClientDestination> dest;
         std::string label;
@@ -783,15 +930,21 @@ public:
         bool published = false;
     };
     mutable std::mutex destsMutex;
+    // Swept while reporting, which is the only time anyone looks.
     mutable std::vector<DestEntry> dests;
 
     ~EmbeddedRouter()
     {
+        // Release the shared service before stopping the engine: workers must drain
+        // and join while the engine they post to is still up.
         io.reset();
         if (started)
         {
             i2pd::api::StopI2P();
         }
+        // The engine is initialized once per process, so terminate it (crypto) only
+        // here, at the end of the object's life - never on stop(), so the network
+        // can be started again. A second InitI2P is unsupported.
         if (inited)
         {
             i2pd::api::TerminateI2P();
@@ -822,14 +975,29 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
         args.push_back("--share=100");
     }
     args.push_back("--loglevel=warn");
+    // Peer profiles are a plain-text record of which routers this installation
+    // has been talking to, and when. Keeping them buys a little tunnel-building
+    // quality; leaving them on disk costs a log of the user's activity.
     args.push_back("--persist.profiles=false");
     if (!config.reseedUrls.empty())
     {
+        // The addresses this router bootstraps from, in place of the engine's
+        // built-in list. Each is a reseed base - the same shape every public
+        // reseed has - and the engine appends the archive's standard name to it,
+        // fetches it with the user agent every I2P router sends, unpacks it and
+        // loads the routers, each of which carries its own signature and is
+        // verified on load. The su3's own signature is not required
+        // (reseed.verify is off by default): a private reseed is signed by nobody
+        // a stock client trusts, so requiring it would mean no private reseeds.
+        // The trailing slash is put back if it is missing, because the engine
+        // concatenates rather than joins.
         std::string joined;
         for (const std::string& url : config.reseedUrls)
         {
             if (url.rfind("https://", 0) != 0)
             {
+                // Not an address but an archive already on disk: an offline
+                // install, or a test feeding the engine a file it packed itself.
                 args.push_back("--reseed.file=" + url);
                 continue;
             }
@@ -851,6 +1019,8 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
 
     i2pd::api::InitI2P(static_cast<int>(argv.size()), argv.data(), "bazarish-i2p");
     inited = true;
+    // After the config is parsed and before the transports come up, which is when
+    // they read it.
     setSocksProxy(config.socksProxyHost, config.socksProxyPort);
     start();
 }
@@ -859,11 +1029,16 @@ void EmbeddedRouter::start()
 {
     if (started) { return; }
     i2pd::api::StartI2P();
+    // StartI2P always (re)points logging, so install our sink after it (on every
+    // start - it is reset each time). The sink drops everything unless logging was
+    // explicitly turned on, so by default the embedded router is silent.
     i2pd::log::Logger().SendTo([](LogLevel level, const std::string& text)
     {
         if (!i2pLogging()) { return; }
         bazarish::log::emit(mapLevel(level), text);
     });
+    // Honor the current logging setting (default OFF) now that the logger exists,
+    // so the engine does not even format messages while logging is suppressed.
     i2pd::log::Logger().SetLogLevel(i2pLogging() ? "warn" : "none");
     started = true;
     io = std::make_shared<IoService>(ioContextCount());
@@ -876,7 +1051,11 @@ void EmbeddedRouter::setSocksProxy(const std::string& host, const int port)
         = wanted ? "socks://" + host + ":" + std::to_string(port) : std::string();
     i2pd::config::SetOption("ntcp2.proxy", url);
     i2pd::config::SetOption("reseed.proxy", url);
-    // SSU2 goes off whenever a proxy is set, without exception.
+    // SSU2 goes off whenever a proxy is set, without exception. Its datagrams can
+    // only ride SOCKS5's UDP ASSOCIATE, which most proxies do not offer and which
+    // i2pd attempts against a literal address alone - and whatever the proxy does
+    // not carry, SSU2 sends straight out around it. NTCP2 carries the router on
+    // its own; nothing leaves unproxied.
     i2pd::config::SetOption("ssu2.proxy", std::string());
     i2pd::config::SetOption("ssu2.enabled", !wanted);
     if (wanted)
@@ -898,6 +1077,8 @@ ProxyState EmbeddedRouter::proxyState() const
 void EmbeddedRouter::stop()
 {
     if (!started) { return; }
+    // Release the shared service before stopping the engine: workers must drain and
+    // join while the engine they post to is still up.
     io.reset();
     i2pd::api::StopI2P();
     started = false;
@@ -930,16 +1111,19 @@ int EmbeddedRouter::outboundTunnels() const
 std::vector<TransportPeer> EmbeddedRouter::transportPeers() const
 {
     std::vector<TransportPeer> peers;
+    // Copy each server's session map (the i2pd webconsole pattern) so iteration
+    // is over a snapshot rather than the live, concurrently-mutated container.
     const auto collect = [&peers](const auto& sessions, const char* name) {
         for (const auto& entry : sessions) {
             const auto& session = entry.second;
             if (!session || !session->IsEstablished()) { continue; }
             const auto remote = session->GetRemoteIdentity();
-            if (!remote) { continue; }
+            if (!remote) { continue; }  // handshake not finished yet
             TransportPeer peer;
             peer.ident = remote->GetIdentHash().ToBase64().substr(0, 8);
             peer.transport = name;
             peer.outbound = session->IsOutgoing();
+            // Remote socket address; IPv6 is bracketed so the port stays readable.
             const auto endpoint = session->GetRemoteEndpoint();
             const auto address = endpoint.address();
             const std::string host = address.to_string();
@@ -953,6 +1137,8 @@ std::vector<TransportPeer> EmbeddedRouter::transportPeers() const
         collect(sessions, "NTCP2");
     }
     if (auto* const ssu2 = i2pd::transport::transports.GetSSU2Server()) {
+        // The SSU2 session map may only be read on the server's own service, which
+        // hands the snapshot back through a future.
         i2pd::transport::SSU2Server::SSU2Sessions sessions;
         if (ssu2->GetSSU2Sessions(sessions).wait_for(std::chrono::seconds(kSessionSnapshotSeconds))
             == std::future_status::ready) {
@@ -979,6 +1165,8 @@ void EmbeddedRouter::retagEndpoint(
 
 std::vector<LocalDestination> EmbeddedRouter::localDestinations() const
 {
+    // More than any pool can hold: the quantity is clamped to 16 per direction,
+    // so this asks for every established inbound tunnel there can be.
     constexpr int kTunnelCountProbe = 64;
     std::vector<LocalDestination> live;
     std::lock_guard<std::mutex> lock(destsMutex);
@@ -993,6 +1181,9 @@ std::vector<LocalDestination> EmbeddedRouter::localDestinations() const
         info.published = entry.published;
         info.ready = dest->IsReady();
         info.remoteLeaseSets = dest->GetNumRemoteLeaseSets();
+        // A stopped destination keeps its pool until the last handler holding it
+        // returns, and the pool stands down the moment it is stopped: that flag is
+        // the difference between an address coming up and one going away.
         const auto tunnelPool = dest->GetTunnelPool();
         info.closing = !tunnelPool || !tunnelPool->IsActive();
         if (const auto pool = tunnelPool) {
@@ -1012,6 +1203,9 @@ std::vector<LocalDestination> EmbeddedRouter::localDestinations() const
 std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     const EndpointConfig& config)
 {
+    // A caller with no key of its own gets a one-time one. Every destination a
+    // client raises is one-time, so minting it here is what keeps key material
+    // out of the caller's hands entirely.
     const Keys keys = config.keys.has_value() ? config.keys.value() : Keys::generate();
 
     auto impl = std::make_shared<EmbeddedEndpoint>();
@@ -1024,6 +1218,11 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_TYPE,
         std::to_string(i2pd::data::NETDB_STORE_TYPE_ENCRYPTED_LEASESET2));
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_ENCRYPTION_TYPE, "4");
+    // Never write this destination's leaseset keys to the router directory: the
+    // files there are named by the destination, so persisting them would leave a
+    // list of every address this installation has served lying in the clear. The
+    // address itself is unaffected - only the leaseset's encryption key is new
+    // after a restart, and subscribers fetch the current leaseset anyway.
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_PERSIST_KEYS, "false");
     int length = 0;
     int variance = 0;
@@ -1036,6 +1235,9 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     params.Insert(i2pd::client::I2CP_PARAM_INBOUND_TUNNELS_QUANTITY, std::to_string(quantity));
     params.Insert(i2pd::client::I2CP_PARAM_OUTBOUND_TUNNELS_QUANTITY, std::to_string(quantity));
 
+    // Pin this destination to one lane of the router's io_context pool rather than
+    // a dedicated thread, so the router scales to many destinations on a fixed pool
+    // while every handler of this destination stays on a single thread.
     impl->io = io;
     impl->dest = std::make_shared<i2pd::client::ClientDestination>(
         config.realtime ? impl->io->reserved() : impl->io->next(),
@@ -1049,6 +1251,10 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
             impl->dest, config.label, config.owner, impl->hostAddress, config.published});
     }
 
+    // Weakly, and never by raw pointer: these callbacks live on the engine's own
+    // threads and can fire while this endpoint is being torn down. A weak
+    // reference that no longer locks is the difference between doing nothing and
+    // writing into freed memory.
     const std::weak_ptr<EmbeddedEndpoint> weak = impl;
     impl->dest->AcceptStreams([weak](std::shared_ptr<i2pd::stream::Stream> stream)
     {
@@ -1093,6 +1299,7 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
 
 Capabilities EmbeddedRouter::capabilities() const
 {
+    // The engine is in this process, so everything about it can be answered.
     Capabilities what;
     what.routerCounters = true;
     what.destinationCounters = true;
@@ -1118,7 +1325,10 @@ Bytes generateKeysBlob()
 Bytes issueTransientBlob(const Bytes& master, const int days)
 {
     const i2pd::data::PrivateKeys keys = parseKeys(master);
+    // One reading of the clock for the whole delegation: taken twice, a day
+    // change between them would end the inner transient a day before the batch.
     const std::uint64_t midnight = currentMidnight();
+    // The transient of the inner LeaseSet lasts exactly as long as the batch.
     const std::uint64_t expires = midnight + days*i2pd::data::SECONDS_PER_DAY;
     Bytes blob
         = serializeKeys(keys.CreateOfflineKeys(kSigType, static_cast<std::uint32_t>(expires)));
@@ -1132,6 +1342,8 @@ int b33OfflineKeyDays(const Bytes& blob)
     const i2pd::data::PrivateKeys keys = parseKeys(blob);
     const i2pd::data::B33OfflineKeys& batch = keys.GetB33OfflineKeys();
     if (batch.GetLen() < i2pd::data::B33_OFFLINE_KEYS_HEADER_LENGTH) { return 0; }
+    // A batch that cannot sign today is no better than none: say so now rather
+    // than at the first publication, which has no caller left to tell.
     char today[9];
     i2pd::util::GetDateString(currentMidnight(), today);
     if (!i2pd::data::OfflinePrivateKeys(keys, today).IsOfflineSignature()) { return 0; }

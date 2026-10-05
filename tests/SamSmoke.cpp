@@ -8,6 +8,18 @@
 #include <string>
 #include <thread>
 
+// End-to-end over a live I2P router reached by SAM (not a unit test - needs a
+// running i2pd and the network). Two destinations of this process talk to each
+// other through I2P: one accepts, the other dials.
+//
+//   sam_smoke [host] [control port] [rebuild|b33|b33-cold]
+//
+// Datagrams are addressed by the peer's base64 destination, which every router
+// takes. Addressing one by its ".b32.i2p" host is asked for by name: "b33" after
+// the stream test, "b33-cold" instead of it. The two differ because opening a
+// stream to a host puts it in the router's addressbook, and a router that cannot
+// resolve a blinded address on its own will still find it there afterwards.
+
 using namespace bazarish;
 
 namespace {
@@ -49,6 +61,8 @@ int main(int argc, char** argv)
     CHECK(router.running());
     CHECK(router.ready());
 
+    // An external router answers none of these, and says so rather than
+    // returning a zero that reads like a fact.
     const i2p::Capabilities what = router.capabilities();
     CHECK(!what.routerCounters);
     CHECK(!what.netDbSample);
@@ -57,6 +71,8 @@ int main(int argc, char** argv)
     CHECK_THROWS(router.knownRouters());
     CHECK_THROWS(router.proxyState());
 
+    // A key of one's own is minted by the library, not by a router: a router
+    // mints for the destinations it operates.
     const i2p::Keys keys = i2p::Keys::generate();
     CHECK(!keys.publicBase64().empty());
     const std::string host = i2p::routingHost(keys.publicBase64());
@@ -72,9 +88,13 @@ int main(int argc, char** argv)
     CHECK(client->waitReady(kReady));
     std::printf("server is %s\nclient is up\n", server->routingHost().c_str());
 
+    // The status view is this process's own bookkeeping, which an external
+    // router does not take away.
     const std::vector<i2p::LocalDestination> destinations = router.localDestinations();
     CHECK(destinations.size() == 2);
 
+    // Addressing a datagram by the host peers actually know, rather than by a
+    // destination in full. A repliable one also names its sender back.
     const auto datagramsByHost = [&]() {
         const std::string toHost = "one raw datagram, addressed by host";
         client->sendRawDatagram(server->routingHost(), toHost.data(), toHost.size());
@@ -94,6 +114,8 @@ int main(int argc, char** argv)
 
     const std::string mode = argc > 3 ? argv[3] : std::string();
     if (mode == "b33-cold") {
+        // Nothing has dialled this host, so the router has to resolve the
+        // blinded address itself.
         datagramsByHost();
         std::printf("SamSmoke ok\n");
         return 0;
@@ -104,6 +126,8 @@ int main(int argc, char** argv)
     std::string caller;
     std::string acceptFailure;
     std::thread accepting([&]() {
+        // Whatever goes wrong on this side is reported rather than thrown out of
+        // a thread, where it would only abort the process and say nothing.
         try {
             const std::unique_ptr<i2p::Stream> stream = server->accept(caller, kAcceptWait);
             if (stream == nullptr) {
@@ -152,6 +176,9 @@ int main(int argc, char** argv)
         datagramsByHost();
     }
 
+    // With "rebuild" as the third argument, the run pauses here so the router can
+    // be restarted under it: the session is the router's, and losing it must cost
+    // the destination its streams but not its address.
     if (mode == "rebuild") {
         const std::string address = server->routingHost();
         std::printf("waiting for a router restart\n");

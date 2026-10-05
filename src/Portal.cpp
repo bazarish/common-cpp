@@ -12,6 +12,8 @@ namespace bazarish::service {
 
 namespace {
 
+// Consumer fields are read by a person. A control character would let a name
+// paint a line the consumer never wrote.
 bool hasControlCharacters(const std::string& text)
 {
     for (const unsigned char character : text) {
@@ -97,6 +99,10 @@ std::string signLoginBlob(
 std::string verifyLoginBlob(
     const std::string& blob, const std::int64_t now, const std::string& challenge)
 {
+    // The commonest way to get here is the challenge pasted back into the field
+    // that wants the signature - both are base64 of a JSON object, so only their
+    // contents tell them apart. Which one arrived is what the operator needs to
+    // be told; a parser's complaint about a missing key helps nobody.
     const char* const kNotASignature
         = "this is not a signature: the field wants what your client's Signature window copied";
     nlohmann::json parsed;

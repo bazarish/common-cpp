@@ -1,4 +1,8 @@
 // Bazarish project (c) 2026
+//
+// The reseed archive this server hands out is read by routers, not by us, so
+// what is checked here is the shape the format promises: the container's header,
+// and a ZIP whose stored entries carry the routers back byte for byte.
 #include <bazarish/Bytes.hpp>
 #include <bazarish/I2p.hpp>
 
@@ -51,16 +55,20 @@ int main()
     const std::string signer = "bazarish@example";
     const Bytes su3 = i2p::packReseedSu3(routers, signer);
 
+    // The header, field by field, exactly where a router looks for it.
     CHECK(std::memcmp(su3.data(), "I2Psu3", 6) == 0);
     CHECK(su3.at(6) == 0);
+    // Where a router looks, counted the way its reader walks the header: magic
+    // and a zero (7), format version, signature type and length, then the four
+    // one-byte fields with an unused byte before each of the last three.
     constexpr std::size_t kVersionLengthAt = 13;
     constexpr std::size_t kSignerLengthAt = 15;
     constexpr std::size_t kContentLengthAt = 16;
     constexpr std::size_t kFileTypeAt = 25;
     constexpr std::size_t kContentTypeAt = 27;
-    constexpr std::size_t kHeaderBytes = 40;
-    CHECK(su3.at(kFileTypeAt) == 0x00);
-    CHECK(su3.at(kContentTypeAt) == 0x03);
+    constexpr std::size_t kHeaderBytes = 40;  // through the twelve unused bytes
+    CHECK(su3.at(kFileTypeAt) == 0x00);     // zip
+    CHECK(su3.at(kContentTypeAt) == 0x03);  // reseed
     const std::size_t versionLength = su3.at(kVersionLengthAt);
     const std::size_t signerLength = su3.at(kSignerLengthAt);
     CHECK(versionLength >= 16);
@@ -70,12 +78,15 @@ int main()
     CHECK(std::string(su3.begin() + static_cast<long>(zipAt - signerLength),
               su3.begin() + static_cast<long>(zipAt))
         == signer);
+    // Nothing after the content: the archive is not signed, and says so with a
+    // zero-length signature rather than by being short.
     CHECK(su3.size() == zipAt + contentLength);
 
+    // The ZIP: one stored entry per router, each carrying its bytes unchanged.
     std::size_t at = zipAt;
     for (std::size_t i = 0; i < routers.size(); ++i) {
         CHECK(le32(su3, at) == 0x04034B50);
-        CHECK(le16(su3, at + 8) == 0);
+        CHECK(le16(su3, at + 8) == 0);  // stored, never deflated
         const std::uint32_t crc = le32(su3, at + 14);
         const std::uint32_t size = le32(su3, at + 18);
         const std::size_t nameLength = le16(su3, at + 26);
@@ -89,8 +100,10 @@ int main()
             == routers[i]);
         at = body + size;
     }
+    // And then the central directory, which is where a reader stops.
     CHECK(le32(su3, at) == 0x02014B50);
 
+    // An empty netDb makes an empty archive, not a malformed one.
     const Bytes none = i2p::packReseedSu3({}, signer);
     CHECK(std::memcmp(none.data(), "I2Psu3", 6) == 0);
 

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 
+// Minimal test support: CHECK aborts the test binary with a location report.
 #define CHECK(condition)                                                            \
     do {                                                                            \
         if (!(condition)) {                                                         \

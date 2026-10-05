@@ -22,8 +22,12 @@ int main()
     const Identity serverRoot = Identity::generate();
     const Key sealing = Key::generateSealing();
 
+    // Contact card round trip: a card with nothing published yet is still a
+    // signed statement of who it belongs to.
     const Bytes bareDer = ContactCard::issue(user, kNow);
     const ContactCard bare = ContactCard::verify(bareDer);
+    // Whose card it is comes from the signature, not from a claim standing
+    // beside it: there is nothing in the body left to disagree with the signer.
     CHECK(bare.fingerprint() == user.fingerprint());
     CHECK(bare.dest.empty());
     CHECK(bare.sealingPublicKeyDer.empty());
@@ -31,6 +35,8 @@ int main()
     CHECK_THROWS(bare.sealingKey());
     CHECK_THROWS(bare.servingSealingKey());
 
+    // A published card: routing and both keys ride under the one signature, and
+    // nothing in it names the server that operates the destination.
     const Key servingSealing = Key::generateSealing();
     const std::string dest = "exampledestination.b32.i2p";
     const Bytes contactDer = ContactCard::issue(
@@ -44,6 +50,11 @@ int main()
     CHECK(contact.servingSealingKeyDer == servingSealing.publicDer());
     CHECK(contact.servingSealingKey().publicDer() == servingSealing.publicDer());
 
+    // A card is its signer's, and a name written into the body is not consulted:
+    // there is nothing there to disagree with the signature. A card somebody else
+    // signed is simply theirs, and it is the reader who says whether that is the
+    // one they asked for - which is where the check belongs, because only the
+    // reader knows whose card they wanted.
     {
         const Identity impostor = Identity::generate();
         const nlohmann::json body = {{"v", kCertificateFormatVersion}, {"t", "contact-card"},
@@ -53,6 +64,8 @@ int main()
         CHECK(theirs.fingerprint() != user.fingerprint());
     }
 
+    // A signed document that is not a contact card is not read as one, however
+    // well its fields happen to line up.
     {
         const nlohmann::json notACard = {{"v", kCertificateFormatVersion}, {"t", "alias"},
             {"issuedAt", kNow}, {"alias", "someone"}};
@@ -61,12 +74,15 @@ int main()
         CHECK_THROWS(ContactCard::verify(cms::signJsonHybrid(untagged, user)));
     }
 
+    // A card that cannot be placed in time is refused: it could not be compared
+    // with the one already held, which is the only reason the stamp is there.
     {
         const nlohmann::json undated
             = {{"v", kCertificateFormatVersion}, {"t", "contact-card"}};
         CHECK_THROWS(ContactCard::verify(cms::signJsonHybrid(undated, user)));
     }
 
+    // Two cards of one person are ordered by the stamp and by nothing else.
     {
         const Bytes olderDer = ContactCard::issue(user, kNow, "old.b32.i2p",
             sealing.publicDer(), servingSealing.publicDer());
@@ -76,18 +92,25 @@ int main()
             < ContactCard::verify(newerDer).issuedAt);
     }
 
+    // Alias certificate round trip. It says who and which name, and the signer is
+    // the subject: a certificate naming somebody else does not verify.
     const Bytes aliasDer = AliasCertificate::issue(user, "alice", kNow);
     const AliasCertificate alias = AliasCertificate::verify(aliasDer);
     CHECK(alias.alias == "alice");
     CHECK(alias.user == user.fingerprint());
     CHECK(alias.issuedAt == kNow);
 
+    // Server card round trip. It names the server and its sealing key and
+    // nothing else: the server has no address of its own to advertise, users
+    // being reached at their own destinations.
     const Bytes cardDer = ServerCard::issue(serverRoot, sealing, kNow);
     const ServerCard card = ServerCard::verify(cardDer);
     CHECK(card.server == serverRoot.fingerprint());
     CHECK(card.issuedAt == kNow);
     CHECK(card.sealingKey().fingerprint() == sealing.fingerprint());
 
+    // A certificate naming someone else's identity must fail verification:
+    // Mallory signs a subscription certificate claiming the victim's UID.
     const Identity mallory = Identity::generate();
     const nlohmann::json forgedBody = {
         {"v", kCertificateFormatVersion},
@@ -99,6 +122,10 @@ int main()
     const Bytes forgedDer = cms::signJsonHybrid(forgedBody, mallory);
     CHECK_THROWS(ContactCard::verify(forgedDer));
 
+    // Every signed document here says what it is, and says it before anything
+    // else in it is believed. One body carrying the fields of two is the case
+    // that makes the point: without the tag each reader would find everything it
+    // looks for and take it.
     {
         const nlohmann::json bothShapes = {
             {"v", kCertificateFormatVersion},
@@ -114,6 +141,7 @@ int main()
         CHECK_THROWS(ServerCard::verify(bothDer));
         CHECK_THROWS(ContactCard::verify(bothDer));
 
+        // And an untagged body of the right shape is refused outright.
         const nlohmann::json untaggedAlias = {{"v", kCertificateFormatVersion},
             {"alias", "alice"}, {"user", user.fingerprint()}, {"issuedAt", kNow}};
         CHECK_THROWS(AliasCertificate::verify(cms::signJsonHybrid(untaggedAlias, user)));
@@ -129,6 +157,7 @@ int main()
         CHECK_THROWS(DelegationCertificate::verify(cms::signJsonHybrid(untaggedDelegation, user)));
     }
 
+    // An unsupported format version must be rejected.
     const nlohmann::json futureBody = {
         {"v", kCertificateFormatVersion + 1},
         {"user", user.fingerprint()},

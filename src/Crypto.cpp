@@ -20,8 +20,14 @@ namespace {
 
 using bazarish::Bytes;
 
+// The post-quantum half of every sealing key (FIPS 203). ML-KEM-768 is the
+// category-3 parameter set, matching ML-DSA-65 on the signing side.
 constexpr const char* kKemAlgorithm = "ML-KEM-768";
 
+// OpenSSL's own callback prompts on the terminal when it has nothing to give,
+// which is not a thing a library may do: without a controlling terminal it fails
+// after a detour, with one it waits forever. The reader gets exactly what the
+// caller passed, and an encrypted block with no passphrase is simply an error.
 int passphraseCallback(char* const buffer, const int size, int, void* const userdata)
 {
     const auto* const passphrase = static_cast<const std::string*>(userdata);
@@ -115,6 +121,8 @@ Key Key::generateSigningPq()
 
 Key Key::generateSealing()
 {
+    // Hybrid by construction: there is no way to make a sealing key that is
+    // only classical, so nothing downstream can accidentally seal with one.
     EVP_PKEY* const kem = EVP_PKEY_Q_keygen(nullptr, nullptr, kKemAlgorithm);
     if (kem == nullptr) {
         throw std::runtime_error("ML-KEM-768 keygen failed");
@@ -133,9 +141,11 @@ Key Key::fromPrivatePem(const std::string& pem, const std::string& passphrase)
     if (key == nullptr) {
         throw std::runtime_error("PEM_read_bio_PrivateKey failed");
     }
+    // A sealing key is written as two blocks, classical first: read the second
+    // when it is there, so a key round-trips through PEM with both halves.
     EVP_PKEY* const second = PEM_read_bio_PrivateKey(bio.get(), nullptr, passphraseCallback, password);
     if (second == nullptr) {
-        ERR_clear_error();
+        ERR_clear_error();  // one block: not an error, just a single key
         return Key(KeyPtr(key), true);
     }
     return Key(KeyPtr(key), KeyPtr(second), true);
@@ -143,14 +153,19 @@ Key Key::fromPrivatePem(const std::string& pem, const std::string& passphrase)
 
 namespace {
 
+// A hybrid sealing key travels as this pair; a single key travels as its bare
+// SPKI. The tag is what tells them apart without guessing.
 constexpr const char* kSealingPairTag = "bzsk1";
 
 }  // namespace
 
 Key Key::fromPublicDer(const Bytes& spkiDer)
 {
-    // The pair form is CBOR; a bare SPKI is DER.
+    // The pair form is CBOR; a bare SPKI is DER. Try the pair first - it is
+    // self-identifying, so a bare SPKI cannot be mistaken for one.
     if (!spkiDer.empty()) {
+        // Asked not to throw: "this is not CBOR" is the ordinary case here (a
+        // bare SPKI), not an error to report.
         const nlohmann::json pair
             = nlohmann::json::from_cbor(spkiDer, true, false, nlohmann::json::cbor_tag_handler_t::error);
         {
@@ -186,6 +201,8 @@ std::string Key::privatePem(const std::string& passphrase) const
         throw std::logic_error("key has no private part");
     }
     const BioPtr bio = makeMemoryBio();
+    // A non-empty passphrase selects AES-256-CBC encryption of the PEM block;
+    // an empty one keeps the unencrypted form.
     const EVP_CIPHER* const cipher = passphrase.empty() ? nullptr : EVP_aes_256_cbc();
     unsigned char* const pass = passphrase.empty()
         ? nullptr
@@ -196,6 +213,8 @@ std::string Key::privatePem(const std::string& passphrase) const
         throw std::runtime_error("PEM_write_bio_PrivateKey failed");
     }
     const Bytes data = bioToBytes(bio.get());
+    // A sealing key is two keys, so it is two PEM blocks: the classical one
+    // first, the ML-KEM one second (the same order Identity uses).
     return std::string(data.begin(), data.end()) + (kem_ ? kem_->privatePem(passphrase) : "");
 }
 
@@ -260,6 +279,7 @@ Bytes sign(const Key& key, const Bytes& data)
     if (ctx == nullptr) {
         throw std::runtime_error("EVP_MD_CTX_new failed");
     }
+    // EC signs a SHA-256 digest; ML-DSA signs the message directly.
     const EVP_MD* const digest = key.isA("EC") ? EVP_sha256() : nullptr;
     Bytes signature;
     bool ok = EVP_DigestSignInit(ctx.get(), nullptr, digest, nullptr, key.raw()) == 1;
@@ -345,7 +365,7 @@ std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes&
         throw std::invalid_argument("aeadOpen: wrong key or nonce size");
     }
     if (sealed.size() < kAeadTagBytes) {
-        return std::nullopt;
+        return std::nullopt;  // too short to carry a tag: malformed, not authentic
     }
     const std::size_t cipherLen = sealed.size() - kAeadTagBytes;
     const CipherCtxPtr ctx(EVP_CIPHER_CTX_new());
@@ -364,6 +384,7 @@ std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes&
         != 1) {
         throw std::runtime_error("aeadOpen: decrypt failed");
     }
+    // The trailing 16 bytes are the GCM tag; a mismatch fails DecryptFinal.
     if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, static_cast<int>(kAeadTagBytes),
             const_cast<unsigned char*>(sealed.data() + cipherLen))
         != 1) {
@@ -371,7 +392,7 @@ std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes&
     }
     int finalLen = 0;
     if (EVP_DecryptFinal_ex(ctx.get(), out.data() + len, &finalLen) != 1) {
-        return std::nullopt;
+        return std::nullopt;  // authentication failed
     }
     return out;
 }

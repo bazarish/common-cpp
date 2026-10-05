@@ -93,6 +93,8 @@ std::optional<Address> parseAddress(const std::string& text)
     address.server = server;
     address.local = local;
     if (isFingerprint(local)) {
+        // A bare fingerprint with no @server has nowhere to be delivered;
+        // only aliases may omit the server part (main server implied).
         if (server.empty()) {
             return std::nullopt;
         }

@@ -2051,6 +2051,7 @@ Session::RoutingPushResult Session::pushRoutingToContacts(
         nlohmann::json inner = envelope("contact.routing", toHex(randomBytes(8)));
         try {
             sendContent(peer, std::move(inner), {}, false,
+                /*establishOnFirstReply=*/false);
             ++result.told;
         } catch (const std::exception& error) {
             ++result.failed;
@@ -2076,6 +2077,7 @@ void Session::sendReceipt(const std::string& peerFingerprint, const std::string&
     bazarish::log::info("read receipt for {} on its way to {}", refMessageId,
         bazarish::log::redact(peerFingerprint));
     if (!sendContent(peerFingerprint, std::move(inner), {}, false,
+            /*establishOnFirstReply=*/false)) {
         bazarish::log::info("the read receipt for {} waits for a token", refMessageId);
     }
 }

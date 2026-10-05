@@ -50,31 +50,40 @@ int main()
     CHECK(css == "body { color: #d7dbd8; }");
     CHECK(etag.size() > 2 && etag.front() == '"' && etag.back() == '"');
 
+    // Read once: the file on disk changes and what is served does not, which is
+    // why editing one of these is followed by a restart.
     write(dir / "style.css", "body { color: #39ff14; }");
     CHECK(assets.file("style.css").body == css);
     CHECK(assets.file("style.css").etag == etag);
 
+    // A caller with no tag is handed the file and the tag for it.
     const http::Response full = serveWebAsset(assets.file("style.css"), asking(""));
     CHECK(full.status == kOk);
     CHECK(full.body == css);
     CHECK(full.contentType == "text/css; charset=utf-8");
     CHECK(full.headers.at("ETag") == etag);
 
+    // A caller that already holds the body downloads nothing, and still learns
+    // the tag is current.
     const http::Response cached = serveWebAsset(assets.file("style.css"), asking(etag));
     CHECK(cached.status == kNotModified);
     CHECK(cached.body.empty());
     CHECK(cached.headers.at("ETag") == etag);
 
+    // A list, a weak tag and "*" all name what we hold; another tag does not.
     CHECK(serveWebAsset(assets.file("style.css"), asking("\"other\", " + etag)).status
         == kNotModified);
     CHECK(serveWebAsset(assets.file("style.css"), asking("W/" + etag)).status == kNotModified);
     CHECK(serveWebAsset(assets.file("style.css"), asking("*")).status == kNotModified);
     CHECK(serveWebAsset(assets.file("style.css"), asking("\"other\"")).status == kOk);
 
+    // The tag is the content: the same bytes under another name carry the same
+    // one, different bytes do not.
     write(dir / "copy.css", css);
     CHECK(assets.file("copy.css").etag == etag);
     CHECK(assets.file("page.html").etag != etag);
 
+    // Templates are loaded at construction and poured into pages, not served.
     CHECK(assets.render("page.html", {{"note", "hello"}}) == "<p>hello</p>");
     CHECK_THROWS(assets.file("secrets.json"));
 

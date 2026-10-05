@@ -18,9 +18,13 @@ using namespace bazarish;
 
 namespace {
 
+// Long enough that a loaded machine does not fail the test, short enough that a
+// hung exchange does not hang the suite.
 constexpr int kTimeoutSeconds = 10;
+// Bigger than one write, so a streamed body has to come back in several chunks.
 constexpr std::size_t kUploadBytes = 300 * 1024;
 
+// One request head off a raw socket, empty when the peer closed instead.
 std::string readHead(boost::asio::ip::tcp::socket& peer)
 {
     std::string head;
@@ -44,7 +48,7 @@ std::string rawResponse(const std::string& head, const std::string& body)
 http::Server::Options serverOptions()
 {
     http::Server::Options options;
-    options.port = 0;
+    options.port = 0;  // the kernel picks one
     options.threads = 2;
     return options;
 }
@@ -70,9 +74,11 @@ int main()
     server.post("/form", [](const http::Request& request) {
         http::Response answer;
         answer.contentType = "text/plain";
+        // A form field and a query value read the same way, both decoded.
         answer.body = request.param("blob") + "|" + request.param("who");
         return answer;
     });
+    // Reads back one cookie by name, so a test can see what the server got.
     server.get("/cookie", [](const http::Request& request) {
         http::Response answer;
         answer.contentType = "text/plain";
@@ -85,6 +91,8 @@ int main()
         answer.body = std::to_string(request.body.size());
         return answer;
     });
+    // A backend that wants HTTP Digest credentials: it 401s with a challenge and
+    // then checks the answer the client computes from it.
     server.get("/vault", [](const http::Request& request) {
         http::Response answer;
         answer.contentType = "text/plain";
@@ -96,6 +104,8 @@ int main()
             answer.body = "who goes there";
             return answer;
         }
+        // The response is what proves the password without sending it; the rest
+        // of the header only says how it was computed.
         const bool named = authorization.find(R"(username="walletuser")") != std::string::npos;
         const bool answered = authorization.find(R"(response=")") != std::string::npos;
         const bool counted = authorization.find("nc=00000001") != std::string::npos;
@@ -114,6 +124,8 @@ int main()
     options.readTimeout = std::chrono::seconds(kTimeoutSeconds);
     options.writeTimeout = std::chrono::seconds(kTimeoutSeconds);
 
+    // A GET carries its headers and query through, and the answer comes back
+    // with its status, body and headers (keys lowercased).
     http::ClientRequest get;
     get.method = "GET";
     get.target = "/hello?who=world";
@@ -125,6 +137,10 @@ int main()
     CHECK(hello.contentType == "text/plain");
     CHECK(hello.headers.at("x-echo-query") == "world");
 
+    // Cookies are matched by whole name. Two services on one host share a
+    // cookie jar, and "adminsession" used to answer for "session" - the portal
+    // then read the panel's token, found it invalid, and showed the sign-in
+    // page again with nothing wrong on it.
     {
         const auto cookieOf = [port, &options](const std::string& jar, const std::string& name) {
             http::ClientRequest ask;
@@ -137,10 +153,12 @@ int main()
         CHECK(cookieOf("adminsession=panel; session=portal", "session") == "portal");
         CHECK(cookieOf("adminsession=panel", "session").empty());
         CHECK(cookieOf("adminsession=panel; session=portal", "adminsession") == "panel");
+        // Values keep whatever they are made of; only the name is parsed.
         CHECK(cookieOf("session=a.b.c; other=1", "session") == "a.b.c");
         CHECK(cookieOf("", "session").empty());
     }
 
+    // A body goes out with its content type and comes back unchanged.
     http::ClientRequest post;
     post.method = "POST";
     post.target = "/echo";
@@ -151,6 +169,8 @@ int main()
     CHECK(echoed.body == post.body);
     CHECK(echoed.contentType == "application/json");
 
+    // An HTML form posts its fields as an urlencoded body: they arrive decoded,
+    // "+" included, and a query value on the same request is read the same way.
     http::ClientRequest form;
     form.method = "POST";
     form.target = "/form?who=a%2Fb";
@@ -160,6 +180,8 @@ int main()
     CHECK(posted.status == 200);
     CHECK(posted.body == "aGVsbG8+d29ybGQ=|a/b");
 
+    // A streamed upload of a known length arrives whole, in as many chunks as it
+    // takes.
     http::ClientRequest put;
     put.method = "PUT";
     put.target = "/sink";
@@ -177,6 +199,8 @@ int main()
     CHECK(stored.body == std::to_string(kUploadBytes));
     CHECK(produced == kUploadBytes);
 
+    // A digest challenge is answered on a second attempt, with the credentials
+    // computed from what the server asked for.
     http::ClientOptions vaultOptions = options;
     vaultOptions.digestUser = "walletuser";
     vaultOptions.digestPassword = "walletpass";
@@ -187,16 +211,21 @@ int main()
     CHECK(authorized.status == 200);
     CHECK(authorized.body == "welcome");
 
+    // Without credentials the challenge reaches the caller as it stands.
     const http::ClientResponse challenged = http::request("127.0.0.1", port, vault, options);
     CHECK(challenged.status == 401);
     CHECK(challenged.headers.count("www-authenticate") == 1);
 
-    const int kClosedPort = 9;
+    // Nothing listening: a transport failure is status 0 with a reason, not an
+    // exception, and it is not reported as a read timeout.
+    const int kClosedPort = 9;  // discard/, never served here
     const http::ClientResponse refused = http::request("127.0.0.1", kClosedPort, get, options);
     CHECK(refused.status == 0);
     CHECK(!refused.error.empty());
     CHECK(!refused.readTimedOut);
 
+    // A backend that never answers in time is a read timeout, which callers
+    // report differently from an unreachable host.
     http::ClientOptions impatient = options;
     impatient.readTimeout = std::chrono::seconds(1);
     http::ClientRequest slow;
@@ -207,6 +236,9 @@ int main()
     CHECK(late.readTimedOut);
 
     server.stop();
+    // --- Basic, sent unasked ---
+    // bitcoind takes only Basic and does not challenge for it, so a client that
+    // waits to be asked never gets in at all.
     {
         std::string sawAuthorization;
         http::Server::Options options;
@@ -235,6 +267,8 @@ int main()
         CHECK(sawAuthorization
             == "Basic " + bazarish::toBase64(bazarish::Bytes(pair.begin(), pair.end())));
 
+        // Without credentials nothing is sent, and the refusal comes back as it
+        // stands rather than being retried blindly.
         sawAuthorization.clear();
         const http::ClientResponse bare = http::request("127.0.0.1", port, ask, {});
         CHECK(bare.status == 401);
@@ -242,7 +276,12 @@ int main()
         server.stop();
     }
 
+    // --- A nonce that is good only on the connection that issued it ---
     {
+        // monero-wallet-rpc refuses an answer arriving on a second connection
+        // (stale=true), so the challenge and its answer have to share one. This
+        // server is that server in the small: it offers a single connection and
+        // accepts only the nonce it handed out on it.
         using boost::asio::ip::tcp;
         boost::asio::io_context loop;
         tcp::acceptor door(loop, tcp::endpoint(boost::asio::ip::make_address("127.0.0.1"), 0));
@@ -284,6 +323,7 @@ int main()
         serving.join();
         CHECK(welcomed.status == 200);
         CHECK(welcomed.body == "welcome");
+        // Two connections would have left the nonce stale on the second.
         CHECK(accepted == 1);
     }
 

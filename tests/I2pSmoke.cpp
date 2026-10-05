@@ -1,4 +1,11 @@
 // Bazarish project (c) 2026
+//
+// End-to-end smoke for bazarish::i2p over live I2P, through the wrapper ONLY -
+// this translation unit includes no i2pd or Boost header. Brings up the embedded
+// router, an offline-transient SERVER endpoint published blinded from its b33
+// offline keys and a CLIENT endpoint, then does a stream round-trip, a datagram
+// round-trip, and an in-process offline-signature refresh. Not a unit test (needs
+// the network); run manually.
 #include <bazarish/I2p.hpp>
 
 #include <chrono>
@@ -11,10 +18,17 @@
 
 using namespace std::chrono;
 
+// The read-deadline case below: how long the far side holds the stream without
+// sending anything, what the reader gives it, and how much longer than that the
+// reader may take to say so. The engine is polled in slices, so a deadline is
+// noticed at the first slice past it rather than to the second.
 constexpr int kQuietHoldSeconds = 30;
 constexpr int kReadDeadlineSeconds = 3;
 constexpr int kDeadlineSlackSeconds = 10;
 
+// Days of b33 offline keys in the delegation the server endpoint runs on. Two is
+// the smallest batch that proves the day is picked out of several rather than
+// taken because it is the only one there.
 constexpr int kDelegationDays = 2;
 
 int main(int argc, char** argv)
@@ -29,6 +43,9 @@ int main(int argc, char** argv)
     router.waitReady(seconds(300));
     std::printf("[smoke] router ready=%d knownRouters=%d\n", router.ready(), router.knownRouters());
 
+    // Offline-transient server endpoint. The delegation carries the b33 offline
+    // keys, so the address is the master's blinded b33 and the router publishes
+    // it without ever seeing the master signing key.
     const auto master = bazarish::i2p::Keys::generate();
     const auto transient = master.issueTransient(kDelegationDays);
     bazarish::i2p::EndpointConfig serverCfg{transient, bazarish::i2p::Privacy::eMax, 3, true};
@@ -71,6 +88,9 @@ int main(int argc, char** argv)
     }
     std::printf("[smoke] STREAM echo: \"%s\"\n", streamResult.c_str());
 
+    // A far side that takes the stream and then says nothing. Without a deadline
+    // the read below never returns - the stream stays open to this side and the
+    // caller's thread is gone for good.
     std::thread quietPeer([&] {
         std::string peer;
         auto s = server->accept(peer, seconds(300));

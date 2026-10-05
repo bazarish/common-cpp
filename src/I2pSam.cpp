@@ -16,10 +16,19 @@ namespace bazarish::i2p {
 
 namespace {
 
+// How long a destination is given to come up. The router answers SESSION CREATE
+// only once the destination has tunnels, so this is the whole of the wait.
 constexpr auto kDestinationReadyTimeout = std::chrono::seconds(180);
 
+// A router on this machine either answers at once or is not there. The result is
+// held for a moment so a status view polling it does not open a connection per
+// frame.
 constexpr auto kProbeInterval = std::chrono::seconds(5);
 
+// A destination that has just been published is not yet findable everywhere, so
+// a dial that comes back "LeaseSet not found" is re-issued until the caller's
+// deadline rather than reported as a failure. The embedded transport does the
+// same thing for the same reason.
 constexpr auto kDialRetryDelay = std::chrono::seconds(2);
 
 [[noreturn]] void notWithAnExternalRouter(const std::string& what)
@@ -71,6 +80,10 @@ private:
     std::unique_ptr<sam::Stream> stream_;
 };
 
+// One destination on the external router. A SAM session carries exactly one
+// style, so a destination that both streams and sends datagrams runs two of
+// them over the same keys - which the router allows, and which leave it with one
+// destination either way.
 class SamEndpoint final : public backend::EndpointBackend {
 public:
     SamEndpoint(sam::RouterAddress router, const EndpointConfig& config)
@@ -81,6 +94,9 @@ public:
         , keysBlob_(config.keys.value().blob())
         , label_(config.label)
     {
+        // Building tunnels takes as long as it takes, and the caller asked for a
+        // destination, not for a wait: it goes up on a thread of its own, and
+        // ready() says when it is there.
         builder_ = std::thread([this]() { build(); });
     }
 
@@ -105,12 +121,17 @@ public:
 
     void refreshOfflineSignature(const Keys&) override
     {
+        // Swapping a live transient means re-creating the session, which drops
+        // every stream on it. The router has no other way to be told.
         notWithAnExternalRouter("swapping an offline transient");
     }
 
     void stop() override
     {
         stopped_.store(true);
+        // Whoever is waiting for the session to come up is woken so the flag is
+        // looked at; a dial already on the wire is the router's to finish, and
+        // this endpoint simply will not start another.
         ready_.notify_all();
     }
 
@@ -129,6 +150,8 @@ public:
                 return std::make_unique<SamStream>(session->connect(host, remaining));
             } catch (const sam::Error& error) {
                 if (error.result() != sam::Result::eCantReachPeer) {
+                    // A refusal that names the reason is an answer, not a miss:
+                    // trying again with the same input would get the same one.
                     bazarish::log::warn("i2p: no stream to {}: {}", host, error.what());
                     return nullptr;
                 }
@@ -136,6 +159,8 @@ public:
             }
             std::this_thread::sleep_for(kDialRetryDelay);
         }
+        // A dial that did not happen is a null stream, as it is on the embedded
+        // transport.
         bazarish::log::warn("i2p: no route to {} inside the dial window", host);
         return nullptr;
     }
@@ -233,6 +258,7 @@ private:
         return stopped_ ? nullptr : streams_;
     }
 
+    // The session for a datagram style, built on first use over the same keys.
     std::shared_ptr<sam::Session> datagrams(const sam::Style style)
     {
         const std::lock_guard<std::mutex> lock(datagramMutex_);
@@ -251,7 +277,9 @@ private:
     const std::string hostAddress_;
     const Bytes keysBlob_;
 
-    // Raised once, by stop(): this endpoint is finished with and starts nothing more.
+    // Raised once, by stop(): this endpoint is finished with and starts nothing
+    // more. An external router owns the sockets, so what can be done here is to
+    // stop waiting and stop asking.
     std::atomic<bool> stopped_{false};
 
     mutable std::mutex mutex_;
@@ -276,11 +304,16 @@ public:
 
     Capabilities capabilities() const override
     {
+        // An external router says nothing about the network it is on, and its
+        // clearnet side is its operator's business rather than ours.
         return Capabilities{};
     }
 
     void start() override
     {
+        // Nothing of ours to start: the check is that the router is there at all,
+        // and a router that is not there is worth saying so about now rather than
+        // at the first dial.
         (void)sam::probe(address_);
         running_ = true;
         probedAt_ = std::chrono::steady_clock::now();
@@ -291,6 +324,8 @@ public:
 
     void stop() override
     {
+        // The router belongs to somebody else and keeps running; what stops is
+        // this process using it.
         running_ = false;
         reachable_ = false;
     }
@@ -332,6 +367,9 @@ public:
 
     std::vector<LocalDestination> localDestinations() const override
     {
+        // What this process runs is this process's own bookkeeping, so it can be
+        // answered. The tunnel counts cannot, and stay at zero - which is what
+        // capabilities() is for.
         std::vector<LocalDestination> destinations;
         const std::lock_guard<std::mutex> lock(mutex_);
         for (const std::weak_ptr<SamEndpoint>& held : endpoints_) {
@@ -362,6 +400,8 @@ public:
     {
         EndpointConfig filled = config;
         if (!filled.keys.has_value()) {
+            // The router operates what it is given, so a destination with no key
+            // of its own gets a one-time one here rather than from the caller.
             filled.keys = Keys::generate();
         }
         auto endpoint = std::make_shared<SamEndpoint>(address_, filled);
