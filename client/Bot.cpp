@@ -126,7 +126,7 @@ namespace {
 bool warrantsReceipt(const std::string& contentType)
 {
     return contentType == "text" || contentType == "file" || contentType == "image"
-        || contentType == "voice";
+        || contentType == "audio";
 }
 
 }  // namespace

@@ -706,6 +706,23 @@ int main()
         }
 
         {
+            const Bytes opus{'O', 'p', 'u', 's'};
+            alice.sendVoice(bob.fingerprint(), opus, 2500);
+            bool heard = false;
+            for (int round = 0; round < 3 && !heard; ++round) {
+                for (const IncomingMessage& item : bob.sync()) {
+                    if (item.contentType == "audio") {
+                        heard = true;
+                        CHECK(item.attachmentMime == "audio/opus");
+                        CHECK(item.attachmentDurationMs == 2500);
+                        CHECK(item.attachmentSize == opus.size());
+                    }
+                }
+            }
+            CHECK(heard);
+        }
+
+        {
             const InlineKeyboard keyboard{
                 {{"Ping", "ping", {}}, {"Time", "time", {}}},
                 {{"Help", {}, "help"}},
@@ -772,7 +789,7 @@ int main()
         bob.sync();
 
         {
-            CHECK(alice.pushRoutingToContacts({}).told > 0);
+            CHECK(alice.pushRoutingToContacts().told > 0);
             bool sawRouting = false;
             CHECK(waitFor([&]() {
                 for (const IncomingMessage& item : bob.sync()) {

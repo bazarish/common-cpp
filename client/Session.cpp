@@ -58,7 +58,7 @@ bool isBlank(const std::string& text)
 
 const char* const kTypeFile = "file";
 const char* const kTypeImage = "image";
-const char* const kTypeVoice = "voice";
+const char* const kTypeAudio = "audio";
 const char* const kCallOpeningStage = "Opening the audio path";
 constexpr std::size_t kDeliveryIdBytes = 16;
 constexpr std::size_t kContactBookChunkBytes = 128 * 1024;
@@ -213,7 +213,7 @@ std::string guessMime(const fs::path& path)
 bool echoesToOwnDevices(const std::string& type)
 {
     static const std::set<std::string> kEchoed{
-        "text", "image", "voice", "edit", "delete", "reaction", "chat.clear"};
+        "text", "image", "audio", "edit", "delete", "reaction", "chat.clear"};
     return kEchoed.find(type) != kEchoed.end();
 }
 
@@ -1863,16 +1863,12 @@ bool Session::sendFile(const std::string& peerFingerprint, const fs::path& path,
         kTypeFile, peerFingerprint, path, e2eId, watch, replyTo);
 }
 
-bool Session::sendPicture(const std::string& peerFingerprint, const fs::path& path,
-    const std::string& e2eId, const DeliveryWatch& watch, const std::string& replyTo)
+bool Session::sendPicture(const std::string& peerFingerprint, const Bytes& bytes,
+    const std::string& name, const std::string& mime, const std::string& e2eId,
+    const DeliveryWatch& watch, const std::string& replyTo)
 {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        throw std::runtime_error("cannot read the picture: " + path.string());
-    }
-    const Bytes bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     if (bytes.empty()) {
-        throw std::runtime_error("the picture is empty: " + path.string());
+        throw std::runtime_error("the picture is empty");
     }
 
     const std::string id = e2eId.empty() ? toHex(randomBytes(8)) : e2eId;
@@ -1881,8 +1877,8 @@ bool Session::sendPicture(const std::string& peerFingerprint, const fs::path& pa
     nlohmann::json inner = envelope(kTypeImage, id, {
         {"image",
             {
-                {"name", path.filename().string()},
-                {"mime", guessMime(path)},
+                {"name", name},
+                {"mime", mime},
                 {"size", bytes.size()},
                 {"data", nlohmann::json::binary(bytes)},
             }},
@@ -1901,10 +1897,10 @@ bool Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
     const std::string id = e2eId.empty() ? toHex(randomBytes(8)) : e2eId;
     putVoice(id, opus);
 
-    nlohmann::json inner = envelope(kTypeVoice, id, {
-        {"voice",
+    nlohmann::json inner = envelope(kTypeAudio, id, {
+        {"audio",
             {
-                        {"durationMs", durationMs},
+                {"durationMs", durationMs},
                 {"size", opus.size()},
                 {"data", nlohmann::json::binary(opus)},
             }},
@@ -1997,7 +1993,8 @@ void Session::setSharingAllowed(const bool allowed)
     persistMeta();
 }
 
-void Session::rotateServingKey(const std::function<void(const std::string&)>& onStage)
+Session::RoutingPushResult Session::rotateServingKey(
+    const std::function<void(const std::string&)>& onStage)
 {
     const auto stage = [&onStage](const std::string& text) {
         if (onStage) {
@@ -2021,15 +2018,10 @@ void Session::rotateServingKey(const std::function<void(const std::string&)>& on
     stage("Telling the name service");
     serviceAliasesAfterMove();
     stage("Telling your contacts");
-    const RoutingPushResult pushed = pushRoutingToContacts(onStage);
-    stage(pushed.failed == 0
-            ? ("Done - " + std::to_string(pushed.told) + " contact(s) told")
-            : ("Done - " + std::to_string(pushed.told) + " told, " + std::to_string(pushed.failed)
-                + " could not be reached; they get it with your next message"));
+    return pushRoutingToContacts();
 }
 
-Session::RoutingPushResult Session::pushRoutingToContacts(
-    const std::function<void(const std::string&)>& onStage)
+Session::RoutingPushResult Session::pushRoutingToContacts()
 {
     RoutingPushResult result;
     std::vector<std::string> peers;
@@ -2040,10 +2032,6 @@ Session::RoutingPushResult Session::pushRoutingToContacts(
         }
     }
     for (const std::string& peer : peers) {
-        if (onStage) {
-            onStage("Telling your contacts (" + std::to_string(result.told + result.failed + 1)
-                + "/" + std::to_string(peers.size()) + ")");
-        }
         nlohmann::json inner = envelope("contact.routing", toHex(randomBytes(8)));
         try {
             sendContent(peer, std::move(inner), {}, false,
@@ -2234,6 +2222,7 @@ void Session::unsend(const std::string& e2eId)
 void Session::releaseI2pLinks()
 {
     client_->releaseI2pLink();
+    stopFacadeLinkFor(destinationOwner());
 }
 
 bazarish::i2p::Privacy Session::transferPrivacy() const
@@ -2709,15 +2698,15 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 message.attachmentSize = picture.value("size", std::uint64_t{0});
                 const nlohmann::json::binary_t& data = picture.at("data").get_binary();
                 putPicture(message.e2eId, Bytes(data.begin(), data.end()));
-            } else if (type == kTypeVoice) {
+            } else if (type == kTypeAudio) {
                 message.contentType = type;
-                const nlohmann::json& voice = body.at("voice");
+                const nlohmann::json& audio = body.at("audio");
                 message.attachmentMime = "audio/opus";
-                message.attachmentSize = voice.value("size", std::uint64_t{0});
-                message.attachmentDurationMs = voice.value("durationMs", std::int64_t{0});
-                const nlohmann::json::binary_t& data = voice.at("data").get_binary();
+                message.attachmentSize = audio.value("size", std::uint64_t{0});
+                message.attachmentDurationMs = audio.value("durationMs", std::int64_t{0});
+                const nlohmann::json::binary_t& data = audio.at("data").get_binary();
                 putVoice(message.e2eId, Bytes(data.begin(), data.end()));
-            } else if (type == kTypeFile || type == "audio") {
+            } else if (type == kTypeFile) {
                 message.contentType = type;
                 const nlohmann::json& file = body.at("file");
                 message.attachmentRef = file.value("sha256", std::string());

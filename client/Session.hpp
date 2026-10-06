@@ -355,8 +355,8 @@ public:
         const std::string& e2eId = {},
         const DeliveryWatch& watch = {}, const std::string& replyTo = {});
 
-    bool sendPicture(const std::string& peerFingerprint, const std::filesystem::path& path,
-        const std::string& e2eId = {},
+    bool sendPicture(const std::string& peerFingerprint, const Bytes& bytes,
+        const std::string& name, const std::string& mime, const std::string& e2eId = {},
         const DeliveryWatch& watch = {},
         const std::string& replyTo = {});
 
@@ -403,20 +403,21 @@ public:
 
     bool aliasDepositCovers() const { return aliasDepositCovers_; }
 
-    void rotateServingKey(const std::function<void(const std::string& stage)>& onStage);
-
     struct RoutingPushResult {
         std::size_t told = 0;
         std::size_t failed = 0;
     };
+
+    RoutingPushResult rotateServingKey(
+        const std::function<void(const std::string& stage)>& onStage);
+
     bool contactSharingRefused(const std::string& peerFingerprint) const
     {
         const auto found = contacts_.find(peerFingerprint);
         return found != contacts_.end() && found->second.sharingRefused;
     }
 
-    RoutingPushResult pushRoutingToContacts(
-        const std::function<void(const std::string& stage)>& onStage);
+    RoutingPushResult pushRoutingToContacts();
 
     bool sharingAllowed() const { return sharingAllowed_; }
     void setSharingAllowed(bool allowed);
