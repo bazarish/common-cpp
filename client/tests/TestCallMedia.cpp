@@ -320,16 +320,30 @@ int main()
 
         caller.start();
         callee.start();
-        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        // Waited for rather than slept through: on a loaded machine the media
+        // threads take longer to get there, and the count is what matters.
+        constexpr int kWantedFrames = 5;
+        constexpr int kWaitMs = 10000;
+        constexpr int kPollMs = 10;
+        for (int waited = 0; waited < kWaitMs; waited += kPollMs) {
+            if (caller.packetsSent() >= kWantedFrames && callee.packetsSent() >= kWantedFrames
+                && caller.packetsReceived() >= kWantedFrames
+                && callee.packetsReceived() >= kWantedFrames
+                && callerSinkRaw->frameCount() >= kWantedFrames
+                && calleeSinkRaw->frameCount() >= kWantedFrames) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(kPollMs));
+        }
         caller.stop();
         callee.stop();
 
-        CHECK(caller.packetsSent() >= 5);
-        CHECK(callee.packetsSent() >= 5);
-        CHECK(callerSinkRaw->frameCount() >= 5);
-        CHECK(calleeSinkRaw->frameCount() >= 5);
-        CHECK(caller.packetsReceived() >= 5);
-        CHECK(callee.packetsReceived() >= 5);
+        CHECK(caller.packetsSent() >= kWantedFrames);
+        CHECK(callee.packetsSent() >= kWantedFrames);
+        CHECK(callerSinkRaw->frameCount() >= kWantedFrames);
+        CHECK(calleeSinkRaw->frameCount() >= kWantedFrames);
+        CHECK(caller.packetsReceived() >= kWantedFrames);
+        CHECK(callee.packetsReceived() >= kWantedFrames);
     }
 
     {

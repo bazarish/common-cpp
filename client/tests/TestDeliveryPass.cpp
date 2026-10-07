@@ -958,13 +958,14 @@ int main()
             }
 
             bob.sendMessage(alice.fingerprint(), "after the unblock");
-            bool heardAgain = false;
-            for (const IncomingMessage& item : alice.sync()) {
-                if (item.text == "after the unblock") {
-                    heardAgain = true;
+            CHECK(waitFor([&]() {
+                for (const IncomingMessage& item : alice.sync()) {
+                    if (item.text == "after the unblock") {
+                        return true;
+                    }
                 }
-            }
-            CHECK(heardAgain);
+                return false;
+            }));
         }
 
         {
