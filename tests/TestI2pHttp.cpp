@@ -8,6 +8,8 @@
 
 #include <cstdio>
 #include <exception>
+#include <csignal>
+#include <thread>
 #include <string>
 #include <sys/types.h>
 
@@ -33,12 +35,24 @@ private:
     int fd_;
 };
 
+// The bytes go in beside the reader rather than before it: a socketpair holds
+// 8 KiB on the BSDs, which is less than the cases below feed through one.
 FdStream streamFrom(const std::string& data)
 {
     int fds[2] = {-1, -1};
     CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
-    CHECK(::write(fds[1], data.data(), data.size()) == static_cast<ssize_t>(data.size()));
-    CHECK(::close(fds[1]) == 0);
+    std::thread feeder([fd = fds[1], data]() {
+        std::size_t done = 0;
+        while (done < data.size()) {
+            const ssize_t put = ::write(fd, data.data() + done, data.size() - done);
+            if (put <= 0) {
+                break;
+            }
+            done += static_cast<std::size_t>(put);
+        }
+        ::close(fd);
+    });
+    feeder.detach();
     return FdStream(fds[0]);
 }
 
@@ -48,6 +62,9 @@ constexpr std::size_t kSomeBodyBound = 64 * 1024;
 
 int main()
 {
+    // A feeder outlives the case it fed; writing into a closed pair must not
+    // signal the process.
+    ::signal(SIGPIPE, SIG_IGN);
     {
         const std::string get
             = buildI2pHttpRequest("GET", "h.b32.i2p", "/b/x", {{"Range", "bytes=10-"}}, 0);
