@@ -120,6 +120,10 @@ std::size_t socketSendQueue(Socket)
     return 0;
 }
 
+constexpr int kNoSignal = 0;
+
+void quietenSignals(Socket) { }
+
 #else
 
 void ensureSockets() {}
@@ -130,6 +134,25 @@ using NativeSocket = int;
 
 void closeSocket(const Socket socket) { ::close(static_cast<int>(socket)); }
 
+// A peer that has gone away must not raise SIGPIPE and take the process with it:
+// Linux carries that on the call, the BSDs on the socket.
+#ifdef MSG_NOSIGNAL
+constexpr int kNoSignal = MSG_NOSIGNAL;
+#else
+constexpr int kNoSignal = 0;
+#endif
+
+void quietenSignals([[maybe_unused]] const Socket socket)
+{
+#ifdef SO_NOSIGPIPE
+    const int wanted = 1;
+    if (::setsockopt(static_cast<int>(socket), SOL_SOCKET, SO_NOSIGPIPE, &wanted, sizeof(wanted))
+        != 0) {
+        throw Error(Result::eI2pError, "SAM: socket would still signal on a closed peer");
+    }
+#endif
+}
+
 std::ptrdiff_t socketRead(const Socket socket, void* const buffer, const std::size_t size)
 {
     return ::recv(static_cast<int>(socket), buffer, size, 0);
@@ -137,7 +160,7 @@ std::ptrdiff_t socketRead(const Socket socket, void* const buffer, const std::si
 
 std::ptrdiff_t socketWrite(const Socket socket, const void* const data, const std::size_t size)
 {
-    return ::send(static_cast<int>(socket), data, size, 0);
+    return ::send(static_cast<int>(socket), data, size, kNoSignal);
 }
 
 void setTimeoutOption(const Socket socket, const int option, const int seconds)
@@ -153,7 +176,7 @@ void setTimeoutOption(const Socket socket, const int option, const int seconds)
 std::ptrdiff_t socketSendTo(const Socket socket, const void* const data,
     const std::size_t size, const sockaddr_in& address)
 {
-    return ::sendto(static_cast<int>(socket), data, size, 0,
+    return ::sendto(static_cast<int>(socket), data, size, kNoSignal,
         reinterpret_cast<const sockaddr*>(&address), sizeof address);
 }
 
@@ -245,6 +268,7 @@ Socket openControlSocket(const std::string& host, const std::uint16_t port)
     if (!fd.valid()) {
         throw Error(Result::eI2pError, "SAM: no socket");
     }
+    quietenSignals(fd.get());
     if (::connect(native(fd.get()), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
         throw Error(Result::eI2pError,
             "SAM: no router at " + host + ":" + std::to_string(port));
@@ -260,6 +284,7 @@ Socket openLocalUdpSocket(std::uint16_t& boundPort)
     if (!fd.valid()) {
         throw Error(Result::eI2pError, "SAM: no datagram socket");
     }
+    quietenSignals(fd.get());
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -282,6 +307,7 @@ Socket openLocalListener(std::uint16_t& boundPort)
     if (!fd.valid()) {
         throw Error(Result::eI2pError, "SAM: no listening socket");
     }
+    quietenSignals(fd.get());
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -839,6 +865,8 @@ std::unique_ptr<Stream> Session::accept(
     if (!incoming.valid()) {
         throw Error(Result::eI2pError, "SAM: could not take a forwarded stream");
     }
+    // An accepted socket does not inherit this from the one that listened.
+    quietenSignals(incoming.get());
     setSocketTimeouts(incoming.get(), kControlIoTimeoutSeconds);
     const std::string peerLine = readLineSocket(incoming.get());
     peerDestination = peerLine.substr(0, peerLine.find(' '));
