@@ -33,9 +33,9 @@ constexpr int kFetchRunSeconds = kDialSeconds + kReplySeconds;
 
 namespace {
 
-thread_local std::function<void(const std::string&)> stageSink;
+thread_local std::function<void(FetchStage)> stageSink;
 
-void sayStage(const std::string& stage)
+void sayStage(const FetchStage stage)
 {
     if (stageSink) {
         stageSink(stage);
@@ -47,11 +47,11 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(
 {
     std::shared_ptr<bazarish::i2p::Endpoint> endpoint = acquireWarmDest();
     if (endpoint) {
-        sayStage("Taking a destination to ask from");
+        sayStage(FetchStage::eTakingDest);
         router.retagEndpoint(*endpoint, "Contact lookup", owner);
         return endpoint;
     }
-    sayStage("Building a destination to ask from");
+    sayStage(FetchStage::eBuildingDest);
     bazarish::i2p::EndpointConfig config;
     config.privacy = privacy;
     config.published = false;
@@ -111,7 +111,7 @@ FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& des
     const std::string& op, const Bytes& sealed, const std::chrono::seconds dialFor,
     const std::chrono::seconds waitFor, std::chrono::seconds& dialTook, const Face face)
 {
-    sayStage("Reaching their server");
+    sayStage(FetchStage::eReaching);
     const auto dialStarted = std::chrono::steady_clock::now();
     auto stream = endpoint.connect(dest, dialFor);
     dialTook = std::chrono::duration_cast<std::chrono::seconds>(
@@ -121,7 +121,7 @@ FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& des
     }
     stream->setReadTimeout(waitFor);
 
-    sayStage("Waiting for their answer");
+    sayStage(FetchStage::eWaiting);
     if (face == Face::eResolverHttp) {
         return askResolver(*stream, dest, op, sealed);
     }
@@ -156,7 +156,7 @@ FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& des
                 || std::chrono::steady_clock::now() + gap + next > deadline) {
                 throw;
             }
-            sayStage("No answer; asking again");
+            sayStage(FetchStage::eAskingAgain);
             bazarish::log::info("federation fetch: no answer from {} on try {}, asking again: {}",
                 bazarish::log::redact(dest), attempt, error.what());
             std::this_thread::sleep_for(gap);
@@ -166,7 +166,7 @@ FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& des
 
 }  // namespace
 
-void tellFetchStages(std::function<void(const std::string&)> tell)
+void tellFetchStages(std::function<void(FetchStage)> tell)
 {
     stageSink = std::move(tell);
 }

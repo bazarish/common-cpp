@@ -11,7 +11,15 @@
 
 namespace bazarish::client {
 
-void tellFetchStages(std::function<void(const std::string&)> tell);
+enum class FetchStage {
+    eTakingDest,
+    eBuildingDest,
+    eReaching,
+    eWaiting,
+    eAskingAgain
+};
+
+void tellFetchStages(std::function<void(FetchStage)> tell);
 
 FetchOutcome federationFetchOverI2p(bazarish::i2p::Router& router, const std::string& dest,
     const std::string& op, const Bytes& sealed,
