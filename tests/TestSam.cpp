@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <mutex>
 #include <string>
+#include <csignal>
 #include <thread>
 #include <vector>
 
@@ -577,6 +578,9 @@ void testRefusesAnEndlessReply()
 
 int main()
 {
+    // The fake router here hangs up on the client under test; on the BSDs that
+    // write would otherwise signal this process rather than return an error.
+    ::signal(SIGPIPE, SIG_IGN);
     testProbe();
     testGenerateDestination();
     testSessionCreate();
