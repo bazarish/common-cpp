@@ -205,7 +205,7 @@ if(BAZARISH_WITH_CLIENT)
     # both front-ends already spell them.
     target_include_directories(bazarish_client PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/client)
     target_include_directories(bazarish_client PRIVATE
-        ${QRENCODE_INCLUDE_DIR} ${OPUS_INCLUDE_DIR})
+        ${SQLCIPHER_INCLUDE_DIR} ${QRENCODE_INCLUDE_DIR} ${OPUS_INCLUDE_DIR})
     target_link_libraries(bazarish_client PUBLIC bazarish_common Threads::Threads
         ${SQLCIPHER_LIBRARY})
     target_link_libraries(bazarish_client PRIVATE ${QRENCODE_LIBRARY} ${OPUS_LIBRARY})
@@ -220,7 +220,10 @@ if(BAZARISH_WITH_CLIENT)
     endfunction()
 
     bazarish_client_add_test(TestAccount)
-bazarish_client_add_test(TestDevicePairing)
+if(NOT WIN32)
+    # Its fakes are a socketpair and SIGPIPE, which MinGW does not carry.
+    bazarish_client_add_test(TestDevicePairing)
+endif()
     bazarish_client_add_test(TestAuthorship)
     bazarish_client_add_test(TestApiClient)
     bazarish_client_add_test(TestBot)

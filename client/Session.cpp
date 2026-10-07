@@ -105,8 +105,6 @@ constexpr std::size_t kEndedCallsRemembered = 32;
 constexpr int kMessageFormatVersion = 1;
 constexpr int kBundleFormatVersion = 1;
 
-constexpr std::int64_t kSecondsPerDay = 24 * 3600;
-
 std::int64_t nowSeconds()
 {
     return static_cast<std::int64_t>(std::time(nullptr));

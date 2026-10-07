@@ -109,6 +109,7 @@ if(WIN32)
     # about which of them wins.
     target_compile_definitions(i2pd_bazarish PUBLIC WIN32_LEAN_AND_MEAN)
     target_compile_definitions(i2pd_bazarish PRIVATE WINVER=0x0602 _WIN32_WINNT=0x0602)
-else()
+elseif(NOT APPLE)
+    # libatomic is GCC's runtime; Clang on macOS has the builtins and no such library.
     target_link_libraries(i2pd_bazarish PUBLIC atomic)
 endif()
