@@ -5,7 +5,7 @@
 
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
-#include <bazarish/Cms.hpp>
+#include <bazarish/Hybrid.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/ServerDescriptor.hpp>
 #include <bazarish/Pass.hpp>
@@ -272,7 +272,7 @@ int main()
         const Bytes pass = Bytes(kDeliveryPassSize, 0x33);
         const Bytes sealed
             = sealDeliveryEnvelope("content", bob.fingerprint(), "msg-1", pass, recipientSealing);
-        const Bytes plain = cms::unseal(sealed, serverSealing);
+        const Bytes plain = hybrid::unseal(sealed, serverSealing);
         const nlohmann::json inner = nlohmann::json::parse(plain.begin(), plain.end());
         CHECK(inner.at("class") == "content");
         CHECK(inner.at("mailbox") == bob.fingerprint());

@@ -11,7 +11,7 @@
 #include <bazarish/AliasMaintenance.hpp>
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
-#include <bazarish/Cms.hpp>
+#include <bazarish/Hybrid.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/ServerDescriptor.hpp>
 #include <bazarish/Resolve.hpp>
@@ -159,7 +159,7 @@ private:
         CHECK(payloadText.size() == length);
         const Bytes payload(payloadText.begin(), payloadText.end());
         const Bytes sealed = fromBase64(header.at("sealed").get<std::string>());
-        const nlohmann::json inner = nlohmann::json::parse(cms::unseal(sealed, mock_.serverSealing));
+        const nlohmann::json inner = nlohmann::json::parse(hybrid::unseal(sealed, mock_.serverSealing));
         const std::string cls = inner.at("class").get<std::string>();
         const std::string mailbox = inner.at("mailbox").get<std::string>();
         const std::string deliveryId = inner.at("deliveryId").get<std::string>();
@@ -856,7 +856,7 @@ int main()
                 signAuthorship(saved, aliceIdentity, /*withKeys=*/false);
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"saved-echo", "device",
-                    cms::seal(padToLadder(nlohmann::json::to_cbor(saved)),
+                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(saved)),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             }
             bool sawSaved = false;
@@ -975,7 +975,7 @@ int main()
             const auto intoAliceMailbox = [&](const std::string& id, nlohmann::json content) {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({id, "content",
-                    cms::seal(padToLadder(nlohmann::json::to_cbor(content)),
+                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(content)),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             };
             const auto text = [](const std::string& from, const std::string& id,
@@ -1220,7 +1220,7 @@ int main()
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"self-" + notice.at("id").get<std::string>(),
                     "device",
-                    cms::seal(padToLadder(nlohmann::json::to_cbor(notice)),
+                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(notice)),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             };
             const auto notice = [&](const std::string& type, nlohmann::json extra) {
@@ -1303,7 +1303,7 @@ int main()
             {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"stranger-blob", "content",
-                    cms::seal(padToLadder(nlohmann::json::to_cbor(inner)),
+                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(inner)),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             }
             for (const IncomingMessage& item : alice.sync()) {

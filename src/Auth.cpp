@@ -33,13 +33,14 @@ const char* const kHeaderKeys = "X-Bazarish-Keys";
 const char* const kHeaderTimestamp = "X-Bazarish-Timestamp";
 const char* const kHeaderSignatureClassical = "X-Bazarish-Sig-Classical";
 const char* const kHeaderSignaturePq = "X-Bazarish-Sig-Pq";
+const char* const kHeaderNonce = "X-Bazarish-Nonce";
 
 namespace {
 
 std::string canonicalFromDigest(const std::int64_t timestamp, const std::string& method,
     const std::string& path, const std::string& bodySha256Hex, const std::string& clientId)
 {
-    const std::string base = "v1\n" + std::to_string(timestamp) + "\n" + method + "\n" + path
+    const std::string base = "v2\n" + std::to_string(timestamp) + "\n" + method + "\n" + path
         + "\n" + bodySha256Hex + "\n";
     return clientId.empty() ? base : base + clientId + "\n";
 }
@@ -53,6 +54,13 @@ std::string makeCanonicalString(const std::int64_t timestamp, const std::string&
 }
 
 namespace {
+
+std::string signatureCanonical(const std::int64_t timestamp, const std::string& method,
+    const std::string& path, const std::string& bodySha256Hex, const std::string& clientId,
+    const std::string& nonce)
+{
+    return canonicalFromDigest(timestamp, method, path, bodySha256Hex, clientId) + nonce + "\n";
+}
 
 std::string macCanonical(const std::int64_t timestamp, const std::string& method,
     const std::string& path, const Bytes& body, const std::uint64_t seq,
@@ -123,8 +131,9 @@ Headers signRequestDigest(const Identity& identity, const std::int64_t timestamp
     const std::string& method, const std::string& path, const std::string& bodySha256Hex,
     const std::string& clientId)
 {
+    const std::string nonce = toBase64(randomBytes(kAuthNonceBytes));
     const std::string canonical
-        = canonicalFromDigest(timestamp, method, path, bodySha256Hex, clientId);
+        = signatureCanonical(timestamp, method, path, bodySha256Hex, clientId, nonce);
     const Bytes canonicalBytes(canonical.begin(), canonical.end());
 
     const nlohmann::json keys = {
@@ -136,6 +145,7 @@ Headers signRequestDigest(const Identity& identity, const std::int64_t timestamp
     Headers headers;
     headers[kHeaderKeys] = toBase64(Bytes(keysText.begin(), keysText.end()));
     headers[kHeaderTimestamp] = std::to_string(timestamp);
+    headers[kHeaderNonce] = nonce;
     headers[kHeaderSignatureClassical] = toBase64(sign(identity.classical(), canonicalBytes));
     headers[kHeaderSignaturePq] = toBase64(sign(identity.pq(), canonicalBytes));
     return headers;
@@ -166,15 +176,15 @@ std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
 
     const Key classical = Key::fromPublicDer(classicalDer);
     const Key pq = Key::fromPublicDer(pqDer);
-    if (!classical.isA("EC")) {
-        throw std::runtime_error("auth classical key is not EC");
+    if (!classical.isA(kClassicalSigningAlgorithm)) {
+        throw std::runtime_error("auth classical key is not Ed25519");
     }
-    if (!pq.isA("ML-DSA-65")) {
+    if (!pq.isA(kPqSigningAlgorithm)) {
         throw std::runtime_error("auth pq key is not ML-DSA-65");
     }
 
-    const std::string canonical
-        = canonicalFromDigest(timestamp, method, path, bodySha256Hex, clientId);
+    const std::string canonical = signatureCanonical(
+        timestamp, method, path, bodySha256Hex, clientId, requireHeader(headers, kHeaderNonce));
     const Bytes canonicalBytes(canonical.begin(), canonical.end());
     if (!verify(classical, canonicalBytes,
             fromBase64(requireHeader(headers, kHeaderSignatureClassical)))) {
@@ -208,9 +218,8 @@ std::string authorizeRequest(const Headers& headers, const std::int64_t now,
 }
 
 bool ReplayCache::checkAndRecord(
-    const Bytes& classicalSignature, const std::int64_t timestamp, const std::int64_t now)
+    const std::string& nonce, const std::int64_t timestamp, const std::int64_t now)
 {
-    const std::string key = toHex(sha256(classicalSignature));
     const std::lock_guard<std::mutex> lock(mutex_);
 
     if (now > lastSweep_) {
@@ -225,7 +234,7 @@ bool ReplayCache::checkAndRecord(
         lastSweep_ = now;
     }
 
-    return seen_.emplace(key, timestamp).second;
+    return seen_.emplace(nonce, timestamp).second;
 }
 
 std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
@@ -236,8 +245,7 @@ std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
         = verifyRequestDigest(headers, now, method, path, bodySha256Hex, clientId);
     const std::int64_t timestamp
         = std::strtoll(requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
-    const Bytes classicalSignature = fromBase64(requireHeader(headers, kHeaderSignatureClassical));
-    if (!replayCache.checkAndRecord(classicalSignature, timestamp, now)) {
+    if (!replayCache.checkAndRecord(requireHeader(headers, kHeaderNonce), timestamp, now)) {
         throw std::runtime_error("auth request replay detected");
     }
     return fingerprint;

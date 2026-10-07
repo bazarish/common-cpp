@@ -5,7 +5,6 @@
 
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
-#include <bazarish/Cms.hpp>
 #include <bazarish/Tunnel.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/ServerDescriptor.hpp>

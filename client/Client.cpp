@@ -3,7 +3,7 @@
 
 #include <bazarish/Errors.hpp>
 #include <bazarish/Log.hpp>
-#include <bazarish/Cms.hpp>
+#include <bazarish/Hybrid.hpp>
 #include <bazarish/Hmac.hpp>
 #include <bazarish/I2pAddress.hpp>
 #include <bazarish/Resolve.hpp>
@@ -46,7 +46,7 @@ Bytes sealDeliveryEnvelope(const std::string& deliveryClass, const std::string& 
         inner["pass"] = toBase64(pass);
     }
     const std::string text = inner.dump();
-    return cms::seal(Bytes(text.begin(), text.end()), recipientSealingKey);
+    return hybrid::seal(Bytes(text.begin(), text.end()), recipientSealingKey);
 }
 
 Client::Client(Identity identity, std::string clientId, ServerEndpoint endpoint,

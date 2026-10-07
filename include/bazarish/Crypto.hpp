@@ -12,6 +12,11 @@ typedef struct evp_pkey_st EVP_PKEY;
 
 namespace bazarish {
 
+inline constexpr const char* kClassicalSigningAlgorithm = "ED25519";
+inline constexpr const char* kClassicalSealingAlgorithm = "X25519";
+inline constexpr const char* kPqSigningAlgorithm = "ML-DSA-65";
+inline constexpr const char* kPqKemAlgorithm = "ML-KEM-768";
+
 inline constexpr std::size_t kFingerprintBytes = 32;
 // Text length of a fingerprint: base32 of 32 bytes, no padding.
 inline constexpr std::size_t kFingerprintTextLength = 52;
@@ -68,7 +73,7 @@ Bytes sha256File(const std::filesystem::path& path);
 class Identity {
 public:
     static Identity generate();
-    // Reads two PEM blocks: the classical key first, the ML-DSA key second.
+    // Reads two PEM blocks: the Ed25519 key first, the ML-DSA key second.
     static Identity fromPrivatePem(const std::string& pem, const std::string& passphrase = {});
     Identity(Key classical, Key pq);
 

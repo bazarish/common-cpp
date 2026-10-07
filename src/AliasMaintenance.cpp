@@ -2,7 +2,7 @@
 #include "bazarish/AliasMaintenance.hpp"
 
 #include "bazarish/Certificates.hpp"
-#include "bazarish/Cms.hpp"
+#include "bazarish/Hybrid.hpp"
 #include "bazarish/Resolve.hpp"
 
 #include <cstdlib>
@@ -97,12 +97,12 @@ AliasStatus aliasStatusFromJson(const nlohmann::json& body)
 
 Bytes signAliasMaintenanceRequest(const AliasMaintenanceRequest& request, const Identity& owner)
 {
-    return cms::signJsonHybrid(toJson(request), owner);
+    return hybrid::signJson(toJson(request), owner);
 }
 
 VerifiedAliasRequest verifyAliasMaintenanceRequest(const Bytes& der, const std::int64_t now)
 {
-    const cms::VerifiedHybridJson verified = cms::verifyJsonHybrid(der);
+    const hybrid::VerifiedJson verified = hybrid::verifyJson(der);
     VerifiedAliasRequest out;
     out.owner = verified.identityFingerprint;
     out.request = aliasMaintenanceRequestFromJson(verified.body);
@@ -115,7 +115,7 @@ VerifiedAliasRequest verifyAliasMaintenanceRequest(const Bytes& der, const std::
 
 Bytes signAliasStatus(const AliasStatus& status, const Identity& delegatedIdentity)
 {
-    return cms::signJsonHybrid(toJson(status), delegatedIdentity);
+    return hybrid::signJson(toJson(status), delegatedIdentity);
 }
 
 AliasStatus verifyAliasStatus(const Bytes& statusDer, const Bytes& delegationDer,
@@ -132,7 +132,7 @@ AliasStatus verifyAliasStatus(const Bytes& statusDer, const Bytes& delegationDer
         throw std::runtime_error("alias status: delegation has expired");
     }
 
-    const cms::VerifiedHybridJson verified = cms::verifyJsonHybrid(statusDer);
+    const hybrid::VerifiedJson verified = hybrid::verifyJson(statusDer);
     if (verified.identityFingerprint != delegation.delegatedFingerprint()) {
         throw std::runtime_error("alias status: signer is not the delegated key");
     }

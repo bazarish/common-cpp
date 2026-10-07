@@ -15,6 +15,7 @@
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Cms.hpp>
+#include <bazarish/Hybrid.hpp>
 #include <bazarish/Descriptor.hpp>
 #include <bazarish/Resolve.hpp>
 #include <bazarish/Errors.hpp>
@@ -894,7 +895,7 @@ bool Session::adoptI2pMasterFromOwnMailbox(const std::string& wantedHost)
     try {
         for (const PendingEntry& entry : client_->listPending()) {
             const Bytes blob = client_->fetchBlob(entry.id);
-            const nlohmann::json body = decodedBody(cms::unseal(blob, sealingKey_));
+            const nlohmann::json body = decodedBody(hybrid::unseal(blob, sealingKey_));
             if (body.value("type", std::string()) != "device.i2p-master"
                 || body.value("from", std::string()) != fingerprint()) {
                 continue;
@@ -1431,7 +1432,7 @@ void Session::submitSignedToSelf(
     const Bytes innerBytes = encodedBody(inner);
     const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
     const std::string deliveryId = toHex(randomBytes(16));
-    Bytes sealed = cms::seal(innerBytes, ownSealing);
+    Bytes sealed = hybrid::seal(innerBytes, ownSealing);
     if (later && selfSendSink_) {
         selfSendSink_(deliveryId, std::move(sealed), kind);
         return;
@@ -1846,7 +1847,7 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     });
     nlohmann::json request = payload;
     signAuthorship(request, client_->identity(), /*withKeys=*/true);
-    const Bytes encrypted = cms::seal(encodedBody(request), peerPrekey);
+    const Bytes encrypted = hybrid::seal(encodedBody(request), peerPrekey);
     deliver(peerDest, peerServingKey, "contact", peerFingerprint, {}, encrypted,
         DeliveryWatch{}, /*waitForOutcome=*/true, requestId);
 
@@ -2495,7 +2496,7 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     signAuthorship(inner, client_->identity(), /*withKeys=*/false);
     const Bytes innerBytes = encodedBody(inner);
     const Key peerSealing = Key::fromPublicDer(fromBase64(contact.sealingPublicB64));
-    const Bytes payload = cms::seal(innerBytes, peerSealing);
+    const Bytes payload = hybrid::seal(innerBytes, peerSealing);
     const Key peerServingKey = Key::fromPublicDer(fromBase64(contact.servingSealingB64));
     const Bytes pass = fromBase64(contact.sendPass);
 
@@ -2607,7 +2608,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
             } else {
                 blob = client_->fetchBlob(entry.id);
             }
-            const Bytes plain = cms::unseal(blob, sealingKey_);
+            const Bytes plain = hybrid::unseal(blob, sealingKey_);
             nlohmann::json body = decodedBody(plain);
 
             {

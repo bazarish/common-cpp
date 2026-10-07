@@ -69,10 +69,10 @@ std::string authorOf(const nlohmann::json& content, const IdentityKeys& known)
 
     const Key classical = Key::fromPublicDer(keys.classicalDer);
     const Key pq = Key::fromPublicDer(keys.pqDer);
-    if (!classical.isA("EC")) {
+    if (!classical.isA(kClassicalSigningAlgorithm)) {
         throw std::runtime_error("author's classical key is not EC");
     }
-    if (!pq.isA("ML-DSA-65")) {
+    if (!pq.isA(kPqSigningAlgorithm)) {
         throw std::runtime_error("author's pq key is not ML-DSA-65");
     }
     if (!verify(classical, signedBytes, fromBytes(block.at("c")))) {

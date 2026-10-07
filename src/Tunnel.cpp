@@ -3,7 +3,7 @@
 
 #include "bazarish/Padding.hpp"
 
-#include "bazarish/Cms.hpp"
+#include "bazarish/Hybrid.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -91,7 +91,7 @@ Bytes sealHello(const Hello& hello, const Key& serverSealingPublic)
     const nlohmann::json frame = {
         {kVersionField, kFrameVersion},
         {kTypeField, kHelloType},
-        {kSealedField, asBinary(cms::seal(padToLadder(toCbor(inner)), serverSealingPublic))},
+        {kSealedField, asBinary(hybrid::seal(padToLadder(toCbor(inner)), serverSealingPublic))},
     };
     return toCbor(frame);
 }
@@ -103,7 +103,7 @@ Hello openHello(const Bytes& frame, const Key& serverSealingPrivate)
         throw std::runtime_error("tunnel frame does not open a tunnel");
     }
     const nlohmann::json inner
-        = fromCbor(unpadFromLadder(cms::unseal(fromBinary(parsed.at(kSealedField)), serverSealingPrivate)));
+        = fromCbor(unpadFromLadder(hybrid::unseal(fromBinary(parsed.at(kSealedField)), serverSealingPrivate)));
     Hello hello;
     hello.secret = fromBinary(inner.at("secret"));
     hello.replyKeyDer = fromBinary(inner.at("replyKey"));
@@ -114,12 +114,12 @@ Hello openHello(const Bytes& frame, const Key& serverSealingPrivate)
 Bytes sealWelcome(const Welcome& welcome, const Key& replyKeyPublic)
 {
     const nlohmann::json inner = {{"expiresUnix", welcome.expiresUnix}};
-    return cms::seal(padToLadder(toCbor(inner)), replyKeyPublic);
+    return hybrid::seal(padToLadder(toCbor(inner)), replyKeyPublic);
 }
 
 Welcome openWelcome(const Bytes& sealed, const Key& replyKeyPrivate)
 {
-    const nlohmann::json inner = fromCbor(unpadFromLadder(cms::unseal(sealed, replyKeyPrivate)));
+    const nlohmann::json inner = fromCbor(unpadFromLadder(hybrid::unseal(sealed, replyKeyPrivate)));
     Welcome welcome;
     welcome.expiresUnix = inner.at("expiresUnix").get<std::int64_t>();
     return welcome;

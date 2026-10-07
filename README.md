@@ -6,14 +6,16 @@ component, so there is no duplicated crypto code.
 
 ## What it provides
 
-- **Identity** - post-quantum hybrid keys: ECDSA P-256 **+** ML-DSA-65 (FIPS 204).
+- **Identity** - post-quantum hybrid keys: Ed25519 **+** ML-DSA-65 (FIPS 204).
   Every identity statement is dual-signed and valid only when both signatures
   verify. The fingerprint covers both public keys (base32 of SHA-256).
-- **Certificates** (CMS SignedData over JSON) - the user's contact card (with a
-  sealing **prekey** a first-contact sender encrypts to), the alias certificate
-  and its delegation chain, and the server card.
-- **CMS sealing** - ECDH P-256 + AES-256-GCM envelopes for delivery metadata
-  and E2E payloads.
+- **Certificates** (one composite CBOR frame over JSON) - the user's contact card
+  (with a sealing **prekey** a first-contact sender encrypts to), the alias
+  certificate and its delegation chain, and the server card.
+- **Composite sealing** (`Hybrid`) - X25519 **+** ML-KEM-768 into one
+  AES-256-GCM layer, for delivery metadata and E2E payloads. `Cms` keeps the
+  password envelope (RFC 3211 PWRI) that the account backup and file transfer
+  use.
 - **I2P transport** - one facade (`bazarish::i2p`) over three engines: libi2pd
   inside the process; a router outside it over **SAM v3** (`bazarish::sam`,
   loopback only), which lets one router serve many processes; and a **private

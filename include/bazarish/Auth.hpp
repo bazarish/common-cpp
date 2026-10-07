@@ -19,6 +19,11 @@ extern const char* const kHeaderKeys;
 extern const char* const kHeaderTimestamp;
 extern const char* const kHeaderSignatureClassical;
 extern const char* const kHeaderSignaturePq;
+extern const char* const kHeaderNonce;
+
+// Ed25519 is deterministic, so a retry of the same request would otherwise be
+// indistinguishable from its replay: the nonce is what makes it distinct.
+inline constexpr std::size_t kAuthNonceBytes = 16;
 
 using Headers = std::map<std::string, std::string>;
 
@@ -67,8 +72,7 @@ std::string authorizeRequest(const Headers& headers, std::int64_t now,
 
 class ReplayCache {
 public:
-    bool checkAndRecord(
-        const Bytes& classicalSignature, std::int64_t timestamp, std::int64_t now);
+    bool checkAndRecord(const std::string& nonce, std::int64_t timestamp, std::int64_t now);
 
 private:
     std::mutex mutex_;

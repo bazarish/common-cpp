@@ -87,6 +87,7 @@ std::string signLoginBlob(
     const nlohmann::json blob = {
         {"k", headers.at(auth::kHeaderKeys)},
         {"t", headers.at(auth::kHeaderTimestamp)},
+        {"n", headers.at(auth::kHeaderNonce)},
         {"c", headers.at(auth::kHeaderSignatureClassical)},
         {"p", headers.at(auth::kHeaderSignaturePq)},
     };
@@ -114,6 +115,7 @@ std::string verifyLoginBlob(
     try {
         headers[auth::kHeaderKeys] = parsed.at("k").get<std::string>();
         headers[auth::kHeaderTimestamp] = parsed.at("t").get<std::string>();
+        headers[auth::kHeaderNonce] = parsed.at("n").get<std::string>();
         headers[auth::kHeaderSignatureClassical] = parsed.at("c").get<std::string>();
         headers[auth::kHeaderSignaturePq] = parsed.at("p").get<std::string>();
     } catch (const nlohmann::json::exception&) {

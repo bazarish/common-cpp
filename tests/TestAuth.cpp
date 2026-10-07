@@ -84,6 +84,12 @@ int main()
             = auth::signRequest(identity, kNow, "POST", "/v1/messaging/ack", body);
         CHECK(auth::verifyRequest(resigned, kNow, "POST", "/v1/messaging/ack", body, cache)
             == identity.fingerprint());
+        CHECK(resigned.at(auth::kHeaderNonce) != first.at(auth::kHeaderNonce));
+
+        auth::Headers renonced = first;
+        renonced[auth::kHeaderNonce] = resigned.at(auth::kHeaderNonce);
+        CHECK_THROWS(
+            auth::verifyRequest(renonced, kNow, "POST", "/v1/messaging/ack", body, cache));
         CHECK_THROWS(auth::verifyRequest(first, kNow + auth::kAuthFreshnessWindowSeconds + 1,
             "POST", "/v1/messaging/ack", body, cache));
         const std::string blobDigest = toHex(sha256(body));

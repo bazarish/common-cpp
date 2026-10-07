@@ -31,7 +31,7 @@ struct ContactCard {
     static Bytes issue(const Identity& userIdentity, std::int64_t issuedAt,
         const std::string& dest = {}, const Bytes& sealingPublicKeyDer = {},
         const Bytes& servingSealingKeyDer = {});
-    // Verifies the CMS signature and that the signer is body.user.
+    // Verifies both signatures and that the signer is body.user.
     static ContactCard verify(const Bytes& der);
 
     Key sealingKey() const;
@@ -46,7 +46,7 @@ struct AliasCertificate {
 
     static Bytes issue(
         const Identity& userIdentity, const std::string& alias, std::int64_t issuedAt);
-    // Verifies the CMS signature and that the signer is body.user.
+    // Verifies both signatures and that the signer is body.user.
     static AliasCertificate verify(const Bytes& der);
 };
 
@@ -58,7 +58,7 @@ struct ServerCard {
 
     static Bytes issue(const Identity& serverRootIdentity,
         const Key& sealingPublicKey, std::int64_t issuedAt);
-    // Verifies the CMS signature and that the signer is body.server.
+    // Verifies both signatures and that the signer is body.server.
     static ServerCard verify(const Bytes& der);
 
     Key sealingKey() const;
@@ -74,7 +74,7 @@ struct DelegationCertificate {
 
     static Bytes issue(const Identity& rootIdentity, const Identity& delegatedIdentity,
         std::int64_t issuedAt, std::int64_t notAfter);
-    // Verifies the CMS signature and that the signer is body.root.
+    // Verifies both signatures and that the signer is body.root.
     static DelegationCertificate verify(const Bytes& der);
 
     std::string delegatedFingerprint() const;

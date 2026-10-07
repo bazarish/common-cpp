@@ -1,27 +1,18 @@
 // Bazarish project (c) 2026
 #include "bazarish/Cms.hpp"
 
-#include <openssl/asn1.h>
 #include <openssl/bio.h>
-#include <openssl/bn.h>
 #include <openssl/cms.h>
 #include <openssl/crypto.h>
-#include <openssl/core_names.h>
 #include <openssl/evp.h>
-#include <openssl/kdf.h>
-#include <openssl/params.h>
-#include <openssl/x509.h>
+#include <openssl/objects.h>
 
-#include <filesystem>
-#include <cstring>
+#include <memory>
 #include <stdexcept>
 
 namespace {
 
 using bazarish::Bytes;
-using bazarish::Key;
-
-constexpr int kCarrierCertValidityDays = 365 * 100;
 
 struct BioDeleter {
     void operator()(BIO* bio) const
@@ -31,14 +22,6 @@ struct BioDeleter {
 };
 using BioPtr = std::unique_ptr<BIO, BioDeleter>;
 
-struct X509Deleter {
-    void operator()(X509* cert) const
-    {
-        X509_free(cert);
-    }
-};
-using X509Ptr = std::unique_ptr<X509, X509Deleter>;
-
 struct CmsDeleter {
     void operator()(CMS_ContentInfo* cms) const
     {
@@ -46,22 +29,6 @@ struct CmsDeleter {
     }
 };
 using CmsPtr = std::unique_ptr<CMS_ContentInfo, CmsDeleter>;
-
-struct BnDeleter {
-    void operator()(BIGNUM* bn) const
-    {
-        BN_free(bn);
-    }
-};
-using BnPtr = std::unique_ptr<BIGNUM, BnDeleter>;
-
-struct StackOfX509Deleter {
-    void operator()(STACK_OF(X509)* stack) const
-    {
-        sk_X509_free(stack);
-    }
-};
-using StackOfX509Ptr = std::unique_ptr<STACK_OF(X509), StackOfX509Deleter>;
 
 BioPtr makeMemoryBio()
 {
@@ -77,6 +44,24 @@ BioPtr makeInputBio(const Bytes& data)
     BioPtr bio(BIO_new_mem_buf(data.data(), static_cast<int>(data.size())));
     if (bio == nullptr) {
         throw std::runtime_error("BIO_new_mem_buf failed");
+    }
+    return bio;
+}
+
+BioPtr makeReadFileBio(const std::filesystem::path& path)
+{
+    BioPtr bio(BIO_new_file(path.string().c_str(), "rb"));
+    if (bio == nullptr) {
+        throw std::runtime_error("BIO_new_file (read) failed: " + path.string());
+    }
+    return bio;
+}
+
+BioPtr makeWriteFileBio(const std::filesystem::path& path)
+{
+    BioPtr bio(BIO_new_file(path.string().c_str(), "wb"));
+    if (bio == nullptr) {
+        throw std::runtime_error("BIO_new_file (write) failed: " + path.string());
     }
     return bio;
 }
@@ -106,63 +91,6 @@ void addPasswordRecipient(CMS_ContentInfo* const cms, const std::string& passwor
     }
 }
 
-X509Ptr makeCarrierCert(const Key& subjectKey, const Key& signerKey)
-{
-    X509Ptr cert(X509_new());
-    if (cert == nullptr) {
-        throw std::runtime_error("X509_new failed");
-    }
-    bool ok = X509_set_version(cert.get(), X509_VERSION_3) == 1;
-
-    if (ok) {
-        const Bytes serial = bazarish::randomBytes(8);
-        const BnPtr serialBn(BN_bin2bn(serial.data(), static_cast<int>(serial.size()), nullptr));
-        ok = serialBn != nullptr
-            && BN_to_ASN1_INTEGER(serialBn.get(), X509_get_serialNumber(cert.get())) != nullptr;
-    }
-
-    if (ok) {
-        const std::string commonName = subjectKey.fingerprint();
-        X509_NAME* const name = X509_get_subject_name(cert.get());
-        ok = X509_NAME_add_entry_by_txt(
-                 name, "CN", MBSTRING_ASC,
-                 reinterpret_cast<const unsigned char*>(commonName.c_str()), -1, -1, 0)
-                == 1
-            && X509_set_issuer_name(cert.get(), name) == 1;
-    }
-
-    ok = ok && X509_gmtime_adj(X509_getm_notBefore(cert.get()), -3600) != nullptr
-        && X509_time_adj_ex(X509_getm_notAfter(cert.get()), kCarrierCertValidityDays, 0,
-               nullptr)
-            != nullptr
-        && X509_set_pubkey(cert.get(), subjectKey.raw()) == 1;
-
-    ok = ok && X509_sign(cert.get(), signerKey.raw(), EVP_sha256()) > 0;
-
-    if (!ok) {
-        throw std::runtime_error("carrier certificate creation failed");
-    }
-    return cert;
-}
-
-BioPtr makeReadFileBio(const std::filesystem::path& path)
-{
-    BioPtr bio(BIO_new_file(path.string().c_str(), "rb"));
-    if (bio == nullptr) {
-        throw std::runtime_error("BIO_new_file (read) failed: " + path.string());
-    }
-    return bio;
-}
-
-BioPtr makeWriteFileBio(const std::filesystem::path& path)
-{
-    BioPtr bio(BIO_new_file(path.string().c_str(), "wb"));
-    if (bio == nullptr) {
-        throw std::runtime_error("BIO_new_file (write) failed: " + path.string());
-    }
-    return bio;
-}
-
 void unsealWithPasswordBio(BIO* const input, BIO* const output, const std::string& password)
 {
     const CmsPtr cms(d2i_CMS_bio(input, nullptr));
@@ -184,355 +112,14 @@ void unsealWithPasswordBio(BIO* const input, BIO* const output, const std::strin
 
 namespace bazarish::cms {
 
-Bytes signJson(const nlohmann::json& body, const Key& signingKey)
-{
-    if (!signingKey.hasPrivate()) {
-        throw std::logic_error("CMS signing requires a private key");
-    }
-    const std::string serialized = body.dump();
-    const Bytes payload(serialized.begin(), serialized.end());
-
-    const X509Ptr cert = makeCarrierCert(signingKey, signingKey);
-    const BioPtr input = makeInputBio(payload);
-
-    const CmsPtr cms(CMS_sign(cert.get(), signingKey.raw(), nullptr, input.get(), CMS_BINARY));
-    if (cms == nullptr) {
-        throw std::runtime_error("CMS_sign failed");
-    }
-
-    const BioPtr output = makeMemoryBio();
-    if (i2d_CMS_bio(output.get(), cms.get()) != 1) {
-        throw std::runtime_error("i2d_CMS_bio failed");
-    }
-    return bioToBytes(output.get());
-}
-
-VerifiedJson verifyJson(const Bytes& der)
-{
-    const BioPtr input = makeInputBio(der);
-    const CmsPtr cms(d2i_CMS_bio(input.get(), nullptr));
-    if (cms == nullptr) {
-        throw std::runtime_error("d2i_CMS_bio failed");
-    }
-
-    const BioPtr output = makeMemoryBio();
-    if (CMS_verify(cms.get(), nullptr, nullptr, nullptr, output.get(),
-            CMS_BINARY | CMS_NO_SIGNER_CERT_VERIFY)
-        != 1) {
-        throw std::runtime_error("CMS_verify failed");
-    }
-
-    const StackOfX509Ptr signers(CMS_get0_signers(cms.get()));
-    if (signers == nullptr || sk_X509_num(signers.get()) != 1) {
-        throw std::runtime_error("CMS signer extraction failed");
-    }
-    EVP_PKEY* const signerPubkey = X509_get0_pubkey(sk_X509_value(signers.get(), 0));
-    if (signerPubkey == nullptr) {
-        throw std::runtime_error("CMS signer has no public key");
-    }
-
-    // Re-encode the signer key through the canonical SPKI DER form.
-    const BioPtr keyBio = makeMemoryBio();
-    if (i2d_PUBKEY_bio(keyBio.get(), signerPubkey) != 1) {
-        throw std::runtime_error("i2d_PUBKEY_bio failed");
-    }
-    Bytes signerDer = bioToBytes(keyBio.get());
-    const Key signerKey = Key::fromPublicDer(signerDer);
-
-    const Bytes payload = bioToBytes(output.get());
-    return VerifiedJson{
-        nlohmann::json::parse(payload.begin(), payload.end()),
-        signerKey.fingerprint(),
-        std::move(signerDer),
-    };
-}
-
-Bytes signJsonHybrid(const nlohmann::json& body, const Identity& identity)
-{
-    const std::string serialized = body.dump();
-    const Bytes bodyBytes(serialized.begin(), serialized.end());
-    const Bytes pqSignature = sign(identity.pq(), bodyBytes);
-
-    const nlohmann::json wrapper = {
-        {"body", toBase64(bodyBytes)},
-        {"pq",
-            {
-                {"alg", "ML-DSA-65"},
-                {"pub", toBase64(identity.pq().publicDer())},
-                {"sig", toBase64(pqSignature)},
-            }},
-    };
-    return signJson(wrapper, identity.classical());
-}
-
-VerifiedHybridJson verifyJsonHybrid(const Bytes& der)
-{
-    const VerifiedJson outer = verifyJson(der);
-
-    const Key classicalKey = Key::fromPublicDer(outer.signerPublicDer);
-    if (!classicalKey.isA("EC")) {
-        throw std::runtime_error("hybrid statement: classical signer is not EC");
-    }
-
-    const nlohmann::json& pq = outer.body.at("pq");
-    if (pq.at("alg").get<std::string>() != "ML-DSA-65") {
-        throw std::runtime_error("hybrid statement: unexpected pq algorithm");
-    }
-    const Bytes bodyBytes = fromBase64(outer.body.at("body").get<std::string>());
-    const Bytes pqPublicDer = fromBase64(pq.at("pub").get<std::string>());
-    const Bytes pqSignature = fromBase64(pq.at("sig").get<std::string>());
-
-    const Key pqKey = Key::fromPublicDer(pqPublicDer);
-    if (!pqKey.isA("ML-DSA-65")) {
-        throw std::runtime_error("hybrid statement: pq key is not ML-DSA-65");
-    }
-    if (!verify(pqKey, bodyBytes, pqSignature)) {
-        throw std::runtime_error("hybrid statement: pq signature verification failed");
-    }
-
-    return VerifiedHybridJson{
-        nlohmann::json::parse(bodyBytes.begin(), bodyBytes.end()),
-        hybridFingerprint(outer.signerPublicDer, pqPublicDer),
-        outer.signerPublicDer,
-        pqPublicDer,
-    };
-}
-
-namespace {
-
-// The shape of a hybrid sealed blob, inside the CMS EnvelopedData.
-constexpr int kHybridSealVersion = 1;
-constexpr const char* kSealInfo = "bazarish-hybrid-seal-v1";
-constexpr int kSealKeyBytes = 32;
-constexpr int kSealNonceBytes = 12;
-constexpr int kSealTagBytes = 16;
-
-Bytes sealKeyFrom(const Bytes& sharedSecret, const Bytes& kemCiphertext)
-{
-    EVP_KDF* const kdf = EVP_KDF_fetch(nullptr, "HKDF", nullptr);
-    if (kdf == nullptr) {
-        throw std::runtime_error("HKDF unavailable");
-    }
-    EVP_KDF_CTX* const ctx = EVP_KDF_CTX_new(kdf);
-    EVP_KDF_free(kdf);
-    if (ctx == nullptr) {
-        throw std::runtime_error("EVP_KDF_CTX_new failed");
-    }
-    Bytes key(kSealKeyBytes);
-    const OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, const_cast<char*>("SHA256"), 0),
-        OSSL_PARAM_construct_octet_string(
-            OSSL_KDF_PARAM_KEY, const_cast<unsigned char*>(sharedSecret.data()),
-            sharedSecret.size()),
-        OSSL_PARAM_construct_octet_string(
-            OSSL_KDF_PARAM_SALT, const_cast<unsigned char*>(kemCiphertext.data()),
-            kemCiphertext.size()),
-        OSSL_PARAM_construct_octet_string(
-            OSSL_KDF_PARAM_INFO, const_cast<char*>(kSealInfo), std::strlen(kSealInfo)),
-        OSSL_PARAM_construct_end(),
-    };
-    const int ok = EVP_KDF_derive(ctx, key.data(), key.size(), params);
-    EVP_KDF_CTX_free(ctx);
-    if (ok != 1) {
-        throw std::runtime_error("HKDF derive failed");
-    }
-    return key;
-}
-
-Bytes aesGcm(const Bytes& key, const Bytes& nonce, const Bytes& aad, const Bytes& input,
-    const bool encrypting)
-{
-    EVP_CIPHER_CTX* const ctx = EVP_CIPHER_CTX_new();
-    if (ctx == nullptr) {
-        throw std::runtime_error("EVP_CIPHER_CTX_new failed");
-    }
-    const struct Guard {
-        EVP_CIPHER_CTX* ctx;
-        ~Guard() { EVP_CIPHER_CTX_free(ctx); }
-    } guard{ctx};
-
-    if (EVP_CipherInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr, encrypting ? 1 : 0)
-            != 1
-        || EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, kSealNonceBytes, nullptr) != 1
-        || EVP_CipherInit_ex(
-               ctx, nullptr, nullptr, key.data(), nonce.data(), encrypting ? 1 : 0)
-            != 1) {
-        throw std::runtime_error("AES-GCM init failed");
-    }
-    int length = 0;
-    if (!aad.empty()
-        && EVP_CipherUpdate(ctx, nullptr, &length, aad.data(), static_cast<int>(aad.size()))
-            != 1) {
-        throw std::runtime_error("AES-GCM aad failed");
-    }
-    if (encrypting) {
-        Bytes out(input.size() + kSealTagBytes);
-        if (EVP_CipherUpdate(ctx, out.data(), &length, input.data(),
-                static_cast<int>(input.size()))
-            != 1) {
-            throw std::runtime_error("AES-GCM encrypt failed");
-        }
-        int finalLength = 0;
-        if (EVP_CipherFinal_ex(ctx, out.data() + length, &finalLength) != 1) {
-            throw std::runtime_error("AES-GCM finalise failed");
-        }
-        if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, kSealTagBytes,
-                out.data() + input.size())
-            != 1) {
-            throw std::runtime_error("AES-GCM tag failed");
-        }
-        return out;
-    }
-    if (input.size() < static_cast<std::size_t>(kSealTagBytes)) {
-        throw std::runtime_error("sealed payload is too short to carry a tag");
-    }
-    const std::size_t bodyLength = input.size() - kSealTagBytes;
-    Bytes out(bodyLength);
-    if (EVP_CipherUpdate(ctx, out.data(), &length, input.data(), static_cast<int>(bodyLength))
-        != 1) {
-        throw std::runtime_error("AES-GCM decrypt failed");
-    }
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, kSealTagBytes,
-            const_cast<unsigned char*>(input.data() + bodyLength))
-        != 1) {
-        throw std::runtime_error("AES-GCM set tag failed");
-    }
-    int finalLength = 0;
-    if (EVP_CipherFinal_ex(ctx, out.data() + length, &finalLength) != 1) {
-        throw std::runtime_error("sealed payload does not authenticate");
-    }
-    return out;
-}
-
-}  // namespace
-
-Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey)
-{
-    if (!recipientPublicKey.hasKem()) {
-        throw std::logic_error("sealing requires a hybrid (ML-KEM) recipient key");
-    }
-    EVP_PKEY_CTX* const kemCtx = EVP_PKEY_CTX_new(recipientPublicKey.kem().raw(), nullptr);
-    if (kemCtx == nullptr || EVP_PKEY_encapsulate_init(kemCtx, nullptr) != 1) {
-        EVP_PKEY_CTX_free(kemCtx);
-        throw std::runtime_error("ML-KEM encapsulate init failed");
-    }
-    std::size_t ciphertextLength = 0;
-    std::size_t secretLength = 0;
-    if (EVP_PKEY_encapsulate(kemCtx, nullptr, &ciphertextLength, nullptr, &secretLength) != 1) {
-        EVP_PKEY_CTX_free(kemCtx);
-        throw std::runtime_error("ML-KEM encapsulate sizing failed");
-    }
-    Bytes kemCiphertext(ciphertextLength);
-    Bytes sharedSecret(secretLength);
-    const int encapsulated = EVP_PKEY_encapsulate(
-        kemCtx, kemCiphertext.data(), &ciphertextLength, sharedSecret.data(), &secretLength);
-    EVP_PKEY_CTX_free(kemCtx);
-    if (encapsulated != 1) {
-        throw std::runtime_error("ML-KEM encapsulate failed");
-    }
-    kemCiphertext.resize(ciphertextLength);
-    sharedSecret.resize(secretLength);
-
-    const Bytes nonce = randomBytes(kSealNonceBytes);
-    const Bytes inner = aesGcm(sealKeyFrom(sharedSecret, kemCiphertext), nonce, kemCiphertext,
-        plaintext, true);
-    const nlohmann::json wrapper = {
-        {"v", kHybridSealVersion},
-        {"kem", nlohmann::json::binary(kemCiphertext)},
-        {"n", nlohmann::json::binary(nonce)},
-        {"ct", nlohmann::json::binary(inner)},
-    };
-    const Bytes wrapped = nlohmann::json::to_cbor(wrapper);
-
-    const Key throwaway = Key::generateSigning();
-    const X509Ptr carrier = makeCarrierCert(recipientPublicKey, throwaway);
-
-    const StackOfX509Ptr recipients(sk_X509_new_null());
-    if (recipients == nullptr || sk_X509_push(recipients.get(), carrier.get()) <= 0) {
-        throw std::runtime_error("recipient stack creation failed");
-    }
-
-    const BioPtr input = makeInputBio(wrapped);
-    const CmsPtr cms(
-        CMS_encrypt(recipients.get(), input.get(), EVP_aes_256_gcm(), CMS_BINARY));
-    if (cms == nullptr) {
-        throw std::runtime_error("CMS_encrypt failed");
-    }
-
-    const BioPtr output = makeMemoryBio();
-    if (i2d_CMS_bio(output.get(), cms.get()) != 1) {
-        throw std::runtime_error("i2d_CMS_bio failed");
-    }
-    return bioToBytes(output.get());
-}
-
-Bytes unseal(const Bytes& der, const Key& recipientPrivateKey)
-{
-    if (!recipientPrivateKey.hasPrivate()) {
-        throw std::logic_error("unsealing requires a private key");
-    }
-    const BioPtr input = makeInputBio(der);
-    const CmsPtr cms(d2i_CMS_bio(input.get(), nullptr));
-    if (cms == nullptr) {
-        throw std::runtime_error("d2i_CMS_bio failed");
-    }
-
-    const BioPtr output = makeMemoryBio();
-    if (CMS_decrypt(cms.get(), recipientPrivateKey.raw(), nullptr, nullptr, output.get(),
-            CMS_BINARY)
-        != 1) {
-        throw std::runtime_error("CMS_decrypt failed");
-    }
-    const Bytes wrapped = bioToBytes(output.get());
-    if (!recipientPrivateKey.hasKem()) {
-        throw std::logic_error("unsealing requires a hybrid (ML-KEM) key");
-    }
-
-    const nlohmann::json wrapper = nlohmann::json::from_cbor(wrapped);
-    const int version = wrapper.at("v").get<int>();
-    if (version != kHybridSealVersion) {
-        throw std::runtime_error(
-            "sealed blob is version " + std::to_string(version) + ", this build reads version "
-                + std::to_string(kHybridSealVersion));
-    }
-    const nlohmann::json::binary_t& kemCiphertext = wrapper.at("kem").get_binary();
-    const nlohmann::json::binary_t& nonce = wrapper.at("n").get_binary();
-    const nlohmann::json::binary_t& inner = wrapper.at("ct").get_binary();
-
-    EVP_PKEY_CTX* const kemCtx = EVP_PKEY_CTX_new(recipientPrivateKey.kem().raw(), nullptr);
-    if (kemCtx == nullptr || EVP_PKEY_decapsulate_init(kemCtx, nullptr) != 1) {
-        EVP_PKEY_CTX_free(kemCtx);
-        throw std::runtime_error("ML-KEM decapsulate init failed");
-    }
-    std::size_t secretLength = 0;
-    if (EVP_PKEY_decapsulate(kemCtx, nullptr, &secretLength, kemCiphertext.data(),
-            kemCiphertext.size())
-        != 1) {
-        EVP_PKEY_CTX_free(kemCtx);
-        throw std::runtime_error("ML-KEM decapsulate sizing failed");
-    }
-    Bytes sharedSecret(secretLength);
-    const int decapsulated = EVP_PKEY_decapsulate(kemCtx, sharedSecret.data(), &secretLength,
-        kemCiphertext.data(), kemCiphertext.size());
-    EVP_PKEY_CTX_free(kemCtx);
-    if (decapsulated != 1) {
-        throw std::runtime_error("ML-KEM decapsulate failed");
-    }
-    sharedSecret.resize(secretLength);
-
-    return aesGcm(sealKeyFrom(sharedSecret, Bytes(kemCiphertext.begin(), kemCiphertext.end())),
-        Bytes(nonce.begin(), nonce.end()), Bytes(kemCiphertext.begin(), kemCiphertext.end()),
-        Bytes(inner.begin(), inner.end()), false);
-}
-
 Bytes sealWithPassword(const Bytes& plaintext, const std::string& password)
 {
     if (password.empty()) {
         throw std::invalid_argument("password must not be empty");
     }
     const BioPtr input = makeInputBio(plaintext);
-    const CmsPtr cms(CMS_encrypt(nullptr, input.get(), EVP_aes_256_cbc(),
-        CMS_BINARY | CMS_PARTIAL));
+    const CmsPtr cms(
+        CMS_encrypt(nullptr, input.get(), EVP_aes_256_cbc(), CMS_BINARY | CMS_PARTIAL));
     if (cms == nullptr) {
         throw std::runtime_error("CMS_encrypt failed");
     }

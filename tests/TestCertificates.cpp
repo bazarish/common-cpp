@@ -1,7 +1,7 @@
 // Bazarish project (c) 2026
 #include "bazarish/Certificates.hpp"
 
-#include "bazarish/Cms.hpp"
+#include "bazarish/Hybrid.hpp"
 
 #include "TestUtil.hpp"
 
@@ -48,7 +48,7 @@ int main()
         const Identity impostor = Identity::generate();
         const nlohmann::json body = {{"v", kCertificateFormatVersion}, {"t", "contact-card"},
             {"issuedAt", kNow}, {"user", user.fingerprint()}};
-        const ContactCard theirs = ContactCard::verify(cms::signJsonHybrid(body, impostor));
+        const ContactCard theirs = ContactCard::verify(hybrid::signJson(body, impostor));
         CHECK(theirs.fingerprint() == impostor.fingerprint());
         CHECK(theirs.fingerprint() != user.fingerprint());
     }
@@ -56,15 +56,15 @@ int main()
     {
         const nlohmann::json notACard = {{"v", kCertificateFormatVersion}, {"t", "alias"},
             {"issuedAt", kNow}, {"alias", "someone"}};
-        CHECK_THROWS(ContactCard::verify(cms::signJsonHybrid(notACard, user)));
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(notACard, user)));
         const nlohmann::json untagged = {{"v", kCertificateFormatVersion}};
-        CHECK_THROWS(ContactCard::verify(cms::signJsonHybrid(untagged, user)));
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(untagged, user)));
     }
 
     {
         const nlohmann::json undated
             = {{"v", kCertificateFormatVersion}, {"t", "contact-card"}};
-        CHECK_THROWS(ContactCard::verify(cms::signJsonHybrid(undated, user)));
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(undated, user)));
     }
 
     {
@@ -96,7 +96,7 @@ int main()
         {"issuedAt", kNow},
         {"notAfter", kNow + kThreeDays},
     };
-    const Bytes forgedDer = cms::signJsonHybrid(forgedBody, mallory);
+    const Bytes forgedDer = hybrid::signJson(forgedBody, mallory);
     CHECK_THROWS(ContactCard::verify(forgedDer));
 
     {
@@ -109,24 +109,24 @@ int main()
             {"sealingKey", toBase64(sealing.publicDer())},
             {"issuedAt", kNow},
         };
-        const Bytes bothDer = cms::signJsonHybrid(bothShapes, user);
+        const Bytes bothDer = hybrid::signJson(bothShapes, user);
         CHECK(AliasCertificate::verify(bothDer).alias == "alice");
         CHECK_THROWS(ServerCard::verify(bothDer));
         CHECK_THROWS(ContactCard::verify(bothDer));
 
         const nlohmann::json untaggedAlias = {{"v", kCertificateFormatVersion},
             {"alias", "alice"}, {"user", user.fingerprint()}, {"issuedAt", kNow}};
-        CHECK_THROWS(AliasCertificate::verify(cms::signJsonHybrid(untaggedAlias, user)));
+        CHECK_THROWS(AliasCertificate::verify(hybrid::signJson(untaggedAlias, user)));
         const nlohmann::json untaggedServer = {{"v", kCertificateFormatVersion},
             {"server", user.fingerprint()}, {"sealingKey", toBase64(sealing.publicDer())},
             {"issuedAt", kNow}};
-        CHECK_THROWS(ServerCard::verify(cms::signJsonHybrid(untaggedServer, user)));
+        CHECK_THROWS(ServerCard::verify(hybrid::signJson(untaggedServer, user)));
         const nlohmann::json untaggedDelegation = {{"v", kCertificateFormatVersion},
             {"root", user.fingerprint()},
             {"delegatedClassical", toBase64(sealing.publicDer())},
             {"delegatedPq", toBase64(sealing.publicDer())}, {"issuedAt", kNow},
             {"notAfter", kNow + kThreeDays}};
-        CHECK_THROWS(DelegationCertificate::verify(cms::signJsonHybrid(untaggedDelegation, user)));
+        CHECK_THROWS(DelegationCertificate::verify(hybrid::signJson(untaggedDelegation, user)));
     }
 
     const nlohmann::json futureBody = {
@@ -136,7 +136,7 @@ int main()
         {"issuedAt", kNow},
         {"notAfter", kNow + kThreeDays},
     };
-    const Bytes futureDer = cms::signJsonHybrid(futureBody, user);
+    const Bytes futureDer = hybrid::signJson(futureBody, user);
     CHECK_THROWS(ContactCard::verify(futureDer));
 
     return 0;

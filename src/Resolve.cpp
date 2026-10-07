@@ -3,7 +3,7 @@
 
 #include "bazarish/Address.hpp"
 #include "bazarish/Certificates.hpp"
-#include "bazarish/Cms.hpp"
+#include "bazarish/Hybrid.hpp"
 #include "bazarish/I2pAddress.hpp"
 
 #include <stdexcept>
@@ -157,7 +157,7 @@ ResolveRecord resolveRecordFromJson(const nlohmann::json& body)
 
 Bytes signResolveRecord(const ResolveRecord& record, const Identity& delegatedIdentity)
 {
-    return cms::signJsonHybrid(toJson(record), delegatedIdentity);
+    return hybrid::signJson(toJson(record), delegatedIdentity);
 }
 
 namespace {
@@ -188,7 +188,7 @@ ResolveRecord verifyResolveRecord(const Bytes& recordDer, const Bytes& delegatio
         throw std::runtime_error("resolve record: delegation has expired");
     }
 
-    const cms::VerifiedHybridJson verified = cms::verifyJsonHybrid(recordDer);
+    const hybrid::VerifiedJson verified = hybrid::verifyJson(recordDer);
     if (verified.identityFingerprint != delegation.delegatedFingerprint()) {
         throw std::runtime_error("resolve record: signer is not the delegated key");
     }

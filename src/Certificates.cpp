@@ -1,7 +1,7 @@
 // Bazarish project (c) 2026
 #include "bazarish/Certificates.hpp"
 
-#include "bazarish/Cms.hpp"
+#include "bazarish/Hybrid.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -9,11 +9,11 @@
 
 namespace {
 
-using bazarish::cms::VerifiedHybridJson;
+using bazarish::hybrid::VerifiedJson;
 
-VerifiedHybridJson verifyTagged(const bazarish::Bytes& der, const char* const type)
+VerifiedJson verifyTagged(const bazarish::Bytes& der, const char* const type)
 {
-    VerifiedHybridJson verified = bazarish::cms::verifyJsonHybrid(der);
+    VerifiedJson verified = bazarish::hybrid::verifyJson(der);
     if (verified.body.value("t", std::string()) != type) {
         throw std::runtime_error(std::string("wrong document type: expected ") + type);
     }
@@ -23,7 +23,7 @@ VerifiedHybridJson verifyTagged(const bazarish::Bytes& der, const char* const ty
     return verified;
 }
 
-void requireSigner(const VerifiedHybridJson& verified, const std::string& expectedFingerprint)
+void requireSigner(const VerifiedJson& verified, const std::string& expectedFingerprint)
 {
     if (verified.identityFingerprint != expectedFingerprint) {
         throw std::runtime_error("certificate signer does not match the claimed identity");
@@ -61,12 +61,12 @@ Bytes ContactCard::issue(const Identity& userIdentity, const std::int64_t issued
     if (!servingSealingKeyDer.empty()) {
         body["servingKey"] = toBase64(servingSealingKeyDer);
     }
-    return cms::signJsonHybrid(body, userIdentity);
+    return hybrid::signJson(body, userIdentity);
 }
 
 ContactCard ContactCard::verify(const Bytes& der)
 {
-    const VerifiedHybridJson verified = verifyTagged(der, kContactCardType);
+    const VerifiedJson verified = verifyTagged(der, kContactCardType);
     ContactCard card;
     if (!verified.body.contains("issuedAt")) {
         throw std::runtime_error("a contact card must say when it was signed");
@@ -118,12 +118,12 @@ Bytes AliasCertificate::issue(
         {"user", userIdentity.fingerprint()},
         {"issuedAt", issuedAt},
     };
-    return cms::signJsonHybrid(body, userIdentity);
+    return hybrid::signJson(body, userIdentity);
 }
 
 AliasCertificate AliasCertificate::verify(const Bytes& der)
 {
-    const VerifiedHybridJson verified = verifyTagged(der, kAliasCertificateType);
+    const VerifiedJson verified = verifyTagged(der, kAliasCertificateType);
     AliasCertificate cert;
     cert.v = verified.body.at("v").get<int>();
     cert.alias = verified.body.at("alias").get<std::string>();
@@ -144,12 +144,12 @@ Bytes ServerCard::issue(const Identity& serverRootIdentity,
         {"sealingKey", toBase64(sealingPublicKey.publicDer())},
         {"issuedAt", issuedAt},
     };
-    return cms::signJsonHybrid(body, serverRootIdentity);
+    return hybrid::signJson(body, serverRootIdentity);
 }
 
 ServerCard ServerCard::verify(const Bytes& der)
 {
-    const VerifiedHybridJson verified = verifyTagged(der, kServerCardType);
+    const VerifiedJson verified = verifyTagged(der, kServerCardType);
     ServerCard card;
     card.v = verified.body.at("v").get<int>();
     card.server = verified.body.at("server").get<std::string>();
@@ -176,12 +176,12 @@ Bytes DelegationCertificate::issue(const Identity& rootIdentity,
         {"issuedAt", issuedAt},
         {"notAfter", notAfter},
     };
-    return cms::signJsonHybrid(body, rootIdentity);
+    return hybrid::signJson(body, rootIdentity);
 }
 
 DelegationCertificate DelegationCertificate::verify(const Bytes& der)
 {
-    const VerifiedHybridJson verified = verifyTagged(der, kDelegationCertificateType);
+    const VerifiedJson verified = verifyTagged(der, kDelegationCertificateType);
     DelegationCertificate cert;
     cert.v = verified.body.at("v").get<int>();
     cert.root = verified.body.at("root").get<std::string>();

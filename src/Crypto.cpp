@@ -20,8 +20,6 @@ namespace {
 
 using bazarish::Bytes;
 
-constexpr const char* kKemAlgorithm = "ML-KEM-768";
-
 int passphraseCallback(char* const buffer, const int size, int, void* const userdata)
 {
     const auto* const passphrase = static_cast<const std::string*>(userdata);
@@ -33,11 +31,11 @@ int passphraseCallback(char* const buffer, const int size, int, void* const user
     return static_cast<int>(passphrase->size());
 }
 
-bazarish::KeyPtr generateEcP256()
+bazarish::KeyPtr generateNamed(const char* const algorithm)
 {
-    EVP_PKEY* const key = EVP_PKEY_Q_keygen(nullptr, nullptr, "EC", "P-256");
+    EVP_PKEY* const key = EVP_PKEY_Q_keygen(nullptr, nullptr, algorithm);
     if (key == nullptr) {
-        throw std::runtime_error("EC P-256 keygen failed");
+        throw std::runtime_error(std::string(algorithm) + " keygen failed");
     }
     return bazarish::KeyPtr(key);
 }
@@ -101,25 +99,17 @@ Key::Key(KeyPtr key, const bool hasPrivate)
 
 Key Key::generateSigning()
 {
-    return Key(generateEcP256(), true);
+    return Key(generateNamed(kClassicalSigningAlgorithm), true);
 }
 
 Key Key::generateSigningPq()
 {
-    EVP_PKEY* const key = EVP_PKEY_Q_keygen(nullptr, nullptr, "ML-DSA-65");
-    if (key == nullptr) {
-        throw std::runtime_error("ML-DSA-65 keygen failed");
-    }
-    return Key(KeyPtr(key), true);
+    return Key(generateNamed(kPqSigningAlgorithm), true);
 }
 
 Key Key::generateSealing()
 {
-    EVP_PKEY* const kem = EVP_PKEY_Q_keygen(nullptr, nullptr, kKemAlgorithm);
-    if (kem == nullptr) {
-        throw std::runtime_error("ML-KEM-768 keygen failed");
-    }
-    return Key(generateEcP256(), KeyPtr(kem), true);
+    return Key(generateNamed(kClassicalSealingAlgorithm), generateNamed(kPqKemAlgorithm), true);
 }
 
 Key Key::fromPrivatePem(const std::string& pem, const std::string& passphrase)
@@ -260,9 +250,8 @@ Bytes sign(const Key& key, const Bytes& data)
     if (ctx == nullptr) {
         throw std::runtime_error("EVP_MD_CTX_new failed");
     }
-    const EVP_MD* const digest = key.isA("EC") ? EVP_sha256() : nullptr;
     Bytes signature;
-    bool ok = EVP_DigestSignInit(ctx.get(), nullptr, digest, nullptr, key.raw()) == 1;
+    bool ok = EVP_DigestSignInit(ctx.get(), nullptr, nullptr, nullptr, key.raw()) == 1;
     if (ok) {
         std::size_t size = 0;
         ok = EVP_DigestSign(ctx.get(), nullptr, &size, data.data(), data.size()) == 1;
@@ -285,8 +274,7 @@ bool verify(const Key& key, const Bytes& data, const Bytes& signature)
     if (ctx == nullptr) {
         throw std::runtime_error("EVP_MD_CTX_new failed");
     }
-    const EVP_MD* const digest = key.isA("EC") ? EVP_sha256() : nullptr;
-    bool ok = EVP_DigestVerifyInit(ctx.get(), nullptr, digest, nullptr, key.raw()) == 1;
+    bool ok = EVP_DigestVerifyInit(ctx.get(), nullptr, nullptr, nullptr, key.raw()) == 1;
     if (ok) {
         ok = EVP_DigestVerify(
                  ctx.get(), signature.data(), signature.size(), data.data(), data.size())
@@ -411,10 +399,10 @@ Identity::Identity(Key classical, Key pq)
     : classical_(std::move(classical))
     , pq_(std::move(pq))
 {
-    if (!classical_.isA("EC")) {
-        throw std::invalid_argument("classical identity key must be EC");
+    if (!classical_.isA(kClassicalSigningAlgorithm)) {
+        throw std::invalid_argument("classical identity key must be Ed25519");
     }
-    if (!pq_.isA("ML-DSA-65")) {
+    if (!pq_.isA(kPqSigningAlgorithm)) {
         throw std::invalid_argument("post-quantum identity key must be ML-DSA-65");
     }
 }

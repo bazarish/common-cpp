@@ -568,8 +568,8 @@ auth::Headers collectAuthHeaders(const Request& request)
 {
     auth::Headers headers;
     for (const char* const name : {auth::kHeaderKeys, auth::kHeaderTimestamp,
-             auth::kHeaderSignatureClassical, auth::kHeaderSignaturePq, auth::kHeaderSession,
-             auth::kHeaderSeq, auth::kHeaderMac}) {
+             auth::kHeaderNonce, auth::kHeaderSignatureClassical, auth::kHeaderSignaturePq,
+             auth::kHeaderSession, auth::kHeaderSeq, auth::kHeaderMac}) {
         if (request.hasHeader(name)) {
             headers[name] = request.header(name);
         }
