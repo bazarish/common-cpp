@@ -8,6 +8,7 @@
 #include <zlib.h>
 
 #include <array>
+#include <climits>
 #include <cstdint>
 #include <stdexcept>
 
@@ -24,6 +25,20 @@ constexpr std::uint8_t kBlindedSigTypeEd25519 = 11;
 
 constexpr char kB32Suffix[] = ".b32.i2p";
 constexpr std::size_t kB32SuffixLen = sizeof(kB32Suffix) - 1;
+constexpr std::size_t kBase32BitsPerChar = 5;
+constexpr std::size_t kBlindedHeaderLen = 3;
+constexpr std::size_t kDestHashLen = 32;
+
+constexpr std::size_t base32Chars(const std::size_t bytes)
+{
+    return (bytes * CHAR_BIT + kBase32BitsPerChar - 1) / kBase32BitsPerChar;
+}
+
+constexpr std::size_t kB32LabelChars = base32Chars(kDestHashLen);
+constexpr std::size_t kB33LabelChars = base32Chars(kBlindedHeaderLen + kEd25519KeyLen);
+
+static_assert(kB32LabelChars == 52);
+static_assert(kB33LabelChars == 56);
 
 }  // namespace
 
@@ -121,6 +136,9 @@ bool isB32I2pHost(const std::string& host)
         return false;
     }
     const std::size_t labelLen = host.size() - kB32SuffixLen;
+    if (labelLen != kB32LabelChars && labelLen != kB33LabelChars) {
+        return false;
+    }
     for (std::size_t i = 0; i < labelLen; ++i) {
         const char c = host[i];
         const bool isBase32Char = (c >= 'a' && c <= 'z') || (c >= '2' && c <= '7');

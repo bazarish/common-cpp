@@ -765,6 +765,8 @@ public:
     std::vector<LocalDestination> localDestinations() const override;
     void setSocksProxy(const std::string& host, int port) override;
     ProxyState proxyState() const override;
+    void setReseedUrls(const std::vector<std::string>& urls) override;
+    ReseedState reseedState() const override;
     std::shared_ptr<backend::EndpointBackend> createEndpoint(const EndpointConfig& config) override;
     void retagEndpoint(
         const backend::EndpointBackend& endpoint, std::string label, std::string owner) override;
@@ -772,6 +774,7 @@ public:
     bool owns = false;
     bool inited = false;
     bool started = false;
+    std::string builtInReseedUrls;
     std::shared_ptr<IoService> io;
 
     struct DestEntry {
@@ -799,8 +802,45 @@ public:
     }
 };
 
+namespace {
+
+struct ReseedChoice
+{
+    std::string urls;
+    std::string file;
+};
+
+// i2pd reads reseed.file before reseed.urls and takes one archive, so a second
+// local archive would be dropped without a word.
+ReseedChoice reseedChoiceFor(const std::vector<std::string>& reseedUrls)
+{
+    ReseedChoice choice;
+    for (const std::string& url : reseedUrls)
+    {
+        if (url.rfind("https://", 0) != 0)
+        {
+            if (!choice.file.empty())
+            {
+                throw std::invalid_argument("i2p: one local reseed archive at a time");
+            }
+            choice.file = url;
+            continue;
+        }
+        choice.urls += (choice.urls.empty() ? "" : ",") + url;
+        if (choice.urls.back() != '/')
+        {
+            choice.urls += '/';
+        }
+    }
+    return choice;
+}
+
+}  // namespace
+
 EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
 {
+    (void)reseedChoiceFor(config.reseedUrls);
+
     bool expected = false;
     if (!g_routerLive.compare_exchange_strong(expected, true))
     {
@@ -822,27 +862,6 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
     }
     args.push_back("--loglevel=warn");
     args.push_back("--persist.profiles=false");
-    if (!config.reseedUrls.empty())
-    {
-        std::string joined;
-        for (const std::string& url : config.reseedUrls)
-        {
-            if (url.rfind("https://", 0) != 0)
-            {
-                args.push_back("--reseed.file=" + url);
-                continue;
-            }
-            joined += (joined.empty() ? "" : ",") + url;
-            if (joined.back() != '/')
-            {
-                joined += '/';
-            }
-        }
-        if (!joined.empty())
-        {
-            args.push_back("--reseed.urls=" + joined);
-        }
-    }
 
     std::vector<char*> argv;
     argv.reserve(args.size());
@@ -850,6 +869,8 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
 
     i2pd::api::InitI2P(static_cast<int>(argv.size()), argv.data(), "bazarish-i2p");
     inited = true;
+    i2pd::config::GetOption("reseed.urls", builtInReseedUrls);
+    setReseedUrls(config.reseedUrls);
     setSocksProxy(config.socksProxyHost, config.socksProxyPort);
     start();
 }
@@ -866,6 +887,25 @@ void EmbeddedRouter::start()
     i2pd::log::Logger().SetLogLevel(i2pLogging() ? "warn" : "none");
     started = true;
     io = std::make_shared<IoService>(ioContextCount());
+}
+
+void EmbeddedRouter::setReseedUrls(const std::vector<std::string>& urls)
+{
+    const ReseedChoice choice = reseedChoiceFor(urls);
+    const std::string wanted = choice.urls.empty() ? builtInReseedUrls : choice.urls;
+    if (!i2pd::config::SetOption("reseed.file", choice.file)
+        || !i2pd::config::SetOption("reseed.urls", wanted))
+    {
+        throw std::runtime_error("bazarish::i2p: this engine has no reseed option to set");
+    }
+}
+
+ReseedState EmbeddedRouter::reseedState() const
+{
+    ReseedState state;
+    i2pd::config::GetOption("reseed.urls", state.urls);
+    i2pd::config::GetOption("reseed.file", state.file);
+    return state;
 }
 
 void EmbeddedRouter::setSocksProxy(const std::string& host, const int port)
@@ -1097,6 +1137,7 @@ Capabilities EmbeddedRouter::capabilities() const
     what.netDbSample = true;
     what.proxy = true;
     what.offlineKeys = true;
+    what.reseed = true;
     return what;
 }
 

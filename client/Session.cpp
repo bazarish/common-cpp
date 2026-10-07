@@ -6,6 +6,7 @@
 #include "AccountDb.hpp"
 
 #include "Authorship.hpp"
+#include "DevicePairing.hpp"
 #include "FederationFetch.hpp"
 #include "I2pKeys.hpp"
 #include "I2pRouter.hpp"
@@ -277,7 +278,12 @@ bazarish::i2p::Router& Session::i2pRouter() const
     return sharedI2pRouter(dataDir);
 }
 
-Session::~Session() = default;
+Session::~Session()
+{
+    if (pairing_) {
+        stopPairing();
+    }
+}
 Session::Session(Session&&) noexcept = default;
 Session& Session::operator=(Session&&) noexcept = default;
 
@@ -4170,7 +4176,136 @@ void Session::changePassphrase(const std::string& passphrase)
     persistMeta();
 }
 
-void Session::exportAccount(const fs::path& outFile, const std::string& password)
+Session::PairingOffer Session::startPairing(PairingEventFn onEvent)
+{
+    const std::string code = newPairCode();
+    Bytes bundle = exportAccountBytes(code);
+    if (bundle.size() > kMaxPairBundleBytes) {
+        throw std::runtime_error("this account takes " + std::to_string(bundle.size())
+            + " bytes, and pairing carries at most " + std::to_string(kMaxPairBundleBytes));
+    }
+
+    const std::shared_ptr<PairingRegistry> registry = pairing_;
+    const auto cancel = std::make_shared<std::atomic<bool>>(false);
+    {
+        const std::lock_guard<std::mutex> lock(registry->mutex);
+        if (registry->cancel) {
+            throw std::runtime_error("this account is already waiting for a device");
+        }
+    }
+
+    const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
+        = publishPairDest(i2pRouter(), transferPrivacy(), destinationOwner());
+
+    PairingOffer offer;
+    offer.code = code;
+    offer.uri = encodePairLink(PairLink{endpoint->routingHost(), client_->endpoint().reseeds});
+    {
+        const std::lock_guard<std::mutex> lock(registry->mutex);
+        registry->cancel = cancel;
+        registry->endpoint = endpoint;
+        registry->onEvent = std::move(onEvent);
+    }
+
+    std::thread([registry, cancel, endpoint, bundle = std::move(bundle), code]() {
+        const auto say = [&registry, &cancel](const PairingEvent& event) {
+            PairingEventFn handler;
+            {
+                const std::lock_guard<std::mutex> lock(registry->mutex);
+                if (registry->cancel != cancel) {
+                    return;
+                }
+                handler = registry->onEvent;
+            }
+            if (handler) {
+                handler(event);
+            }
+        };
+        try {
+            PairingEvent publishing;
+            publishing.stage = PairingStage::ePublishing;
+            say(publishing);
+            const auto deadline
+                = std::chrono::steady_clock::now() + std::chrono::seconds(kPublishWaitSeconds);
+            bool published = false;
+            while (!cancel->load()) {
+                if (endpoint->waitReady(std::chrono::seconds(kPublishPollSeconds))) {
+                    published = true;
+                    break;
+                }
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    throw std::runtime_error("could not publish the pairing address");
+                }
+            }
+            if (published) {
+                PairingEvent waiting;
+                waiting.stage = PairingStage::eWaiting;
+                say(waiting);
+                const PairProgressFn onProgress
+                    = [&say](const std::uint64_t done, const std::uint64_t total) {
+                          PairingEvent sending;
+                          sending.stage = PairingStage::eSending;
+                          sending.done = done;
+                          sending.total = total;
+                          say(sending);
+                      };
+                const PairRefusedFn onWrongCode = [&say](const int wrongCodes) {
+                    PairingEvent refused;
+                    refused.stage = PairingStage::eWrongCode;
+                    refused.wrongCodes = wrongCodes;
+                    say(refused);
+                };
+                const PairServeResult result = servePairBundle(
+                    *endpoint, bundle, code, onProgress, onWrongCode, *cancel);
+                PairingEvent settled;
+                settled.wrongCodes = result.wrongCodes;
+                if (result.delivered) {
+                    settled.stage = PairingStage::eDone;
+                    say(settled);
+                } else if (result.wrongCodes >= kMaxWrongCodes) {
+                    settled.stage = PairingStage::eRefused;
+                    say(settled);
+                }
+            }
+        } catch (const std::exception& error) {
+            PairingEvent failed;
+            failed.stage = PairingStage::eFailed;
+            failed.error = error.what();
+            say(failed);
+        }
+        endpoint->stop();
+        const std::lock_guard<std::mutex> lock(registry->mutex);
+        if (registry->cancel == cancel) {
+            registry->cancel.reset();
+            registry->endpoint.reset();
+            registry->onEvent = nullptr;
+        }
+    }).detach();
+
+    return offer;
+}
+
+void Session::stopPairing()
+{
+    const std::shared_ptr<PairingRegistry> registry = pairing_;
+    std::shared_ptr<bazarish::i2p::Endpoint> endpoint;
+    {
+        const std::lock_guard<std::mutex> lock(registry->mutex);
+        if (!registry->cancel) {
+            return;
+        }
+        registry->cancel->store(true);
+        registry->cancel.reset();
+        endpoint = registry->endpoint.lock();
+        registry->endpoint.reset();
+        registry->onEvent = nullptr;
+    }
+    if (endpoint) {
+        endpoint->stop();
+    }
+}
+
+Bytes Session::exportAccountBytes(const std::string& password)
 {
     const nlohmann::json meta = nlohmann::json::parse(db_->text("meta"));
     nlohmann::json contacts = contactsToJson();
@@ -4193,16 +4328,19 @@ void Session::exportAccount(const fs::path& outFile, const std::string& password
         {"blocked", nlohmann::json(blocked_)},
     };
     const std::string text = bundle.dump();
-    const Bytes sealed = cms::sealWithPassword(Bytes(text.begin(), text.end()), password);
+    return cms::sealWithPassword(Bytes(text.begin(), text.end()), password);
+}
+
+void Session::exportAccount(const fs::path& outFile, const std::string& password)
+{
+    const Bytes sealed = exportAccountBytes(password);
     writeFileText(outFile, std::string(sealed.begin(), sealed.end()));
 }
 
-void Session::importAccount(const fs::path& bundleFile, const fs::path& accountFile,
+void Session::importAccountBytes(const Bytes& sealed, const fs::path& accountFile,
     const std::string& password, const std::string& atRestPassphrase)
 {
-    const std::string sealedText = readFileText(bundleFile);
-    const Bytes plain
-        = cms::unsealWithPassword(Bytes(sealedText.begin(), sealedText.end()), password);
+    const Bytes plain = cms::unsealWithPassword(sealed, password);
     const nlohmann::json bundle = nlohmann::json::parse(plain.begin(), plain.end());
 
     if (bundle.value("v", kBundleFormatVersion) > kBundleFormatVersion) {
@@ -4243,6 +4381,14 @@ void Session::importAccount(const fs::path& bundleFile, const fs::path& accountF
             }
         }
     }
+}
+
+void Session::importAccount(const fs::path& bundleFile, const fs::path& accountFile,
+    const std::string& password, const std::string& atRestPassphrase)
+{
+    const std::string sealed = readFileText(bundleFile);
+    importAccountBytes(Bytes(sealed.begin(), sealed.end()), accountFile, password,
+        atRestPassphrase);
 }
 
 }  // namespace bazarish::client

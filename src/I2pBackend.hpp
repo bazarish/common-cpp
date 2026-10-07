@@ -75,6 +75,9 @@ public:
     virtual void setSocksProxy(const std::string& host, int port) = 0;
     virtual ProxyState proxyState() const = 0;
 
+    virtual void setReseedUrls(const std::vector<std::string>& urls) = 0;
+    virtual ReseedState reseedState() const = 0;
+
     virtual std::shared_ptr<EndpointBackend> createEndpoint(const EndpointConfig& config) = 0;
     virtual void retagEndpoint(
         const EndpointBackend& endpoint, std::string label, std::string owner)

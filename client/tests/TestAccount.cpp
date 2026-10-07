@@ -3,6 +3,7 @@
 #include "Session.hpp"
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/Cms.hpp>
 
 #include "TestUtil.hpp"
 
@@ -144,7 +145,33 @@ int main()
             CHECK(imp2.id != imp1.id);
             CHECK(imp2.name == "Acetone");
             CHECK(manager2.list().size() == 2);
-            CHECK(!fs::exists(root2 / ".import-tmp"));
+            CHECK(!fs::exists(root2 / ".import-tmp.db"));
+
+            const Bytes sealed = sa.exportAccountBytes("bundle-pw");
+            CHECK(!sealed.empty());
+            Session::importAccountBytes(sealed, scratch / "imported-mem.db", "bundle-pw",
+                "atrest-pw");
+            onlyTheDatabase(scratch / "imported-mem.db");
+            const Session importedMem = Session::open(scratch / "imported-mem.db", "atrest-pw");
+            CHECK(importedMem.fingerprint() == a.fingerprint);
+            CHECK(importedMem.avatarMime() == "image/png");
+            CHECK(importedMem.avatar() == face);
+            CHECK_THROWS(
+                Session::importAccountBytes(sealed, scratch / "refused.db", "wrong-pw"));
+            CHECK(!fs::exists(scratch / "refused.db"));
+
+            const AccountInfo imp3 = manager2.import("", sealed, "bundle-pw");
+            CHECK(imp3.name == "Acetone");
+            CHECK(imp3.fingerprint == a.fingerprint);
+            CHECK(manager2.list().size() == 3);
+            CHECK(!fs::exists(root2 / ".import-tmp.db"));
+
+            const std::string headerOnly = R"({"v":1})";
+            const Bytes sealedHeaderOnly = cms::sealWithPassword(
+                Bytes(headerOnly.begin(), headerOnly.end()), "bundle-pw");
+            CHECK_THROWS(manager2.import("", sealedHeaderOnly, "bundle-pw"));
+            CHECK(manager2.list().size() == 3);
+            CHECK(!fs::exists(root2 / ".import-tmp.db"));
             fs::remove_all(root2);
 
             const auto copyOfPlainAccount = [&scratch](const std::string& name) {

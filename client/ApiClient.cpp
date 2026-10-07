@@ -305,7 +305,10 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     const int readTimeoutSeconds)
 {
     reportConnectProgress(30, "Starting the I2P router");
-    sharedI2pRouter(i2pDataDir_);
+    setReseedUrls(endpoint_.reseeds);
+    if (bootstrapI2pRouter(i2pDataDir_) == I2pBootstrap::eEmpty) {
+        return std::nullopt;
+    }
     if (i2pOut_ && i2pOut_->lost()) {
         i2pStream_.reset();
         i2pOut_.reset();

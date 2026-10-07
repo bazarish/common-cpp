@@ -5,6 +5,7 @@
 #include "AccountKey.hpp"
 
 #include <bazarish/Limits.hpp>
+#include <bazarish/PrivateFile.hpp>
 
 #include <memory>
 
@@ -203,24 +204,36 @@ Session AccountManager::open(const std::string& id, const std::string& passphras
     return Session::open(fileFor(id), passphrase);
 }
 
-AccountInfo AccountManager::import(const std::string& name, const fs::path& bundleFile,
+AccountInfo AccountManager::import(const std::string& name, const Bytes& bundle,
     const std::string& password, const std::string& atRestPassphrase)
 {
     const fs::path tmp = root_ / ".import-tmp.db";
     removePair(tmp);
-    Session::importAccount(bundleFile, tmp, password, atRestPassphrase);
-    const std::string restoredName = readInfo(std::string{}, tmp, atRestPassphrase).name;
-    if ((name.empty() ? restoredName : name).find_first_not_of(" \t\r\n")
-        == std::string::npos) {
-        removePair(tmp);
-        throw std::runtime_error("an account needs a name");
-    }
-    std::string id = newAccountId();
-    while (exists(id)) {
+    std::string id;
+    try {
+        Session::importAccountBytes(bundle, tmp, password, atRestPassphrase);
+        const std::string restoredName = readInfo(std::string{}, tmp, atRestPassphrase).name;
+        if ((name.empty() ? restoredName : name).find_first_not_of(" \t\r\n")
+            == std::string::npos) {
+            throw std::runtime_error("an account needs a name");
+        }
         id = newAccountId();
+        while (exists(id)) {
+            id = newAccountId();
+        }
+    } catch (...) {
+        removePair(tmp);
+        throw;
     }
     movePair(tmp, fileFor(id));
     return readInfo(id, fileFor(id), atRestPassphrase);
+}
+
+AccountInfo AccountManager::import(const std::string& name, const fs::path& bundleFile,
+    const std::string& password, const std::string& atRestPassphrase)
+{
+    const std::string sealed = readFileText(bundleFile);
+    return import(name, Bytes(sealed.begin(), sealed.end()), password, atRestPassphrase);
 }
 
 void AccountManager::remove(const std::string& id)

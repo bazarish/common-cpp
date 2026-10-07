@@ -38,7 +38,13 @@ int main()
     CHECK(isB32I2pHost(plainB32));
     CHECK(!isB32I2pHost(destination));  // raw base64 destination
     CHECK(!isB32I2pHost("stats.i2p"));
-    CHECK(isB32I2pHost("abc.b32.i2p"));
+    CHECK(!isB32I2pHost("abc.b32.i2p"));
+    CHECK(!isB32I2pHost(std::string(51, 'a') + ".b32.i2p"));
+    CHECK(!isB32I2pHost(std::string(53, 'a') + ".b32.i2p"));
+    CHECK(!isB32I2pHost(std::string(55, 'a') + ".b32.i2p"));
+    CHECK(!isB32I2pHost(std::string(57, 'a') + ".b32.i2p"));
+    CHECK(isB32I2pHost(std::string(52, 'a') + ".b32.i2p"));
+    CHECK(isB32I2pHost(std::string(56, 'a') + ".b32.i2p"));
     CHECK(!isB32I2pHost(std::string(52, '1') + ".b32.i2p"));  // non-base32 chars
     CHECK(!isB32I2pHost(".b32.i2p"));
     CHECK(!isB32I2pHost(""));

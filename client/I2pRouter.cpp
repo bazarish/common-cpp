@@ -5,6 +5,8 @@
 
 #include "WarmDestPool.hpp"
 
+#include <chrono>
+#include <thread>
 #include <atomic>
 #include <cstddef>
 #include <memory>
@@ -375,6 +377,62 @@ void restartI2pRouter(const std::filesystem::path& dataDir)
     }
     router->start();
     ensureWarmPool(*router);
+}
+
+namespace {
+
+// The retry stays in the router-start stage, which the interface filters as
+// monotonic, so it must not report less than the start itself did.
+constexpr int kRouterStartPercent = 30;
+
+// The router holds its database in memory and writes it out on its own schedule,
+// so the count to wait on is the live one, not the files under netDb.
+bool knownEnough(const bazarish::i2p::Router& router)
+{
+    return static_cast<std::size_t>(router.knownRouters()) >= kMinKnownRouters;
+}
+
+bool waitForNetDb(const bazarish::i2p::Router& router)
+{
+    const auto deadline
+        = std::chrono::steady_clock::now() + std::chrono::seconds(kReseedWaitSeconds);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (knownEnough(router)) {
+            return true;
+        }
+        if (!i2pEnabled()) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(kReseedPollSeconds));
+    }
+    return knownEnough(router);
+}
+
+}  // namespace
+
+I2pBootstrap bootstrapI2pRouter(const std::filesystem::path& dataDir)
+{
+    bazarish::i2p::Router& router = sharedI2pRouter(dataDir);
+    const bazarish::i2p::Capabilities what = router.capabilities();
+    if (!what.reseed || !what.routerCounters) {
+        return I2pBootstrap::eKnown;
+    }
+    if (knownEnough(router)) {
+        return I2pBootstrap::eKnown;
+    }
+    if (reseedUrls().empty()) {
+        return waitForNetDb(router) ? I2pBootstrap::eBuiltIn : I2pBootstrap::eEmpty;
+    }
+    if (waitForNetDb(router)) {
+        return I2pBootstrap::eReseeded;
+    }
+    bazarish::log::warn(
+        "i2p: the configured reseed produced no network database; starting with the built-in list");
+    reportConnectProgress(kRouterStartPercent, "Starting with the built-in reseeds");
+    setReseedUrls({});
+    router.setReseedUrls({});
+    restartI2pRouter(dataDir);
+    return waitForNetDb(router) ? I2pBootstrap::eBuiltIn : I2pBootstrap::eEmpty;
 }
 
 void reconcileI2pRouter(const std::filesystem::path& dataDir)

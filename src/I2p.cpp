@@ -410,6 +410,16 @@ void Router::setSocksProxy(const std::string& host, const int port)
     impl_->transport->setSocksProxy(host, port);
 }
 
+void Router::setReseedUrls(const std::vector<std::string>& urls)
+{
+    impl_->transport->setReseedUrls(urls);
+}
+
+ReseedState Router::reseedState() const
+{
+    return impl_->transport->reseedState();
+}
+
 ProxyState Router::proxyState() const
 {
     return impl_->transport->proxyState();

@@ -354,6 +354,16 @@ public:
         notWithAnExternalRouter("the clearnet proxy");
     }
 
+    void setReseedUrls(const std::vector<std::string>&) override
+    {
+        notWithAnExternalRouter("a reseed");
+    }
+
+    ReseedState reseedState() const override
+    {
+        notWithAnExternalRouter("a reseed");
+    }
+
     ProxyState proxyState() const override { notWithAnExternalRouter("the clearnet proxy"); }
 
     std::shared_ptr<backend::EndpointBackend> createEndpoint(

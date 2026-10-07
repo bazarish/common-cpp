@@ -138,6 +138,61 @@ int main()
         CHECK(said.find("head is over") != std::string::npos);
     }
 
+    {
+        FdStream stream = streamFrom("GET /hello HTTP/1.1\r\nHost: h.b32.i2p\r\n"
+                                     "X-Bazarish-Pair: 1234\r\n\r\nleft");
+        const I2pHttpRequestHead head = readI2pHttpRequestHead(stream);
+        CHECK(head.method == "GET");
+        CHECK(head.target == "/hello");
+        CHECK(head.headers.at("x-bazarish-pair") == "1234");
+        CHECK(head.headers.at("host") == "h.b32.i2p");
+        CHECK(head.leftover == "left");
+    }
+
+    {
+        const I2pHttpRequestLine line = parseI2pHttpRequestLine("POST /a/b HTTP/1.1");
+        CHECK(line.method == "POST");
+        CHECK(line.target == "/a/b");
+        CHECK_THROWS(parseI2pHttpRequestLine("GET"));
+        CHECK_THROWS(parseI2pHttpRequestLine("GET /hello"));
+        CHECK_THROWS(parseI2pHttpRequestLine(""));
+    }
+
+    {
+        FdStream stream = streamFrom("GET /hello HTTP/1.1\r\nHost: h");
+        std::string said;
+        try {
+            (void)readI2pHttpRequestHead(stream);
+        } catch (const std::exception& error) {
+            said = error.what();
+        }
+        CHECK(said.find("closed after 28 bytes") != std::string::npos);
+        CHECK(said.find("request head was complete") != std::string::npos);
+    }
+
+    {
+        FdStream stream
+            = streamFrom("GET /hello HTTP/1.1\r\nX: " + std::string(kMaxI2pHttpHeadBytes, 'y'));
+        std::string said;
+        try {
+            (void)readI2pHttpRequestHead(stream);
+        } catch (const std::exception& error) {
+            said = error.what();
+        }
+        CHECK(said.find("i2p request head is over") != std::string::npos);
+    }
+
+    {
+        CHECK(buildI2pHttpResponse(kI2pHttpOk, {{"Content-Type", "application/octet-stream"}}, 7)
+            == "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
+               "Content-Length: 7\r\nConnection: close\r\n\r\n");
+        CHECK(buildI2pHttpResponse(kI2pHttpForbidden, {}, 0)
+            == "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        CHECK(buildI2pHttpResponse(kI2pHttpNotFound, {}, 0).find("404 Not Found") == 9);
+        CHECK(buildI2pHttpResponse(kI2pHttpBadRequest, {}, 0).find("400 Bad Request") == 9);
+        CHECK_THROWS(buildI2pHttpResponse(418, {}, 0));
+    }
+
     std::printf("TestI2pHttp: all checks passed\n");
     return 0;
 }

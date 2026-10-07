@@ -142,12 +142,18 @@ private:
 
 enum class Backend { eEmbedded, eSam, eGateway };
 
+struct ReseedState {
+    std::string urls;
+    std::string file;
+};
+
 struct Capabilities {
     bool routerCounters = false;
     bool destinationCounters = false;
     bool netDbSample = false;
     bool proxy = false;
     bool offlineKeys = false;
+    bool reseed = false;
 };
 
 inline constexpr int kDefaultSamControlPort = 7656;
@@ -227,6 +233,8 @@ public:
     std::vector<LocalDestination> localDestinations() const;
 
     void setSocksProxy(const std::string& host, int port);
+    void setReseedUrls(const std::vector<std::string>& urls);
+    ReseedState reseedState() const;
     ProxyState proxyState() const;
 
     Capabilities capabilities() const;

@@ -49,6 +49,7 @@ add_library(bazarish_common STATIC
     src/I2pSam.cpp
     src/Descriptor.cpp
     src/ServerDescriptor.cpp
+    src/PairLink.cpp
     src/Resolve.cpp
     src/AliasMaintenance.cpp
     src/I2pHttp.cpp
@@ -134,6 +135,7 @@ target_link_libraries(sam_smoke PRIVATE bazarish_common)
 target_compile_options(sam_smoke PRIVATE -Wall -Wextra -Werror)
 bazarish_add_test(TestDescriptor)
 bazarish_add_test(TestServerDescriptor)
+bazarish_add_test(TestPairLink)
 bazarish_add_test(TestResolve)
 bazarish_add_test(TestAliasMaintenance)
 bazarish_add_test(TestLog)
@@ -186,6 +188,7 @@ if(BAZARISH_WITH_CLIENT)
         client/Client.cpp
         client/FederationFetch.cpp
         client/FileTransfer.cpp
+        client/DevicePairing.cpp
         client/I2pKeys.cpp
         client/GatewayAddress.cpp
         client/I2pRouter.cpp
@@ -217,6 +220,7 @@ if(BAZARISH_WITH_CLIENT)
     endfunction()
 
     bazarish_client_add_test(TestAccount)
+bazarish_client_add_test(TestDevicePairing)
     bazarish_client_add_test(TestAuthorship)
     bazarish_client_add_test(TestApiClient)
     bazarish_client_add_test(TestBot)
@@ -236,11 +240,15 @@ if(BAZARISH_WITH_CLIENT)
     add_executable(send_smoke client/tests/SendSmoke.cpp)
     target_link_libraries(send_smoke PRIVATE bazarish_client)
     target_compile_options(send_smoke PRIVATE -Wall -Wextra -Werror)
+    add_executable(pair_smoke client/tests/PairSmoke.cpp)
+    target_link_libraries(pair_smoke PRIVATE bazarish_client)
+    target_compile_options(pair_smoke PRIVATE -Wall -Wextra -Werror)
     bazarish_client_add_test(TestClientFacade)
     bazarish_client_add_test(TestFileTransfer)
     bazarish_client_add_test(TestGatewayAddress)
     bazarish_client_add_test(TestI2pKeys)
     bazarish_client_add_test(TestI2pProxy)
+    bazarish_client_add_test(TestI2pReseed)
     bazarish_client_add_test(TestInvite)
     bazarish_client_add_test(TestLogin)
     bazarish_client_add_test(TestOutboundCourier)

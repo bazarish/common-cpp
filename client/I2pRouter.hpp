@@ -33,6 +33,19 @@ void setReseedUrls(std::vector<std::string> urls);
 std::vector<std::string> reseedUrls();
 
 inline constexpr std::size_t kMinKnownRouters = 10;
+
+// What i2pd itself spends on a reseed before it gives up (RESEED_GIVEUP_TIMEOUT).
+inline constexpr int kReseedWaitSeconds = 180;
+inline constexpr int kReseedPollSeconds = 3;
+
+enum class I2pBootstrap {
+    eKnown,
+    eReseeded,
+    eBuiltIn,
+    eEmpty,
+};
+
+I2pBootstrap bootstrapI2pRouter(const std::filesystem::path& dataDir);
 std::size_t knownRouterCount(
     const std::filesystem::path& dataDir, std::size_t limit = kMinKnownRouters);
 

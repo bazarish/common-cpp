@@ -287,6 +287,16 @@ public:
     {
         notWithAGateway("the clearnet proxy");
     }
+    void setReseedUrls(const std::vector<std::string>&) override
+    {
+        notWithAGateway("a reseed");
+    }
+
+    ReseedState reseedState() const override
+    {
+        notWithAGateway("a reseed");
+    }
+
     ProxyState proxyState() const override { notWithAGateway("the clearnet proxy"); }
 
     std::shared_ptr<EndpointBackend> createEndpoint(const EndpointConfig& config) override;

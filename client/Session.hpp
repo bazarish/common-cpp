@@ -146,7 +146,39 @@ public:
 
     void changePassphrase(const std::string& passphrase);
 
+    struct PairingOffer {
+        std::string uri;
+        std::string code;
+    };
+
+    enum class PairingStage {
+        ePublishing,
+        eWaiting,
+        eWrongCode,
+        eSending,
+        eDone,
+        eRefused,
+        eFailed,
+    };
+
+    struct PairingEvent {
+        PairingStage stage = PairingStage::ePublishing;
+        std::uint64_t done = 0;
+        std::uint64_t total = 0;
+        int wrongCodes = 0;
+        std::string error;
+    };
+
+    using PairingEventFn = std::function<void(const PairingEvent&)>;
+
+    PairingOffer startPairing(PairingEventFn onEvent);
+    void stopPairing();
+
+    Bytes exportAccountBytes(const std::string& password);
     void exportAccount(const std::filesystem::path& outFile, const std::string& password);
+    static void importAccountBytes(const Bytes& bundle,
+        const std::filesystem::path& accountFile, const std::string& password,
+        const std::string& atRestPassphrase = {});
     static void importAccount(const std::filesystem::path& bundleFile,
         const std::filesystem::path& accountFile, const std::string& password,
         const std::string& atRestPassphrase = {});
@@ -734,6 +766,13 @@ private:
         TransferEventFn onEvent;
     };
     std::shared_ptr<TransferRegistry> transfers_ = std::make_shared<TransferRegistry>();
+    struct PairingRegistry {
+        std::mutex mutex;
+        std::shared_ptr<std::atomic<bool>> cancel;
+        std::weak_ptr<bazarish::i2p::Endpoint> endpoint;
+        PairingEventFn onEvent;
+    };
+    std::shared_ptr<PairingRegistry> pairing_ = std::make_shared<PairingRegistry>();
     Key sealingKey_;
     std::string deliveryIdSeed_;
     bool morePending_ = false;
