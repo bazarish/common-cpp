@@ -601,6 +601,10 @@ private:
     std::string registerPassFor(const std::string& peerFingerprint);
     void revokePassFor(const std::string& peerFingerprint);
 
+    void noteChosenName(const std::string& peerFingerprint, const std::string& name);
+    std::string chosenName(const std::string& peerFingerprint) const;
+    void forgetChosenName(const std::string& peerFingerprint);
+
     void requestWithInfo(const std::string& requestId, const std::string& peerFingerprint,
         const std::string& text,
         const ContactInfo& info, const std::string& displayName = {},

@@ -85,6 +85,7 @@ std::uint64_t randomBelow(const std::uint64_t bound)
 }
 constexpr std::size_t kShortFingerprintChars = 8;
 constexpr const char* kPendingAddsKey = "pending-contact-adds";
+constexpr const char* kChosenNamesKey = "chosen-contact-names";
 
 constexpr std::size_t kDeliveryIdSeedBytes = 32;
 const char* const kCallDeliveredStage = "Invitation delivered";
@@ -1711,6 +1712,7 @@ Session::ContactCardResolved Session::resolveContactCard(
 
 std::string Session::commitContactAdd(const ContactCardResolved& resolved)
 {
+    noteChosenName(resolved.fingerprint, resolved.displayName);
     requestWithInfo(resolved.requestId.empty() ? toHex(randomBytes(kRequestIdBytes))
                                                : resolved.requestId,
         resolved.fingerprint, resolved.introText, resolved.info, resolved.displayName,
@@ -1735,6 +1737,38 @@ std::vector<Session::PendingContactAdd> Session::pendingContactAdds() const
         pending.push_back(std::move(add));
     }
     return pending;
+}
+
+void Session::noteChosenName(const std::string& peerFingerprint, const std::string& name)
+{
+    if (peerFingerprint.empty() || name.empty()) {
+        return;
+    }
+    nlohmann::json stored = db_->has(kChosenNamesKey)
+        ? nlohmann::json::parse(db_->text(kChosenNamesKey))
+        : nlohmann::json::object();
+    stored[peerFingerprint] = name;
+    db_->putText(kChosenNamesKey, stored.dump());
+}
+
+std::string Session::chosenName(const std::string& peerFingerprint) const
+{
+    if (!db_->has(kChosenNamesKey)) {
+        return {};
+    }
+    const nlohmann::json stored = nlohmann::json::parse(db_->text(kChosenNamesKey));
+    return stored.value(peerFingerprint, std::string());
+}
+
+void Session::forgetChosenName(const std::string& peerFingerprint)
+{
+    if (!db_->has(kChosenNamesKey)) {
+        return;
+    }
+    nlohmann::json stored = nlohmann::json::parse(db_->text(kChosenNamesKey));
+    if (stored.erase(peerFingerprint) > 0) {
+        db_->putText(kChosenNamesKey, stored.dump());
+    }
 }
 
 void Session::notePendingContactAdd(const PendingContactAdd& pending)
@@ -1825,6 +1859,7 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     contact.view = descriptorView;
     if (!displayName.empty()) {
         contact.displayName = safeContactName(displayName);
+        forgetChosenName(peerFingerprint);
     }
     persistContacts();
 }
@@ -2681,8 +2716,14 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
             if (type == "contact.request" || type == "contact.accept") {
                 const std::string dn = body.value("dn", std::string());
                 Contact& peer = contacts_[message.fromFingerprint];
-                if (!dn.empty() && peer.displayName.empty()) {
-                    peer.displayName = safeContactName(dn);
+                if (peer.displayName.empty()) {
+                    const std::string chosen = chosenName(message.fromFingerprint);
+                    if (!chosen.empty()) {
+                        peer.displayName = safeContactName(chosen);
+                        forgetChosenName(message.fromFingerprint);
+                    } else if (!dn.empty()) {
+                        peer.displayName = safeContactName(dn);
+                    }
                 }
             }
 
