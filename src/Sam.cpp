@@ -76,6 +76,10 @@ constexpr Socket kInvalidSocket = static_cast<Socket>(INVALID_SOCKET);
 
 using NativeSocket = SOCKET;
 
+constexpr int kNoSignal = 0;
+
+void quietenSignals(Socket) { }
+
 void closeSocket(const Socket socket) { ::closesocket(static_cast<SOCKET>(socket)); }
 
 std::ptrdiff_t socketRead(const Socket socket, void* const buffer, const std::size_t size)
@@ -87,7 +91,7 @@ std::ptrdiff_t socketRead(const Socket socket, void* const buffer, const std::si
 std::ptrdiff_t socketWrite(const Socket socket, const void* const data, const std::size_t size)
 {
     return ::send(static_cast<SOCKET>(socket), static_cast<const char*>(data),
-        static_cast<int>(size), 0);
+        static_cast<int>(size), kNoSignal);
 }
 
 void setTimeoutOption(const Socket socket, const int option, const int seconds)
@@ -104,7 +108,8 @@ std::ptrdiff_t socketSendTo(const Socket socket, const void* const data,
     const std::size_t size, const sockaddr_in& address)
 {
     return ::sendto(static_cast<SOCKET>(socket), static_cast<const char*>(data),
-        static_cast<int>(size), 0, reinterpret_cast<const sockaddr*>(&address), sizeof address);
+        static_cast<int>(size), kNoSignal, reinterpret_cast<const sockaddr*>(&address),
+        sizeof address);
 }
 
 bool socketReadable(const Socket socket, const int timeoutMs)
@@ -119,10 +124,6 @@ std::size_t socketSendQueue(Socket)
 {
     return 0;
 }
-
-constexpr int kNoSignal = 0;
-
-void quietenSignals(Socket) { }
 
 #else
 
