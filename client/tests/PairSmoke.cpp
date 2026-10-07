@@ -23,6 +23,7 @@ using Clock = std::chrono::steady_clock;
 namespace {
 
 constexpr int kOfferWaitSeconds = 300;
+constexpr int kTeardownWaitSeconds = 2;
 constexpr char kWrongCode[] = "0000";
 constexpr char kOtherWrongCode[] = "1111";
 
@@ -39,6 +40,21 @@ void say(const std::string& what)
 std::string wrongCodeFor(const std::string& code)
 {
     return code == kWrongCode ? kOtherWrongCode : kWrongCode;
+}
+
+void sayDestinations(const std::string& when)
+{
+    bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
+    if (router == nullptr) {
+        say("pool " + when + ": no router");
+        return;
+    }
+    for (const bazarish::i2p::LocalDestination& dest : router->localDestinations()) {
+        say("pool " + when + ": " + dest.label + " " + dest.host + " in="
+            + std::to_string(dest.inboundTunnels) + " out="
+            + std::to_string(dest.outboundTunnels)
+            + (dest.published ? " published" : " unpublished"));
+    }
 }
 
 }  // namespace
@@ -90,10 +106,11 @@ int main()
           });
     say("link " + offer.uri);
     say("code " + offer.code);
+    sayDestinations("while pairing");
 
     const PairLink link = parsePairLink(offer.uri);
     const std::atomic<bool> never{false};
-    const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
+    std::shared_ptr<bazarish::i2p::Endpoint> endpoint
         = openPairLink(sharedI2pRouter(root / "i2p"), bazarish::i2p::Privacy::eMinimal,
             kPairingOwner);
 
@@ -151,5 +168,17 @@ int main()
         return 1;
     }
     say("paired");
+
+    endpoint.reset();
+    std::this_thread::sleep_for(std::chrono::seconds(kTeardownWaitSeconds));
+    sayDestinations("after both sides let go");
+
+    const Session::PairingOffer again
+        = session.startPairing([](const Session::PairingEvent&) {});
+    say("second offer " + again.code);
+    sayDestinations("a window nobody fetches from");
+    session.stopPairing();
+    std::this_thread::sleep_for(std::chrono::seconds(kTeardownWaitSeconds));
+    sayDestinations("that window closed");
     return 0;
 }
