@@ -20,12 +20,15 @@ int main()
     {
         bazarish::i2p::RouterConfig refused = bazarish::i2p::offlineRouter(dir);
         refused.reseedUrls.push_back((dir / "second-no-reseed.su3").string());
+        std::fprintf(stderr, "reseed: a router with an unreadable archive\n");
         CHECK_THROWS(bazarish::i2p::Router(refused));
     }
 
     bazarish::i2p::RouterConfig config = bazarish::i2p::offlineRouter(dir);
     config.role = bazarish::i2p::Role::eClient;
+    std::fprintf(stderr, "reseed: starting the router\n");
     bazarish::i2p::Router router(config);
+    std::fprintf(stderr, "reseed: router started\n");
     CHECK(router.running());
     CHECK(router.capabilities().reseed);
 

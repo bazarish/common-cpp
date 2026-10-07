@@ -200,6 +200,10 @@ void testVoiceNormalization()
     CHECK(nothing.empty());
 }
 
+constexpr int kWantedFrames = 5;
+constexpr int kWaitMs = 10000;
+constexpr int kPollMs = 10;
+
 }  // namespace
 
 int main()
@@ -322,9 +326,6 @@ int main()
         callee.start();
         // Waited for rather than slept through: on a loaded machine the media
         // threads take longer to get there, and the count is what matters.
-        constexpr int kWantedFrames = 5;
-        constexpr int kWaitMs = 10000;
-        constexpr int kPollMs = 10;
         for (int waited = 0; waited < kWaitMs; waited += kPollMs) {
             if (caller.packetsSent() >= kWantedFrames && callee.packetsSent() >= kWantedFrames
                 && caller.packetsReceived() >= kWantedFrames
@@ -364,11 +365,18 @@ int main()
 
         caller.start();
         callee.start();
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        // Waited for, not slept through: what is asserted is that the caller
+        // sent and that the callee, holding another key, heard none of it.
+        for (int waited = 0; waited < kWaitMs; waited += kPollMs) {
+            if (caller.packetsSent() >= kWantedFrames) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(kPollMs));
+        }
         caller.stop();
         callee.stop();
 
-        CHECK(caller.packetsSent() >= 5);
+        CHECK(caller.packetsSent() >= kWantedFrames);
         CHECK(calleeSinkRaw->frameCount() == 0);
         CHECK(callee.packetsReceived() == 0);
     }

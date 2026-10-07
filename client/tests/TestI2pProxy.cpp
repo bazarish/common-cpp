@@ -19,7 +19,9 @@ int main()
 
     bazarish::i2p::RouterConfig config = bazarish::i2p::offlineRouter(dir);
     config.role = bazarish::i2p::Role::eClient;
+    std::fprintf(stderr, "proxy: starting the router\n");
     bazarish::i2p::Router router(config);
+    std::fprintf(stderr, "proxy: router started\n");
 
     {
         const bazarish::i2p::ProxyState state = router.proxyState();
