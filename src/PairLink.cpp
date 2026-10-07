@@ -1,14 +1,15 @@
 // Bazarish project (c) 2026
 #include "bazarish/PairLink.hpp"
 
+#include "bazarish/Links.hpp"
 #include "bazarish/I2pAddress.hpp"
 
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 
-constexpr char kPrefix[] = "bazarish://pair?";
-constexpr std::size_t kPrefixLen = sizeof(kPrefix) - 1;
+constexpr std::string_view kPrefix = bazarish::kPairUri;
 constexpr char kHttps[] = "https://";
 
 }  // namespace
@@ -26,7 +27,7 @@ std::string encodePairLink(const PairLink& link)
 
 PairLink parsePairLink(const std::string& uri)
 {
-    if (uri.size() <= kPrefixLen || uri.compare(0, kPrefixLen, kPrefix) != 0) {
+    if (uri.size() <= kPrefix.size() || uri.compare(0, kPrefix.size(), kPrefix) != 0) {
         throw std::invalid_argument("not a bazarish://pair link");
     }
 
@@ -35,7 +36,7 @@ PairLink parsePairLink(const std::string& uri)
     bool haveVersion = false;
     bool haveDest = false;
 
-    const std::string query = uri.substr(kPrefixLen);
+    const std::string query = uri.substr(kPrefix.size());
     std::size_t pos = 0;
     while (pos < query.size()) {
         const std::size_t amp = query.find('&', pos);

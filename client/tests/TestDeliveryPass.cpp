@@ -777,14 +777,14 @@ int main()
                 return m.mailbox[bob.fingerprint()].back().payload.size();
             };
             constexpr std::size_t kSealFramingWobble = 8;
-            const std::size_t small = weighOf("hi");
+            const std::size_t brief = weighOf("hi");
             const std::size_t again = weighOf("hi");
-            const std::size_t large = weighOf(std::string(200, 'x'));
-            const auto near = [](const std::size_t a, const std::size_t b) {
+            const std::size_t lengthy = weighOf(std::string(200, 'x'));
+            const auto withinWobble = [](const std::size_t a, const std::size_t b) {
                 return a < b ? b - a <= kSealFramingWobble : a - b <= kSealFramingWobble;
             };
-            CHECK(near(small, again));
-            CHECK(near(small, large));
+            CHECK(withinWobble(brief, again));
+            CHECK(withinWobble(brief, lengthy));
         }
         bob.sync();
 

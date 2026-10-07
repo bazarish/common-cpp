@@ -1,16 +1,17 @@
 // Bazarish project (c) 2026
 #include "bazarish/ServerDescriptor.hpp"
 
+#include "bazarish/Links.hpp"
 #include "bazarish/Address.hpp"
 #include "bazarish/Crypto.hpp"
 
 #include <atomic>
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 
-constexpr char kPrefix[] = "bazarish://server?";
-constexpr std::size_t kPrefixLen = sizeof(kPrefix) - 1;
+constexpr std::string_view kPrefix = bazarish::kServerUri;
 
 }  // namespace
 
@@ -66,7 +67,7 @@ std::string encodeServerDescriptor(const ServerDescriptor& descriptor)
 
 ServerDescriptor parseServerDescriptor(const std::string& uri)
 {
-    if (uri.size() <= kPrefixLen || uri.compare(0, kPrefixLen, kPrefix) != 0) {
+    if (uri.size() <= kPrefix.size() || uri.compare(0, kPrefix.size(), kPrefix) != 0) {
         throw std::invalid_argument("not a bazarish://server descriptor");
     }
 
@@ -75,7 +76,7 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
     bool haveVersion = false;
     bool haveFingerprint = false;
 
-    const std::string query = uri.substr(kPrefixLen);
+    const std::string query = uri.substr(kPrefix.size());
     std::size_t pos = 0;
     while (pos < query.size()) {
         const std::size_t amp = query.find('&', pos);

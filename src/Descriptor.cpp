@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "bazarish/Descriptor.hpp"
 
+#include "bazarish/Links.hpp"
 #include "bazarish/Address.hpp"
 #include "bazarish/Crypto.hpp"
 #include "bazarish/I2pAddress.hpp"
@@ -8,12 +9,12 @@
 #include <algorithm>
 #include <map>
 #include <stdexcept>
+#include <string_view>
 #include <string>
 
 namespace {
 
-constexpr char kPrefix[] = "bazarish://invite?";
-constexpr std::size_t kPrefixLen = sizeof(kPrefix) - 1;
+constexpr std::string_view kPrefix = bazarish::kInviteUri;
 
 std::string percentEncode(const std::string& value)
 {
@@ -89,12 +90,12 @@ std::string encodeDescriptor(const Descriptor& descriptor)
 
 Descriptor parseDescriptor(const std::string& uri)
 {
-    if (uri.size() <= kPrefixLen || uri.compare(0, kPrefixLen, kPrefix) != 0) {
+    if (uri.size() <= kPrefix.size() || uri.compare(0, kPrefix.size(), kPrefix) != 0) {
         throw std::invalid_argument("not a bazarish://invite descriptor");
     }
 
     std::map<std::string, std::string> params;
-    const std::string query = uri.substr(kPrefixLen);
+    const std::string query = uri.substr(kPrefix.size());
     std::size_t pos = 0;
     while (pos < query.size()) {
         const std::size_t amp = query.find('&', pos);
