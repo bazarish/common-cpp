@@ -102,7 +102,7 @@ int main()
         wrongVersion["v"] = hybrid::kFrameVersion + 1;
         CHECK_THROWS(hybrid::verifyJson(encode(wrongVersion)));
         nlohmann::json wrongAlgorithm = decode(frame);
-        wrongAlgorithm["c"]["alg"] = "ECDSA";
+        wrongAlgorithm["c"]["alg"] = "ED448";
         CHECK_THROWS(hybrid::verifyJson(encode(wrongAlgorithm)));
     }
 

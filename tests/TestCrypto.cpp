@@ -14,8 +14,8 @@ int main()
     const Key signing = Key::generateSigning();
     const Bytes message = {'b', 'a', 'z', 'a', 'r', 'i', 's', 'h'};
     const Bytes signature = sign(signing, message);
-    // DER-encoded ECDSA P-256 signature: variable size around 70 bytes.
-    CHECK(signature.size() >= 64 && signature.size() <= 72);
+    CHECK(signing.isA(kClassicalSigningAlgorithm));
+    CHECK(signature.size() == 64);
     CHECK(verify(signing, message, signature));
 
     Bytes tampered = message;
@@ -52,8 +52,8 @@ int main()
     CHECK(sealingPublic.fingerprint() == sealing.fingerprint());
 
     const Key pq = Key::generateSigningPq();
-    CHECK(pq.isA("ML-DSA-65"));
-    CHECK(!pq.isA("EC"));
+    CHECK(pq.isA(kPqSigningAlgorithm));
+    CHECK(!pq.isA(kClassicalSigningAlgorithm));
     const Bytes pqSignature = sign(pq, message);
     CHECK(pqSignature.size() == 3309);
     CHECK(verify(pq, message, pqSignature));
