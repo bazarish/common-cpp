@@ -766,8 +766,6 @@ void Session::publishRouting()
     } catch (const std::exception& error) {
         bazarish::log::info("master not synced to this account's other devices: {}", error.what());
     }
-    reportConnectProgress(98, "Telling the name service where you are");
-    serviceAliasesAfterMove();
     approval_ = {};
 }
 
