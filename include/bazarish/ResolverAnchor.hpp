@@ -4,6 +4,6 @@
 namespace bazarish {
 
 inline constexpr const char* kResolverRootFingerprint
-    = "alias3c4rsqdg7hr5vf7uqwuum3pcmdeexoongjgo35pw3rrbnnq";
+    = "rootjh33dil4gejlmima3jpsfg6fw77m6unyldxeytfy7ccf3gma";
 
 }  // namespace bazarish
