@@ -17,19 +17,15 @@ int main()
     const Descriptor descriptor{
         "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq",
         "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p",
-        "0123456789abcdef0123456789abcdef",
     };
 
     const Descriptor d2 = descriptorFromJson(descriptorToJson(descriptor));
     CHECK(d2.fingerprint == descriptor.fingerprint);
     CHECK(d2.dest == descriptor.dest);
-    CHECK(d2.view == descriptor.view);
 
-    const CardFetchQuery query{"dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq",
-        "0123456789abcdef0123456789abcdef"};
+    const CardFetchQuery query{"dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq"};
     const CardFetchQuery q2 = cardFetchQueryFromJson(toJson(query));
     CHECK(q2.fingerprint == query.fingerprint);
-    CHECK(q2.view == query.view);
 
     const CardFetchResponse response{Bytes{0xDE, 0xAD, 0xBE, 0xEF, 0x42}};
     const CardFetchResponse r2 = cardFetchResponseFromJson(toJson(response));
@@ -52,7 +48,6 @@ int main()
     CHECK(rec2.alias == record.alias);
     CHECK(rec2.descriptor.fingerprint == descriptor.fingerprint);
     CHECK(rec2.descriptor.dest == descriptor.dest);
-    CHECK(rec2.descriptor.view == descriptor.view);
     CHECK(rec2.issuedAt == record.issuedAt);
     CHECK(rec2.notAfter == record.notAfter);
 
@@ -79,7 +74,7 @@ int main()
     CHECK(del.delegatedFingerprint() == delegated.fingerprint());
 
     const Identity owner = Identity::generate();
-    const Descriptor owned{owner.fingerprint(), descriptor.dest, descriptor.view};
+    const Descriptor owned{owner.fingerprint(), descriptor.dest};
     const Bytes ownerCert = AliasCertificate::issue(owner, "alice", now);
 
     const ResolveRecord signedRec{"alice", owned, now, now + week};
@@ -88,7 +83,7 @@ int main()
         = verifyResolveRecord(recordDer, delegationDer, ownerCert, root.fingerprint(), now);
     CHECK(okRec.alias == "alice");
     CHECK(okRec.descriptor.fingerprint == owner.fingerprint());
-    CHECK(okRec.descriptor.view == descriptor.view);
+    CHECK(okRec.descriptor.dest == descriptor.dest);
 
     const auto chainRejects = [&](const Bytes& rDer, const Bytes& dDer, const Bytes& certDer,
                                   const std::string& rootFp, std::int64_t t) {
@@ -141,14 +136,10 @@ int main()
         }
         return false;
     };
-    CHECK(descriptorRejects({{"fp", "not-a-fingerprint"}, {"dest", descriptor.dest},
-        {"view", descriptor.view}}));
-    CHECK(descriptorRejects({{"fp", descriptor.fingerprint}, {"dest", "nowhere.example"},
-        {"view", descriptor.view}}));
-    CHECK(descriptorRejects(
-        {{"fp", descriptor.fingerprint}, {"dest", descriptor.dest}, {"view", "short"}}));
-    CHECK(descriptorRejects({{"fp", descriptor.fingerprint}, {"dest", ""}, {"view", ""}}));
-    CHECK(!descriptorRejects({{"fp", ""}, {"dest", ""}, {"view", ""}}));
+    CHECK(descriptorRejects({{"fp", "not-a-fingerprint"}, {"dest", descriptor.dest}}));
+    CHECK(descriptorRejects({{"fp", descriptor.fingerprint}, {"dest", "nowhere.example"}}));
+    CHECK(descriptorRejects({{"fp", descriptor.fingerprint}, {"dest", ""}}));
+    CHECK(!descriptorRejects({{"fp", ""}, {"dest", ""}}));
 
     CHECK(!chainRejects(recordDer, delegationDer, AliasCertificate::issue(owner, "Alice", now),
         root.fingerprint(), now));

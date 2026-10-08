@@ -42,15 +42,13 @@ int main()
     const std::string userDest = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
     const Identity user = Identity::generate();
 
-    const std::string view = "0123456789abcdef0123456789abcdef";
-    const Descriptor descriptor{user.fingerprint(), userDest, view};
+    const Descriptor descriptor{user.fingerprint(), userDest};
     const std::string uri = encodeDescriptor(descriptor);
     CHECK(uri.rfind("bazarish://invite?", 0) == 0);
 
     const Descriptor decoded = parseDescriptor(uri);
     CHECK(decoded.fingerprint == user.fingerprint());
     CHECK(decoded.dest == userDest);
-    CHECK(decoded.view == view);
 
     CHECK_THROWS(parseDescriptor("http://example/x"));
     CHECK_THROWS(parseDescriptor("bazarish://invite?v=1&fp=short"));

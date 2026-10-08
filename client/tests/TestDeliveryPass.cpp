@@ -87,7 +87,6 @@ struct Mock {
     Key serverSealing = Key::generateSealing();
     std::map<std::string, std::string> destFor;
     std::map<std::string, std::string> certFor;  // fingerprint -> contact card (base64 DER)
-    std::map<std::string, std::string> viewFor;
     std::set<std::string> delegated;
     struct Item {
         std::string id;
@@ -100,7 +99,6 @@ struct Mock {
     std::size_t largestContactRequest = 0;
     int nextId = 1;
     std::string refuseWith;
-    std::map<std::string, std::string> pendingView;
     std::map<std::string, std::string> aliasOwner;
     std::map<std::string, Descriptor> aliasDescriptor;
     std::set<std::string> aliasBindingWanted;
@@ -255,39 +253,9 @@ int main()
                   }
                   m.certFor[caller] = cardB64;
               }
-              const std::string view = toHex(sha256(Bytes(caller.begin(), caller.end())))
-                                           .substr(0, bazarish::kViewCapabilityChars);
-              {
-                  std::lock_guard<std::mutex> lock(m.mu);
-                  m.viewFor[caller] = view;
-              }
-              respondJson(response, {{"quotaBytes", 100u * 1024 * 1024}, {"view", view}});
+              respondJson(response, {{"quotaBytes", 100u * 1024 * 1024}});
           };
     server.post("/v1/account/card", stub(handlePublishCard));
-
-    server.post("/v1/account/serving-key",
-        stub([&](const http::Request& request, http::Response& response) {
-            const std::string caller = requireCaller(request);
-            const std::string view = toHex(randomBytes(bazarish::kViewCapabilityBytes));
-            CHECK(isViewCapability(view));
-            {
-                std::lock_guard<std::mutex> lock(m.mu);
-                m.pendingView[caller] = view;
-            }
-            respondJson(response,
-                {{"servingKey", toBase64(m.serverSealing.publicDer())}, {"view", view}});
-        }));
-    server.post("/v1/account/serving-key/commit",
-        stub([&](const http::Request& request, http::Response& response) {
-            const std::string caller = requireCaller(request);
-            const std::string cardB64
-                = nlohmann::json::parse(request.body).at("card").get<std::string>();
-            CHECK(ContactCard::verify(fromBase64(cardB64)).fingerprint() == caller);
-            std::lock_guard<std::mutex> lock(m.mu);
-            m.certFor[caller] = cardB64;
-            m.viewFor[caller] = m.pendingView[caller];
-            respondJson(response, {{"ok", true}});
-        }));
 
     server.post("/v1/account/i2p-dest",
         stub([&](const http::Request& request, http::Response& response) {
@@ -517,7 +485,7 @@ int main()
             std::lock_guard<std::mutex> lock(m.mu);
             const auto found = m.certFor.find(asked.fingerprint);
             FetchOutcome outcome;
-            if (found == m.certFor.end() || asked.view != m.viewFor[asked.fingerprint]) {
+            if (found == m.certFor.end()) {
                 outcome.errorCode = "CARD_UNKNOWN";
                 return outcome;
             }
@@ -596,17 +564,6 @@ int main()
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.resolverUpdateCalls == updatesBeforePressingAgain);
             CHECK(m.aliasDescriptor.at("alice").fingerprint == alice.fingerprint());
-            CHECK(m.aliasDescriptor.at("alice").view == m.viewFor[alice.fingerprint()]);
-        }
-
-        const std::string viewBefore = m.viewFor[alice.fingerprint()];
-        alice.rotateServingKey(nullptr);
-        const std::string viewAfter = m.viewFor[alice.fingerprint()];
-        CHECK(viewAfter != viewBefore);
-        CHECK(!alice.aliasUpdatePending());
-        {
-            std::lock_guard<std::mutex> lock(m.mu);
-            CHECK(m.aliasDescriptor.at("alice").view == viewAfter);
         }
 
         {
@@ -639,7 +596,7 @@ int main()
         }
         CHECK(bob.aliasNames().empty());
         const int statusBefore = m.resolverStatusCalls;
-        bob.rotateServingKey(nullptr);
+        CHECK(bob.refreshAliasStatus());
         CHECK(m.resolverStatusCalls == statusBefore + 1);
         CHECK(bob.aliasNames().size() == 1);
         {

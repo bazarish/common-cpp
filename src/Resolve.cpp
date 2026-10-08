@@ -38,7 +38,6 @@ nlohmann::json descriptorToJson(const Descriptor& descriptor)
     return {
         {"fp", descriptor.fingerprint},
         {"dest", descriptor.dest},
-        {"view", descriptor.view},
     };
 }
 
@@ -47,18 +46,13 @@ Descriptor descriptorFromJson(const nlohmann::json& body)
     Descriptor descriptor;
     descriptor.fingerprint = body.at("fp").get<std::string>();
     descriptor.dest = body.at("dest").get<std::string>();
-    descriptor.view = body.at("view").get<std::string>();
-    if (descriptor.fingerprint.empty() && descriptor.dest.empty()
-        && descriptor.view.empty()) {
+    if (descriptor.fingerprint.empty() && descriptor.dest.empty()) {
         return descriptor;
     }
     if (!isFingerprint(descriptor.fingerprint)) {
         throw std::invalid_argument("descriptor: that is not a fingerprint");
     }
     validateB32I2pHost(descriptor.dest);
-    if (!isViewCapability(descriptor.view)) {
-        throw std::invalid_argument("descriptor: that is not a card-read capability");
-    }
     return descriptor;
 }
 
@@ -67,7 +61,6 @@ nlohmann::json toJson(const CardFetchQuery& query)
     return {
         {"v", 1},
         {"fp", query.fingerprint},
-        {"view", query.view},
     };
 }
 
@@ -76,7 +69,6 @@ CardFetchQuery cardFetchQueryFromJson(const nlohmann::json& body)
     requireVersion(body, "card-fetch query");
     CardFetchQuery query;
     query.fingerprint = body.at("fp").get<std::string>();
-    query.view = body.at("view").get<std::string>();
     return query;
 }
 

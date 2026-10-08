@@ -81,7 +81,6 @@ int main()
     const Key serverSealing = Key::generateSealing();
     const std::string aliceDest = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
     const std::string bobDest = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
-    const std::string bobView = "0123456789abcdef0123456789abcdef";
 
     const Identity resolverRoot = Identity::generate();
     const Identity resolverDelegated = Identity::generate();
@@ -122,7 +121,6 @@ int main()
             CHECK(toDest == bobDest);
             const CardFetchQuery query = cardFetchQueryFromJson(nlohmann::json::parse(sealed));
             CHECK(query.fingerprint == bob.fingerprint());
-            CHECK(query.view == bobView);
             const Key bobSealing = Key::generateSealing();
             outcome.ok = true;
             outcome.sealed = ContactCard::issue(bob, static_cast<std::int64_t>(std::time(nullptr)),
@@ -138,7 +136,7 @@ int main()
             return outcome;
         }
         const std::string recordAlias = query.alias == "swap" ? "other" : query.alias;
-        const Descriptor descriptor{bob.fingerprint(), bobDest, bobView};
+        const Descriptor descriptor{bob.fingerprint(), bobDest};
         const ResolveRecord record{recordAlias, descriptor, now, now + resolverWeek};
         const ResolveResponse resp{signResolveRecord(record, resolverDelegated),
             resolverDelegationDer, AliasCertificate::issue(bob, recordAlias, now)};
@@ -216,7 +214,7 @@ int main()
     }
 
     {
-        const Descriptor descriptor{bob.fingerprint(), bobDest, bobView};
+        const Descriptor descriptor{bob.fingerprint(), bobDest};
         const ContactInfo info = client.fetchCard(descriptor, directDial);
         CHECK(info.card.fingerprint() == bob.fingerprint());
         CHECK(info.card.dest == bobDest);
@@ -237,7 +235,6 @@ int main()
         const Descriptor descriptor = client.resolveAlias("bob", resolver, now, directDial);
         CHECK(descriptor.fingerprint == bob.fingerprint());
         CHECK(descriptor.dest == bobDest);
-        CHECK(descriptor.view == bobView);
 
         CHECK(rejects([&]() { (void)client.resolveAlias("ghost", resolver, now, directDial); }));
 

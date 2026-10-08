@@ -6,7 +6,6 @@
 #include "bazarish/Crypto.hpp"
 #include "bazarish/I2pAddress.hpp"
 
-#include <algorithm>
 #include <map>
 #include <stdexcept>
 #include <string_view>
@@ -70,18 +69,10 @@ std::string percentDecode(const std::string& value)
 
 namespace bazarish {
 
-bool isViewCapability(const std::string& text)
-{
-    return text.size() == kViewCapabilityChars
-        && std::all_of(text.begin(), text.end(), [](const char c) {
-               return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-           });
-}
-
 std::string encodeDescriptor(const Descriptor& descriptor)
 {
     std::string uri = std::string(kPrefix) + "v=1&fp=" + descriptor.fingerprint
-        + "&dest=" + descriptor.dest + "&view=" + descriptor.view;
+        + "&dest=" + descriptor.dest;
     if (!descriptor.name.empty()) {
         uri += "&name=" + percentEncode(descriptor.name);
     }
@@ -130,10 +121,6 @@ Descriptor parseDescriptor(const std::string& uri)
     }
     descriptor.dest = need("dest");
     validateB32I2pHost(descriptor.dest);
-    descriptor.view = need("view");
-    if (!isViewCapability(descriptor.view)) {
-        throw std::invalid_argument("descriptor view is not 32 hex characters");
-    }
     const auto nameParam = params.find("name");
     if (nameParam != params.end()) {
         descriptor.name = percentDecode(nameParam->second);

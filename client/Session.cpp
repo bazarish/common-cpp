@@ -133,9 +133,6 @@ void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap)
     if (bootstrap.contains("servingKey")) {
         contact.servingSealingB64 = bootstrap.at("servingKey").get<std::string>();
     }
-    if (bootstrap.contains("view")) {
-        contact.view = bootstrap.at("view").get<std::string>();
-    }
     if (!bootstrap.contains("pass")) {
         return;
     }
@@ -412,8 +409,6 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
             contact.displayName = entry.value("displayName", std::string());
             contact.avatarMime = entry.value("avatarMime", std::string());
             contact.avatarSentToPeer = entry.value("avatarSentToPeer", false);
-            contact.view = entry.value("view", std::string());
-            contact.sharingRefused = entry.value("sharingRefused", false);
             contact.notifications = entry.value("notifications", true);
             contact.allowCalls = entry.value("allowCalls", true);
             contacts.emplace(fingerprint, std::move(contact));
@@ -445,7 +440,6 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     session.contactsAskedBy_
         = meta.value("contactsAskedBy", std::vector<std::string>());
     session.cardB64_ = meta.value("card", std::string{});
-    session.view_ = meta.value("view", std::string{});
     for (const nlohmann::json& held : meta.value("aliasNames", nlohmann::json::array())) {
         session.aliasNames_.push_back(
             Session::AliasHolding{held.value("alias", std::string()),
@@ -456,8 +450,6 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     session.aliasStatusAt_ = meta.value("aliasStatusAt", std::int64_t{0});
     session.aliasDepositCovers_ = meta.value("aliasDepositCovers", true);
     session.aliasPushedDest_ = meta.value("aliasPushedDest", std::string{});
-    session.aliasPushedView_ = meta.value("aliasPushedView", std::string{});
-    session.sharingAllowed_ = meta.value("sharingAllowed", true);
     session.delegationDays_ = meta.value("delegationDays", kDefaultDelegationDays);
     session.deliveryIdSeed_ = meta.value("deliveryIdSeed", std::string());
     if (session.deliveryIdSeed_.empty()) {
@@ -633,8 +625,6 @@ void Session::persistMeta() const
         {"card", cardB64_},
         {"deliveryIdSeed", deliveryIdSeed_},
         {"deliverySecret", toHex(deliverySecret_)},
-        {"view", view_},
-        {"sharingAllowed", sharingAllowed_},
         {"delegationDays", delegationDays_},
         {"encrypted", encrypted_},
         {"avatarMime", avatarMime_},
@@ -646,7 +636,6 @@ void Session::persistMeta() const
         {"aliasStatusAt", aliasStatusAt_},
         {"aliasDepositCovers", aliasDepositCovers_},
         {"aliasPushedDest", aliasPushedDest_},
-        {"aliasPushedView", aliasPushedView_},
     };
     db_->putText("meta", meta.dump(2));
 }
@@ -677,8 +666,6 @@ nlohmann::json Session::contactsToJson() const
             {"displayName", contact.displayName},
             {"avatarMime", contact.avatarMime},
             {"avatarSentToPeer", contact.avatarSentToPeer},
-            {"view", contact.view},
-            {"sharingRefused", contact.sharingRefused},
             {"notifications", contact.notifications},
             {"allowCalls", contact.allowCalls},
         };
@@ -772,9 +759,6 @@ void Session::publishRouting()
 void Session::storeCard(const PublishResult& result)
 {
     cardB64_ = toBase64(result.cardDer);
-    if (!result.view.empty()) {
-        view_ = result.view;
-    }
     myDest_ = result.dest;
     myServingKeyB64_
         = result.servingSealingKeyDer.empty() ? std::string() : toBase64(result.servingSealingKeyDer);
@@ -1616,8 +1600,8 @@ std::string Session::addByInvite(const std::string& inviteUri, const std::string
 {
     const Descriptor descriptor = parseDescriptor(inviteUri);
     const ContactInfo info = client_->fetchCard(descriptor, fetchTransport());
-    requestWithInfo(toHex(randomBytes(kRequestIdBytes)), descriptor.fingerprint, text, info,
-        descriptor.name, descriptor.view);
+    requestWithInfo(
+        toHex(randomBytes(kRequestIdBytes)), descriptor.fingerprint, text, info, descriptor.name);
     return descriptor.fingerprint;
 }
 
@@ -1689,13 +1673,11 @@ Session::ContactCardResolved Session::resolveContactCard(
                 = fetchClient.resolveAlias(alias, context.resolver, nowSeconds(), toRegistry);
             out.info = fetchClient.fetchCard(descriptor, transport);
             out.fingerprint = descriptor.fingerprint;
-            out.view = descriptor.view;
             out.displayName = safeContactName(alias);
         } else {
             const Descriptor descriptor = parseDescriptor(request.uriOrAlias);
             out.info = fetchClient.fetchCard(descriptor, transport);
             out.fingerprint = descriptor.fingerprint;
-            out.view = descriptor.view;
             out.displayName = safeContactName(descriptor.name);
         }
         out.ok = true;
@@ -1714,8 +1696,7 @@ std::string Session::commitContactAdd(const ContactCardResolved& resolved)
     noteChosenName(resolved.fingerprint, resolved.displayName);
     requestWithInfo(resolved.requestId.empty() ? toHex(randomBytes(kRequestIdBytes))
                                                : resolved.requestId,
-        resolved.fingerprint, resolved.introText, resolved.info, resolved.displayName,
-        resolved.view);
+        resolved.fingerprint, resolved.introText, resolved.info, resolved.displayName);
     return resolved.fingerprint;
 }
 
@@ -1805,14 +1786,13 @@ std::string Session::addByAlias(const std::string& alias, const std::string& tex
     const Descriptor descriptor
         = client_->resolveAlias(normalized, resolverCoordinate_, nowSeconds(), heldTransport());
     const ContactInfo info = client_->fetchCard(descriptor, fetchTransport());
-    requestWithInfo(toHex(randomBytes(kRequestIdBytes)), descriptor.fingerprint, text, info,
-        alias, descriptor.view);
+    requestWithInfo(
+        toHex(randomBytes(kRequestIdBytes)), descriptor.fingerprint, text, info, alias);
     return descriptor.fingerprint;
 }
 
 void Session::requestWithInfo(const std::string& requestId, const std::string& peerFingerprint,
-    const std::string& text, const ContactInfo& info, const std::string& displayName,
-    const std::string& descriptorView)
+    const std::string& text, const ContactInfo& info, const std::string& displayName)
 {
     if (info.card.fingerprint() != peerFingerprint) {
         throw std::runtime_error("contact lookup returned a different user");
@@ -1839,7 +1819,6 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
                 {"sealing", sealingPublicB64()},
                 {"dest", myDest_},
                 {"servingKey", myServingKeyB64_},
-                {"view", sharedView()},
                 {"pass", replyPass},
             }},
     });
@@ -1855,7 +1834,6 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     contact.servingSealingB64 = toBase64(peerServingKey.publicDer());
     rememberKeys(contact, IdentityKeys{info.card.identityClassicalDer, info.card.identityPqDer});
     contact.issuedToThem = true;
-    contact.view = descriptorView;
     if (!displayName.empty()) {
         contact.displayName = safeContactName(displayName);
         forgetChosenName(peerFingerprint);
@@ -2022,43 +2000,6 @@ void Session::sendDelete(const std::string& peerFingerprint, const std::string& 
     sendContent(peerFingerprint, std::move(inner));
 }
 
-void Session::setSharingAllowed(const bool allowed)
-{
-    if (sharingAllowed_ == allowed) {
-        return;
-    }
-    sharingAllowed_ = allowed;
-    persistMeta();
-}
-
-Session::RoutingPushResult Session::rotateServingKey(
-    const std::function<void(const std::string&)>& onStage)
-{
-    const auto stage = [&onStage](const std::string& text) {
-        if (onStage) {
-            onStage(text);
-        }
-    };
-    if (myDest_.empty()) {
-        throw std::runtime_error("no destination of your own yet - connect first");
-    }
-    stage("Asking your server for a new serving key");
-    const Client::PreparedServingKey prepared = client_->prepareServingKey();
-    stage("Signing a card over the new key");
-    const Bytes card = ContactCard::issue(client_->identity(), nowSeconds(), myDest_,
-        sealingKey_.publicDer(), prepared.servingSealingKeyDer);
-    stage("Putting the new key in force");
-    client_->commitServingKey(card);
-    cardB64_ = toBase64(card);
-    myServingKeyB64_ = toBase64(prepared.servingSealingKeyDer);
-    view_ = prepared.view;
-    persistMeta();
-    stage("Telling the name service");
-    serviceAliasesAfterMove();
-    stage("Telling your contacts");
-    return pushRoutingToContacts();
-}
-
 Session::RoutingPushResult Session::pushRoutingToContacts()
 {
     RoutingPushResult result;
@@ -2070,7 +2011,8 @@ Session::RoutingPushResult Session::pushRoutingToContacts()
         }
     }
     for (const std::string& peer : peers) {
-        nlohmann::json inner = envelope("contact.routing", toHex(randomBytes(8)));
+        nlohmann::json inner = envelope("contact.routing", toHex(randomBytes(8)),
+            {{"routing", {{"dest", myDest_}, {"servingKey", myServingKeyB64_}}}});
         try {
             sendContent(peer, std::move(inner), {}, false,
                 /*establishOnFirstReply=*/false);
@@ -2482,14 +2424,10 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
             {"sealing", sealingPublicB64()},
             {"dest", myDest_},
             {"servingKey", myServingKeyB64_},
-            {"view", sharedView()},
             {"pass", registerPassFor(peerFingerprint)},
         };
         bootstrapIssued = true;
     }
-
-    inner["routing"]
-        = {{"dest", myDest_}, {"servingKey", myServingKeyB64_}, {"view", sharedView()}};
 
     signAuthorship(inner, client_->identity(), /*withKeys=*/false);
     const Bytes innerBytes = encodedBody(inner);
@@ -2688,19 +2626,6 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                     peer.dest = dest;
                     peer.servingSealingB64 = servingKey;
                     persistContacts();
-                }
-                if (routing.contains("view")) {
-                    const std::string view = routing.value("view", std::string());
-                    const bool refused = view.empty();
-                    if (isViewCapability(view) && (peer.view != view || peer.sharingRefused)) {
-                        peer.view = view;
-                        peer.sharingRefused = false;
-                        persistContacts();
-                    } else if (refused && (!peer.view.empty() || !peer.sharingRefused)) {
-                        peer.view.clear();
-                        peer.sharingRefused = true;
-                        persistContacts();
-                    }
                 }
             }
 
@@ -3302,8 +3227,6 @@ nlohmann::json Session::contactBookEntry(
         {"sealing", contact.sealingPublicB64},
         {"dest", contact.dest},
         {"servingKey", contact.servingSealingB64},
-        {"view", contact.view},
-        {"sharingRefused", contact.sharingRefused},
         {"name", contact.displayName},
         {"notifications", contact.notifications},
         {"allowCalls", contact.allowCalls},
@@ -3374,12 +3297,10 @@ void Session::applyContactBook(const nlohmann::json& entries)
         fill(contact.sealingPublicB64, entry.value("sealing", std::string()));
         fill(contact.dest, entry.value("dest", std::string()));
         fill(contact.servingSealingB64, entry.value("servingKey", std::string()));
-        fill(contact.view, entry.value("view", std::string()));
         fill(contact.displayName, entry.value("name", std::string()));
         fill(contact.identityClassicalB64, entry.value("identityClassical", std::string()));
         fill(contact.identityPqB64, entry.value("identityPq", std::string()));
         if (isNew) {
-            contact.sharingRefused = entry.value("sharingRefused", false);
             contact.notifications = entry.value("notifications", true);
             contact.allowCalls = entry.value("allowCalls", true);
             contact.issuedToThem = entry.value("issuedToThem", false);
@@ -3871,14 +3792,9 @@ std::string Session::contactInviteUri(const std::string& peerFingerprint) const
     if (found->second.dest.empty() || found->second.servingSealingB64.empty()) {
         throw std::runtime_error("no routing held for this contact yet");
     }
-    if (!isViewCapability(found->second.view)) {
-        throw std::runtime_error(
-            "no descriptor key for this contact yet - it arrives with their next message");
-    }
     Descriptor descriptor;
     descriptor.fingerprint = peerFingerprint;
     descriptor.dest = found->second.dest;
-    descriptor.view = found->second.view;
     descriptor.name = found->second.displayName;
     return encodeDescriptor(descriptor);
 }
@@ -3891,13 +3807,12 @@ std::string Session::destinationOwner() const
 
 std::string Session::inviteUri() const
 {
-    if (myDest_.empty() || view_.empty()) {
+    if (myDest_.empty()) {
         throw std::runtime_error("register first: no destination to publish");
     }
     Descriptor descriptor;
     descriptor.fingerprint = fingerprint();
     descriptor.dest = myDest_;
-    descriptor.view = view_;
     descriptor.name = name_;
     return encodeDescriptor(descriptor);
 }
@@ -3967,9 +3882,8 @@ bool tellAliasesWhereWeAre(const Session::AliasErrandContext& context, const Ide
     Descriptor descriptor;
     descriptor.fingerprint = context.fingerprint;
     descriptor.dest = context.dest;
-    descriptor.view = context.view;
 
-    const bool moved = context.pushedDest != context.dest || context.pushedView != context.view;
+    const bool moved = context.pushedDest != context.dest;
     std::size_t needed = 0;
     std::size_t accepted = 0;
     for (const Session::AliasHolding& holding : names) {
@@ -4043,10 +3957,10 @@ bool Session::refreshAliasStatus(const FetchTransport& over)
 
 bool Session::aliasUpdatePending() const
 {
-    if (myDest_.empty() || !isViewCapability(view_)) {
+    if (myDest_.empty()) {
         return false;
     }
-    const bool moved = aliasPushedDest_ != myDest_ || aliasPushedView_ != view_;
+    const bool moved = aliasPushedDest_ != myDest_;
     for (const AliasHolding& holding : aliasNames_) {
         if (holding.bindingWanted && (moved || !holding.bound)) {
             return true;
@@ -4073,7 +3987,6 @@ bool Session::pushAliasDescriptor(const FetchTransport& over)
         return false;
     }
     aliasPushedDest_ = myDest_;
-    aliasPushedView_ = view_;
     noteAliasesBound();
     persistMeta();
     return true;
@@ -4089,9 +4002,7 @@ Session::AliasErrandContext Session::aliasErrandContext() const
     context.destinationOwner = destinationOwner();
     context.fingerprint = fingerprint();
     context.dest = myDest_;
-    context.view = view_;
     context.pushedDest = aliasPushedDest_;
-    context.pushedView = aliasPushedView_;
     context.transport = fetchTransportOverride_;
     return context;
 }
@@ -4117,9 +4028,8 @@ Session::AliasErrandResult Session::runAliasErrand(const AliasErrandContext& con
             names.push_back(AliasHolding{
                 entry.alias, entry.notAfter, entry.autoRenew, entry.bindingWanted, entry.bound});
         }
-        const bool canPublish = !context.dest.empty() && isViewCapability(context.view);
-        const bool moved
-            = context.pushedDest != context.dest || context.pushedView != context.view;
+        const bool canPublish = !context.dest.empty();
+        const bool moved = context.pushedDest != context.dest;
         const bool anyNeeded = std::any_of(names.begin(), names.end(),
             [moved](const AliasHolding& holding) {
                 return holding.bindingWanted && (moved || !holding.bound);
@@ -4129,7 +4039,6 @@ Session::AliasErrandResult Session::runAliasErrand(const AliasErrandContext& con
                 context, Identity::fromPrivatePem(context.identityPem), over, names, now);
             if (out.pointed) {
                 out.pushedDest = context.dest;
-                out.pushedView = context.view;
             }
         }
         out.ok = true;
@@ -4152,7 +4061,6 @@ void Session::applyAliasErrand(const AliasErrandResult& result)
     }
     if (result.pointed) {
         aliasPushedDest_ = result.pushedDest;
-        aliasPushedView_ = result.pushedView;
         noteAliasesBound();
         persistMeta();
     }

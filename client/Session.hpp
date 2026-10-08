@@ -57,8 +57,6 @@ struct Contact {
     std::string sealingPublicB64;
     std::string dest;
     std::string servingSealingB64;
-    std::string view;
-    bool sharingRefused = false;
     std::string sendPass;
     bool issuedToThem = false;
     bool acceptInFlight = false;
@@ -321,9 +319,7 @@ public:
         std::string destinationOwner;
         std::string fingerprint;
         std::string dest;
-        std::string view;
         std::string pushedDest;
-        std::string pushedView;
         FetchTransport transport;
     };
 
@@ -340,7 +336,6 @@ public:
         AliasStatusAnswer answer;
         bool pointed = false;
         std::string pushedDest;
-        std::string pushedView;
     };
 
     struct ContactCardRequest {
@@ -364,7 +359,6 @@ public:
         ContactInfo info;
         std::string displayName;
         std::string introText;
-        std::string view;
         std::string requestId;
     };
 
@@ -440,24 +434,7 @@ public:
         std::size_t failed = 0;
     };
 
-    RoutingPushResult rotateServingKey(
-        const std::function<void(const std::string& stage)>& onStage);
-
-    bool contactSharingRefused(const std::string& peerFingerprint) const
-    {
-        const auto found = contacts_.find(peerFingerprint);
-        return found != contacts_.end() && found->second.sharingRefused;
-    }
-
     RoutingPushResult pushRoutingToContacts();
-
-    bool sharingAllowed() const { return sharingAllowed_; }
-    void setSharingAllowed(bool allowed);
-
-private:
-    std::string sharedView() const { return sharingAllowed_ ? view_ : std::string(); }
-
-public:
 
     void sendReceipt(const std::string& peerFingerprint, const std::string& refMessageId);
 
@@ -606,9 +583,7 @@ private:
     void forgetChosenName(const std::string& peerFingerprint);
 
     void requestWithInfo(const std::string& requestId, const std::string& peerFingerprint,
-        const std::string& text,
-        const ContactInfo& info, const std::string& displayName = {},
-        const std::string& descriptorView = {});
+        const std::string& text, const ContactInfo& info, const std::string& displayName = {});
 
     FetchTransport fetchTransport() const;
 
@@ -710,7 +685,6 @@ private:
     std::int64_t aliasStatusAt_ = 0;
     bool aliasDepositCovers_ = true;
     std::string aliasPushedDest_;
-    std::string aliasPushedView_;
 
     nlohmann::json aliasNamesToJson() const;
     void adoptAliasStatus(const AliasStatus& status);
@@ -795,7 +769,6 @@ private:
     std::vector<std::string> contactsAskedBy_;
     std::string myDest_;
     std::string myServingKeyB64_;
-    std::string view_;
     std::int64_t delegationDays_ = kDefaultDelegationDays;
     FetchTransport fetchTransportOverride_;
     std::string name_;
@@ -804,7 +777,6 @@ private:
     std::string cardB64_;
     ApprovalState approval_;
     bool encrypted_ = false;
-    bool sharingAllowed_ = true;
     bool acceptCalls_ = true;
     bool sendReceipts_ = true;
     std::string passphrase_;

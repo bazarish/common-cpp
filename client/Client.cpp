@@ -111,25 +111,9 @@ PublishResult Client::publishCard(const Bytes& sealingPrekeyDer, const std::stri
     PublishResult result;
     result.cardDer = card;
     result.quotaBytes = body.at("quotaBytes").get<std::uint64_t>();
-    result.view = body.value("view", std::string());
     result.dest = dest;
     result.servingSealingKeyDer = destination.servingSealingKeyDer;
     return result;
-}
-
-Client::PreparedServingKey Client::prepareServingKey()
-{
-    const ApiResponse response = api_.postJson("/v1/account/serving-key", nlohmann::json::object());
-    const nlohmann::json body = response.json();
-    PreparedServingKey prepared;
-    prepared.servingSealingKeyDer = fromBase64(body.at("servingKey").get<std::string>());
-    prepared.view = body.at("view").get<std::string>();
-    return prepared;
-}
-
-void Client::commitServingKey(const Bytes& cardDer)
-{
-    (void)api_.postJson("/v1/account/serving-key/commit", {{"card", toBase64(cardDer)}}).json();
 }
 
 void Client::closeAccount()
@@ -158,10 +142,21 @@ void Client::registerHere()
     (void)api_.postJson("/v1/account/registration", nlohmann::json::object()).json();
 }
 
-void Client::sendI2pTransient(const std::string& transientB64, const std::int64_t expiresUnix)
+DestinationInfo Client::sendI2pTransient(
+    const std::string& transientB64, const std::int64_t expiresUnix)
 {
-    api_.postJson(
-        "/v1/account/i2p-dest", {{"transient", transientB64}, {"expiresUnix", expiresUnix}});
+    const nlohmann::json body
+        = api_
+              .postJson("/v1/account/i2p-dest",
+                  {{"transient", transientB64}, {"expiresUnix", expiresUnix}})
+              .json();
+    DestinationInfo info;
+    info.dest = body.value("dest", std::string());
+    if (const std::string servingKey = body.value("servingKey", std::string());
+        !servingKey.empty()) {
+        info.servingSealingKeyDer = fromBase64(servingKey);
+    }
+    return info;
 }
 
 I2pDestStatus Client::i2pStatus()
@@ -193,7 +188,7 @@ StorageUsage Client::storageUsage()
 ContactInfo Client::fetchCard(const Descriptor& descriptor, const FetchTransport& transport)
 {
     const FetchOutcome outcome = transport(descriptor.dest, "card",
-        cardQueryBytes(CardFetchQuery{descriptor.fingerprint, descriptor.view}));
+        cardQueryBytes(CardFetchQuery{descriptor.fingerprint}));
     if (!outcome.ok) {
         throw std::runtime_error("that invite is out of date - ask for a new one");
     }

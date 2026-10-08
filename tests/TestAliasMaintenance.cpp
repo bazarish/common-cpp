@@ -35,7 +35,6 @@ int main()
     const Descriptor descriptor{
         "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq",
         "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p",
-        "0123456789abcdef0123456789abcdef",
     };
 
     const Identity alice = Identity::generate();
@@ -48,7 +47,6 @@ int main()
     const AliasMaintenanceRequest back = aliasMaintenanceRequestFromJson(toJson(update));
     CHECK(back.op == update.op);
     CHECK(back.alias == update.alias);
-    CHECK(back.descriptor.view == descriptor.view);
     CHECK(back.issuedAt == update.issuedAt);
     CHECK(back.aliasCertDer == update.aliasCertDer);
 

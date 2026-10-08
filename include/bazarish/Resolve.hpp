@@ -14,7 +14,6 @@ namespace bazarish {
 
 struct CardFetchQuery {
     std::string fingerprint;
-    std::string view;
 };
 
 struct CardFetchResponse {

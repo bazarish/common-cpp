@@ -42,7 +42,6 @@ struct StorageUsage {
 
 struct PublishResult {
     std::uint64_t quotaBytes = 0;
-    std::string view;
     std::string dest;
     Bytes servingSealingKeyDer;
     Bytes cardDer;
@@ -96,16 +95,10 @@ public:
     PublishResult publishCard(const Bytes& sealingPrekeyDer = {}, const std::string& ownDest = {},
         std::int64_t notBefore = 0);
 
-    struct PreparedServingKey {
-        Bytes servingSealingKeyDer;
-        std::string view;
-    };
-    PreparedServingKey prepareServingKey();
-    void commitServingKey(const Bytes& cardDer);
     void closeAccount();
     PortalInfo fetchPortalInfo();
     void registerHere();
-    void sendI2pTransient(const std::string& transientB64, std::int64_t expiresUnix);
+    DestinationInfo sendI2pTransient(const std::string& transientB64, std::int64_t expiresUnix);
     I2pDestStatus i2pStatus();
     StorageUsage storageUsage();
     ContactInfo fetchCard(const Descriptor& descriptor, const FetchTransport& transport);
