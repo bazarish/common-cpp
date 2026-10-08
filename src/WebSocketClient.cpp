@@ -198,6 +198,17 @@ struct Connected {
     std::string error;
 };
 
+// Beast's timeouts apply to asynchronous operations only.
+template <class Start>
+boost::system::error_code awaited(asio::io_context& loop, Start&& start)
+{
+    boost::system::error_code result;
+    start([&result](const boost::system::error_code& error, auto&&...) { result = error; });
+    loop.restart();
+    loop.run();
+    return result;
+}
+
 Connected connect(const SocketDial& dial)
 {
     Connected out;
@@ -214,7 +225,9 @@ Connected connect(const SocketDial& dial)
     if (!dial.tls) {
         out.plain = std::make_unique<beast::tcp_stream>(*out.loop);
         out.plain->expires_after(dial.connectTimeout);
-        out.plain->connect(found, error);
+        error = awaited(*out.loop, [&out, &found](auto&& handler) {
+            out.plain->async_connect(found, std::move(handler));
+        });
         if (error) {
             out.error = "cannot reach " + dial.host + ": " + error.message();
             return out;
@@ -235,12 +248,17 @@ Connected connect(const SocketDial& dial)
         return out;
     }
     beast::get_lowest_layer(*out.secure).expires_after(dial.connectTimeout);
-    beast::get_lowest_layer(*out.secure).connect(found, error);
+    error = awaited(*out.loop, [&out, &found](auto&& handler) {
+        beast::get_lowest_layer(*out.secure).async_connect(found, std::move(handler));
+    });
     if (error) {
         out.error = "cannot reach " + dial.host + ": " + error.message();
         return out;
     }
-    out.secure->handshake(ssl::stream_base::client, error);
+    beast::get_lowest_layer(*out.secure).expires_after(dial.connectTimeout);
+    error = awaited(*out.loop, [&out](auto&& handler) {
+        out.secure->async_handshake(ssl::stream_base::client, std::move(handler));
+    });
     if (error) {
         out.error = "the handshake failed: " + error.message();
         return out;
@@ -263,7 +281,8 @@ Connected connect(const SocketDial& dial)
 }
 
 template <class Stream>
-std::string upgrade(websocket::stream<Stream>& stream, const SocketDial& dial)
+std::string upgrade(
+    asio::io_context& loop, websocket::stream<Stream>& stream, const SocketDial& dial)
 {
     websocket::stream_base::timeout timeouts{};
     timeouts.handshake_timeout = dial.connectTimeout;
@@ -280,8 +299,10 @@ std::string upgrade(websocket::stream<Stream>& stream, const SocketDial& dial)
                 request.set(bhttp::field::sec_websocket_protocol, dial.subprotocol);
             }
         }));
-    boost::system::error_code error;
-    stream.handshake(dial.sni.empty() ? dial.host : dial.sni, dial.path, error);
+    const std::string host = dial.sni.empty() ? dial.host : dial.sni;
+    const boost::system::error_code error = awaited(loop, [&stream, &host, &dial](auto&& handler) {
+        stream.async_handshake(host, dial.path, std::move(handler));
+    });
     if (error) {
         return "the upgrade was refused: " + error.message();
     }
@@ -306,7 +327,7 @@ SocketDialResult openSocket(const SocketDial& dial,
     if (connected.plain) {
         auto stream
             = std::make_unique<websocket::stream<beast::tcp_stream>>(std::move(*connected.plain));
-        result.error = upgrade(*stream, dial);
+        result.error = upgrade(*connected.loop, *stream, dial);
         if (!result.error.empty()) {
             return result;
         }
@@ -318,7 +339,7 @@ SocketDialResult openSocket(const SocketDial& dial,
     }
 
     auto stream = std::make_unique<websocket::stream<TlsStream>>(std::move(*connected.secure));
-    result.error = upgrade(*stream, dial);
+    result.error = upgrade(*connected.loop, *stream, dial);
     if (!result.error.empty()) {
         return result;
     }
@@ -332,7 +353,8 @@ SocketDialResult openSocket(const SocketDial& dial,
 namespace {
 
 template <class Stream>
-void exchange(Stream& stream, const SocketDial& dial, const std::string& body, Probe& probe)
+void exchange(asio::io_context& loop, Stream& stream, const SocketDial& dial,
+    const std::string& body, Probe& probe)
 {
     bhttp::request<bhttp::string_body> out{
         body.empty() ? bhttp::verb::get : bhttp::verb::post, dial.path, 11};
@@ -343,16 +365,20 @@ void exchange(Stream& stream, const SocketDial& dial, const std::string& body, P
     out.body() = body;
     out.prepare_payload();
 
-    boost::system::error_code error;
     beast::get_lowest_layer(stream).expires_after(dial.connectTimeout);
-    bhttp::write(stream, out, error);
+    boost::system::error_code error = awaited(loop, [&stream, &out](auto&& handler) {
+        bhttp::async_write(stream, out, std::move(handler));
+    });
     if (error) {
         probe.error = "the request would not go: " + error.message();
         return;
     }
     beast::flat_buffer buffer;
     bhttp::response<bhttp::string_body> in;
-    bhttp::read(stream, buffer, in, error);
+    beast::get_lowest_layer(stream).expires_after(dial.connectTimeout);
+    error = awaited(loop, [&stream, &buffer, &in](auto&& handler) {
+        bhttp::async_read(stream, buffer, in, std::move(handler));
+    });
     if (error) {
         probe.error = "no answer came back: " + error.message();
         return;
@@ -373,10 +399,10 @@ Probe probeHost(const SocketDial& dial, const std::string& body)
         return probe;
     }
     if (connected.plain) {
-        exchange(*connected.plain, dial, body, probe);
+        exchange(*connected.loop, *connected.plain, dial, body, probe);
         return probe;
     }
-    exchange(*connected.secure, dial, body, probe);
+    exchange(*connected.loop, *connected.secure, dial, body, probe);
     boost::system::error_code ignored;
     connected.secure->shutdown(ignored);
     return probe;
