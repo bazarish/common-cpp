@@ -49,8 +49,8 @@ struct SocketRoutes;
 
 auth::Headers collectAuthHeaders(const Request& request);
 
-std::optional<Response> operatorRefusal(
-    const Request& request, std::int64_t now, const std::vector<std::string>& operators);
+std::optional<Response> operatorRefusal(const Request& request, std::int64_t now,
+    const std::vector<std::string>& operators, auth::ReplayCache& replayCache);
 
 using Filler = std::function<void(const Request&, Response&)>;
 Handler filled(Filler handler);

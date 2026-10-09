@@ -66,10 +66,6 @@ std::string verifyRequestDigest(const Headers& headers, std::int64_t now,
     const std::string& method, const std::string& path, const std::string& bodySha256Hex,
     const std::string& clientId = {});
 
-std::string authorizeRequest(const Headers& headers, std::int64_t now,
-    const std::string& method, const std::string& path, const Bytes& body,
-    const std::vector<std::string>& authorizedFingerprints);
-
 class ReplayCache {
 public:
     bool checkAndRecord(const std::string& nonce, std::int64_t timestamp, std::int64_t now);
@@ -79,6 +75,10 @@ private:
     std::unordered_map<std::string, std::int64_t> seen_;
     std::int64_t lastSweep_ = 0;
 };
+
+std::string authorizeRequest(const Headers& headers, std::int64_t now,
+    const std::string& method, const std::string& path, const Bytes& body,
+    const std::vector<std::string>& authorizedFingerprints, ReplayCache& replayCache);
 
 std::string verifyRequest(const Headers& headers, std::int64_t now, const std::string& method,
     const std::string& path, const Bytes& body, ReplayCache& replayCache,

@@ -206,11 +206,17 @@ std::string verifyRequest(const Headers& headers, const std::int64_t now,
 
 std::string authorizeRequest(const Headers& headers, const std::int64_t now,
     const std::string& method, const std::string& path, const Bytes& body,
-    const std::vector<std::string>& authorizedFingerprints)
+    const std::vector<std::string>& authorizedFingerprints, ReplayCache& replayCache)
 {
     const std::string caller = verifyRequest(headers, now, method, path, body);
     for (const std::string& fingerprint : authorizedFingerprints) {
         if (!fingerprint.empty() && fingerprint == caller) {
+            const std::int64_t timestamp
+                = std::strtoll(requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
+            if (!replayCache.checkAndRecord(
+                    requireHeader(headers, kHeaderNonce), timestamp, now)) {
+                throw std::runtime_error("auth request replay detected");
+            }
             return caller;
         }
     }

@@ -618,12 +618,12 @@ auth::Headers collectAuthHeaders(const Request& request)
     return headers;
 }
 
-std::optional<Response> operatorRefusal(
-    const Request& request, const std::int64_t now, const std::vector<std::string>& operators)
+std::optional<Response> operatorRefusal(const Request& request, const std::int64_t now,
+    const std::vector<std::string>& operators, auth::ReplayCache& replayCache)
 {
     try {
         auth::authorizeRequest(collectAuthHeaders(request), now, request.method, request.path,
-            Bytes(request.body.begin(), request.body.end()), operators);
+            Bytes(request.body.begin(), request.body.end()), operators, replayCache);
         return std::nullopt;
     } catch (const std::exception& error) {
         log::debug("an operator call was refused: {}", error.what());

@@ -199,20 +199,28 @@ int main()
     }
 
     {
+        auth::ReplayCache cache;
         const auth::Headers signedHeaders
             = auth::signRequest(identity, kNow, "GET", "/healthz", Bytes{});
-        CHECK(auth::authorizeRequest(signedHeaders, kNow, "GET", "/healthz", Bytes{},
-                  {other.fingerprint(), identity.fingerprint()})
-            == identity.fingerprint());
         CHECK_THROWS(auth::authorizeRequest(
-            signedHeaders, kNow, "GET", "/healthz", Bytes{}, {other.fingerprint()}));
+            signedHeaders, kNow, "GET", "/healthz", Bytes{}, {other.fingerprint()}, cache));
         CHECK_THROWS(
-            auth::authorizeRequest(signedHeaders, kNow, "GET", "/healthz", Bytes{}, {}));
+            auth::authorizeRequest(signedHeaders, kNow, "GET", "/healthz", Bytes{}, {}, cache));
         auth::Headers tampered = signedHeaders;
         std::string& sig = tampered[auth::kHeaderSignatureClassical];
         sig[0] = sig[0] == 'A' ? 'B' : 'A';
         CHECK_THROWS(auth::authorizeRequest(
-            tampered, kNow, "GET", "/healthz", Bytes{}, {identity.fingerprint()}));
+            tampered, kNow, "GET", "/healthz", Bytes{}, {identity.fingerprint()}, cache));
+        CHECK(auth::authorizeRequest(signedHeaders, kNow, "GET", "/healthz", Bytes{},
+                  {other.fingerprint(), identity.fingerprint()}, cache)
+            == identity.fingerprint());
+        CHECK_THROWS(auth::authorizeRequest(
+            signedHeaders, kNow, "GET", "/healthz", Bytes{}, {identity.fingerprint()}, cache));
+        const auth::Headers resigned
+            = auth::signRequest(identity, kNow, "GET", "/healthz", Bytes{});
+        CHECK(auth::authorizeRequest(
+                  resigned, kNow, "GET", "/healthz", Bytes{}, {identity.fingerprint()}, cache)
+            == identity.fingerprint());
     }
 
     return 0;
