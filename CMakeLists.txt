@@ -200,6 +200,7 @@ if(BAZARISH_WITH_CLIENT)
         client/OutboundLeases.cpp
         client/Qr.cpp
         client/Session.cpp
+        client/SocksProxy.cpp
         client/WarmDestPool.cpp
         client/WireLog.cpp
     )
@@ -258,6 +259,7 @@ endif()
     bazarish_client_add_test(TestInvite)
     bazarish_client_add_test(TestLogin)
     bazarish_client_add_test(TestOutboundCourier)
+    bazarish_client_add_test(TestSocksProxy)
     bazarish_client_add_test(TestDeliveryPass)
     bazarish_client_add_test(TestWireLog)
 endif()

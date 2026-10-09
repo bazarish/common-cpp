@@ -110,7 +110,7 @@ GatewayCheck checkGateway(const GatewayAddress& address, const std::string& pin)
         return check;
     }
     if (probe.status != 200) {
-        check.error = "that address and token open nothing here";
+        check.error = "the gateway answered HTTP " + std::to_string(probe.status);
         return check;
     }
     check.ok = true;
