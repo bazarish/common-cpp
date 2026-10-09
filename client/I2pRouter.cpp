@@ -27,6 +27,13 @@ std::mutex& routerMutex()
     return mutex;
 }
 
+// Taken before routerMutex: starting and stopping a router can take a minute.
+std::mutex& lifecycleMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
 std::unique_ptr<bazarish::i2p::Router>& routerSlot()
 {
     static std::unique_ptr<bazarish::i2p::Router> router;
@@ -247,13 +254,22 @@ bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir
 
 bazarish::i2p::Router& sharedI2pRouter(const std::filesystem::path& dataDir)
 {
-    const std::lock_guard<std::mutex> lock(routerMutex());
-    std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
-    if (!router) {
-        router = std::make_unique<bazarish::i2p::Router>(routerConfigFor(dataDir));
-    } else if (!router->running()) {
+    const std::lock_guard<std::mutex> lifecycle(lifecycleMutex());
+    bazarish::i2p::Router* router = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(routerMutex());
+        router = routerSlot().get();
+    }
+    if (router == nullptr) {
+        auto made = std::make_unique<bazarish::i2p::Router>(routerConfigFor(dataDir));
+        const std::lock_guard<std::mutex> lock(routerMutex());
+        routerSlot() = std::move(made);
+        router = routerSlot().get();
+    }
+    if (!router->running()) {
         router->start();
     }
+    const std::lock_guard<std::mutex> lock(routerMutex());
     ensureWarmPool(*router);
     return *router;
 }
@@ -365,17 +381,22 @@ void restartI2pRouter(const std::filesystem::path& dataDir)
     if (usingSamTransport() || usingGatewayTransport()) {
         return;
     }
-    const std::lock_guard<std::mutex> lock(routerMutex());
-    std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
-    if (!router) {
-        return;
+    const std::lock_guard<std::mutex> lifecycle(lifecycleMutex());
+    bazarish::i2p::Router* router = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(routerMutex());
+        router = routerSlot().get();
+        if (router == nullptr) {
+            return;
+        }
+        stopWarmPool();
     }
-    stopWarmPool();
     router->stop();
     if (router->capabilities().proxy) {
         router->setSocksProxy(i2pSocksProxyHost(), i2pSocksProxyPort());
     }
     router->start();
+    const std::lock_guard<std::mutex> lock(routerMutex());
     ensureWarmPool(*router);
 }
 
@@ -437,6 +458,7 @@ I2pBootstrap bootstrapI2pRouter(const std::filesystem::path& dataDir)
 
 void reconcileI2pRouter(const std::filesystem::path& dataDir)
 {
+    const std::lock_guard<std::mutex> lifecycle(lifecycleMutex());
     const std::lock_guard<std::mutex> lock(routerMutex());
     std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
     if (g_i2pEnabled.load()) {
@@ -499,10 +521,12 @@ void setWarmDestsWanted(const bool wanted)
 {
     g_warmDestsWanted.store(wanted);
     const std::lock_guard<std::mutex> lock(routerMutex());
+    if (WarmDestPool* const pool = warmPoolSlot().get(); pool != nullptr) {
+        pool->setWanted(wanted);
+        return;
+    }
     bazarish::i2p::Router* const router = routerSlot().get();
-    if (!wanted) {
-        stopWarmPool();
-    } else if (router != nullptr && router->running()) {
+    if (wanted && router != nullptr && router->running()) {
         ensureWarmPool(*router);
     }
 }

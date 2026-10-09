@@ -69,6 +69,20 @@ void WarmDestPool::flush()
     cv_.notify_all();
 }
 
+void WarmDestPool::setWanted(const bool wanted)
+{
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (wanted_ == wanted) {
+            return;
+        }
+        wanted_ = wanted;
+        ++generation_;
+        refillWanted_ = true;
+    }
+    cv_.notify_all();
+}
+
 void WarmDestPool::warmerLoop()
 {
     std::vector<Building> building;
@@ -76,15 +90,20 @@ void WarmDestPool::warmerLoop()
     while (running_.load()) {
         std::size_t toCreate = 0;
         std::size_t generation = 0;
+        std::deque<std::shared_ptr<bazarish::i2p::Endpoint>> unwanted;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             generation = generation_;
             std::erase_if(building, [generation](const Building& item) {
                 return item.generation != generation;
             });
+            if (!wanted_) {
+                unwanted.swap(ready_);
+            }
             const std::size_t have = ready_.size() + building.size();
-            toCreate = size_ > have ? size_ - have : 0;
+            toCreate = wanted_ && size_ > have ? size_ - have : 0;
         }
+        unwanted.clear();
 
         for (std::size_t i = 0; i < toCreate && running_.load(); ++i) {
             try {

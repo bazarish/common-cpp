@@ -23,6 +23,7 @@ public:
     void stop();
 
     void flush();
+    void setWanted(bool wanted);
 
     std::shared_ptr<bazarish::i2p::Endpoint> acquire();
 
@@ -36,6 +37,7 @@ private:
 
     bazarish::i2p::Router& router_;
     bool refillWanted_ = false;
+    bool wanted_ = true;
     const std::size_t size_;
     const int tunnelQuantity_;
     const std::chrono::seconds buildTimeout_{120};
