@@ -367,7 +367,11 @@ public:
 
     static ContactCardResolved resolveContactCard(
         const ContactFetchContext& context, const ContactCardRequest& request);
-    std::string commitContactAdd(const ContactCardResolved& resolved);
+    std::string commitContactAdd(const ContactCardResolved& resolved, const DeliveryWatch& watch);
+    void sendContactRequest(const std::string& peerFingerprint, const std::string& requestId,
+        const std::string& text, const DeliveryWatch& watch, bool waitForOutcome);
+    bool contactAwaitsAnswer(const std::string& peerFingerprint) const;
+    void forgetUnansweredContact(const std::string& peerFingerprint);
 
     void setResolverCoordinate(ResolverCoordinate coordinate);
 
@@ -604,6 +608,8 @@ private:
 
     void requestWithInfo(const std::string& requestId, const std::string& peerFingerprint,
         const std::string& text, const ContactInfo& info, const std::string& displayName = {});
+    void recordRequestedContact(const std::string& peerFingerprint, const ContactInfo& info,
+        const std::string& text, const std::string& displayName);
 
     FetchTransport fetchTransport() const;
 

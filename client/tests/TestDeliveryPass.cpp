@@ -1087,6 +1087,58 @@ int main()
         }
 
         {
+            const fs::path eDir = fs::temp_directory_path() / "bz-pass-e";
+            fs::remove(eDir);
+            Session erin = Session::create(eDir, endpoint, std::string{});
+            {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.destFor[erin.fingerprint()]
+                    = "hlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+            }
+            erin.registerAccount();
+            erin.setFetchTransport(directDial);
+            erin.setOutboundCourier(courierFor());
+
+            {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.refuseWith = "CONTACT_RATE_LIMITED";
+            }
+            CHECK_THROWS(alice.addByInvite(erin.inviteUri(), "refused"));
+            CHECK(!alice.hasContact(erin.fingerprint()));
+            {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.refuseWith.clear();
+            }
+
+            DeliverySchedule once;
+            once.attempts = 1;
+            once.dial = std::chrono::seconds(1);
+            once.run = std::chrono::seconds(2);
+            alice.setOutboundCourier(std::make_unique<OutboundCourier>(
+                [](const std::string&, const std::string&) { return true; },
+                [](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                    return nullptr;
+                },
+                once));
+            CHECK_THROWS(alice.addByInvite(erin.inviteUri(), "are you there"));
+            CHECK(alice.contactAwaitsAnswer(erin.fingerprint()));
+
+            alice.setOutboundCourier(courierFor());
+            alice.sendContactRequest(erin.fingerprint(), "resent-request", "are you there",
+                DeliveryWatch{}, /*waitForOutcome=*/true);
+            for (int round = 0; round < 3 && !erin.hasContact(alice.fingerprint()); ++round) {
+                erin.sync();
+            }
+            CHECK(erin.contactIsPending(alice.fingerprint()));
+            erin.acceptContactRequest(alice.fingerprint());
+            CHECK(waitFor([&]() {
+                alice.sync();
+                return alice.canWriteTo(erin.fingerprint());
+            }));
+            CHECK(!alice.contactAwaitsAnswer(erin.fingerprint()));
+        }
+
+        {
             const Bytes face = {0xFF, 0xD8, 0xFF, 0xE0, 'b', 'o', 'b'};
             bob.setAvatar(face, "image/jpeg");
             for (int round = 0; round < 3 && alice.contactAvatar(bob.fingerprint()).empty();

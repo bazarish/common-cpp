@@ -1694,13 +1694,30 @@ Session::ContactCardResolved Session::resolveContactCard(
     return out;
 }
 
-std::string Session::commitContactAdd(const ContactCardResolved& resolved)
+std::string Session::commitContactAdd(
+    const ContactCardResolved& resolved, const DeliveryWatch& watch)
 {
     noteChosenName(resolved.fingerprint, resolved.displayName);
-    requestWithInfo(resolved.requestId.empty() ? toHex(randomBytes(kRequestIdBytes))
-                                               : resolved.requestId,
-        resolved.fingerprint, resolved.introText, resolved.info, resolved.displayName);
+    recordRequestedContact(
+        resolved.fingerprint, resolved.info, resolved.introText, resolved.displayName);
+    sendContactRequest(resolved.fingerprint,
+        resolved.requestId.empty() ? toHex(randomBytes(kRequestIdBytes)) : resolved.requestId,
+        resolved.introText, watch, /*waitForOutcome=*/false);
     return resolved.fingerprint;
+}
+
+bool Session::contactAwaitsAnswer(const std::string& peerFingerprint) const
+{
+    const auto found = contacts_.find(peerFingerprint);
+    return found != contacts_.end() && found->second.issuedToThem
+        && found->second.sendPass.empty();
+}
+
+void Session::forgetUnansweredContact(const std::string& peerFingerprint)
+{
+    if (contactAwaitsAnswer(peerFingerprint)) {
+        removeContact(peerFingerprint);
+    }
 }
 
 std::vector<Session::PendingContactAdd> Session::pendingContactAdds() const
@@ -1797,6 +1814,22 @@ std::string Session::addByAlias(const std::string& alias, const std::string& tex
 void Session::requestWithInfo(const std::string& requestId, const std::string& peerFingerprint,
     const std::string& text, const ContactInfo& info, const std::string& displayName)
 {
+    recordRequestedContact(peerFingerprint, info, text, displayName);
+    try {
+        sendContactRequest(
+            peerFingerprint, requestId, text, DeliveryWatch{}, /*waitForOutcome=*/true);
+    } catch (const ApiError& error) {
+        if (error.code != ErrorCode::eRecipientServerUnreachable) {
+            forgetUnansweredContact(peerFingerprint);
+        }
+        throw;
+    }
+}
+
+// Recorded before the request leaves: an unconfirmed request may still be answered.
+void Session::recordRequestedContact(const std::string& peerFingerprint,
+    const ContactInfo& info, const std::string& text, const std::string& displayName)
+{
     if (info.card.fingerprint() != peerFingerprint) {
         throw std::runtime_error("contact lookup returned a different user");
     }
@@ -1809,8 +1842,32 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     }
     const Key peerPrekey = info.card.sealingKey();
     const Key peerServingKey = info.card.servingSealingKey();
-    const std::string peerDest = info.card.dest;
-    validateB32I2pHost(peerDest);
+    validateB32I2pHost(info.card.dest);
+
+    Contact& contact = contacts_[peerFingerprint];
+    contact.dest = info.card.dest;
+    contact.sealingPublicB64 = toBase64(peerPrekey.publicDer());
+    contact.servingSealingB64 = toBase64(peerServingKey.publicDer());
+    rememberKeys(contact, IdentityKeys{info.card.identityClassicalDer, info.card.identityPqDer});
+    contact.issuedToThem = true;
+    if (!displayName.empty()) {
+        contact.displayName = safeContactName(displayName);
+        forgetChosenName(peerFingerprint);
+    }
+    persistContacts();
+}
+
+void Session::sendContactRequest(const std::string& peerFingerprint,
+    const std::string& requestId, const std::string& text, const DeliveryWatch& watch,
+    const bool waitForOutcome)
+{
+    const auto found = contacts_.find(peerFingerprint);
+    if (found == contacts_.end()) {
+        throw std::runtime_error("no contact to send a request to: " + peerFingerprint);
+    }
+    const Key peerPrekey = Key::fromPublicDer(fromBase64(found->second.sealingPublicB64));
+    const Key peerServingKey = Key::fromPublicDer(fromBase64(found->second.servingSealingB64));
+    const std::string peerDest = found->second.dest;
 
     const std::string replyPass = registerPassFor(peerFingerprint);
 
@@ -1828,20 +1885,8 @@ void Session::requestWithInfo(const std::string& requestId, const std::string& p
     nlohmann::json request = payload;
     signAuthorship(request, client_->identity(), /*withKeys=*/true);
     const Bytes encrypted = hybrid::seal(encodedBody(request), peerPrekey);
-    deliver(peerDest, peerServingKey, "contact", peerFingerprint, {}, encrypted,
-        DeliveryWatch{}, /*waitForOutcome=*/true, requestId);
-
-    Contact& contact = contacts_[peerFingerprint];
-    contact.dest = peerDest;
-    contact.sealingPublicB64 = toBase64(peerPrekey.publicDer());
-    contact.servingSealingB64 = toBase64(peerServingKey.publicDer());
-    rememberKeys(contact, IdentityKeys{info.card.identityClassicalDer, info.card.identityPqDer});
-    contact.issuedToThem = true;
-    if (!displayName.empty()) {
-        contact.displayName = safeContactName(displayName);
-        forgetChosenName(peerFingerprint);
-    }
-    persistContacts();
+    deliver(peerDest, peerServingKey, "contact", peerFingerprint, {}, encrypted, watch,
+        waitForOutcome, requestId);
 }
 
 void Session::acceptContactRequest(const std::string& peerFingerprint)
