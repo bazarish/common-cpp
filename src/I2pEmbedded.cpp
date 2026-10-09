@@ -879,8 +879,6 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
 void EmbeddedRouter::start()
 {
     if (started) { return; }
-    // Before the start, not after it: the lines the engine emits while coming up
-    // are the ones worth having.
     i2pd::log::Logger().SendTo([](LogLevel level, const std::string& text)
     {
         if (!i2pLogging()) { return; }

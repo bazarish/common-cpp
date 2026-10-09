@@ -36,14 +36,9 @@ struct ClientRequest {
     std::string contentType;
 };
 
-boost::asio::awaitable<Response> fetch(boost::asio::any_io_executor executor,
-    const std::string& host, int port, ClientRequest request, std::chrono::seconds timeout);
-
 struct ClientOptions {
     bool tls = false;
     bool verifyPeer = true;
-    // A peer on a private socket is named by the hash of its key, not by a
-    // chain and a hostname: with a pin set, that is the whole check.
     std::string pin;
     std::string certificate;
     std::string key;
@@ -55,6 +50,9 @@ struct ClientOptions {
     std::string basicUser;
     std::string basicPassword;
 };
+
+boost::asio::awaitable<Response> fetch(boost::asio::any_io_executor executor,
+    const std::string& host, int port, ClientRequest request, const ClientOptions& options);
 
 struct ClientResponse {
     int status = 0;

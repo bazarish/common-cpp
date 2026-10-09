@@ -404,8 +404,6 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                             asio::redirect_error(asio::use_awaitable, refusalError));
                         break;
                     }
-                    // An upgrade belongs to the plain listener: a private socket
-                    // carries the operator's requests and nothing that stays open.
                     if constexpr (std::is_same_v<Stream, beast::tcp_stream>) {
                         websocket::stream<beast::tcp_stream> upgraded(std::move(stream));
                         websocket::stream_base::timeout timeouts{};
@@ -705,8 +703,6 @@ int Server::start()
         impl_->tls->use_certificate_chain_file(impl_->options.certificate);
         impl_->tls->use_private_key_file(impl_->options.key, ssl::context::pem);
         if (!impl_->options.clientPins.empty()) {
-            // The chain is not the question: the pin below is, and it is checked
-            // once the handshake has the client's certificate in hand.
             impl_->tls->set_verify_mode(ssl::verify_peer | ssl::verify_fail_if_no_peer_cert);
             impl_->tls->set_verify_callback([](bool, ssl::verify_context&) { return true; });
         }

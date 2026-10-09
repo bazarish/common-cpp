@@ -64,9 +64,6 @@ public:
         std::size_t maxHeadBytes = 64 * 1024;
         std::size_t maxBodyBytes = kMaxRequestBodyBytes;
         std::chrono::seconds readTimeout{120};
-        // With a certificate the socket speaks TLS and nothing else. A client
-        // pin listed here is one this socket answers; an empty list answers
-        // every client that completes the handshake.
         std::string certificate;
         std::string key;
         std::vector<std::string> clientPins;

@@ -352,12 +352,8 @@ ClientResponse runOnce(const std::string& host, const int port, const ClientRequ
 }  // namespace
 
 asio::awaitable<Response> fetch(asio::any_io_executor executor, const std::string& host,
-    const int port, ClientRequest request, const std::chrono::seconds timeout)
+    const int port, ClientRequest request, const ClientOptions& options)
 {
-    ClientOptions options;
-    options.connectTimeout = timeout;
-    options.readTimeout = timeout;
-    options.writeTimeout = timeout;
     const ClientResponse result
         = co_await exchange(executor, host, port, request, options, 0, nullptr);
     if (result.status == 0) {
