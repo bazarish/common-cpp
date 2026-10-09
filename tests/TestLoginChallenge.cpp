@@ -21,7 +21,7 @@ namespace {
 
 LoginConsumer panel()
 {
-    return LoginConsumer{"Bazarish admin panel", "http://127.0.0.1:8460", "Administrator"};
+    return LoginConsumer{"Bazarish admin panel", {"http://127.0.0.1:8460"}, "Administrator"};
 }
 
 void testHappyPathAndReplay()
@@ -63,7 +63,7 @@ void testRejections()
         other.name = "Bazarish admin panel - south fleet";
         CHECK_THROWS(LoginChallenge("portal-secret", other).verify(challenge, blob, t));
         other = panel();
-        other.place = "http://127.0.0.1:9460";
+        other.place = {"http://127.0.0.1:9460"};
         CHECK_THROWS(LoginChallenge("portal-secret", other).verify(challenge, blob, t));
         other = panel();
         other.role = "Account owner";
@@ -107,6 +107,44 @@ void testIncompleteConsumerRefused()
     LoginConsumer roleless = panel();
     roleless.role.clear();
     CHECK_THROWS(LoginChallenge("portal-secret", roleless));
+
+    LoginConsumer blankPlace = panel();
+    blankPlace.place = {"https://panel.example", ""};
+    CHECK_THROWS(LoginChallenge("portal-secret", blankPlace));
+
+    LoginConsumer crowded = panel();
+    crowded.place.clear();
+    for (std::size_t i = 0; i <= kConsumerPlacesMax; ++i) {
+        crowded.place.push_back("https://panel" + std::to_string(i) + ".example");
+    }
+    CHECK_THROWS(LoginChallenge("portal-secret", crowded));
+    crowded.place.pop_back();
+    CHECK(crowded.place.size() == kConsumerPlacesMax);
+    LoginChallenge atTheCap("portal-secret", crowded);
+    CHECK(readLoginConsumer(atTheCap.issue(5000)).place == crowded.place);
+}
+
+void testEveryPlaceIsSigned()
+{
+    const Identity identity = Identity::generate();
+    const LoginConsumer both{
+        "Bazarish alias registry", {"https://alias.example", "http://alias.b32.i2p"}, "Alias owner"};
+    LoginChallenge portal("portal-secret", both);
+    const std::int64_t t = 5000;
+
+    const std::string challenge = portal.issue(t);
+    CHECK(readLoginConsumer(challenge).place == both.place);
+    const std::string blob = signLoginBlob(identity, t, challenge);
+    CHECK(portal.verify(challenge, blob, t) == identity.fingerprint());
+
+    // The list is what the tag covers, so dropping or reordering it is a
+    // different consumer and the signature stops verifying.
+    LoginConsumer fewer = both;
+    fewer.place = {"https://alias.example"};
+    CHECK_THROWS(LoginChallenge("portal-secret", fewer).verify(challenge, blob, t));
+    LoginConsumer swapped = both;
+    std::swap(swapped.place.front(), swapped.place.back());
+    CHECK_THROWS(LoginChallenge("portal-secret", swapped).verify(challenge, blob, t));
 }
 
 void testConsumerChangedWhileRunning()
@@ -118,7 +156,7 @@ void testConsumerChangedWhileRunning()
     const std::string before = portal.issue(t);
     const std::string blobBefore = signLoginBlob(identity, t, before);
 
-    const LoginConsumer renamed{"Bazarish alpha", "https://alpha.example", "Administrator"};
+    const LoginConsumer renamed{"Bazarish alpha", {"https://alpha.example"}, "Administrator"};
     portal.setConsumer(renamed);
     CHECK(portal.consumer() == renamed);
 
@@ -167,6 +205,7 @@ int main()
     testRejections();
     testRelabelling();
     testIncompleteConsumerRefused();
+    testEveryPlaceIsSigned();
     testConsumerChangedWhileRunning();
     testChallengePastedAsBlob();
     std::printf("TestLoginChallenge: all checks passed\n");

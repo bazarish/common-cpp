@@ -40,7 +40,16 @@ void requireField(const std::string& value, const std::size_t limit, const std::
 void requireUsableConsumer(const LoginConsumer& consumer)
 {
     requireField(consumer.name, kConsumerNameMax, "name");
-    requireField(consumer.place, kConsumerPlaceMax, "place");
+    if (consumer.place.empty()) {
+        throw std::runtime_error("the consumer names no place");
+    }
+    if (consumer.place.size() > kConsumerPlacesMax) {
+        throw std::runtime_error("the consumer names more than "
+            + std::to_string(kConsumerPlacesMax) + " places");
+    }
+    for (const std::string& place : consumer.place) {
+        requireField(place, kConsumerPlaceMax, "place");
+    }
     requireField(consumer.role, kConsumerRoleMax, "role");
 }
 
@@ -69,7 +78,7 @@ LoginConsumer readLoginConsumer(const std::string& challenge)
         }
         const nlohmann::json& object = envelope.at("consumer");
         consumer.name = object.value("name", std::string());
-        consumer.place = object.value("place", std::string());
+        consumer.place = object.value("place", std::vector<std::string>());
         consumer.role = object.value("role", std::string());
     } catch (const std::exception& error) {
         throw std::runtime_error(

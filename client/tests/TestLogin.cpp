@@ -30,7 +30,8 @@ std::int64_t now()
 
 service::LoginConsumer portalConsumer()
 {
-    return service::LoginConsumer{"Bazarish service node", "http://node.example", "Account owner"};
+    return service::LoginConsumer{
+        "Bazarish service node", {"http://node.example"}, "Account owner"};
 }
 
 std::string encodedChallenge(const nlohmann::json& envelope)
@@ -89,6 +90,19 @@ int main()
         service::LoginConsumer painted = portalConsumer();
         painted.name = "Your server\nplace: somewhere-else.i2p";
         CHECK_THROWS(session.signLogin(encodedChallenge(envelopeWith(painted))));
+        service::LoginConsumer paintedPlace = portalConsumer();
+        paintedPlace.place = {"http://node.example\nsomewhere-else.i2p"};
+        CHECK_THROWS(session.signLogin(encodedChallenge(envelopeWith(paintedPlace))));
+        service::LoginConsumer crowded = portalConsumer();
+        crowded.place.clear();
+        for (std::size_t i = 0; i <= service::kConsumerPlacesMax; ++i) {
+            crowded.place.push_back("http://node" + std::to_string(i) + ".example");
+        }
+        CHECK_THROWS(session.signLogin(encodedChallenge(envelopeWith(crowded))));
+
+        service::LoginConsumer both = portalConsumer();
+        both.place = {"https://node.example", "http://node.b32.i2p"};
+        CHECK(!session.signLogin(encodedChallenge(envelopeWith(both))).empty());
 
         nlohmann::json future = envelopeWith(portalConsumer());
         future["v"] = service::kLoginChallengeVersion + 1;

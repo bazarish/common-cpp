@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace bazarish::service {
 
@@ -18,7 +19,9 @@ inline constexpr int kLoginChallengeVersion = 1;
 
 struct LoginConsumer {
     std::string name;
-    std::string place;
+    // Every address this place answers at, in the order it publishes them: the
+    // signature covers the list, so the order is part of what is signed.
+    std::vector<std::string> place;
     std::string role;
 
     friend bool operator==(const LoginConsumer&, const LoginConsumer&) = default;
@@ -27,6 +30,9 @@ struct LoginConsumer {
 inline constexpr std::size_t kConsumerNameMax = 96;
 inline constexpr std::size_t kConsumerPlaceMax = 256;
 inline constexpr std::size_t kConsumerRoleMax = 48;
+// A list nobody reads is not a check: a reader has to be able to find their own
+// address in it at a glance.
+inline constexpr std::size_t kConsumerPlacesMax = 4;
 
 void requireUsableConsumer(const LoginConsumer& consumer);
 
