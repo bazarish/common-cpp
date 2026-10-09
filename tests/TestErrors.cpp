@@ -8,7 +8,6 @@ using namespace bazarish;
 int main()
 {
     const ErrorCode codes[] = {
-        ErrorCode::eQuotaExceeded,
         ErrorCode::eStorageFull,
         ErrorCode::eRecipientServerUnreachable,
         ErrorCode::eDeliveryRejected,
@@ -19,7 +18,6 @@ int main()
         ErrorCode::eAliasUnknown,
         ErrorCode::eClientUnregistered,
         ErrorCode::eSessionInvalid,
-        ErrorCode::eI2pUnavailable,
         ErrorCode::eAccountPendingApproval,
     };
     for (const ErrorCode code : codes) {
@@ -27,7 +25,7 @@ int main()
         CHECK(back.has_value());
         CHECK(back.value() == code);
     }
-    CHECK(toString(ErrorCode::eQuotaExceeded) == "QUOTA_EXCEEDED");
+    CHECK(toString(ErrorCode::eStorageFull) == "STORAGE_FULL");
     CHECK(!errorCodeFromString("NO_SUCH_CODE").has_value());
 
     for (const ErrorCode code : codes) {
@@ -41,10 +39,10 @@ int main()
 
     const nlohmann::json details = {{"limit", 10485760}, {"size", 12582912}};
     const nlohmann::json envelope
-        = makeErrorEnvelope(ErrorCode::eQuotaExceeded, "blob too large", details);
+        = makeErrorEnvelope(ErrorCode::eMessageTooLarge, "blob too large", details);
     const std::optional<ParsedError> parsed = parseErrorEnvelope(envelope);
     CHECK(parsed.has_value());
-    CHECK(parsed->code == ErrorCode::eQuotaExceeded);
+    CHECK(parsed->code == ErrorCode::eMessageTooLarge);
     CHECK(parsed->message == "blob too large");
     CHECK(parsed->details == details);
 

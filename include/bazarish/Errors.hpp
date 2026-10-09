@@ -10,7 +10,6 @@
 namespace bazarish {
 
 enum class ErrorCode {
-    eQuotaExceeded,
     eStorageFull,
     eRecipientServerUnreachable,
     eDeliveryRejected,
@@ -21,7 +20,6 @@ enum class ErrorCode {
     eAliasUnknown,
     eClientUnregistered,
     eSessionInvalid,
-    eI2pUnavailable,
     eAccountPendingApproval,
 };
 

@@ -7,8 +7,7 @@
 
 namespace {
 
-constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErrorNames = {{
-    {bazarish::ErrorCode::eQuotaExceeded, "QUOTA_EXCEEDED"},
+constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 11> kErrorNames = {{
     {bazarish::ErrorCode::eStorageFull, "STORAGE_FULL"},
     {bazarish::ErrorCode::eRecipientServerUnreachable, "RECIPIENT_SERVER_UNREACHABLE"},
     {bazarish::ErrorCode::eDeliveryRejected, "DELIVERY_REJECTED"},
@@ -19,12 +18,10 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErro
     {bazarish::ErrorCode::eAliasUnknown, "ALIAS_UNKNOWN"},
     {bazarish::ErrorCode::eClientUnregistered, "CLIENT_UNREGISTERED"},
     {bazarish::ErrorCode::eSessionInvalid, "SESSION_INVALID"},
-    {bazarish::ErrorCode::eI2pUnavailable, "I2P_UNAVAILABLE"},
     {bazarish::ErrorCode::eAccountPendingApproval, "ACCOUNT_PENDING_APPROVAL"},
 }};
 
-constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErrorTexts = {{
-    {bazarish::ErrorCode::eQuotaExceeded, "There is no room left for this on the server."},
+constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 11> kErrorTexts = {{
     {bazarish::ErrorCode::eStorageFull, "The server has run out of storage."},
     {bazarish::ErrorCode::eRecipientServerUnreachable, "Their server did not answer."},
     {bazarish::ErrorCode::eDeliveryRejected, "Their server refused to take this."},
@@ -39,7 +36,6 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErro
     {bazarish::ErrorCode::eClientUnregistered, "This account is not registered on the server."},
     {bazarish::ErrorCode::eSessionInvalid,
         "The session with the server has lapsed; it will be opened again."},
-    {bazarish::ErrorCode::eI2pUnavailable, "I2P is not ready yet."},
     {bazarish::ErrorCode::eAccountPendingApproval,
         "This account is waiting for the server's operator to let it in."},
 }};
