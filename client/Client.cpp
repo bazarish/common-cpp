@@ -97,22 +97,20 @@ void Client::releaseI2pLink()
     api_.releaseI2pLink();
 }
 
-PublishResult Client::publishCard(const Bytes& sealingPrekeyDer, const std::string& ownDest,
+PublishResult Client::publishCard(const Bytes& sealingPrekeyDer, const DestinationInfo& serving,
     const std::int64_t notBefore)
 {
-    const DestinationInfo destination = myDestination();
-    const std::string dest = destination.dest.empty() ? ownDest : destination.dest;
     const std::int64_t issuedAt = std::max(nowSeconds(), notBefore + 1);
     const Bytes card = ContactCard::issue(
-        identity_, issuedAt, dest, sealingPrekeyDer, destination.servingSealingKeyDer);
+        identity_, issuedAt, serving.dest, sealingPrekeyDer, serving.servingSealingKeyDer);
     const ApiResponse response = api_.postJson("/v1/account/card", {{"card", toBase64(card)}});
     const nlohmann::json body = response.json();
 
     PublishResult result;
     result.cardDer = card;
     result.quotaBytes = body.at("quotaBytes").get<std::uint64_t>();
-    result.dest = dest;
-    result.servingSealingKeyDer = destination.servingSealingKeyDer;
+    result.dest = serving.dest;
+    result.servingSealingKeyDer = serving.servingSealingKeyDer;
     return result;
 }
 

@@ -62,7 +62,7 @@ nlohmann::json toJson(const AliasStatus& status)
     for (const AliasStatusEntry& entry : status.names) {
         names.push_back({{"alias", entry.alias}, {"notAfter", entry.notAfter},
             {"autoRenew", entry.autoRenew}, {"bindingWanted", entry.bindingWanted},
-            {"bound", entry.bound}});
+            {"bound", entry.bound}, {"inApp", entry.inApp}});
     }
     return {
         {"v", kAliasMaintenanceVersion},
@@ -87,6 +87,7 @@ AliasStatus aliasStatusFromJson(const nlohmann::json& body)
         one.autoRenew = entry.value("autoRenew", true);
         one.bindingWanted = entry.value("bindingWanted", false);
         one.bound = entry.value("bound", false);
+        one.inApp = entry.value("inApp", false);
         status.names.push_back(std::move(one));
     }
     status.depositCoversRenewals = body.value("depositCoversRenewals", true);

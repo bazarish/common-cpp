@@ -92,8 +92,8 @@ public:
     void setDestinationOwner(std::string owner);
     void releaseI2pLink();
 
-    PublishResult publishCard(const Bytes& sealingPrekeyDer = {}, const std::string& ownDest = {},
-        std::int64_t notBefore = 0);
+    PublishResult publishCard(const Bytes& sealingPrekeyDer = {},
+        const DestinationInfo& serving = {}, std::int64_t notBefore = 0);
 
     void closeAccount();
     PortalInfo fetchPortalInfo();

@@ -261,11 +261,11 @@ int main()
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
             CHECK(!nlohmann::json::parse(request.body).at("transient").get<std::string>().empty());
-            {
-                std::lock_guard<std::mutex> lock(m.mu);
-                m.delegated.insert(caller);
-            }
-            respondJson(response, {{"ok", true}});
+            std::lock_guard<std::mutex> lock(m.mu);
+            m.delegated.insert(caller);
+            respondJson(response,
+                {{"dest", m.destFor[caller]},
+                    {"servingKey", toBase64(m.serverSealing.publicDer())}});
         }));
 
     server.post("/v1/messaging/self",
@@ -746,7 +746,11 @@ int main()
         bob.sync();
 
         {
-            CHECK(alice.pushRoutingToContacts().told > 0);
+            alice.replaceOwnAddress();
+            CHECK(waitFor([&]() {
+                alice.flushPendingEchoes();
+                return alice.routingFanout().contacts.empty();
+            }));
             bool sawRouting = false;
             CHECK(waitFor([&]() {
                 for (const IncomingMessage& item : bob.sync()) {
@@ -1267,6 +1271,45 @@ int main()
                 CHECK(item.fromFingerprint != stranger);
             }
             CHECK(!alice.hasContact(stranger));
+        }
+
+        {
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.refuseWith = "RECIPIENT_SERVER_UNREACHABLE";
+            }
+            int refused = 0;
+            alice.setRoutingFanoutSink([&refused](const std::string&, const bool delivered) {
+                if (!delivered) {
+                    ++refused;
+                }
+            });
+            alice.announceNewRouting();
+            const std::size_t queued = alice.routingFanout().contacts.size();
+            CHECK(queued > 0);
+            CHECK(waitFor([&]() {
+                alice.flushPendingEchoes();
+                return static_cast<std::size_t>(refused) == queued;
+            }));
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.refuseWith.clear();
+            }
+            CHECK(alice.routingFanout().contacts.size() == queued);
+            for (const std::string& peer : alice.routingFanout().contacts) {
+                CHECK(alice.canWriteTo(peer));
+            }
+            CHECK(alice.routingFanout().registry);
+            alice.setRoutingFanoutSink({});
+        }
+    }
+
+    {
+        const Session reopened = Session::open(aDir, std::string{});
+        CHECK(!reopened.routingFanout().contacts.empty());
+        CHECK(reopened.routingFanout().registry);
+        for (const std::string& peer : reopened.routingFanout().contacts) {
+            CHECK(reopened.canWriteTo(peer));
         }
     }
 

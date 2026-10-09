@@ -21,6 +21,7 @@ inline constexpr const char* kAliasStatusOp = "alias.status";
 inline constexpr const char* kAliasUpdateOp = "alias.update";
 inline constexpr const char* kAliasRenewOp = "alias.renew";
 inline constexpr const char* kAliasAutoRenewOp = "alias.autorenew";
+inline constexpr const char* kAliasBindingOp = "alias.binding";
 inline constexpr const char* kAliasTransferAcceptOp = "alias.transfer.accept";
 
 struct AliasMaintenanceRequest {
@@ -38,6 +39,7 @@ struct AliasStatusEntry {
     bool autoRenew = true;
     bool bindingWanted = false;
     bool bound = false;
+    bool inApp = false;
 };
 
 struct AliasStatus {

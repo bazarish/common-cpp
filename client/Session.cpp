@@ -66,6 +66,8 @@ constexpr std::size_t kDeliveryIdBytes = 16;
 constexpr std::size_t kContactBookChunkBytes = 128 * 1024;
 constexpr std::size_t kRequestIdBytes = 8;
 
+constexpr std::int64_t kRegistryFanoutRetrySeconds = 10;
+
 constexpr std::int64_t kAliasStatusIntervalSeconds = 24 * 3600;
 constexpr std::int64_t kAliasStatusJitterSeconds = 6 * 3600;
 static_assert(kAliasStatusIntervalSeconds + kAliasStatusJitterSeconds
@@ -429,11 +431,19 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
         }
     }
 
+    Session::RoutingFanout fanout;
+    if (db->has("routing-fanout")) {
+        const nlohmann::json queued = nlohmann::json::parse(db->text("routing-fanout"));
+        fanout.contacts = queued.value("contacts", std::vector<std::string>());
+        fanout.registry = queued.value("registry", false);
+    }
+
     auto client = std::make_unique<Client>(
         std::move(identity), clientId, endpoint, i2pDirFor(accountFile));
     Session session(accountFile, std::move(client), std::move(sealing), std::move(contacts));
     session.db_ = std::move(db);
     session.blocked_ = std::move(blocked);
+    session.fanout_ = std::move(fanout);
     session.pendingPassRevokes_ = std::move(pendingRevokes);
     session.acceptCalls_ = meta.value("acceptCalls", true);
     session.sendReceipts_ = meta.value("sendReceipts", true);
@@ -444,7 +454,8 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
         session.aliasNames_.push_back(
             Session::AliasHolding{held.value("alias", std::string()),
                 held.value("notAfter", std::int64_t{0}), held.value("autoRenew", true),
-                held.value("bindingWanted", false), held.value("bound", false)});
+                held.value("bindingWanted", false), held.value("bound", false),
+                held.value("inApp", false)});
     }
     session.aliasCheckAfter_ = meta.value("aliasCheckAfter", std::int64_t{0});
     session.aliasStatusAt_ = meta.value("aliasStatusAt", std::int64_t{0});
@@ -646,7 +657,7 @@ nlohmann::json Session::aliasNamesToJson() const
     for (const AliasHolding& holding : aliasNames_) {
         held.push_back({{"alias", holding.alias}, {"notAfter", holding.notAfter},
             {"autoRenew", holding.autoRenew}, {"bindingWanted", holding.bindingWanted},
-            {"bound", holding.bound}});
+            {"bound", holding.bound}, {"inApp", holding.inApp}});
     }
     return held;
 }
@@ -686,16 +697,17 @@ PortalInfo Session::serverPortalInfo()
 void Session::registerAccount()
 {
     requireSwitchedOn();
+    const DestinationInfo serving = servedOrOwnDestination();
     PublishResult result;
     try {
-        result = client_->publishCard(sealingKey_.publicDer(), ownRoutingHost(), currentCardIssuedAt());
+        result = client_->publishCard(sealingKey_.publicDer(), serving, currentCardIssuedAt());
     } catch (const ApiError& error) {
         if (error.code != ErrorCode::eDeliveryRejected) {
             throw;
         }
         reportConnectProgress(60, "Registering with this server");
         client_->registerHere();
-        result = client_->publishCard(sealingKey_.publicDer(), ownRoutingHost(), currentCardIssuedAt());
+        result = client_->publishCard(sealingKey_.publicDer(), serving, currentCardIssuedAt());
     }
     reportConnectProgress(70, "Registered; registering this device");
     storeCard(result);
@@ -744,9 +756,9 @@ void Session::publishRouting()
     }
     const std::int64_t expires = renewI2pTransient(delegationDays_);
     reportConnectProgress(88, "Delegating your destination to the server");
-    client_->sendI2pTransient(i2pTransientBase64(), expires);
+    const DestinationInfo serving = client_->sendI2pTransient(i2pTransientBase64(), expires);
     reportConnectProgress(92, "Publishing your contact card");
-    storeCard(client_->publishCard(sealingKey_.publicDer(), ownRoutingHost(), currentCardIssuedAt()));
+    storeCard(client_->publishCard(sealingKey_.publicDer(), serving, currentCardIssuedAt()));
     reportConnectProgress(96, "Syncing your address to your other devices");
     try {
         syncI2pMasterToSelf();
@@ -812,15 +824,6 @@ bool Session::hasI2pDestination() const
 std::string Session::i2pAddress() const
 {
     return i2pAddress_;
-}
-
-void Session::deleteI2pDestination()
-{
-    i2pMaster_.clear();
-    i2pTransient_.clear();
-    i2pAddress_.clear();
-    db_->erase("i2p-master");
-    db_->erase("i2p-transient");
 }
 
 std::int64_t Session::renewI2pTransient(const int days)
@@ -2000,30 +2003,135 @@ void Session::sendDelete(const std::string& peerFingerprint, const std::string& 
     sendContent(peerFingerprint, std::move(inner));
 }
 
-Session::RoutingPushResult Session::pushRoutingToContacts()
+void Session::tellRoutingTo(const std::string& peerFingerprint)
 {
-    RoutingPushResult result;
-    std::vector<std::string> peers;
+    nlohmann::json inner = envelope("contact.routing", toHex(randomBytes(8)),
+        {{"routing", {{"dest", myDest_}, {"servingKey", myServingKeyB64_}}}});
+    const std::shared_ptr<EchoQueue> queue = echoQueue_;
+    DeliveryWatch watch;
+    watch.onOutcome
+        = [queue, peerFingerprint](const OutboundCourier::Outcome& outcome) {
+              const std::lock_guard<std::mutex> lock(queue->mutex);
+              queue->routingTold.emplace_back(peerFingerprint, outcome.stored);
+          };
+    try {
+        (void)sendContent(peerFingerprint, std::move(inner), watch, /*waitForOutcome=*/false,
+            /*establishOnFirstReply=*/false);
+    } catch (const std::exception& error) {
+        bazarish::log::warn("routing update not sent to {}: {}",
+            bazarish::log::redact(peerFingerprint), error.what());
+        const std::lock_guard<std::mutex> lock(queue->mutex);
+        queue->routingTold.emplace_back(peerFingerprint, false);
+    }
+}
+
+void Session::persistRoutingFanout() const
+{
+    if (fanout_.empty()) {
+        db_->erase("routing-fanout");
+        return;
+    }
+    db_->putText("routing-fanout",
+        nlohmann::json{{"contacts", fanout_.contacts}, {"registry", fanout_.registry}}.dump());
+}
+
+void Session::queueRoutingFanout()
+{
+    fanout_.contacts.clear();
     for (const auto& [fingerprint, contact] : contacts_) {
-        if (contact.issuedToThem && !contact.sealingPublicB64.empty()
+        if (!contact.sendPass.empty() && !contact.sealingPublicB64.empty()
             && !contact.servingSealingB64.empty()) {
-            peers.push_back(fingerprint);
+            fanout_.contacts.push_back(fingerprint);
         }
     }
-    for (const std::string& peer : peers) {
-        nlohmann::json inner = envelope("contact.routing", toHex(randomBytes(8)),
-            {{"routing", {{"dest", myDest_}, {"servingKey", myServingKeyB64_}}}});
-        try {
-            sendContent(peer, std::move(inner), {}, false,
-                /*establishOnFirstReply=*/false);
-            ++result.told;
-        } catch (const std::exception& error) {
-            ++result.failed;
-            bazarish::log::warn("routing update not delivered to {}: {}",
-                bazarish::log::redact(peer), error.what());
-        }
+    fanout_.registry = resolverCoordinate_.configured()
+        && std::any_of(aliasNames_.begin(), aliasNames_.end(),
+            [](const AliasHolding& holding) { return holding.bindingWanted; });
+    registryFanoutAfter_ = 0;
+    persistRoutingFanout();
+}
+
+void Session::dropFromRoutingFanout(const std::string& peerFingerprint)
+{
+    const auto queued
+        = std::find(fanout_.contacts.begin(), fanout_.contacts.end(), peerFingerprint);
+    if (queued == fanout_.contacts.end()) {
+        return;
     }
-    return result;
+    fanout_.contacts.erase(queued);
+    persistRoutingFanout();
+}
+
+void Session::retryRoutingTo(const std::string& peerFingerprint)
+{
+    tellRoutingTo(peerFingerprint);
+}
+
+bool Session::tellRegistryWhereWeAre()
+{
+    try {
+        if (aliasUpdatePending() && !pushAliasDescriptor()) {
+            return false;
+        }
+    } catch (const std::exception& error) {
+        log::info("the alias registry has not taken the new address yet: {}", error.what());
+        return false;
+    }
+    noteRegistryTold();
+    return true;
+}
+
+void Session::runRoutingFanout()
+{
+    for (const std::string& peer : std::vector<std::string>(fanout_.contacts)) {
+        tellRoutingTo(peer);
+    }
+}
+
+void Session::serviceRoutingFanout()
+{
+    if (!fanout_.registry || nowSeconds() < registryFanoutAfter_) {
+        return;
+    }
+    registryFanoutAfter_ = nowSeconds() + kRegistryFanoutRetrySeconds;
+    (void)tellRegistryWhereWeAre();
+}
+
+void Session::noteRegistryTold()
+{
+    if (!fanout_.registry) {
+        return;
+    }
+    fanout_.registry = false;
+    persistRoutingFanout();
+}
+
+void Session::replaceOwnAddress()
+{
+    requireSwitchedOn();
+    if (cardB64_.empty()) {
+        throw std::runtime_error("not registered: there is no address to replace");
+    }
+    const I2pMasterKey master = generateI2pMaster();
+    i2pMaster_ = master.privateKeys;
+    i2pAddress_ = master.host;
+    persistI2pBlob("i2p-master", i2pMaster_);
+    const std::int64_t expires = renewI2pTransient(static_cast<int>(delegationDays_));
+    const DestinationInfo serving = client_->sendI2pTransient(i2pTransientBase64(), expires);
+    storeCard(client_->publishCard(sealingKey_.publicDer(), serving, currentCardIssuedAt()));
+    try {
+        syncI2pMasterToSelf();
+    } catch (const std::exception& error) {
+        log::info("this account's other devices were not handed the new address: {}",
+            error.what());
+    }
+    announceNewRouting();
+}
+
+void Session::announceNewRouting()
+{
+    queueRoutingFanout();
+    runRoutingFanout();
 }
 
 void Session::sendReceipt(const std::string& peerFingerprint, const std::string& refMessageId)
@@ -3155,11 +3263,13 @@ void Session::flushPendingEchoes()
     std::vector<std::pair<std::string, nlohmann::json>> ready;
     std::vector<std::string> established;
     std::vector<std::string> notEstablished;
+    std::vector<std::pair<std::string, bool>> told;
     {
         const std::lock_guard<std::mutex> lock(echoQueue_->mutex);
         ready.swap(echoQueue_->pending);
         established.swap(echoQueue_->established);
         notEstablished.swap(echoQueue_->notEstablished);
+        told.swap(echoQueue_->routingTold);
     }
     for (const std::string& peerFingerprint : established) {
         const auto found = contacts_.find(peerFingerprint);
@@ -3193,6 +3303,14 @@ void Session::flushPendingEchoes()
         } catch (const std::exception& error) {
             bazarish::log::warn(
                 "could not echo what was sent to our own devices: {}", error.what());
+        }
+    }
+    for (const auto& [peerFingerprint, delivered] : told) {
+        if (delivered) {
+            dropFromRoutingFanout(peerFingerprint);
+        }
+        if (routingFanoutSink_) {
+            routingFanoutSink_(peerFingerprint, delivered);
         }
     }
 }
@@ -3780,7 +3898,17 @@ void Session::refreshOwnCard()
     if (cardB64_.empty()) {
         throw std::runtime_error("not registered: nothing to refresh");
     }
-    storeCard(client_->publishCard(sealingKey_.publicDer(), ownRoutingHost(), currentCardIssuedAt()));
+    storeCard(client_->publishCard(
+        sealingKey_.publicDer(), servedOrOwnDestination(), currentCardIssuedAt()));
+}
+
+DestinationInfo Session::servedOrOwnDestination()
+{
+    DestinationInfo serving = client_->myDestination();
+    if (serving.dest.empty()) {
+        serving.dest = ownRoutingHost();
+    }
+    return serving;
 }
 
 std::string Session::contactInviteUri(const std::string& peerFingerprint) const
@@ -3827,8 +3955,8 @@ void Session::adoptAliasStatus(const AliasStatus& status)
 {
     aliasNames_.clear();
     for (const AliasStatusEntry& entry : status.names) {
-        aliasNames_.push_back(AliasHolding{
-            entry.alias, entry.notAfter, entry.autoRenew, entry.bindingWanted, entry.bound});
+        aliasNames_.push_back(AliasHolding{entry.alias, entry.notAfter, entry.autoRenew,
+            entry.bindingWanted, entry.bound, entry.inApp});
     }
     aliasDepositCovers_ = status.depositCoversRenewals;
     aliasStatusAt_ = status.issuedAt;
@@ -3955,6 +4083,37 @@ bool Session::refreshAliasStatus(const FetchTransport& over)
     return true;
 }
 
+void Session::setAliasBinding(const std::string& alias, const bool on)
+{
+    if (!resolverCoordinate_.configured()) {
+        throw std::runtime_error("This build has no alias registry configured.");
+    }
+    const auto held = std::find_if(aliasNames_.begin(), aliasNames_.end(),
+        [&alias](const AliasHolding& holding) { return holding.alias == alias; });
+    if (held == aliasNames_.end()) {
+        throw std::runtime_error("this account does not hold that name");
+    }
+    AliasMaintenanceRequest asking;
+    asking.op = kAliasBindingOp;
+    asking.alias = alias;
+    asking.flag = on;
+    asking.issuedAt = nowSeconds();
+    const Bytes request = signAliasMaintenanceRequest(asking, client_->identity());
+    const FetchOutcome outcome
+        = heldTransport()(resolverCoordinate_.dest, kAliasBindingOp, request);
+    if (!outcome.ok) {
+        const std::optional<ErrorCode> known = errorCodeFromString(outcome.errorCode);
+        throw std::runtime_error(known ? std::string(readable(*known))
+                                       : "The alias registry did not answer.");
+    }
+    held->bindingWanted = on;
+    held->bound = false;
+    persistMeta();
+    if (on) {
+        pushAliasDescriptor();
+    }
+}
+
 bool Session::aliasUpdatePending() const
 {
     if (myDest_.empty()) {
@@ -4025,8 +4184,8 @@ Session::AliasErrandResult Session::runAliasErrand(const AliasErrandContext& con
 
         std::vector<AliasHolding> names;
         for (const AliasStatusEntry& entry : out.answer.status.names) {
-            names.push_back(AliasHolding{
-                entry.alias, entry.notAfter, entry.autoRenew, entry.bindingWanted, entry.bound});
+            names.push_back(AliasHolding{entry.alias, entry.notAfter, entry.autoRenew,
+                entry.bindingWanted, entry.bound, entry.inApp});
         }
         const bool canPublish = !context.dest.empty();
         const bool moved = context.pushedDest != context.dest;
@@ -4064,6 +4223,9 @@ void Session::applyAliasErrand(const AliasErrandResult& result)
         noteAliasesBound();
         persistMeta();
     }
+    if (result.ok && !aliasUpdatePending()) {
+        noteRegistryTold();
+    }
 }
 
 void Session::noteAliasesBound()
@@ -4095,23 +4257,6 @@ void Session::serviceAliases()
         }
     } catch (const std::exception& error) {
         log::info("name servicing will try again: {}", error.what());
-    }
-}
-
-void Session::serviceAliasesAfterMove()
-{
-    if (!resolverCoordinate_.configured()) {
-        return;
-    }
-    try {
-        if (aliasNames_.empty()) {
-            refreshAliasStatus();
-        }
-        if (aliasUpdatePending()) {
-            pushAliasDescriptor();
-        }
-    } catch (const std::exception& error) {
-        log::info("the name service was not reached after this account moved: {}", error.what());
     }
 }
 

@@ -251,7 +251,6 @@ public:
     bool hasI2pDestination() const;
     // The stable base32 address (without the ".b32.i2p" suffix), or empty.
     std::string i2pAddress() const;
-    void deleteI2pDestination();
 
     void disableI2pDest();
     I2pDestStatus i2pDestStatus();
@@ -409,9 +408,12 @@ public:
         bool autoRenew = true;
         bool bindingWanted = false;
         bool bound = false;
+        bool inApp = false;
     };
 
     std::vector<AliasHolding> aliasNames() const { return aliasNames_; }
+
+    void setAliasBinding(const std::string& alias, bool on);
 
     bool refreshAliasStatus(const FetchTransport& over = {});
 
@@ -429,12 +431,29 @@ public:
 
     bool aliasDepositCovers() const { return aliasDepositCovers_; }
 
-    struct RoutingPushResult {
-        std::size_t told = 0;
-        std::size_t failed = 0;
+    struct RoutingFanout {
+        std::vector<std::string> contacts;
+        bool registry = false;
+
+        bool empty() const { return contacts.empty() && !registry; }
     };
 
-    RoutingPushResult pushRoutingToContacts();
+    using RoutingFanoutFn
+        = std::function<void(const std::string& peerFingerprint, bool delivered)>;
+
+    void setRoutingFanoutSink(RoutingFanoutFn sink) { routingFanoutSink_ = std::move(sink); }
+
+    RoutingFanout routingFanout() const { return fanout_; }
+
+    void replaceOwnAddress();
+
+    void announceNewRouting();
+
+    void runRoutingFanout();
+
+    void serviceRoutingFanout();
+
+    void retryRoutingTo(const std::string& peerFingerprint);
 
     void sendReceipt(const std::string& peerFingerprint, const std::string& refMessageId);
 
@@ -568,6 +587,7 @@ private:
     void storeCard(const PublishResult& result);
     std::int64_t currentCardIssuedAt() const;
     std::string ownRoutingHost() const;
+    DestinationInfo servedOrOwnDestination();
 
     void sendSelf(nlohmann::json inner);
     bool saveToSelf(nlohmann::json message);
@@ -685,6 +705,9 @@ private:
     std::int64_t aliasStatusAt_ = 0;
     bool aliasDepositCovers_ = true;
     std::string aliasPushedDest_;
+    RoutingFanout fanout_;
+    RoutingFanoutFn routingFanoutSink_;
+    std::int64_t registryFanoutAfter_ = 0;
 
     nlohmann::json aliasNamesToJson() const;
     void adoptAliasStatus(const AliasStatus& status);
@@ -692,7 +715,12 @@ private:
     FetchTransport heldTransport() const;
     void relayAliasStatus(const Bytes& statusDer, const Bytes& delegationDer);
     void scheduleNextAliasCheck(std::int64_t from);
-    void serviceAliasesAfterMove();
+    void queueRoutingFanout();
+    void persistRoutingFanout() const;
+    void dropFromRoutingFanout(const std::string& peerFingerprint);
+    void tellRoutingTo(const std::string& peerFingerprint);
+    bool tellRegistryWhereWeAre();
+    void noteRegistryTold();
     bool switchedOff_ = false;
     bazarish::i2p::Privacy transferPrivacy() const;
     std::optional<bazarish::i2p::Privacy> transferPrivacy_;
@@ -785,6 +813,7 @@ private:
         std::vector<std::pair<std::string, nlohmann::json>> pending;
         std::vector<std::string> established;
         std::vector<std::string> notEstablished;
+        std::vector<std::pair<std::string, bool>> routingTold;
     };
     std::shared_ptr<EchoQueue> echoQueue_ = std::make_shared<EchoQueue>();
     AddressDecisionFn addressDecision_;

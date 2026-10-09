@@ -206,7 +206,9 @@ int main()
 
     {
         const Key aliceSealing = Key::generateSealing();
-        const PublishResult result = client.publishCard(aliceSealing.publicDer());
+        const DestinationInfo serving = client.myDestination();
+        CHECK(serving.dest == aliceDest);
+        const PublishResult result = client.publishCard(aliceSealing.publicDer(), serving);
         CHECK(result.quotaBytes == 10u * 1024 * 1024);
         CHECK(result.dest == aliceDest);
         CHECK(result.servingSealingKeyDer == serverSealing.publicDer());
