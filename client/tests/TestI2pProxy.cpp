@@ -17,6 +17,7 @@ int main()
     fs::remove_all(dir);
     fs::create_directories(dir);
 
+    bazarish::i2p::setI2pLogging(true);
     bazarish::i2p::RouterConfig config = bazarish::i2p::offlineRouter(dir);
     config.role = bazarish::i2p::Role::eClient;
     std::fprintf(stderr, "proxy: starting the router\n");

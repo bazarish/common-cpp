@@ -869,6 +869,7 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
 
     i2pd::api::InitI2P(static_cast<int>(argv.size()), argv.data(), "bazarish-i2p");
     inited = true;
+    bazarish::log::info("i2p: engine initialised");
     i2pd::config::GetOption("reseed.urls", builtInReseedUrls);
     setReseedUrls(config.reseedUrls);
     setSocksProxy(config.socksProxyHost, config.socksProxyPort);
@@ -878,14 +879,17 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
 void EmbeddedRouter::start()
 {
     if (started) { return; }
-    i2pd::api::StartI2P();
+    // Before the start, not after it: the lines the engine emits while coming up
+    // are the ones worth having.
     i2pd::log::Logger().SendTo([](LogLevel level, const std::string& text)
     {
         if (!i2pLogging()) { return; }
         bazarish::log::emit(mapLevel(level), text);
     });
     i2pd::log::Logger().SetLogLevel(i2pLogging() ? "warn" : "none");
+    i2pd::api::StartI2P();
     started = true;
+    bazarish::log::info("i2p: engine running");
     io = std::make_shared<IoService>(ioContextCount());
 }
 
