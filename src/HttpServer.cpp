@@ -3,6 +3,7 @@
 
 #include <bazarish/Errors.hpp>
 #include <bazarish/Log.hpp>
+#include <bazarish/Tls.hpp>
 #include <bazarish/WebSocket.hpp>
 
 #include <utility>
@@ -15,10 +16,12 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <boost/asio/ssl.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
 
 #include <algorithm>
@@ -283,6 +286,7 @@ struct Server::Impl {
     Options options;
     asio::io_context io;
     std::unique_ptr<tcp::acceptor> acceptor;
+    std::unique_ptr<boost::asio::ssl::context> tls;
     std::vector<std::thread> workers;
     std::mutex routesMutex;
     std::vector<Route> routes;
@@ -296,7 +300,10 @@ struct Server::Impl {
 
     const Route* match(const std::string& method, const std::string& path,
         std::vector<std::string>& captures) const;
+    template <typename Stream>
+    asio::awaitable<void> serveOn(Stream stream);
     asio::awaitable<void> serve(tcp::socket socket);
+    asio::awaitable<void> serveTls(tcp::socket socket);
     asio::awaitable<void> accept();
 };
 
@@ -325,13 +332,13 @@ const Route* Server::Impl::match(const std::string& method, const std::string& p
     return nullptr;
 }
 
-asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
+template <typename Stream>
+asio::awaitable<void> Server::Impl::serveOn(Stream stream)
 {
-    beast::tcp_stream stream(std::move(socket));
     beast::flat_buffer buffer;
     try {
         for (;;) {
-            stream.expires_after(options.readTimeout);
+            beast::get_lowest_layer(stream).expires_after(options.readTimeout);
             http::request_parser<http::string_body> parser;
             parser.header_limit(static_cast<std::uint32_t>(options.maxHeadBytes));
             parser.body_limit(options.maxBodyBytes);
@@ -397,29 +404,33 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
                             asio::redirect_error(asio::use_awaitable, refusalError));
                         break;
                     }
-                    websocket::stream<beast::tcp_stream> upgraded(std::move(stream));
-                    websocket::stream_base::timeout timeouts{};
-                    timeouts.handshake_timeout = options.readTimeout;
-                    timeouts.idle_timeout = chosen.idleTimeout;
-                    timeouts.keep_alive_pings = true;
-                    upgraded.set_option(timeouts);
-                    upgraded.set_option(websocket::stream_base::decorator(
-                        [protocol = chosen.subprotocol](websocket::response_type& response) {
-                            if (!protocol.empty()) {
-                                response.set(http::field::sec_websocket_protocol, protocol);
-                            }
-                        }));
-                    upgraded.read_message_max(chosen.maxMessageBytes);
-                    boost::system::error_code upgradeError;
-                    co_await upgraded.async_accept(
-                        parsed, asio::redirect_error(asio::use_awaitable, upgradeError));
-                    if (upgradeError) {
+                    // An upgrade belongs to the plain listener: a private socket
+                    // carries the operator's requests and nothing that stays open.
+                    if constexpr (std::is_same_v<Stream, beast::tcp_stream>) {
+                        websocket::stream<beast::tcp_stream> upgraded(std::move(stream));
+                        websocket::stream_base::timeout timeouts{};
+                        timeouts.handshake_timeout = options.readTimeout;
+                        timeouts.idle_timeout = chosen.idleTimeout;
+                        timeouts.keep_alive_pings = true;
+                        upgraded.set_option(timeouts);
+                        upgraded.set_option(websocket::stream_base::decorator(
+                            [protocol = chosen.subprotocol](websocket::response_type& response) {
+                                if (!protocol.empty()) {
+                                    response.set(http::field::sec_websocket_protocol, protocol);
+                                }
+                            }));
+                        upgraded.read_message_max(chosen.maxMessageBytes);
+                        boost::system::error_code upgradeError;
+                        co_await upgraded.async_accept(
+                            parsed, asio::redirect_error(asio::use_awaitable, upgradeError));
+                        if (upgradeError) {
+                            co_return;
+                        }
+                        co_await runSocket(
+                            std::make_shared<SocketImpl>(std::move(upgraded), std::move(chosen)),
+                            request);
                         co_return;
                     }
-                    co_await runSocket(
-                        std::make_shared<SocketImpl>(std::move(upgraded), std::move(chosen)),
-                        request);
-                    co_return;
                 }
             }
 
@@ -475,7 +486,7 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
                     out.keep_alive(parsed.keep_alive());
                     out.prepare_payload();
                     boost::system::error_code writeError;
-                    stream.expires_after(options.readTimeout);
+                    beast::get_lowest_layer(stream).expires_after(options.readTimeout);
                     co_await http::async_write(
                         stream, out, asio::redirect_error(asio::use_awaitable, writeError));
                     if (writeError || !parsed.keep_alive()) {
@@ -500,7 +511,35 @@ asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
         bazarish::log::debug("connection ended: {}", error.what());
     }
     boost::system::error_code ignored;
-    stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
+    beast::get_lowest_layer(stream).socket().shutdown(tcp::socket::shutdown_both, ignored);
+}
+
+asio::awaitable<void> Server::Impl::serve(tcp::socket socket)
+{
+    co_await serveOn(beast::tcp_stream(std::move(socket)));
+}
+
+asio::awaitable<void> Server::Impl::serveTls(tcp::socket socket)
+{
+    namespace ssl = boost::asio::ssl;
+    beast::ssl_stream<beast::tcp_stream> stream(std::move(socket), *tls);
+    beast::get_lowest_layer(stream).expires_after(options.readTimeout);
+    boost::system::error_code handshakeError;
+    co_await stream.async_handshake(
+        ssl::stream_base::server, asio::redirect_error(asio::use_awaitable, handshakeError));
+    if (handshakeError) {
+        bazarish::log::debug("a handshake did not finish: {}", handshakeError.message());
+        co_return;
+    }
+    if (!options.clientPins.empty()) {
+        const std::string pin = bazarish::tls::pinOf(stream.native_handle());
+        if (std::find(options.clientPins.begin(), options.clientPins.end(), pin)
+            == options.clientPins.end()) {
+            bazarish::log::warn("a caller with an unlisted key was refused");
+            co_return;
+        }
+    }
+    co_await serveOn(std::move(stream));
 }
 
 asio::awaitable<void> Server::Impl::accept()
@@ -522,7 +561,11 @@ asio::awaitable<void> Server::Impl::accept()
             continue;
         }
         const asio::any_io_executor executor = socket.get_executor();
-        asio::co_spawn(executor, serve(std::move(socket)), asio::detached);
+        if (tls) {
+            asio::co_spawn(executor, serveTls(std::move(socket)), asio::detached);
+        } else {
+            asio::co_spawn(executor, serve(std::move(socket)), asio::detached);
+        }
     }
 }
 
@@ -654,6 +697,20 @@ void Server::del(const std::string& pattern, Handler handler)
 
 int Server::start()
 {
+    if (!impl_->options.certificate.empty()) {
+        namespace ssl = boost::asio::ssl;
+        impl_->tls = std::make_unique<ssl::context>(ssl::context::tls_server);
+        impl_->tls->set_options(ssl::context::default_workarounds | ssl::context::no_sslv2
+            | ssl::context::no_sslv3);
+        impl_->tls->use_certificate_chain_file(impl_->options.certificate);
+        impl_->tls->use_private_key_file(impl_->options.key, ssl::context::pem);
+        if (!impl_->options.clientPins.empty()) {
+            // The chain is not the question: the pin below is, and it is checked
+            // once the handshake has the client's certificate in hand.
+            impl_->tls->set_verify_mode(ssl::verify_peer | ssl::verify_fail_if_no_peer_cert);
+            impl_->tls->set_verify_callback([](bool, ssl::verify_context&) { return true; });
+        }
+    }
     const tcp::endpoint endpoint(asio::ip::make_address(impl_->options.host),
         static_cast<unsigned short>(impl_->options.port));
     impl_->acceptor = std::make_unique<tcp::acceptor>(impl_->io);

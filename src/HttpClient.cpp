@@ -3,6 +3,7 @@
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Log.hpp>
+#include "bazarish/Tls.hpp"
 
 #include <utility>
 
@@ -277,8 +278,14 @@ asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const s
             ssl::context context(ssl::context::tls_client);
             context.set_options(ssl::context::default_workarounds | ssl::context::no_sslv2
                 | ssl::context::no_sslv3);
+            if (!options.certificate.empty()) {
+                context.use_certificate_chain_file(options.certificate);
+                context.use_private_key_file(options.key, ssl::context::pem);
+            }
             beast::ssl_stream<beast::tcp_stream> stream(executor, context);
-            if (options.verifyPeer) {
+            if (!options.pin.empty()) {
+                stream.set_verify_mode(ssl::verify_none);
+            } else if (options.verifyPeer) {
                 context.set_default_verify_paths();
                 stream.set_verify_mode(ssl::verify_peer);
                 stream.set_verify_callback(ssl::host_name_verification(host));
@@ -291,6 +298,10 @@ asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const s
             beast::get_lowest_layer(stream).expires_after(options.connectTimeout);
             co_await beast::get_lowest_layer(stream).async_connect(endpoints, asio::use_awaitable);
             co_await stream.async_handshake(ssl::stream_base::client, asio::use_awaitable);
+            if (!options.pin.empty()
+                && bazarish::tls::pinOf(stream.native_handle()) != options.pin) {
+                throw std::runtime_error("the peer's key is not the pinned one");
+            }
             answer = co_await exchangeAuthorized(
                 stream, host, request, options, length, provider, phase);
             boost::system::error_code ignored;

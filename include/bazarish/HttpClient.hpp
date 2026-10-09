@@ -42,6 +42,11 @@ boost::asio::awaitable<Response> fetch(boost::asio::any_io_executor executor,
 struct ClientOptions {
     bool tls = false;
     bool verifyPeer = true;
+    // A peer on a private socket is named by the hash of its key, not by a
+    // chain and a hostname: with a pin set, that is the whole check.
+    std::string pin;
+    std::string certificate;
+    std::string key;
     std::chrono::seconds connectTimeout{15};
     std::chrono::seconds readTimeout{60};
     std::chrono::seconds writeTimeout{60};

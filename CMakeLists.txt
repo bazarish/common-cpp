@@ -66,6 +66,7 @@ add_library(bazarish_common STATIC
     src/Portal.cpp
     src/PortalSession.cpp
     src/LoginChallenge.cpp
+    src/Tls.cpp
 )
 add_library(Bazarish::Common ALIAS bazarish_common)
 
@@ -114,6 +115,7 @@ endfunction()
 bazarish_add_test(TestAuth)
 bazarish_add_test(TestBytes)
 bazarish_add_test(TestCrypto)
+bazarish_add_test(TestTls)
 bazarish_add_test(TestCms)
 bazarish_add_test(TestHybrid)
 bazarish_add_test(TestTunnel)
