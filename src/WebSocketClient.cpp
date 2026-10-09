@@ -132,6 +132,9 @@ private:
             boost::system::error_code error;
             stream_->read(buffer, error);
             if (error) {
+                if (open_.load()) {
+                    bazarish::log::info("websocket lost: {}", error.message());
+                }
                 break;
             }
             if (!stream_->got_binary()) {

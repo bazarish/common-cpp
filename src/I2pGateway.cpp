@@ -65,13 +65,6 @@ std::chrono::milliseconds drawBetween(
             static_cast<std::uint64_t>(high.count()))));
 }
 
-std::chrono::milliseconds chosenGap(const RouterConfig& config)
-{
-    return config.gatewayControlMaxGap.count() > 0
-        ? std::chrono::milliseconds(config.gatewayControlMaxGap)
-        : std::chrono::milliseconds(gateway::kControlGapMax);
-}
-
 [[noreturn]] void notWithAGateway(const char* const what)
 {
     throw std::runtime_error(
@@ -323,6 +316,7 @@ private:
     std::thread cover_;
     std::atomic<bool> live_{false};
     std::atomic<std::int64_t> aloneSince_{0};
+    std::atomic<bool> openFailing_{false};
 };
 
 GatewayStream::GatewayStream(
@@ -740,15 +734,7 @@ void GatewayRouter::stop()
 
 bool GatewayRouter::ready() const
 {
-    if (!live_.load()) {
-        return false;
-    }
-    if (hasControl()) {
-        return true;
-    }
-    const std::chrono::milliseconds allowed
-        = chosenGap(config_) + kCoverTick + kQuietBeforeChurn;
-    return millisNow() - aloneSince_.load() < allowed.count();
+    return live_.load() && !openFailing_.load();
 }
 
 void GatewayRouter::openControl()
@@ -990,9 +976,11 @@ void GatewayRouter::coverLoop()
             }
             try {
                 openControl();
+                openFailing_.store(false);
                 backoff = kFirstRetry;
                 churnAt = nextChurn();
             } catch (const std::exception& error) {
+                openFailing_.store(true);
                 bazarish::log::warn(
                     "i2p: the gateway would not take a socket: {}", error.what());
                 openAt = std::chrono::steady_clock::now() + backoff;
@@ -1126,9 +1114,11 @@ Frame Link::call(
 {
     const std::shared_ptr<Pending> pending = std::make_shared<Pending>();
     pending->request = frame;
+    bool live = false;
     {
         const std::lock_guard<std::mutex> lock(mutex);
         awaited[ref] = pending;
+        live = control != nullptr && control->open();
     }
     send(frame);
 
@@ -1143,6 +1133,9 @@ Frame Link::call(
         awaited.erase(ref);
     }
     if (!answered) {
+        bazarish::log::warn("i2p: the gateway left {} #{} unanswered for {} s, sent {}",
+            gateway::frameTypeName(static_cast<FrameType>(frame.front())), ref, timeout.count(),
+            live ? "on a live socket" : "while no socket was open");
         throw std::runtime_error("bazarish::i2p: the gateway did not answer in time");
     }
     return answer;
