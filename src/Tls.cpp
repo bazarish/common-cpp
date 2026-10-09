@@ -35,16 +35,20 @@ struct BioDeleter {
 };
 using BioPtr = std::unique_ptr<BIO, BioDeleter>;
 
+struct OpenSslFree {
+    void operator()(unsigned char* block) const { OPENSSL_free(block); }
+};
+using BlockPtr = std::unique_ptr<unsigned char, OpenSslFree>;
+
 std::string pinOfSpki(X509* const certificate)
 {
-    unsigned char* der = nullptr;
-    const int length = i2d_X509_PUBKEY(X509_get_X509_PUBKEY(certificate), &der);
-    if (length <= 0 || der == nullptr) {
+    unsigned char* raw = nullptr;
+    const int length = i2d_X509_PUBKEY(X509_get_X509_PUBKEY(certificate), &raw);
+    const BlockPtr der(raw);
+    if (length <= 0 || !der) {
         throw std::runtime_error("tls: the certificate carries no key");
     }
-    const std::string pin = toHex(sha256(Bytes(der, der + length)));
-    OPENSSL_free(der);
-    return pin;
+    return toHex(sha256(Bytes(der.get(), der.get() + length)));
 }
 
 X509Ptr readCertificate(const fs::path& path)
