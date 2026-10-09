@@ -96,7 +96,7 @@ std::string LoginChallenge::verify(
         throw std::runtime_error("login challenge: expired");
     }
     if (!constantTimeEqual(tag, tagFor(secret_, nonce, ts, canonical))) {
-        throw std::runtime_error("login challenge: bad tag (not issued here)");
+        throw std::runtime_error("login challenge: unknown here");
     }
 
     const std::string fingerprint = verifyLoginBlob(loginBlob, now, challenge);
