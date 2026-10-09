@@ -188,7 +188,6 @@ if(BAZARISH_WITH_CLIENT)
         client/Authorship.cpp
         client/LoginSigner.cpp
         client/AudioIo.cpp
-        client/Bot.cpp
         client/CallMedia.cpp
         client/Client.cpp
         client/FederationFetch.cpp
@@ -232,7 +231,6 @@ if(NOT WIN32)
 endif()
     bazarish_client_add_test(TestAuthorship)
     bazarish_client_add_test(TestApiClient)
-    bazarish_client_add_test(TestBot)
     bazarish_client_add_test(TestCallMedia)
     bazarish_client_add_test(TestClient)
 
