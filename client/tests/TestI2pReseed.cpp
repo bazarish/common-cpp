@@ -20,8 +20,8 @@ int main()
     bazarish::i2p::setI2pLogging(true);
     {
         bazarish::i2p::RouterConfig refused = bazarish::i2p::offlineRouter(dir);
-        refused.reseedUrls.push_back((dir / "second-no-reseed.su3").string());
-        std::fprintf(stderr, "reseed: a router with an unreadable archive\n");
+        refused.reseedUrls.push_back("http://seed.example.org/");
+        std::fprintf(stderr, "reseed: a router with a reseed that is not https\n");
         CHECK_THROWS(bazarish::i2p::Router(refused));
     }
 
@@ -44,27 +44,18 @@ int main()
     {
         const bazarish::i2p::ReseedState state = router.reseedState();
         CHECK(state.urls == "https://seed.example.org/");
-        CHECK(state.file.empty());
+        CHECK(state.file == archive);
     }
 
     router.setReseedUrls({"https://one.example/", "https://two.example"});
     CHECK(router.reseedState().urls == "https://one.example/,https://two.example/");
 
     router.setReseedUrls({});
-    {
-        const bazarish::i2p::ReseedState state = router.reseedState();
-        CHECK(state.urls == builtIn);
-        CHECK(state.file.empty());
-    }
+    CHECK(router.reseedState().urls == builtIn);
 
-    router.setReseedUrls({archive});
-    {
-        const bazarish::i2p::ReseedState state = router.reseedState();
-        CHECK(state.file == archive);
-        CHECK(state.urls == builtIn);
-    }
-
-    CHECK_THROWS(router.setReseedUrls({archive, (dir / "other.su3").string()}));
+    CHECK_THROWS(router.setReseedUrls({archive}));
+    CHECK_THROWS(router.setReseedUrls({"https://one.example/", "http://two.example/"}));
+    CHECK(router.reseedState().urls == builtIn);
 
     fs::remove_all(dir);
     std::puts("TestI2pReseed passed");

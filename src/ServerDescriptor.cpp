@@ -4,6 +4,7 @@
 #include "bazarish/Links.hpp"
 #include "bazarish/Address.hpp"
 #include "bazarish/Crypto.hpp"
+#include "bazarish/I2p.hpp"
 
 #include <atomic>
 #include <stdexcept>
@@ -104,6 +105,9 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
             }
         } else if (key == "reseed") {
             if (!value.empty()) {
+                if (!i2p::isReseedUrl(value)) {
+                    throw std::invalid_argument("a reseed is an https URL (" + value + ")");
+                }
                 if (isI2pFacadeUrl(value) && !allowFacadeWithoutI2pForDevPurposes()) {
                     throw std::invalid_argument(
                         "a reseed must not be an I2P address: it is what a client without a"

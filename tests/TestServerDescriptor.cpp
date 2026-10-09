@@ -17,7 +17,7 @@ int main()
     const std::string i2pB = "http://a6i4yj2ovsvrc45gcfdlpqantyjemwdjsuzaqslsvj4le7jphgzq.b32.i2p";
 
     const ServerDescriptor original{fp, {i2pA, i2pB},
-        {"https://relay.example.org:8443/s/9f3c", "http://192.168.0.66:8419"}};
+        {"https://relay.example.org:8443/s/9f3c", "https://seed.example.net/"}};
     const std::string uri = encodeServerDescriptor(original);
     CHECK(uri.rfind("bazarish://server?v=1&", 0) == 0);
     CHECK(uri.find("fp=" + fp) != std::string::npos);
@@ -35,6 +35,8 @@ int main()
     CHECK_THROWS(parseServerDescriptor(
         "bazarish://server?v=1&fp=" + fp + "&facade=https://relay.example.org"));
     CHECK_THROWS(parseServerDescriptor("bazarish://server?v=1&fp=" + fp + "&reseed=" + i2pA));
+    CHECK_THROWS(parseServerDescriptor(
+        "bazarish://server?v=1&fp=" + fp + "&reseed=http://192.168.0.66:8419"));
 
     const ServerDescriptor noFacades = parseServerDescriptor("bazarish://server?v=1&fp=" + fp);
     CHECK(noFacades.fingerprint == fp);

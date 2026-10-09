@@ -2,6 +2,7 @@
 #include "bazarish/PairLink.hpp"
 
 #include "bazarish/Links.hpp"
+#include "bazarish/I2p.hpp"
 #include "bazarish/I2pAddress.hpp"
 
 #include <stdexcept>
@@ -10,7 +11,6 @@
 namespace {
 
 constexpr std::string_view kPrefix = bazarish::kPairUri;
-constexpr char kHttps[] = "https://";
 
 }  // namespace
 
@@ -55,7 +55,7 @@ PairLink parsePairLink(const std::string& uri)
             haveDest = true;
         } else if (key == "reseed") {
             if (!value.empty()) {
-                if (value.rfind(kHttps, 0) != 0) {
+                if (!i2p::isReseedUrl(value)) {
                     throw std::invalid_argument(
                         "a reseed in a pair link must be an https URL (" + value + ")");
                 }

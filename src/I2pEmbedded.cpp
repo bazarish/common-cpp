@@ -804,42 +804,29 @@ public:
 
 namespace {
 
-struct ReseedChoice
+std::string reseedUrlList(const std::vector<std::string>& reseedUrls)
 {
-    std::string urls;
-    std::string file;
-};
-
-// i2pd reads reseed.file before reseed.urls and takes one archive, so a second
-// local archive would be dropped without a word.
-ReseedChoice reseedChoiceFor(const std::vector<std::string>& reseedUrls)
-{
-    ReseedChoice choice;
+    std::string list;
     for (const std::string& url : reseedUrls)
     {
-        if (url.rfind("https://", 0) != 0)
+        if (!isReseedUrl(url))
         {
-            if (!choice.file.empty())
-            {
-                throw std::invalid_argument("i2p: one local reseed archive at a time");
-            }
-            choice.file = url;
-            continue;
+            throw std::invalid_argument("i2p: a reseed is an https URL (" + url + ")");
         }
-        choice.urls += (choice.urls.empty() ? "" : ",") + url;
-        if (choice.urls.back() != '/')
+        list += (list.empty() ? "" : ",") + url;
+        if (list.back() != '/')
         {
-            choice.urls += '/';
+            list += '/';
         }
     }
-    return choice;
+    return list;
 }
 
 }  // namespace
 
 EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
 {
-    (void)reseedChoiceFor(config.reseedUrls);
+    (void)reseedUrlList(config.reseedUrls);
 
     bool expected = false;
     if (!g_routerLive.compare_exchange_strong(expected, true))
@@ -871,6 +858,10 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
     inited = true;
     bazarish::log::info("i2p: engine initialised");
     i2pd::config::GetOption("reseed.urls", builtInReseedUrls);
+    if (!i2pd::config::SetOption("reseed.file", config.reseedFile.string()))
+    {
+        throw std::runtime_error("bazarish::i2p: this engine has no reseed option to set");
+    }
     setReseedUrls(config.reseedUrls);
     setSocksProxy(config.socksProxyHost, config.socksProxyPort);
     start();
@@ -893,10 +884,8 @@ void EmbeddedRouter::start()
 
 void EmbeddedRouter::setReseedUrls(const std::vector<std::string>& urls)
 {
-    const ReseedChoice choice = reseedChoiceFor(urls);
-    const std::string wanted = choice.urls.empty() ? builtInReseedUrls : choice.urls;
-    if (!i2pd::config::SetOption("reseed.file", choice.file)
-        || !i2pd::config::SetOption("reseed.urls", wanted))
+    const std::string listed = reseedUrlList(urls);
+    if (!i2pd::config::SetOption("reseed.urls", listed.empty() ? builtInReseedUrls : listed))
     {
         throw std::runtime_error("bazarish::i2p: this engine has no reseed option to set");
     }

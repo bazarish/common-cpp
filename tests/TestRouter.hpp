@@ -13,7 +13,7 @@ inline RouterConfig offlineRouter(const std::filesystem::path& dataDir)
     config.dataDir = dataDir;
     // A missing archive, not an unreachable URL: i2pd tries one archive and gives
     // up, while it retries servers for RESEED_GIVEUP_TIMEOUT inside the start call.
-    config.reseedUrls = {(dataDir / "no-reseed.su3").string()};
+    config.reseedFile = dataDir / "no-reseed.su3";
     return config;
 }
 

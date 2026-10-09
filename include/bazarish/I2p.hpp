@@ -147,6 +147,13 @@ struct ReseedState {
     std::string file;
 };
 
+inline constexpr std::string_view kReseedScheme = "https://";
+
+inline bool isReseedUrl(const std::string_view url)
+{
+    return url.starts_with(kReseedScheme);
+}
+
 struct Capabilities {
     bool routerCounters = false;
     bool destinationCounters = false;
@@ -162,6 +169,7 @@ struct RouterConfig {
     std::filesystem::path dataDir;
     Role role = Role::eClient;
     std::vector<std::string> reseedUrls{};
+    std::filesystem::path reseedFile{};
     std::string socksProxyHost{};
     int socksProxyPort = 0;
     Backend backend = Backend::eEmbedded;
