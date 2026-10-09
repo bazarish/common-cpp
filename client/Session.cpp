@@ -121,8 +121,6 @@ std::int64_t nowMillis()
         .count();
 }
 
-constexpr std::size_t kAvatarMaxBytes = 500 * 1024;
-
 void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap)
 {
     if (bootstrap.contains("sealing")) {
@@ -1013,7 +1011,7 @@ void Session::syncAvatarToSelf()
         return;
     }
     const nlohmann::json inner = envelope("device.avatar", toHex(randomBytes(16)), {
-        {"avatar", {{"mime", avatarMime_}, {"data", toBase64(avatar_)}}},
+        {"avatar", {{"mime", avatarMime_}, {"data", nlohmann::json::binary(avatar_)}}},
     });
     submitSignedToSelf(inner, "device.avatar");
 }
@@ -1230,7 +1228,7 @@ void Session::maybeSendAvatarToContact(const std::string& peerFingerprint, const
         return;
     }
     nlohmann::json inner = envelope("avatar", toHex(randomBytes(8)), {
-        {"avatar", {{"mime", avatarMime_}, {"data", toBase64(avatar_)}}},
+        {"avatar", {{"mime", avatarMime_}, {"data", nlohmann::json::binary(avatar_)}}},
     });
     try {
         sendContent(peerFingerprint, std::move(inner));
@@ -2989,7 +2987,8 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 message.contentType = type;
                 try {
                     const nlohmann::json& av = body.at("avatar");
-                    const Bytes data = fromBase64(av.value("data", std::string()));
+                    const nlohmann::json::binary_t& raw = av.at("data").get_binary();
+                    const Bytes data(raw.begin(), raw.end());
                     storeContactAvatar(
                         message.fromFingerprint, data, av.value("mime", std::string()));
                     message.avatarData = std::string(data.begin(), data.end());
@@ -3001,7 +3000,8 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 if (message.fromFingerprint == fingerprint()) {
                     try {
                         const nlohmann::json& av = body.at("avatar");
-                        const Bytes data = fromBase64(av.value("data", std::string()));
+                        const nlohmann::json::binary_t& raw = av.at("data").get_binary();
+                        const Bytes data(raw.begin(), raw.end());
                         storeOwnAvatar(data, av.value("mime", std::string()));
                         message.avatarData = std::string(data.begin(), data.end());
                     } catch (const std::exception& error) {

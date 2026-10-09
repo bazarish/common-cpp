@@ -711,6 +711,19 @@ int main()
         }
 
         {
+            alice.setAvatar(Bytes(kAvatarMaxBytes, 'a'), "image/jpeg");
+            std::size_t received = 0;
+            for (int round = 0; round < 3 && received == 0; ++round) {
+                for (const IncomingMessage& item : bob.sync()) {
+                    if (item.contentType == "avatar") {
+                        received = item.avatarData.size();
+                    }
+                }
+            }
+            CHECK(received == kAvatarMaxBytes);
+        }
+
+        {
             const InlineKeyboard keyboard{
                 {{"Ping", "ping", {}}, {"Time", "time", {}}},
                 {{"Help", {}, "help"}},
