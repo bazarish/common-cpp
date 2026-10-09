@@ -382,12 +382,13 @@ public:
 
     bool sendFile(const std::string& peerFingerprint, const std::filesystem::path& path,
         const std::string& e2eId = {},
-        const DeliveryWatch& watch = {}, const std::string& replyTo = {});
+        const DeliveryWatch& watch = {}, const std::string& replyTo = {},
+        bool forwarded = false);
 
     bool sendPicture(const std::string& peerFingerprint, const Bytes& bytes,
         const std::string& name, const std::string& mime, const std::string& e2eId = {},
         const DeliveryWatch& watch = {},
-        const std::string& replyTo = {});
+        const std::string& replyTo = {}, bool forwarded = false);
 
     void sendInteractive(const std::string& peerFingerprint, const std::string& text,
         const InlineKeyboard& keyboard, const std::string& e2eId = {},
@@ -683,7 +684,7 @@ private:
     std::shared_ptr<Outbound> outbound_ = std::make_shared<Outbound>();
     bool announceTransfer(const std::string& type, const std::string& peerFingerprint,
         const std::filesystem::path& path, const std::string& e2eId, const DeliveryWatch& watch,
-        const std::string& replyTo);
+        const std::string& replyTo, bool forwarded);
 
     void serveRequestedFile(const std::string& peerFingerprint, const std::string& fileId,
         const std::string& forAsk);

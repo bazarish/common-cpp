@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <set>
@@ -677,6 +678,28 @@ int main()
                 }
             }
             CHECK(heard);
+        }
+
+        {
+            const fs::path forwardedFile = fs::temp_directory_path() / "bz-pass-forwarded.txt";
+            std::ofstream(forwardedFile) << "fwd";
+            alice.sendPicture(
+                bob.fingerprint(), Bytes{'P', 'N', 'G'}, "p.png", "image/png", {}, {}, {}, true);
+            alice.sendFile(bob.fingerprint(), forwardedFile, {}, {}, {}, true);
+            alice.sendPicture(bob.fingerprint(), Bytes{'J', 'P', 'G'}, "own.jpg", "image/jpeg");
+            std::map<std::string, bool> marks;
+            for (int round = 0; round < 3 && marks.size() < 3; ++round) {
+                for (const IncomingMessage& item : bob.sync()) {
+                    if (item.contentType == "image" || item.contentType == "file") {
+                        marks[item.attachmentName] = item.forwarded;
+                    }
+                }
+            }
+            CHECK(marks.size() == 3);
+            CHECK(marks["p.png"]);
+            CHECK(marks["bz-pass-forwarded.txt"]);
+            CHECK(!marks["own.jpg"]);
+            fs::remove(forwardedFile);
         }
 
         {

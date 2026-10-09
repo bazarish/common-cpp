@@ -1916,7 +1916,8 @@ bool Session::sendMessage(const std::string& peerFingerprint, const std::string&
 }
 
 bool Session::sendFile(const std::string& peerFingerprint, const fs::path& path,
-    const std::string& e2eId, const DeliveryWatch& watch, const std::string& replyTo)
+    const std::string& e2eId, const DeliveryWatch& watch, const std::string& replyTo,
+    const bool forwarded)
 {
     if (isSavedChat(peerFingerprint)) {
         throw std::runtime_error("a file cannot be kept in Saved messages: its bytes travel"
@@ -1924,12 +1925,12 @@ bool Session::sendFile(const std::string& peerFingerprint, const fs::path& path,
             " on another device");
     }
     return announceTransfer(
-        kTypeFile, peerFingerprint, path, e2eId, watch, replyTo);
+        kTypeFile, peerFingerprint, path, e2eId, watch, replyTo, forwarded);
 }
 
 bool Session::sendPicture(const std::string& peerFingerprint, const Bytes& bytes,
     const std::string& name, const std::string& mime, const std::string& e2eId,
-    const DeliveryWatch& watch, const std::string& replyTo)
+    const DeliveryWatch& watch, const std::string& replyTo, const bool forwarded)
 {
     if (bytes.empty()) {
         throw std::runtime_error("the picture is empty");
@@ -1947,7 +1948,7 @@ bool Session::sendPicture(const std::string& peerFingerprint, const Bytes& bytes
                 {"data", nlohmann::json::binary(bytes)},
             }},
     });
-    addReplyAndForward(inner, replyTo, /*forwarded=*/false);
+    addReplyAndForward(inner, replyTo, forwarded);
     return sendContent(peerFingerprint, std::move(inner), watch);
 }
 
@@ -1975,7 +1976,7 @@ bool Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
 
 bool Session::announceTransfer(const std::string& type, const std::string& peerFingerprint,
     const fs::path& path, const std::string& e2eId,
-    const DeliveryWatch& watch, const std::string& replyTo)
+    const DeliveryWatch& watch, const std::string& replyTo, const bool forwarded)
 {
     const std::string id = e2eId.empty() ? toHex(randomBytes(8)) : e2eId;
     const std::uint64_t size = fs::file_size(path);
@@ -1992,7 +1993,7 @@ bool Session::announceTransfer(const std::string& type, const std::string& peerF
                 {"mime", guessMime(path)},
             }},
     });
-    addReplyAndForward(inner, replyTo, /*forwarded=*/false);
+    addReplyAndForward(inner, replyTo, forwarded);
     return sendContent(peerFingerprint, std::move(inner), watch);
 }
 
