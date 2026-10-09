@@ -879,13 +879,13 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
 void EmbeddedRouter::start()
 {
     if (started) { return; }
+    i2pd::api::StartI2P();
     i2pd::log::Logger().SendTo([](LogLevel level, const std::string& text)
     {
         if (!i2pLogging()) { return; }
         bazarish::log::emit(mapLevel(level), text);
     });
     i2pd::log::Logger().SetLogLevel(i2pLogging() ? "warn" : "none");
-    i2pd::api::StartI2P();
     started = true;
     bazarish::log::info("i2p: engine running");
     io = std::make_shared<IoService>(ioContextCount());
