@@ -5,21 +5,37 @@
 #include <bazarish/Bytes.hpp>
 
 #include <nlohmann/json.hpp>
+#include <openssl/asn1.h>
 
+#include <algorithm>
+#include <array>
 #include <stdexcept>
 
 namespace bazarish::service {
 
 namespace {
 
-bool hasControlCharacters(const std::string& text)
+struct CodePointRange {
+    unsigned long first;
+    unsigned long last;
+};
+
+// SignInWithKey.md, "The consumer": C0, DEL, C1, the line and paragraph separators, bidi controls.
+constexpr std::array<CodePointRange, 6> kForbiddenCodePoints = {{
+    {0x0000, 0x001F},
+    {0x007F, 0x009F},
+    {0x061C, 0x061C},
+    {0x200E, 0x200F},
+    {0x2028, 0x202E},
+    {0x2066, 0x2069},
+}};
+
+bool isForbidden(const unsigned long codePoint)
 {
-    for (const unsigned char character : text) {
-        if (character < 0x20 || character == 0x7F) {
-            return true;
-        }
-    }
-    return false;
+    return std::any_of(kForbiddenCodePoints.begin(), kForbiddenCodePoints.end(),
+        [codePoint](const CodePointRange& range) {
+            return codePoint >= range.first && codePoint <= range.last;
+        });
 }
 
 void requireField(const std::string& value, const std::size_t limit, const std::string& what)
@@ -30,8 +46,19 @@ void requireField(const std::string& value, const std::size_t limit, const std::
     if (value.size() > limit) {
         throw std::runtime_error("the consumer's " + what + " is too long");
     }
-    if (hasControlCharacters(value)) {
-        throw std::runtime_error("the consumer's " + what + " carries control characters");
+    const auto* cursor = reinterpret_cast<const unsigned char*>(value.data());
+    std::size_t left = value.size();
+    while (left > 0) {
+        unsigned long codePoint = 0;
+        const int length = UTF8_getc(cursor, static_cast<int>(left), &codePoint);
+        if (length <= 0) {
+            throw std::runtime_error("the consumer's " + what + " is not UTF-8");
+        }
+        if (isForbidden(codePoint)) {
+            throw std::runtime_error("the consumer's " + what + " carries control characters");
+        }
+        cursor += length;
+        left -= static_cast<std::size_t>(length);
     }
 }
 

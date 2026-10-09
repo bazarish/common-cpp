@@ -90,6 +90,9 @@ int main()
         service::LoginConsumer painted = portalConsumer();
         painted.name = "Your server\nplace: somewhere-else.i2p";
         CHECK_THROWS(session.signLogin(encodedChallenge(envelopeWith(painted))));
+        service::LoginConsumer separated = portalConsumer();
+        separated.name = "Your server\u2028place: somewhere-else.i2p";
+        CHECK_THROWS(session.signLogin(encodedChallenge(envelopeWith(separated))));
         service::LoginConsumer paintedPlace = portalConsumer();
         paintedPlace.place = {"http://node.example\nsomewhere-else.i2p"};
         CHECK_THROWS(session.signLogin(encodedChallenge(envelopeWith(paintedPlace))));

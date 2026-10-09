@@ -197,6 +197,38 @@ void testChallengePastedAsBlob()
     CHECK(other.find("not a signature") != std::string::npos);
 }
 
+void testLayoutControlsRefused()
+{
+    for (const char* const painted : {"\x01", "\x1f", "\x7f", "\u0080", "\u0085", "\u009f",
+             "\u061c", "\u200e", "\u200f", "\u2028", "\u2029", "\u202a", "\u202e", "\u2066",
+             "\u2069"}) {
+        LoginConsumer named = panel();
+        named.name = std::string("Your server") + painted + "place: somewhere-else.i2p";
+        CHECK_THROWS(requireUsableConsumer(named));
+        LoginConsumer placed = panel();
+        placed.place = {std::string("http://node.example") + painted};
+        CHECK_THROWS(requireUsableConsumer(placed));
+        LoginConsumer roled = panel();
+        roled.role = std::string("Owner") + painted;
+        CHECK_THROWS(requireUsableConsumer(roled));
+    }
+
+    for (const char* const broken : {"\x80", "\xc0\xaf", "\xed\xa0\x80", "\xe2\x80",
+             "\xf4\x90\x80\x80", "\xff"}) {
+        LoginConsumer named = panel();
+        named.name = std::string("Bazarish") + broken;
+        CHECK_THROWS(requireUsableConsumer(named));
+    }
+
+    for (const char* const spelling : {"\u00a0", "\u200c", "\u200d", "\u2027", "\u202f",
+             "\u2065", "\u206a", "\u0645\u0631\u062d\u0628\u0627",
+             "\U0001f3f3\ufe0f\u200d\U0001f308"}) {
+        LoginConsumer named = panel();
+        named.name = std::string("Bazarish ") + spelling;
+        requireUsableConsumer(named);
+    }
+}
+
 }  // namespace
 
 int main()
@@ -208,6 +240,7 @@ int main()
     testEveryPlaceIsSigned();
     testConsumerChangedWhileRunning();
     testChallengePastedAsBlob();
+    testLayoutControlsRefused();
     std::printf("TestLoginChallenge: all checks passed\n");
     return 0;
 }
