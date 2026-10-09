@@ -12,6 +12,7 @@
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Hybrid.hpp>
+#include <bazarish/Limits.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/ServerDescriptor.hpp>
 #include <bazarish/Resolve.hpp>
@@ -700,6 +701,13 @@ int main()
             CHECK(marks["bz-pass-forwarded.txt"]);
             CHECK(!marks["own.jpg"]);
             fs::remove(forwardedFile);
+        }
+
+        {
+            constexpr std::size_t kBelowTheLimitBytes = 1024;
+            const Bytes nearTheLimit(kMaxMessagePayloadBytes - kBelowTheLimitBytes, 'x');
+            CHECK_THROWS(alice.sendPicture(
+                bob.fingerprint(), nearTheLimit, "near.png", "image/png"));
         }
 
         {

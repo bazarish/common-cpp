@@ -2562,11 +2562,6 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     if (contact.sealingPublicB64.empty() || contact.servingSealingB64.empty()) {
         throw std::runtime_error("contact not established yet: " + peerFingerprint);
     }
-    if (const Bytes body = encodedBody(inner); body.size() > kMaxMessagePayloadBytes) {
-        throw std::runtime_error("this message is too large to send ("
-            + std::to_string(body.size() / 1024) + " KiB; the limit is "
-            + std::to_string(kMaxMessagePayloadBytes / 1024) + " KiB) - send it as a file");
-    }
     if (contact.sendPass.empty()) {
         throw std::runtime_error("no delivery pass for this contact yet: " + peerFingerprint);
     }
@@ -2587,6 +2582,11 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     const Bytes innerBytes = encodedBody(inner);
     const Key peerSealing = Key::fromPublicDer(fromBase64(contact.sealingPublicB64));
     const Bytes payload = hybrid::seal(innerBytes, peerSealing);
+    if (payload.size() > kMaxMessagePayloadBytes) {
+        throw std::runtime_error("this message is too large to send ("
+            + std::to_string(payload.size() / 1024) + " KiB; the limit is "
+            + std::to_string(kMaxMessagePayloadBytes / 1024) + " KiB) - send it as a file");
+    }
     const Key peerServingKey = Key::fromPublicDer(fromBase64(contact.servingSealingB64));
     const Bytes pass = fromBase64(contact.sendPass);
 
