@@ -161,6 +161,7 @@ struct Capabilities {
     bool proxy = false;
     bool offlineKeys = false;
     bool reseed = false;
+    bool warmPool = false;
 };
 
 inline constexpr int kDefaultSamControlPort = 7656;
@@ -206,6 +207,7 @@ struct LocalDestination {
     int inboundTunnels = 0;
     int outboundTunnels = 0;
     int remoteLeaseSets = 0;
+    bool localRoute = false;
 };
 
 struct TransportPeer {

@@ -216,12 +216,13 @@ public:
         label_ = std::move(label);
         owner_ = std::move(owner);
     }
-    void statusChanged(bool ready, int in, int out, int leases);
+    void statusChanged(bool ready, int in, int out, int leases, bool localRoute);
     void datagramArrived(std::vector<std::uint8_t> payload);
     void callerArrived(std::unique_ptr<GatewayStream> stream, const std::string& peer);
     int inboundTunnels() const { return in_.load(); }
     int outboundTunnels() const { return out_.load(); }
     int leaseSets() const { return leases_.load(); }
+    bool localRoute() const { return localRoute_.load(); }
 
 private:
     std::shared_ptr<Link> link_;
@@ -236,6 +237,7 @@ private:
     std::atomic<int> in_{0};
     std::atomic<int> out_{0};
     std::atomic<int> leases_{0};
+    std::atomic<bool> localRoute_{false};
     mutable std::mutex mutex_;
     std::condition_variable arrived_;
     std::deque<std::vector<std::uint8_t>> datagrams_;
@@ -260,6 +262,7 @@ public:
         what.netDbSample = false;
         what.proxy = false;
         what.offlineKeys = false;
+        what.warmPool = true;
         return what;
     }
 
@@ -513,12 +516,13 @@ GatewayEndpoint::~GatewayEndpoint()
 }
 
 void GatewayEndpoint::statusChanged(
-    const bool isReady, const int in, const int out, const int leases)
+    const bool isReady, const int in, const int out, const int leases, const bool localRoute)
 {
     ready_.store(isReady);
     in_.store(in);
     out_.store(out);
     leases_.store(leases);
+    localRoute_.store(localRoute);
 }
 
 void GatewayEndpoint::datagramArrived(std::vector<std::uint8_t> payload)
@@ -826,7 +830,8 @@ void GatewayRouter::openControl()
                 }
                 if (const std::shared_ptr<GatewayEndpoint> endpoint = at->second.lock()) {
                     endpoint->statusChanged(one.value("ready", false), one.value("tunnelsIn", 0),
-                        one.value("tunnelsOut", 0), one.value("leaseSets", 0));
+                        one.value("tunnelsOut", 0), one.value("leaseSets", 0),
+                        one.value("localRoute", false));
                 }
             }
         }
@@ -1188,7 +1193,6 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
     const std::uint32_t id = link_->nextId();
     const bool raw = config.traffic == Traffic::eRaw;
     const nlohmann::json ask = {{"kind", raw ? "raw" : "stream"},
-        {"privacy", privacyName(config.privacy)}, {"tunnels", config.tunnelQuantity},
         {"published", config.published}, {"realtime", config.realtime}};
     const Frame answer
         = link_->call(gateway::encodeJson(FrameType::eEndpointCreate, id, ask), id,
@@ -1248,6 +1252,7 @@ std::vector<LocalDestination> GatewayRouter::localDestinations() const
         entry.inboundTunnels = endpoint->inboundTunnels();
         entry.outboundTunnels = endpoint->outboundTunnels();
         entry.remoteLeaseSets = endpoint->leaseSets();
+        entry.localRoute = endpoint->localRoute();
         destinations.push_back(std::move(entry));
     }
     return destinations;
@@ -1302,7 +1307,8 @@ void GatewayRouter::dispatch(const Frame& frame)
             }
             const nlohmann::json body = gateway::bodyJson(frame);
             endpoint->statusChanged(body.value("ready", false), body.value("tunnelsIn", 0),
-                body.value("tunnelsOut", 0), body.value("leaseSets", 0));
+                body.value("tunnelsOut", 0), body.value("leaseSets", 0),
+                body.value("localRoute", false));
             return;
         }
         case FrameType::eRawRecv: {

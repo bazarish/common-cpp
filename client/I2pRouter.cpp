@@ -60,7 +60,7 @@ std::map<std::string, std::weak_ptr<bazarish::i2p::Endpoint>>& facadeLinks()
 
 void ensureWarmPool(bazarish::i2p::Router& router)
 {
-    if (!g_warmDestsWanted.load()) {
+    if (!g_warmDestsWanted.load() || router.capabilities().warmPool) {
         return;
     }
     std::unique_ptr<WarmDestPool>& pool = warmPoolSlot();
