@@ -137,18 +137,7 @@ fs::path AccountManager::dataRoot()
 
 fs::path AccountManager::defaultRoot()
 {
-    const fs::path accounts = dataRoot() / "accounts";
-    std::error_code ec;
-    const fs::path legacy = dataRoot() / "profiles";
-    if (!fs::exists(accounts, ec) && fs::exists(legacy, ec)) {
-        fs::rename(legacy, accounts, ec);
-        if (ec) {
-            bazarish::log::warn("accounts left in {}: {}", legacy.string(), ec.message());
-            return legacy;
-        }
-        bazarish::log::info("accounts moved from {} to {}", legacy.string(), accounts.string());
-    }
-    return accounts;
+    return dataRoot() / "accounts";
 }
 
 AccountManager::AccountManager(fs::path root)

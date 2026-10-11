@@ -402,15 +402,15 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
             contact.sealingPublicB64 = entry.at("sealingPublicB64").get<std::string>();
             contact.dest = entry.at("dest").get<std::string>();
             contact.servingSealingB64 = entry.at("servingSealingB64").get<std::string>();
-            contact.identityClassicalB64 = entry.value("identityClassicalB64", std::string());
-            contact.identityPqB64 = entry.value("identityPqB64", std::string());
-            contact.sendPass = entry.value("sendPass", std::string());
+            contact.identityClassicalB64 = entry.at("identityClassicalB64").get<std::string>();
+            contact.identityPqB64 = entry.at("identityPqB64").get<std::string>();
+            contact.sendPass = entry.at("sendPass").get<std::string>();
             contact.issuedToThem = entry.at("issuedToThem").get<bool>();
-            contact.displayName = entry.value("displayName", std::string());
-            contact.avatarMime = entry.value("avatarMime", std::string());
-            contact.avatarSentToPeer = entry.value("avatarSentToPeer", false);
-            contact.notifications = entry.value("notifications", true);
-            contact.allowCalls = entry.value("allowCalls", true);
+            contact.displayName = entry.at("displayName").get<std::string>();
+            contact.avatarMime = entry.at("avatarMime").get<std::string>();
+            contact.avatarSentToPeer = entry.at("avatarSentToPeer").get<bool>();
+            contact.notifications = entry.at("notifications").get<bool>();
+            contact.allowCalls = entry.at("allowCalls").get<bool>();
             contacts.emplace(fingerprint, std::move(contact));
         }
     }
@@ -450,31 +450,18 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     session.cardB64_ = meta.value("card", std::string{});
     for (const nlohmann::json& held : meta.value("aliasNames", nlohmann::json::array())) {
         session.aliasNames_.push_back(
-            Session::AliasHolding{held.value("alias", std::string()),
-                held.value("notAfter", std::int64_t{0}), held.value("autoRenew", true),
-                held.value("bindingWanted", false), held.value("bound", false),
-                held.value("inApp", false)});
+            Session::AliasHolding{held.at("alias").get<std::string>(),
+                held.at("notAfter").get<std::int64_t>(), held.at("autoRenew").get<bool>(),
+                held.at("bindingWanted").get<bool>(), held.at("bound").get<bool>(),
+                held.at("inApp").get<bool>()});
     }
     session.aliasCheckAfter_ = meta.value("aliasCheckAfter", std::int64_t{0});
     session.aliasStatusAt_ = meta.value("aliasStatusAt", std::int64_t{0});
     session.aliasDepositCovers_ = meta.value("aliasDepositCovers", true);
     session.aliasPushedDest_ = meta.value("aliasPushedDest", std::string{});
     session.delegationDays_ = meta.value("delegationDays", kDefaultDelegationDays);
-    session.deliveryIdSeed_ = meta.value("deliveryIdSeed", std::string());
-    if (session.deliveryIdSeed_.empty()) {
-        throw std::runtime_error(
-            "this account was written before delivery ids were seeded and cannot be read;"
-            " create it again");
-    }
-    const std::string deliverySecret = meta.value("deliverySecret", std::string());
-    if (deliverySecret.empty()) {
-        session.deliverySecret_ = randomBytes(kDeliverySecretSize);
-        session.persistMeta();
-        bazarish::log::warn("this account predates derived delivery passes: what it issued"
-            " before now cannot be revoked, only what it issues from here");
-    } else {
-        session.deliverySecret_ = fromHex(deliverySecret);
-    }
+    session.deliveryIdSeed_ = meta.at("deliveryIdSeed").get<std::string>();
+    session.deliverySecret_ = fromHex(meta.at("deliverySecret").get<std::string>());
     if (!session.cardB64_.empty()) {
         const ContactCard card = ContactCard::verify(fromBase64(session.cardB64_));
         session.myDest_ = card.dest;
@@ -1742,10 +1729,10 @@ std::vector<Session::PendingContactAdd> Session::pendingContactAdds() const
     for (const auto& [opId, entry] : stored.items()) {
         PendingContactAdd add;
         add.opId = opId;
-        add.request.byAlias = entry.value("byAlias", entry.value("byUsername", false));
-        add.request.uriOrAlias = entry.value("uriOrAlias", std::string());
-        add.request.introText = entry.value("intro", std::string());
-        add.request.requestId = entry.value("requestId", std::string());
+        add.request.byAlias = entry.at("byAlias").get<bool>();
+        add.request.uriOrAlias = entry.at("uriOrAlias").get<std::string>();
+        add.request.introText = entry.at("intro").get<std::string>();
+        add.request.requestId = entry.at("requestId").get<std::string>();
         pending.push_back(std::move(add));
     }
     return pending;
@@ -2734,7 +2721,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 }
             }
 
-            if (body.value("v", kMessageFormatVersion) > kMessageFormatVersion) {
+            if (body.at("v").get<int>() > kMessageFormatVersion) {
                 bazarish::log::info("sync: an item from a newer message format was not read");
                 noteWire(false, "item in a newer format", "dropped", {});
                 releaseItem(entry.id);
@@ -4494,7 +4481,7 @@ void Session::importAccountBytes(const Bytes& sealed, const fs::path& accountFil
     const Bytes plain = cms::unsealWithPassword(sealed, password);
     const nlohmann::json bundle = nlohmann::json::parse(plain.begin(), plain.end());
 
-    if (bundle.value("v", kBundleFormatVersion) > kBundleFormatVersion) {
+    if (bundle.at("v").get<int>() > kBundleFormatVersion) {
         throw std::runtime_error("this backup was written by a newer version of Bazarish");
     }
     AccountDb db(accountFile, atRestPassphrase);
@@ -4509,27 +4496,18 @@ void Session::importAccountBytes(const Bytes& sealed, const fs::path& accountFil
 
     db.putText("meta", meta.dump(2));
     db.putText("contacts", bundle.at("contacts").dump());
-    if (bundle.contains("blocked")) {
-        db.putText("blocked", bundle.at("blocked").dump());
+    db.putText("blocked", bundle.at("blocked").dump());
+    if (const Bytes master = fromBase64(bundle.at("i2pMaster").get<std::string>());
+        !master.empty()) {
+        db.put("i2p-master", master);
     }
-    if (bundle.contains("i2pMaster")) {
-        const Bytes master = fromBase64(bundle.at("i2pMaster").get<std::string>());
-        if (!master.empty()) {
-            db.put("i2p-master", master);
-        }
+    if (const Bytes avatar = fromBase64(bundle.at("avatar").get<std::string>()); !avatar.empty()) {
+        db.put("avatar.self", avatar);
     }
-    if (bundle.contains("avatar")) {
-        const Bytes avatar = fromBase64(bundle.at("avatar").get<std::string>());
+    for (const auto& [contactFp, encoded] : bundle.at("contactAvatars").items()) {
+        const Bytes avatar = fromBase64(encoded.get<std::string>());
         if (!avatar.empty()) {
-            db.put("avatar.self", avatar);
-        }
-    }
-    if (bundle.contains("contactAvatars")) {
-        for (const auto& [contactFp, encoded] : bundle.at("contactAvatars").items()) {
-            const Bytes avatar = fromBase64(encoded.get<std::string>());
-            if (!avatar.empty()) {
-                db.put("avatar-" + contactFp, avatar);
-            }
+            db.put("avatar-" + contactFp, avatar);
         }
     }
 }

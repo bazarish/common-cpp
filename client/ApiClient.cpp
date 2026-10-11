@@ -219,10 +219,6 @@ void ApiClient::ensureServerKeyLocked()
     if (!endpoint_.serverFingerprint.empty() && card.server != endpoint_.serverFingerprint) {
         throw std::runtime_error("the server card names another server than the one we joined");
     }
-    if (!Key::fromPublicDer(card.sealingPublicKeyDer).hasKem()) {
-        throw std::runtime_error("this server's sealing key has no post-quantum half, so a"
-                                 " tunnel cannot be sealed to it - its key needs replacing");
-    }
     serverSealingKeyDer_ = card.sealingPublicKeyDer;
 }
 
