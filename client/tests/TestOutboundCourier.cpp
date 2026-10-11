@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "OutboundCourier.hpp"
+#include "OutboundLeases.hpp"
 
 #include <bazarish/Crypto.hpp>
 #include <bazarish/FederationFrame.hpp>
@@ -101,6 +102,16 @@ int main()
 {
     const Key signingKey = Key::generateSigning();
     const std::string dest = "recipient.b32.i2p";
+
+    {
+        const std::chrono::steady_clock::time_point made{};
+        const std::chrono::seconds tick{1};
+        CHECK(!leaseSpent(made, made, made + kLeaseIdleLife - tick));
+        CHECK(leaseSpent(made, made, made + kLeaseIdleLife));
+        const std::chrono::steady_clock::time_point busy = made + kLeaseMaxLife - tick;
+        CHECK(!leaseSpent(made, busy, made + kLeaseMaxLife - tick));
+        CHECK(leaseSpent(made, busy, made + kLeaseMaxLife));
+    }
 
     {
         std::vector<std::string> phases;

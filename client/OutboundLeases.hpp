@@ -18,8 +18,12 @@
 
 namespace bazarish::client {
 
-inline constexpr int kLeaseTermSeconds = 600;
+inline constexpr std::chrono::seconds kLeaseMaxLife{3600};
+inline constexpr std::chrono::seconds kLeaseIdleLife{600};
 inline constexpr int kOutboundDestReadySeconds = 180;
+
+bool leaseSpent(std::chrono::steady_clock::time_point created,
+    std::chrono::steady_clock::time_point lastUsed, std::chrono::steady_clock::time_point now);
 
 class OutboundLeases {
 public:
@@ -41,7 +45,8 @@ private:
 
     struct Lease {
         std::shared_ptr<bazarish::i2p::Endpoint> endpoint;
-        std::chrono::steady_clock::time_point expiresAt;
+        std::chrono::steady_clock::time_point created;
+        std::chrono::steady_clock::time_point lastUsed;
         bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax;
     };
 

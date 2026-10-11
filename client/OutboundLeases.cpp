@@ -46,6 +46,13 @@ private:
 
 }  // namespace
 
+bool leaseSpent(const std::chrono::steady_clock::time_point created,
+    const std::chrono::steady_clock::time_point lastUsed,
+    const std::chrono::steady_clock::time_point now)
+{
+    return now - created >= kLeaseMaxLife || now - lastUsed >= kLeaseIdleLife;
+}
+
 OutboundLeases::OutboundLeases(bazarish::i2p::Router& router, std::string owner)
     : router_(router)
     , owner_(std::move(owner))
@@ -71,7 +78,8 @@ void OutboundLeases::dropExpired(const std::chrono::steady_clock::time_point now
 {
     const bazarish::i2p::Privacy privacy = tunnelPrivacy();
     for (auto it = leases_.begin(); it != leases_.end();) {
-        if (it->second.expiresAt <= now || it->second.privacy != privacy) {
+        if (leaseSpent(it->second.created, it->second.lastUsed, now)
+            || it->second.privacy != privacy) {
             it = leases_.erase(it);
         } else {
             ++it;
@@ -87,9 +95,14 @@ std::shared_ptr<bazarish::i2p::Endpoint> OutboundLeases::held(const std::string&
 
 std::shared_ptr<bazarish::i2p::Endpoint> OutboundLeases::heldLocked(const std::string& toDest)
 {
-    dropExpired(std::chrono::steady_clock::now());
+    const auto now = std::chrono::steady_clock::now();
+    dropExpired(now);
     const auto found = leases_.find(toDest);
-    return found == leases_.end() ? nullptr : found->second.endpoint;
+    if (found == leases_.end()) {
+        return nullptr;
+    }
+    found->second.lastUsed = now;
+    return found->second.endpoint;
 }
 
 bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerName)
@@ -133,11 +146,11 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
             const std::lock_guard<std::mutex> lock(mutex_);
             const auto now = std::chrono::steady_clock::now();
             const auto found = leases_.find(toDest);
-            if (found != leases_.end() && found->second.expiresAt > now) {
+            if (found != leases_.end()
+                && !leaseSpent(found->second.created, found->second.lastUsed, now)) {
                 endpoint = found->second.endpoint;
             } else {
-                leases_[toDest] = Lease{
-                    endpoint, now + std::chrono::seconds(kLeaseTermSeconds), tunnelPrivacy()};
+                leases_[toDest] = Lease{endpoint, now, now, tunnelPrivacy()};
             }
             preparing_.erase(toDest);
         }
