@@ -1545,11 +1545,25 @@ bool Session::deliver(const std::string& toDest, const Key& servingSealingKey,
     task.onPhase = watch.onPhase;
     task.onOutcome = watch.onOutcome;
     OutboundCourier& courier = outboundCourier();
+    OutboundLeases* const leases = outbound_->leases.get();
+    const bool oneAddressOnly = kind == kContactDeliveryClass && leases != nullptr;
+    if (oneAddressOnly) {
+        task.onOutcome = [leases, toDest, report = watch.onOutcome](
+                             const OutboundCourier::Outcome& outcome) {
+            leases->release(toDest);
+            if (report) {
+                report(outcome);
+            }
+        };
+    }
     if (!waitForOutcome) {
         courier.submit(std::move(task));
         return false;
     }
     const OutboundCourier::Outcome outcome = courier.deliverNow(task);
+    if (oneAddressOnly) {
+        leases->release(toDest);
+    }
     flushPendingEchoes();
     if (!outcome.stored) {
         throw ApiError(bazarish::errorCodeFromString(outcome.errorCode), 0,

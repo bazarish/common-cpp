@@ -178,6 +178,12 @@ std::shared_ptr<DeliveryStream> OutboundLeases::openStream(
     return std::make_shared<I2pDeliveryStream>(endpoint, std::move(stream));
 }
 
+void OutboundLeases::release(const std::string& toDest)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    leases_.erase(toDest);
+}
+
 void OutboundLeases::clear()
 {
     const std::lock_guard<std::mutex> lock(mutex_);

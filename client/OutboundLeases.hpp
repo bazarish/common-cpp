@@ -33,6 +33,7 @@ public:
     bool prepare(const std::string& toDest, const std::string& peerName);
     std::shared_ptr<DeliveryStream> openStream(
         const std::string& toDest, std::chrono::seconds timeout);
+    void release(const std::string& toDest);
     void clear();
 
 private:
