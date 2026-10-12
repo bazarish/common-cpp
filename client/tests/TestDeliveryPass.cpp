@@ -829,6 +829,44 @@ int main()
         }
 
         {
+            const auto deviceItems = [&]() {
+                std::lock_guard<std::mutex> lock(m.mu);
+                std::size_t count = 0;
+                for (const Mock::Item& item : m.mailbox[alice.fingerprint()]) {
+                    count += item.cls == "device" ? 1 : 0;
+                }
+                return count;
+            };
+            const auto sendToBob = [&](const std::string& text) {
+                const std::size_t before = [&]() {
+                    std::lock_guard<std::mutex> lock(m.mu);
+                    return m.mailbox[bob.fingerprint()].size();
+                }();
+                alice.sendMessage(bob.fingerprint(), text);
+                CHECK(waitFor([&]() {
+                    std::lock_guard<std::mutex> lock(m.mu);
+                    return m.mailbox[bob.fingerprint()].size() > before;
+                }));
+                alice.flushPendingEchoes();
+            };
+
+            alice.setDeviceSync(false);
+            const std::size_t quiet = deviceItems();
+            sendToBob("nobody else to tell");
+            alice.syncChatPinToSelf(bob.fingerprint(), true);
+            alice.syncReadToSelf(bob.fingerprint(), 1);
+            CHECK(deviceItems() == quiet);
+
+            alice.setDeviceSync(true);
+            sendToBob("told to the other devices");
+            CHECK(waitFor([&]() {
+                alice.flushPendingEchoes();
+                return deviceItems() > quiet;
+            }));
+            bob.sync();
+        }
+
+        {
             alice.sendMessage(alice.fingerprint(), "note to self");
 
             std::size_t deviceItems = 0;

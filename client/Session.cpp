@@ -1398,6 +1398,9 @@ Bytes Session::passIdFor(const std::string& peerFingerprint) const
 void Session::submitSignedToSelf(
     nlohmann::json inner, const std::string& kind, const bool later) const
 {
+    if (!deviceSync_) {
+        return;
+    }
     signAuthorship(inner, client_->identity(), /*withKeys=*/false);
     const Bytes innerBytes = encodedBody(inner);
     const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
@@ -1408,6 +1411,11 @@ void Session::submitSignedToSelf(
         return;
     }
     client_->submitSelf(deliveryId, sealed, kind);
+}
+
+void Session::setDeviceSync(const bool enabled)
+{
+    deviceSync_ = enabled;
 }
 
 void Session::setSelfSendSink(SelfSendSink sink)

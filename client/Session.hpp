@@ -529,6 +529,7 @@ public:
     void setFetchTransport(FetchTransport transport);
     void setOutboundCourier(std::unique_ptr<OutboundCourier> courier);
     void setOutboundAddressing(OutboundAddressing addressing);
+    void setDeviceSync(bool enabled);
 
     void setAudioBackend(AudioSourceFactory sourceFactory, AudioSinkFactory sinkFactory);
 
@@ -684,6 +685,7 @@ private:
         OutboundAddressing addressing = OutboundAddressing::eOnePerCorrespondent;
     };
     std::shared_ptr<Outbound> outbound_ = std::make_shared<Outbound>();
+    bool deviceSync_ = true;
     bool announceTransfer(const std::string& type, const std::string& peerFingerprint,
         const std::filesystem::path& path, const std::string& e2eId, const DeliveryWatch& watch,
         const std::string& replyTo, bool forwarded);
