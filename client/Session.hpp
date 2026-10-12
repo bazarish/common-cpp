@@ -528,6 +528,7 @@ public:
     using AudioSinkFactory = std::function<std::unique_ptr<AudioSink>()>;
     void setFetchTransport(FetchTransport transport);
     void setOutboundCourier(std::unique_ptr<OutboundCourier> courier);
+    void setOutboundAddressing(OutboundAddressing addressing);
 
     void setAudioBackend(AudioSourceFactory sourceFactory, AudioSinkFactory sinkFactory);
 
@@ -680,6 +681,7 @@ private:
         std::mutex mutex;
         std::unique_ptr<OutboundLeases> leases;
         std::unique_ptr<OutboundCourier> courier;
+        OutboundAddressing addressing = OutboundAddressing::eOnePerCorrespondent;
     };
     std::shared_ptr<Outbound> outbound_ = std::make_shared<Outbound>();
     bool announceTransfer(const std::string& type, const std::string& peerFingerprint,

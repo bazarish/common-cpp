@@ -25,6 +25,10 @@ inline constexpr int kOutboundDestReadySeconds = 180;
 bool leaseSpent(std::chrono::steady_clock::time_point created,
     std::chrono::steady_clock::time_point lastUsed, std::chrono::steady_clock::time_point now);
 
+enum class OutboundAddressing { eOnePerCorrespondent, eOneForAll };
+
+std::string leaseKeyFor(OutboundAddressing addressing, bool ownAddress, const std::string& toDest);
+
 class OutboundLeases {
 public:
     OutboundLeases(bazarish::i2p::Router& router, std::string owner);
@@ -36,13 +40,17 @@ public:
     void release(const std::string& toDest);
     void clear();
 
+    void setAddressing(OutboundAddressing addressing);
+    void keepOwn(const std::string& toDest);
+
 private:
     static std::string labelFor(const std::string& peerName);
 
     void sweeperLoop();
     void dropExpired(std::chrono::steady_clock::time_point now);
     std::shared_ptr<bazarish::i2p::Endpoint> held(const std::string& toDest);
-    std::shared_ptr<bazarish::i2p::Endpoint> heldLocked(const std::string& toDest);
+    std::shared_ptr<bazarish::i2p::Endpoint> heldLocked(const std::string& key);
+    std::string keyForLocked(const std::string& toDest) const;
 
     struct Lease {
         std::shared_ptr<bazarish::i2p::Endpoint> endpoint;
@@ -57,6 +65,8 @@ private:
     std::condition_variable cv_;
     std::map<std::string, Lease> leases_;
     std::set<std::string> preparing_;
+    OutboundAddressing addressing_ = OutboundAddressing::eOnePerCorrespondent;
+    std::set<std::string> own_;
     std::condition_variable prepared_;
     std::atomic<bool> running_{true};
     std::thread sweeper_;

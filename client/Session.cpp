@@ -1535,6 +1535,7 @@ bool Session::deliver(const std::string& toDest, const Key& servingSealingKey,
     OutboundLeases* const leases = outbound_->leases.get();
     const bool oneAddressOnly = kind == kContactDeliveryClass && leases != nullptr;
     if (oneAddressOnly) {
+        leases->keepOwn(toDest);
         task.onOutcome = [leases, toDest, report = watch.onOutcome](
                              const OutboundCourier::Outcome& outcome) {
             leases->release(toDest);
@@ -1565,6 +1566,7 @@ OutboundCourier& Session::outboundCourier()
     if (!outbound_->courier) {
         outbound_->leases = std::make_unique<OutboundLeases>(i2pRouter(), destinationOwner());
         OutboundLeases& leases = *outbound_->leases;
+        leases.setAddressing(outbound_->addressing);
         outbound_->courier = std::make_unique<OutboundCourier>(
             [&leases](const std::string& toDest, const std::string& peerName) {
                 return leases.prepare(toDest, peerName);
@@ -1574,6 +1576,15 @@ OutboundCourier& Session::outboundCourier()
             });
     }
     return *outbound_->courier;
+}
+
+void Session::setOutboundAddressing(const OutboundAddressing addressing)
+{
+    const std::lock_guard<std::mutex> lock(outbound_->mutex);
+    outbound_->addressing = addressing;
+    if (outbound_->leases) {
+        outbound_->leases->setAddressing(addressing);
+    }
 }
 
 void Session::setOutboundCourier(std::unique_ptr<OutboundCourier> courier)

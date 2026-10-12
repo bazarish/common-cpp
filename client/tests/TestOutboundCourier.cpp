@@ -114,6 +114,16 @@ int main()
     }
 
     {
+        const std::string other = "another.b32.i2p";
+        CHECK(leaseKeyFor(OutboundAddressing::eOnePerCorrespondent, false, dest) == dest);
+        CHECK(leaseKeyFor(OutboundAddressing::eOnePerCorrespondent, false, other) == other);
+        CHECK(leaseKeyFor(OutboundAddressing::eOneForAll, false, dest)
+            == leaseKeyFor(OutboundAddressing::eOneForAll, false, other));
+        CHECK(leaseKeyFor(OutboundAddressing::eOneForAll, false, dest) != dest);
+        CHECK(leaseKeyFor(OutboundAddressing::eOneForAll, true, dest) == dest);
+    }
+
+    {
         std::vector<std::string> phases;
         int dials = 0;
         OutboundCourier courier([](const std::string&, const std::string&) { return true; },

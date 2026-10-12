@@ -17,6 +17,8 @@ namespace {
 constexpr std::chrono::seconds kSweepInterval{30};
 constexpr char kLeaseLabel[] = "Outbound delivery";
 constexpr char kLeaseLabelPrefix[] = "Outbound for ";
+constexpr char kSharedLeaseLabel[] = "Outbound for everyone";
+constexpr char kSharedLeaseKey[] = "";
 
 class I2pDeliveryStream final : public DeliveryStream {
 public:
@@ -53,6 +55,14 @@ bool leaseSpent(const std::chrono::steady_clock::time_point created,
     return now - created >= kLeaseMaxLife || now - lastUsed >= kLeaseIdleLife;
 }
 
+std::string leaseKeyFor(
+    const OutboundAddressing addressing, const bool ownAddress, const std::string& toDest)
+{
+    return addressing == OutboundAddressing::eOneForAll && !ownAddress
+        ? std::string(kSharedLeaseKey)
+        : toDest;
+}
+
 OutboundLeases::OutboundLeases(bazarish::i2p::Router& router, std::string owner)
     : router_(router)
     , owner_(std::move(owner))
@@ -87,17 +97,22 @@ void OutboundLeases::dropExpired(const std::chrono::steady_clock::time_point now
     }
 }
 
+std::string OutboundLeases::keyForLocked(const std::string& toDest) const
+{
+    return leaseKeyFor(addressing_, own_.count(toDest) != 0, toDest);
+}
+
 std::shared_ptr<bazarish::i2p::Endpoint> OutboundLeases::held(const std::string& toDest)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
-    return heldLocked(toDest);
+    return heldLocked(keyForLocked(toDest));
 }
 
-std::shared_ptr<bazarish::i2p::Endpoint> OutboundLeases::heldLocked(const std::string& toDest)
+std::shared_ptr<bazarish::i2p::Endpoint> OutboundLeases::heldLocked(const std::string& key)
 {
     const auto now = std::chrono::steady_clock::now();
     dropExpired(now);
-    const auto found = leases_.find(toDest);
+    const auto found = leases_.find(key);
     if (found == leases_.end()) {
         return nullptr;
     }
@@ -109,35 +124,38 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
 {
     std::shared_ptr<bazarish::i2p::Endpoint> endpoint;
     bool making = false;
+    std::string key;
     {
         std::unique_lock<std::mutex> lock(mutex_);
-        prepared_.wait(lock, [this, &toDest]() { return preparing_.count(toDest) == 0; });
-        endpoint = heldLocked(toDest);
+        key = keyForLocked(toDest);
+        prepared_.wait(lock, [this, &key]() { return preparing_.count(key) == 0; });
+        endpoint = heldLocked(key);
         if (!endpoint) {
-            preparing_.insert(toDest);
+            preparing_.insert(key);
             making = true;
         }
     }
+    const std::string label = key == toDest ? labelFor(peerName) : std::string(kSharedLeaseLabel);
     if (making) {
         const log::Slow timed("making an address ready to send from", kSlowPrepare);
         try {
             endpoint = acquireWarmDest();
             if (endpoint) {
-                router_.retagEndpoint(*endpoint, labelFor(peerName), owner_);
+                router_.retagEndpoint(*endpoint, label, owner_);
             } else {
                 log::info("no warm address for {}: building one, which is tunnels",
                     log::redact(toDest));
                 bazarish::i2p::EndpointConfig config;
                 config.privacy = tunnelPrivacy();
                 config.published = false;
-                config.label = labelFor(peerName);
+                config.label = label;
                 config.owner = owner_;
                 endpoint = router_.createEndpoint(config);
             }
         } catch (...) {
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                preparing_.erase(toDest);
+                preparing_.erase(key);
             }
             prepared_.notify_all();
             throw;
@@ -145,14 +163,14 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             const auto now = std::chrono::steady_clock::now();
-            const auto found = leases_.find(toDest);
+            const auto found = leases_.find(key);
             if (found != leases_.end()
                 && !leaseSpent(found->second.created, found->second.lastUsed, now)) {
                 endpoint = found->second.endpoint;
             } else {
-                leases_[toDest] = Lease{endpoint, now, now, tunnelPrivacy()};
+                leases_[key] = Lease{endpoint, now, now, tunnelPrivacy()};
             }
-            preparing_.erase(toDest);
+            preparing_.erase(key);
         }
         prepared_.notify_all();
     }
@@ -182,12 +200,29 @@ void OutboundLeases::release(const std::string& toDest)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     leases_.erase(toDest);
+    own_.erase(toDest);
 }
 
 void OutboundLeases::clear()
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     leases_.clear();
+}
+
+void OutboundLeases::setAddressing(const OutboundAddressing addressing)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (addressing_ == addressing) {
+        return;
+    }
+    addressing_ = addressing;
+    leases_.clear();
+}
+
+void OutboundLeases::keepOwn(const std::string& toDest)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    own_.insert(toDest);
 }
 
 void OutboundLeases::sweeperLoop()
