@@ -867,6 +867,75 @@ int main()
         }
 
         {
+            constexpr std::int64_t kMembers = 7;
+            constexpr std::int64_t kBlockAt = 1234;
+            constexpr std::int64_t kPostSentAt = 1111;
+            alice.setGroupBlockSource([&](const std::string& peer) {
+                CHECK(peer == bob.fingerprint());
+                return GroupBlock{GroupKind::eChannel, kMembers, false, true, kBlockAt};
+            });
+            RelayedPost post;
+            post.type = "text";
+            post.id = "group-post-1";
+            post.sentAt = kPostSentAt;
+            post.text = "relayed";
+            post.replyTo = "group-post-0";
+            post.author = "Ann";
+            post.contactable = true;
+            CHECK(alice.relayFits(post));
+            alice.relayPost(bob.fingerprint(), post);
+            alice.sendGroupReactions(bob.fingerprint(),
+                nlohmann::json::array({{{"ref", "group-post-1"}, {"counts", {{"+", 2}}}}}));
+            alice.sendGroupState(bob.fingerprint());
+            alice.sendMessage(bob.fingerprint(), "plain");
+
+            std::map<std::string, IncomingMessage> seen;
+            for (int round = 0; round < 3 && seen.size() < 4; ++round) {
+                for (const IncomingMessage& item : bob.sync()) {
+                    seen[item.contentType == "text" ? item.text : item.contentType] = item;
+                }
+            }
+            CHECK(seen.size() == 4);
+            const IncomingMessage& relayed = seen["relayed"];
+            CHECK(relayed.e2eId == "group-post-1");
+            CHECK(relayed.sentAt == kPostSentAt);
+            CHECK(relayed.replyTo == "group-post-0");
+            CHECK(relayed.author == "Ann");
+            CHECK(relayed.contactable);
+            CHECK(relayed.group.has_value());
+            CHECK(relayed.group->kind == GroupKind::eChannel);
+            CHECK(relayed.group->members == kMembers);
+            CHECK(!relayed.group->write);
+            CHECK(relayed.group->admin);
+            CHECK(relayed.group->at == kBlockAt);
+            CHECK(seen["group.state"].group.has_value());
+            CHECK(nlohmann::json::parse(seen["group.reactions"].groupReactionsJson)
+                      .at(0).at("counts").at("+") == 2);
+            CHECK(seen["plain"].group.has_value());
+            CHECK(seen["plain"].author.empty());
+
+            RelayedPost oversized = post;
+            oversized.type = "image";
+            oversized.media = Bytes(kMaxMessagePayloadBytes, 0);
+            oversized.mediaName = "big.png";
+            oversized.mime = "image/png";
+            CHECK(!alice.relayFits(oversized));
+
+            alice.setGroupBlockSource({});
+            alice.sendMessage(bob.fingerprint(), "no longer a group");
+            bool plain = false;
+            for (int round = 0; round < 3 && !plain; ++round) {
+                for (const IncomingMessage& item : bob.sync()) {
+                    if (item.text == "no longer a group") {
+                        plain = true;
+                        CHECK(!item.group.has_value());
+                    }
+                }
+            }
+            CHECK(plain);
+        }
+
+        {
             alice.sendMessage(alice.fingerprint(), "note to self");
 
             std::size_t deviceItems = 0;

@@ -35,6 +35,7 @@
 #include <chrono>
 #include <ctime>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <thread>
@@ -208,6 +209,30 @@ std::string guessMime(const fs::path& path)
     return "application/octet-stream";
 }
 
+const char* const kGroupKindGroup = "group";
+const char* const kGroupKindChannel = "channel";
+const char* const kTypeGroupState = "group.state";
+const char* const kTypeGroupReactions = "group.reactions";
+
+nlohmann::json imageBody(const std::string& name, const std::string& mime, const Bytes& bytes)
+{
+    return {
+        {"name", name},
+        {"mime", mime},
+        {"size", bytes.size()},
+        {"data", nlohmann::json::binary(bytes)},
+    };
+}
+
+nlohmann::json audioBody(const std::int64_t durationMs, const Bytes& opus)
+{
+    return {
+        {"durationMs", durationMs},
+        {"size", opus.size()},
+        {"data", nlohmann::json::binary(opus)},
+    };
+}
+
 bool echoesToOwnDevices(const std::string& type)
 {
     static const std::set<std::string> kEchoed{
@@ -253,6 +278,35 @@ void addReplyAndForward(
 }
 
 }  // namespace
+
+nlohmann::json groupBlockToJson(const GroupBlock& block)
+{
+    return {
+        {"kind", block.kind == GroupKind::eChannel ? kGroupKindChannel : kGroupKindGroup},
+        {"members", block.members},
+        {"write", block.write},
+        {"admin", block.admin},
+        {"at", block.at},
+    };
+}
+
+GroupBlock groupBlockFromJson(const nlohmann::json& body)
+{
+    GroupBlock block;
+    const std::string kind = body.at("kind").get<std::string>();
+    if (kind == kGroupKindChannel) {
+        block.kind = GroupKind::eChannel;
+    } else if (kind == kGroupKindGroup) {
+        block.kind = GroupKind::eGroup;
+    } else {
+        throw std::runtime_error("a group block names an unknown kind: " + kind);
+    }
+    block.members = body.at("members").get<std::int64_t>();
+    block.write = body.at("write").get<bool>();
+    block.admin = body.at("admin").get<bool>();
+    block.at = body.at("at").get<std::int64_t>();
+    return block;
+}
 
 std::string inlineKeyboardJson(const InlineKeyboard& keyboard)
 {
@@ -1957,15 +2011,7 @@ bool Session::sendPicture(const std::string& peerFingerprint, const Bytes& bytes
     const std::string id = e2eId.empty() ? toHex(randomBytes(8)) : e2eId;
     putPicture(id, bytes);
 
-    nlohmann::json inner = envelope(kTypeImage, id, {
-        {"image",
-            {
-                {"name", name},
-                {"mime", mime},
-                {"size", bytes.size()},
-                {"data", nlohmann::json::binary(bytes)},
-            }},
-    });
+    nlohmann::json inner = envelope(kTypeImage, id, {{"image", imageBody(name, mime, bytes)}});
     addReplyAndForward(inner, replyTo, forwarded);
     return sendContent(peerFingerprint, std::move(inner), watch);
 }
@@ -1980,16 +2026,62 @@ bool Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
     const std::string id = e2eId.empty() ? toHex(randomBytes(8)) : e2eId;
     putVoice(id, opus);
 
-    nlohmann::json inner = envelope(kTypeAudio, id, {
-        {"audio",
-            {
-                {"durationMs", durationMs},
-                {"size", opus.size()},
-                {"data", nlohmann::json::binary(opus)},
-            }},
-    });
+    nlohmann::json inner = envelope(kTypeAudio, id, {{"audio", audioBody(durationMs, opus)}});
     addReplyAndForward(inner, replyTo, forwarded);
     return sendContent(peerFingerprint, std::move(inner), watch);
+}
+
+void Session::setGroupBlockSource(GroupBlockSource source)
+{
+    groupBlockSource_ = std::move(source);
+}
+
+nlohmann::json Session::relayedEnvelope(const RelayedPost& post) const
+{
+    nlohmann::json inner;
+    if (post.type == kTypeImage) {
+        inner = envelope(kTypeImage, post.id,
+            {{"image", imageBody(post.mediaName, post.mime, post.media)}});
+    } else if (post.type == kTypeAudio) {
+        inner = envelope(kTypeAudio, post.id, {{"audio", audioBody(post.durationMs, post.media)}});
+    } else if (post.type == "text") {
+        inner = envelope("text", post.id, {{"text", post.text}});
+    } else {
+        throw std::runtime_error("a group relays text, pictures and voice, not " + post.type);
+    }
+    inner["sentAt"] = post.sentAt;
+    inner["author"] = post.author;
+    inner["contactable"] = post.contactable;
+    addReplyAndForward(inner, post.replyTo, false);
+    return inner;
+}
+
+bool Session::relayPost(
+    const std::string& peerFingerprint, const RelayedPost& post, const DeliveryWatch& watch)
+{
+    return sendContent(peerFingerprint, relayedEnvelope(post), watch);
+}
+
+bool Session::relayFits(const RelayedPost& post) const
+{
+    nlohmann::json inner = relayedEnvelope(post);
+    inner["group"] = groupBlockToJson(GroupBlock{GroupKind::eChannel,
+        std::numeric_limits<std::int64_t>::max(), true, true,
+        std::numeric_limits<std::int64_t>::max()});
+    signAuthorship(inner, client_->identity(), /*withKeys=*/false);
+    return encodedBody(inner).size() <= kMaxMessagePayloadBytes - kSealOverheadAllowance;
+}
+
+void Session::sendGroupState(const std::string& peerFingerprint, const DeliveryWatch& watch)
+{
+    sendContent(peerFingerprint, envelope(kTypeGroupState, toHex(randomBytes(8)), nlohmann::json::object()), watch);
+}
+
+void Session::sendGroupReactions(const std::string& peerFingerprint,
+    const nlohmann::json& reactions, const DeliveryWatch& watch)
+{
+    sendContent(peerFingerprint,
+        envelope(kTypeGroupReactions, toHex(randomBytes(8)), {{"reactions", reactions}}), watch);
 }
 
 bool Session::announceTransfer(const std::string& type, const std::string& peerFingerprint,
@@ -2570,6 +2662,9 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     if (isBlocked(peerFingerprint)) {
         throw std::runtime_error("this contact is blocked; unblock them to write to them");
     }
+    if (groupBlockSource_) {
+        inner["group"] = groupBlockToJson(groupBlockSource_(peerFingerprint));
+    }
     const nlohmann::json echoPayload
         = echoesToOwnDevices(inner.value("type", std::string())) ? inner : nlohmann::json();
     const auto found = contacts_.find(peerFingerprint);
@@ -2828,9 +2923,20 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 reaskedPeers.insert(message.fromFingerprint);
             }
 
+            if (body.contains("group")) {
+                message.group = groupBlockFromJson(body.at("group"));
+                message.author = body.value("author", std::string());
+                message.contactable = body.value("contactable", false);
+            }
+
             if (type == "text" || type == "contact.request") {
                 message.contentType = type;
                 message.text = body.value("text", std::string());
+            } else if (type == kTypeGroupState && message.group) {
+                message.contentType = type;
+            } else if (type == kTypeGroupReactions && message.group) {
+                message.contentType = type;
+                message.groupReactionsJson = body.at("reactions").dump();
             } else if (type == kTypeImage) {
                 message.contentType = type;
                 const nlohmann::json& picture = body.at("image");

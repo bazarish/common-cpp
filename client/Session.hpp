@@ -70,6 +70,36 @@ struct Contact {
     bool allowCalls = true;
 };
 
+enum class GroupKind {
+    eGroup,
+    eChannel,
+};
+
+struct GroupBlock {
+    GroupKind kind = GroupKind::eGroup;
+    std::int64_t members = 0;
+    bool write = false;
+    bool admin = false;
+    std::int64_t at = 0;
+};
+
+nlohmann::json groupBlockToJson(const GroupBlock& block);
+GroupBlock groupBlockFromJson(const nlohmann::json& body);
+
+struct RelayedPost {
+    std::string type;
+    std::string id;
+    std::int64_t sentAt = 0;
+    std::string text;
+    std::string replyTo;
+    Bytes media;
+    std::string mediaName;
+    std::string mime;
+    std::int64_t durationMs = 0;
+    std::string author;
+    bool contactable = false;
+};
+
 struct IncomingMessage {
     std::string contentType;
     std::string fromFingerprint;
@@ -100,6 +130,11 @@ struct IncomingMessage {
     std::int64_t attachmentDurationMs = 0;
 
     std::string avatarData;
+
+    std::optional<GroupBlock> group;
+    std::string author;
+    bool contactable = false;
+    std::string groupReactionsJson;
 };
 
 struct SentFile {
@@ -407,6 +442,16 @@ public:
 
     void sendDelete(const std::string& peerFingerprint, const std::string& refMessageId);
 
+    using GroupBlockSource = std::function<GroupBlock(const std::string& peerFingerprint)>;
+    void setGroupBlockSource(GroupBlockSource source);
+
+    bool relayPost(const std::string& peerFingerprint, const RelayedPost& post,
+        const DeliveryWatch& watch = {});
+    bool relayFits(const RelayedPost& post) const;
+    void sendGroupState(const std::string& peerFingerprint, const DeliveryWatch& watch = {});
+    void sendGroupReactions(const std::string& peerFingerprint, const nlohmann::json& reactions,
+        const DeliveryWatch& watch = {});
+
     struct AliasHolding {
         std::string alias;
         std::int64_t notAfter = 0;
@@ -630,6 +675,7 @@ private:
     void noteWire(bool outgoing, std::string what, std::string status, std::string detail) const;
     std::string wireName(const std::string& peerFingerprint) const;
 
+    nlohmann::json relayedEnvelope(const RelayedPost& post) const;
     nlohmann::json envelope(const std::string& type, const std::string& id,
         nlohmann::json payload = nlohmann::json::object()) const;
 
@@ -686,6 +732,7 @@ private:
     };
     std::shared_ptr<Outbound> outbound_ = std::make_shared<Outbound>();
     bool deviceSync_ = true;
+    GroupBlockSource groupBlockSource_;
     bool announceTransfer(const std::string& type, const std::string& peerFingerprint,
         const std::filesystem::path& path, const std::string& e2eId, const DeliveryWatch& watch,
         const std::string& replyTo, bool forwarded);
