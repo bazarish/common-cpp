@@ -163,6 +163,46 @@ int main()
         server.stop();
     }
 
+    {
+        Server::Options options;
+        options.port = 0;
+        options.readTimeout = std::chrono::seconds(kDeadlineSeconds);
+        Server server(options);
+        SocketRoutes routes;
+        routes.subprotocol = kProtocol;
+        routes.message = [](const SocketPtr& socket, const std::vector<unsigned char>& message) {
+            socket->send(message);
+        };
+        server.upgrade(kPath, routes);
+        const int port = server.start();
+        CHECK(port > 0);
+
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool echoed = false;
+        const SocketDialResult dialled = openSocket(dialTo(port),
+            [&](const SocketPtr&, const std::vector<unsigned char>&) {
+                {
+                    const std::lock_guard<std::mutex> lock(mutex);
+                    echoed = true;
+                }
+                changed.notify_all();
+            },
+            [](const SocketPtr&) {});
+        CHECK(dialled.socket != nullptr);
+        std::this_thread::sleep_for(std::chrono::seconds(3 * kDeadlineSeconds));
+        CHECK(dialled.socket->open());
+        const std::string sent = "still here";
+        dialled.socket->send(std::vector<unsigned char>(sent.begin(), sent.end()));
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            CHECK(changed.wait_for(
+                lock, std::chrono::seconds(kPatienceSeconds), [&]() { return echoed; }));
+        }
+        dialled.socket->close();
+        server.stop();
+    }
+
     std::printf("TestWebSocketClient ok\n");
     return 0;
 }

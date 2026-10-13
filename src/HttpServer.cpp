@@ -405,6 +405,8 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                         break;
                     }
                     if constexpr (std::is_same_v<Stream, beast::tcp_stream>) {
+                        // The request's read deadline would otherwise close the socket later.
+                        beast::get_lowest_layer(stream).expires_never();
                         websocket::stream<beast::tcp_stream> upgraded(std::move(stream));
                         websocket::stream_base::timeout timeouts{};
                         timeouts.handshake_timeout = options.readTimeout;
