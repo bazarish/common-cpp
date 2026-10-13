@@ -440,7 +440,8 @@ public:
         const std::string& text, const InlineKeyboard& keyboard = {},
         const DeliveryWatch& watch = {});
 
-    void sendDelete(const std::string& peerFingerprint, const std::string& refMessageId);
+    void sendDelete(const std::string& peerFingerprint, const std::string& refMessageId,
+        const DeliveryWatch& watch = {});
 
     using GroupBlockSource = std::function<GroupBlock(const std::string& peerFingerprint)>;
     void setGroupBlockSource(GroupBlockSource source);
