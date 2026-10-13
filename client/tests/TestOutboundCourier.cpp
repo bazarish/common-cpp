@@ -64,6 +64,33 @@ private:
     bool answer_ = true;
 };
 
+// What a stream into a lease set whose tunnels are gone does: takes everything, answers nothing.
+class SilentStream final : public DeliveryStream {
+public:
+    void writeAll(const void*, std::size_t) override {}
+
+    void readExact(void*, std::size_t) override
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        closedCv_.wait(lock, [this]() { return closed_; });
+        throw std::runtime_error("closed before an answer");
+    }
+
+    void close() override
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            closed_ = true;
+        }
+        closedCv_.notify_all();
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable closedCv_;
+    bool closed_ = false;
+};
+
 std::string signedDeliveredReply(const Key& signingKey, const std::string& deliveryId)
 {
     const Bytes signedBytes(deliveryId.begin(), deliveryId.end());
@@ -142,6 +169,33 @@ int main()
         CHECK(phases.at(0) == kPhasePreparing);
         CHECK(phases.at(1) == kPhaseDialing);
         CHECK(phases.at(2) == kPhaseSending);
+    }
+
+    {
+        int dials = 0;
+        int prepared = 0;
+        std::vector<std::string> retired;
+        DeliverySchedule schedule = quickSchedule();
+        schedule.reply = std::chrono::seconds{1};
+        OutboundCourier courier(
+            [&prepared](const std::string&, const std::string&) {
+                ++prepared;
+                return true;
+            },
+            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                ++dials;
+                if (dials == 1) {
+                    return std::make_shared<SilentStream>();
+                }
+                return std::make_shared<ScriptedStream>(
+                    signedDeliveredReply(signingKey, "d-silent"), true);
+            },
+            schedule, [&retired](const std::string& toDest) { retired.push_back(toDest); });
+        const OutboundCourier::Outcome outcome = courier.deliverNow(taskTo(dest, "d-silent"));
+        CHECK(outcome.stored);
+        CHECK(dials == 2);
+        CHECK(retired == std::vector<std::string>{dest});
+        CHECK(prepared == 2);
     }
 
     {

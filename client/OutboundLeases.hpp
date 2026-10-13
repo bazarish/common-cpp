@@ -38,6 +38,7 @@ public:
     std::shared_ptr<DeliveryStream> openStream(
         const std::string& toDest, std::chrono::seconds timeout);
     void release(const std::string& toDest);
+    void retire(const std::string& toDest);
     void clear();
 
     void setAddressing(OutboundAddressing addressing);

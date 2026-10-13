@@ -39,9 +39,10 @@ bool signedForUs(const FederationDeliverResult& reply, const std::string& delive
 }  // namespace
 
 OutboundCourier::OutboundCourier(
-    PrepareFn prepare, OpenStreamFn openStream, DeliverySchedule schedule)
+    PrepareFn prepare, OpenStreamFn openStream, DeliverySchedule schedule, RetireFn retire)
     : prepare_(std::move(prepare))
     , openStream_(std::move(openStream))
+    , retire_(std::move(retire))
     , schedule_(std::move(schedule))
 {
     watchdog_ = std::thread(&OutboundCourier::watchdogLoop, this);
@@ -191,6 +192,13 @@ OutboundCourier::Outcome OutboundCourier::deliverNow(const Task& task)
         if (reachable) {
             return outcome;
         }
+        // An address keeps the lease set it looked up, which may name a restarted peer's dead tunnels.
+        if (sent && retire_) {
+            retire_(task.toDest);
+            if (!prepare_(task.toDest, task.peerName)) {
+                break;
+            }
+        }
     }
     outcome.stored = false;
     outcome.errorCode = std::string(bazarish::toString(ErrorCode::eRecipientServerUnreachable));
@@ -224,9 +232,10 @@ OutboundCourier::Outcome OutboundCourier::attempt(const Task& task,
     if (task.onPhase) {
         task.onPhase(kPhaseSending);
     }
-    watch(stream,
-        std::max(deadline,
-            std::chrono::steady_clock::now() + std::chrono::seconds(kReplyGraceSeconds)));
+    const std::chrono::seconds carrying(
+        static_cast<std::int64_t>((task.sealed.size() + task.payload.size())
+            / kSlowestDeliveryBytesPerSecond));
+    watch(stream, std::chrono::steady_clock::now() + schedule_.reply + carrying);
     FederationDeliverResult reply;
     outSent = true;
     const std::chrono::steady_clock::time_point wroteAt = std::chrono::steady_clock::now();

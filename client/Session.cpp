@@ -1635,7 +1635,8 @@ OutboundCourier& Session::outboundCourier()
             },
             [&leases](const std::string& toDest, const std::chrono::seconds timeout) {
                 return leases.openStream(toDest, timeout);
-            });
+            },
+            DeliverySchedule{}, [&leases](const std::string& toDest) { leases.retire(toDest); });
     }
     return *outbound_->courier;
 }

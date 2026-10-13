@@ -203,6 +203,12 @@ void OutboundLeases::release(const std::string& toDest)
     own_.erase(toDest);
 }
 
+void OutboundLeases::retire(const std::string& toDest)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    leases_.erase(keyForLocked(toDest));
+}
+
 void OutboundLeases::clear()
 {
     const std::lock_guard<std::mutex> lock(mutex_);

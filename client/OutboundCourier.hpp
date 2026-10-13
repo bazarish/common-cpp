@@ -31,6 +31,8 @@ inline constexpr int kDeliveryAttempts = 4;
 inline constexpr int kDeliveryRetryDelaysSeconds[kDeliveryAttempts - 1] = {2, 4, 8};
 inline constexpr int kDeliveryDialSeconds = 15;
 inline constexpr int kReplyGraceSeconds = 30;
+// The slowest a delivery stream is still expected to move; a big payload gets this much longer.
+inline constexpr std::size_t kSlowestDeliveryBytesPerSecond = 8 * 1024;
 inline constexpr int kDeliveryRunSeconds = []() {
     int total = kDeliveryAttempts * kDeliveryDialSeconds + kReplyGraceSeconds;
     for (const int gap : kDeliveryRetryDelaysSeconds) {
@@ -51,6 +53,7 @@ struct DeliverySchedule {
         std::chrono::seconds{kDeliveryRetryDelaysSeconds[0]},
         std::chrono::seconds{kDeliveryRetryDelaysSeconds[1]},
         std::chrono::seconds{kDeliveryRetryDelaysSeconds[2]}};
+    std::chrono::seconds reply{kReplyGraceSeconds};
     std::chrono::seconds run{kDeliveryRunSeconds};
 };
 
@@ -69,6 +72,7 @@ public:
         = std::function<bool(const std::string& toDest, const std::string& peerName)>;
     using OpenStreamFn = std::function<std::shared_ptr<DeliveryStream>(
         const std::string& toDest, std::chrono::seconds timeout)>;
+    using RetireFn = std::function<void(const std::string& toDest)>;
 
     struct Task {
         std::string toDest;
@@ -80,7 +84,8 @@ public:
         OutcomeFn onOutcome;
     };
 
-    OutboundCourier(PrepareFn prepare, OpenStreamFn openStream, DeliverySchedule schedule = {});
+    OutboundCourier(PrepareFn prepare, OpenStreamFn openStream, DeliverySchedule schedule = {},
+        RetireFn retire = {});
     ~OutboundCourier();
 
     Outcome deliverNow(const Task& task);
@@ -99,6 +104,7 @@ private:
 
     const PrepareFn prepare_;
     const OpenStreamFn openStream_;
+    const RetireFn retire_;
     const DeliverySchedule schedule_;
     std::mutex mutex_;
     std::condition_variable cv_;
