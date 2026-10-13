@@ -823,7 +823,10 @@ void GatewayRouter::openControl()
         for (const auto& [streamId, stream] : link_->streams) {
             const auto found = alive.find(streamId);
             if (found == alive.end()) {
-                stream->reset();
+                // Still being opened: the open goes again below, so the gateway has not lost it.
+                if (link_->awaited.count(streamId) == 0) {
+                    stream->reset();
+                }
                 continue;
             }
             ours.push_back({{"id", streamId}, {"received", stream->received()}});
