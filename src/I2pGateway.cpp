@@ -141,6 +141,7 @@ private:
     std::uint32_t endpoint_;
     gateway::StreamBook book_;
     std::chrono::seconds readTimeout_{0};
+    std::mutex sendMutex_;
     mutable std::mutex mutex_;
     std::condition_variable arrived_;
     std::deque<unsigned char> inbox_;
@@ -431,10 +432,12 @@ std::vector<Bytes> GatewayStream::replayFrames(const std::uint64_t peerReceived)
 
 void GatewayStream::drain()
 {
+    // The link locks its own mutex and then a stream's, so this one is never held into it.
+    const std::lock_guard<std::mutex> sending(sendMutex_);
+    std::vector<Bytes> frames;
     bool ending = false;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        const http::SocketPtr own = link_->socketFor(id_, endpoint_);
         while (!outbox_.empty()) {
             const std::size_t piece
                 = std::min({book_.room(), gateway::kMaxBodyBytes, outbox_.size()});
@@ -443,24 +446,22 @@ void GatewayStream::drain()
             }
             const Bytes chunk(outbox_.begin(), outbox_.begin() + static_cast<std::ptrdiff_t>(piece));
             book_.wrote(chunk.data(), chunk.size());
-            const Bytes frame = gateway::encode(FrameType::eStreamData, id_, chunk);
-            if (own) {
-                own->send(std::vector<unsigned char>(frame.begin(), frame.end()));
-            } else {
-                link_->send(frame);
-            }
+            frames.push_back(gateway::encode(FrameType::eStreamData, id_, chunk));
             outbox_.erase(outbox_.begin(), outbox_.begin() + static_cast<std::ptrdiff_t>(piece));
         }
         if (outbox_.empty() && endWhenDrained_) {
             endWhenDrained_ = false;
             ending = true;
             book_.finishSending();
-            const Bytes frame = gateway::encode(FrameType::eStreamClose, id_);
-            if (own) {
-                own->send(std::vector<unsigned char>(frame.begin(), frame.end()));
-            } else {
-                link_->send(frame);
-            }
+            frames.push_back(gateway::encode(FrameType::eStreamClose, id_));
+        }
+    }
+    const http::SocketPtr own = link_->socketFor(id_, endpoint_);
+    for (const Bytes& frame : frames) {
+        if (own) {
+            own->send(std::vector<unsigned char>(frame.begin(), frame.end()));
+        } else {
+            link_->send(frame);
         }
     }
     if (ending) {
