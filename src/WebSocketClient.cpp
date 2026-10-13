@@ -9,6 +9,7 @@
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/beast/core.hpp>
@@ -20,7 +21,6 @@
 #include <openssl/x509.h>
 
 #include <atomic>
-#include <condition_variable>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -56,6 +56,8 @@ std::string spkiFingerprint(SSL* const connection)
     return fingerprint;
 }
 
+// One thread owns the stream: Beast's and OpenSSL's streams take no concurrent callers, and
+// Beast keeps its idle timeout and pings only for asynchronous operations.
 template <class Stream>
 class ClientSocket : public Socket, public std::enable_shared_from_this<ClientSocket<Stream>> {
 public:
@@ -69,15 +71,17 @@ public:
 
     ~ClientSocket() override
     {
-        close();
-        if (!writer_.joinable()) {
+        open_.store(false);
+        boost::system::error_code ignored;
+        beast::get_lowest_layer(*stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
+        if (!thread_.joinable()) {
             return;
         }
-        if (writer_.get_id() == std::this_thread::get_id()) {
-            writer_.detach();
+        if (thread_.get_id() == std::this_thread::get_id()) {
+            thread_.detach();
             return;
         }
-        writer_.join();
+        thread_.join();
     }
 
     void send(std::vector<unsigned char> message) override
@@ -85,12 +89,17 @@ public:
         if (!open_.load()) {
             return;
         }
+        bool start = false;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             queued_ += message.size();
             queue_.push_back(std::move(message));
+            start = !writing_;
+            writing_ = true;
         }
-        waiting_.notify_all();
+        if (start) {
+            asio::post(*loop_, [self = this->shared_from_this()]() { self->writeNext(); });
+        }
     }
 
     std::size_t pending() const override
@@ -104,9 +113,11 @@ public:
         if (!open_.exchange(false)) {
             return;
         }
-        waiting_.notify_all();
-        boost::system::error_code ignored;
-        beast::get_lowest_layer(*stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
+        asio::post(*loop_, [self = this->shared_from_this()]() {
+            boost::system::error_code ignored;
+            beast::get_lowest_layer(*self->stream_).socket().shutdown(
+                tcp::socket::shutdown_both, ignored);
+        });
     }
 
     bool open() const override { return open_.load(); }
@@ -114,81 +125,89 @@ public:
     void run(std::function<void(const SocketPtr&, const std::vector<unsigned char>&)> message,
         std::function<void(const SocketPtr&)> closed)
     {
+        message_ = std::move(message);
+        closed_ = std::move(closed);
         const std::shared_ptr<ClientSocket> self = this->shared_from_this();
-        writer_ = std::thread([self]() { self->write(); });
-        std::thread([self, message = std::move(message), closed = std::move(closed)]() {
-            self->read(message, closed);
-        }).detach();
+        loop_->restart();
+        readNext();
+        thread_ = std::thread([self]() { self->loop_->run(); });
     }
 
 private:
-    void read(const std::function<void(const SocketPtr&, const std::vector<unsigned char>&)>&
-                  message,
-        const std::function<void(const SocketPtr&)>& closed)
+    void readNext()
     {
-        const std::shared_ptr<ClientSocket> self = this->shared_from_this();
-        beast::flat_buffer buffer;
-        for (;;) {
-            boost::system::error_code error;
-            stream_->read(buffer, error);
-            if (error) {
-                if (open_.load()) {
-                    bazarish::log::info("websocket lost: {}", error.message());
-                }
-                break;
+        stream_->async_read(buffer_,
+            [self = this->shared_from_this()](
+                const boost::system::error_code& error, std::size_t) {
+                self->delivered(error);
+            });
+    }
+
+    void delivered(const boost::system::error_code& error)
+    {
+        if (error || !stream_->got_binary()) {
+            if (error && open_.load()) {
+                bazarish::log::info("websocket lost: {}", error.message());
             }
-            if (!stream_->got_binary()) {
-                break;
-            }
-            if (message) {
-                const unsigned char* const at
-                    = static_cast<const unsigned char*>(buffer.data().data());
-                message(self, std::vector<unsigned char>(at, at + buffer.size()));
-            }
-            buffer.consume(buffer.size());
+            ended();
+            return;
         }
+        if (message_) {
+            const unsigned char* const at = static_cast<const unsigned char*>(buffer_.data().data());
+            message_(this->shared_from_this(), std::vector<unsigned char>(at, at + buffer_.size()));
+        }
+        buffer_.consume(buffer_.size());
+        readNext();
+    }
+
+    void ended()
+    {
         open_.store(false);
-        waiting_.notify_all();
-        if (closed) {
-            closed(self);
+        boost::system::error_code ignored;
+        beast::get_lowest_layer(*stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
+        if (closed_) {
+            closed_(this->shared_from_this());
         }
     }
 
-    void write()
+    void writeNext()
     {
-        for (;;) {
-            std::vector<unsigned char> message;
-            {
-                std::unique_lock<std::mutex> lock(mutex_);
-                waiting_.wait(lock, [&]() { return !queue_.empty() || !open_.load(); });
-                if (queue_.empty()) {
-                    return;
-                }
-                message = queue_.front();
-            }
-            boost::system::error_code error;
-            stream_->binary(true);
-            stream_->write(asio::buffer(message), error);
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                queued_ -= queue_.front().size();
-                queue_.pop_front();
-            }
-            if (error) {
-                close();
+        const std::vector<unsigned char>* next = nullptr;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (queue_.empty() || !open_.load()) {
+                writing_ = false;
                 return;
             }
+            next = &queue_.front();
         }
+        stream_->binary(true);
+        stream_->async_write(asio::buffer(*next),
+            [self = this->shared_from_this()](
+                const boost::system::error_code& error, std::size_t) {
+                {
+                    const std::lock_guard<std::mutex> lock(self->mutex_);
+                    self->queued_ -= self->queue_.front().size();
+                    self->queue_.pop_front();
+                }
+                if (error) {
+                    self->close();
+                }
+                self->writeNext();
+            });
     }
 
     std::unique_ptr<asio::io_context> loop_;
     std::unique_ptr<ssl::context> tls_;
     std::unique_ptr<websocket::stream<Stream>> stream_;
-    std::thread writer_;
+    std::function<void(const SocketPtr&, const std::vector<unsigned char>&)> message_;
+    std::function<void(const SocketPtr&)> closed_;
+    beast::flat_buffer buffer_;
+    std::thread thread_;
     mutable std::mutex mutex_;
-    std::condition_variable waiting_;
     std::deque<std::vector<unsigned char>> queue_;
     std::size_t queued_ = 0;
+    bool writing_ = false;
     std::atomic<bool> open_{true};
 };
 

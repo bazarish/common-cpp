@@ -152,7 +152,7 @@ bazarish_add_test(TestLoginChallenge)
 bazarish_add_test(TestConfigFile)
 bazarish_add_test(TestWebAssets)
 
-# These three play the far end over POSIX sockets of their own - socketpair,
+# These four play the far end over POSIX sockets of their own - socketpair,
 # read and write on a descriptor. What they cover is portable; the harness is
 # not, and Windows is a client-only target where they run on the primary
 # platform instead.
@@ -160,6 +160,7 @@ if(NOT WIN32)
     bazarish_add_test(TestFederationFrame)
     bazarish_add_test(TestSam)
     bazarish_add_test(TestI2pHttp)
+    bazarish_add_test(TestWebSocketTlsDuplex)
 endif()
 
 # The client core and its tests. Its own dependencies are looked for only when
