@@ -107,6 +107,17 @@ public:
     std::deque<Bytes> waiting;
     bool holding = false;
     std::atomic<std::int64_t> lastUse{0};
+    std::atomic<std::int64_t> lastArrival{0};
+
+    std::string describe() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return std::string("control ") + (control && control->open() ? "open" : "closed")
+            + ", last frame " + std::to_string(millisNow() - lastArrival.load()) + " ms ago, "
+            + std::to_string(streams.size()) + " stream(s), " + std::to_string(flows.size())
+            + " flow socket(s), " + std::to_string(awaited.size()) + " call(s) waiting, "
+            + std::to_string(waiting.size()) + " frame(s) held";
+    }
 };
 
 class GatewayRouter;
@@ -383,6 +394,7 @@ std::size_t GatewayStream::readSome(void* const buffer, const std::size_t size)
         : std::chrono::steady_clock::time_point::max();
     while (inbox_.empty() && !finished_ && !closed_) {
         if (arrived_.wait_until(lock, deadline) == std::cv_status::timeout) {
+            bazarish::log::warn("i2p: gateway stream #{} silent; {}", id_, link_->describe());
             throw std::runtime_error("bazarish::i2p: the stream said nothing in time");
         }
     }
@@ -1262,6 +1274,7 @@ std::vector<LocalDestination> GatewayRouter::localDestinations() const
 void GatewayRouter::arrived(
     const http::SocketPtr&, const std::vector<unsigned char>& message)
 {
+    link_->lastArrival.store(millisNow());
     try {
         dispatch(gateway::decode(message.data(), message.size()));
     } catch (const std::exception& error) {
