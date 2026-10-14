@@ -89,7 +89,7 @@ void OutboundLeases::dropExpired(const std::chrono::steady_clock::time_point now
     const bazarish::i2p::Privacy privacy = tunnelPrivacy();
     for (auto it = leases_.begin(); it != leases_.end();) {
         if (leaseSpent(it->second.created, it->second.lastUsed, now)
-            || it->second.privacy != privacy) {
+            || it->second.privacy != privacy || it->second.endpoint->lost()) {
             it = leases_.erase(it);
         } else {
             ++it;
