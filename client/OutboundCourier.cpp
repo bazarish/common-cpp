@@ -13,7 +13,6 @@ namespace bazarish::client {
 
 namespace {
 
-constexpr std::size_t kDeliveryWorkers = 4;
 constexpr std::chrono::seconds kWatchdogTick{1};
 
 std::string retryPhase(const int attempt, const int attempts)
@@ -38,15 +37,15 @@ bool signedForUs(const FederationDeliverResult& reply, const std::string& delive
 
 }  // namespace
 
-OutboundCourier::OutboundCourier(
-    PrepareFn prepare, OpenStreamFn openStream, DeliverySchedule schedule, RetireFn retire)
+OutboundCourier::OutboundCourier(PrepareFn prepare, OpenStreamFn openStream,
+    DeliverySchedule schedule, RetireFn retire, const std::size_t workers)
     : prepare_(std::move(prepare))
     , openStream_(std::move(openStream))
     , retire_(std::move(retire))
     , schedule_(std::move(schedule))
 {
     watchdog_ = std::thread(&OutboundCourier::watchdogLoop, this);
-    for (std::size_t i = 0; i < kDeliveryWorkers; ++i) {
+    for (std::size_t i = 0; i < workers; ++i) {
         workers_.emplace_back(&OutboundCourier::workerLoop, this);
     }
 }

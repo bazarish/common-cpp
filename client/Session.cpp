@@ -1633,7 +1633,8 @@ OutboundCourier& Session::outboundCourier()
             [&leases](const std::string& toDest, const std::chrono::seconds timeout) {
                 return leases.openStream(toDest, timeout);
             },
-            DeliverySchedule{}, [&leases](const std::string& toDest) { leases.retire(toDest); });
+            DeliverySchedule{}, [&leases](const std::string& toDest) { leases.retire(toDest); },
+            outbound_->workers);
     }
     return *outbound_->courier;
 }
@@ -1645,6 +1646,12 @@ void Session::setOutboundAddressing(const OutboundAddressing addressing)
     if (outbound_->leases) {
         outbound_->leases->setAddressing(addressing);
     }
+}
+
+void Session::setDeliveryWorkers(const std::size_t workers)
+{
+    const std::lock_guard<std::mutex> lock(outbound_->mutex);
+    outbound_->workers = workers;
 }
 
 void Session::setOutboundCourier(std::unique_ptr<OutboundCourier> courier)

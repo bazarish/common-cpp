@@ -585,6 +585,7 @@ public:
     void setFetchTransport(FetchTransport transport);
     void setOutboundCourier(std::unique_ptr<OutboundCourier> courier);
     void setOutboundAddressing(OutboundAddressing addressing);
+    void setDeliveryWorkers(std::size_t workers);
     void setDeviceSync(bool enabled);
 
     void setAudioBackend(AudioSourceFactory sourceFactory, AudioSinkFactory sinkFactory);
@@ -740,6 +741,7 @@ private:
         std::unique_ptr<OutboundLeases> leases;
         std::unique_ptr<OutboundCourier> courier;
         OutboundAddressing addressing = OutboundAddressing::eOnePerCorrespondent;
+        std::size_t workers = kDeliveryWorkers;
     };
     std::shared_ptr<Outbound> outbound_ = std::make_shared<Outbound>();
     bool deviceSync_ = true;

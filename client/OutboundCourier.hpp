@@ -57,6 +57,8 @@ struct DeliverySchedule {
     std::chrono::seconds run{kDeliveryRunSeconds};
 };
 
+inline constexpr std::size_t kDeliveryWorkers = 4;
+
 class OutboundCourier {
 public:
     using PhaseFn = std::function<void(const std::string& phase)>;
@@ -85,7 +87,7 @@ public:
     };
 
     OutboundCourier(PrepareFn prepare, OpenStreamFn openStream, DeliverySchedule schedule = {},
-        RetireFn retire = {});
+        RetireFn retire = {}, std::size_t workers = kDeliveryWorkers);
     ~OutboundCourier();
 
     Outcome deliverNow(const Task& task);
