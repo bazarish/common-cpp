@@ -470,12 +470,16 @@ public:
     std::deque<std::vector<std::uint8_t>> rawQueue;
 
     struct RawTargets {
-        std::mutex mutex;
         std::map<std::string, i2pd::data::IdentHash> resolved;
         std::set<std::string> lookups;
         std::map<std::string, std::chrono::steady_clock::time_point> missedAt;
     };
     std::shared_ptr<RawTargets> rawTargets = std::make_shared<RawTargets>();
+
+private:
+    static void sendRawOnLane(const std::shared_ptr<i2pd::client::ClientDestination>& dest,
+        i2pd::datagram::DatagramDestination& datagram, const std::shared_ptr<RawTargets>& targets,
+        const std::string& host, const std::vector<std::uint8_t>& payload);
 };
 
 EmbeddedEndpoint::~EmbeddedEndpoint()
@@ -632,6 +636,15 @@ void EmbeddedEndpoint::sendDatagram(const std::string& host, const void* data, s
 {
     if (!datagram) { return; }
     const auto* payload = static_cast<const std::uint8_t*>(data);
+    const std::shared_ptr<i2pd::datagram::DatagramDestination> sender = datagram;
+    std::vector<std::uint8_t> copy(payload, payload + size);
+    const auto sendTo = [this, &sender, &copy](const i2pd::data::IdentHash& to)
+    {
+        boost::asio::post(dest->GetService(), [sender, copy = std::move(copy), to]()
+        {
+            sender->SendDatagramTo(copy.data(), copy.size(), to);
+        });
+    };
 
     if (isB32I2pHost(host))
     {
@@ -640,15 +653,13 @@ void EmbeddedEndpoint::sendDatagram(const std::string& host, const void* data, s
         const std::size_t n = i2pd::data::Base32ToByteStream(label, raw, sizeof raw);
         if (n == 32)
         {
-            datagram->SendDatagramTo(payload, size, i2pd::data::IdentHash(raw));
+            sendTo(i2pd::data::IdentHash(raw));
         }
         else
         {
             auto blinded = std::make_shared<i2pd::data::BlindedPublicKey>(std::string_view(label));
-            const std::shared_ptr<i2pd::datagram::DatagramDestination> sender = datagram;
-            std::vector<std::uint8_t> copy(payload, payload + size);
             dest->RequestDestinationWithEncryptedLeaseSet(blinded,
-                [sender, copy](std::shared_ptr<i2pd::data::LeaseSet> ls)
+                [sender, copy = std::move(copy)](std::shared_ptr<i2pd::data::LeaseSet> ls)
                 {
                     if (ls) { sender->SendDatagramTo(copy.data(), copy.size(), ls->GetIdentHash()); }
                 });
@@ -659,7 +670,7 @@ void EmbeddedEndpoint::sendDatagram(const std::string& host, const void* data, s
         auto identity = std::make_shared<i2pd::data::IdentityEx>();
         if (identity->FromBase64(host) > 0)
         {
-            datagram->SendDatagramTo(payload, size, identity->GetIdentHash());
+            sendTo(identity->GetIdentHash());
         }
     }
 }
@@ -684,75 +695,76 @@ void EmbeddedEndpoint::sendRawDatagram(const std::string& host, const void* data
 {
     if (!datagram) { return; }
     const auto* payload = static_cast<const std::uint8_t*>(data);
+    // libi2pd keeps a destination's garlic state for the one thread that runs it.
+    boost::asio::post(dest->GetService(),
+        [destination = dest, sender = datagram, targets = rawTargets, host,
+            copy = std::vector<std::uint8_t>(payload, payload + size)]()
+        {
+            sendRawOnLane(destination, *sender, targets, host, copy);
+        });
+}
 
-    if (isB32I2pHost(host))
-    {
-        const std::string label = host.substr(0, host.size() - kB32SuffixLen);
-        std::uint8_t rawHash[64];
-        const std::size_t n = i2pd::data::Base32ToByteStream(label, rawHash, sizeof rawHash);
-        if (n == 32)
-        {
-            datagram->SendRawDatagramTo(payload, size, i2pd::data::IdentHash(rawHash));
-        }
-        else
-        {
-            const std::shared_ptr<RawTargets> targets = rawTargets;
-            bool first = false;
-            {
-                const std::lock_guard<std::mutex> lock(targets->mutex);
-                const auto known = targets->resolved.find(host);
-                if (known != targets->resolved.end())
-                {
-                    datagram->SendRawDatagramTo(payload, size, known->second);
-                    return;
-                }
-                // libi2pd answers a lookup from a destination without tunnels at once, with nothing.
-                if (!dest->IsReady() || targets->lookups.count(host) != 0)
-                {
-                    return;
-                }
-                const auto missed = targets->missedAt.find(host);
-                first = missed == targets->missedAt.end();
-                if (!first && std::chrono::steady_clock::now() - missed->second < kRawLookupPause)
-                {
-                    return;
-                }
-                targets->lookups.insert(host);
-            }
-            if (first)
-            {
-                bazarish::log::info("i2p: looking up {} to send it datagrams", host);
-            }
-            auto blinded = std::make_shared<i2pd::data::BlindedPublicKey>(std::string_view(label));
-            dest->RequestDestinationWithEncryptedLeaseSet(blinded,
-                [targets, host, first](std::shared_ptr<i2pd::data::LeaseSet> ls)
-                {
-                    const std::lock_guard<std::mutex> lock(targets->mutex);
-                    targets->lookups.erase(host);
-                    if (!ls)
-                    {
-                        targets->missedAt[host] = std::chrono::steady_clock::now();
-                        if (first)
-                        {
-                            bazarish::log::warn("i2p: {} has no leaseset yet; it is asked again"
-                                " every {} s", host, kRawLookupPause.count());
-                        }
-                        return;
-                    }
-                    targets->resolved[host] = ls->GetIdentHash();
-                    targets->missedAt.erase(host);
-                    bazarish::log::info("i2p: {} answered; datagrams to it can go", host);
-                });
-        }
-    }
-    else
+void EmbeddedEndpoint::sendRawOnLane(const std::shared_ptr<i2pd::client::ClientDestination>& dest,
+    i2pd::datagram::DatagramDestination& datagram, const std::shared_ptr<RawTargets>& targets,
+    const std::string& host, const std::vector<std::uint8_t>& payload)
+{
+    if (!isB32I2pHost(host))
     {
         auto identity = std::make_shared<i2pd::data::IdentityEx>();
         if (identity->FromBase64(host) > 0)
         {
-            datagram->SendRawDatagramTo(payload, size, identity->GetIdentHash());
+            datagram.SendRawDatagramTo(payload.data(), payload.size(), identity->GetIdentHash());
         }
+        return;
     }
+    const std::string label = host.substr(0, host.size() - kB32SuffixLen);
+    std::uint8_t rawHash[64];
+    if (i2pd::data::Base32ToByteStream(label, rawHash, sizeof rawHash) == 32)
+    {
+        datagram.SendRawDatagramTo(payload.data(), payload.size(), i2pd::data::IdentHash(rawHash));
+        return;
+    }
+    const auto known = targets->resolved.find(host);
+    if (known != targets->resolved.end())
+    {
+        datagram.SendRawDatagramTo(payload.data(), payload.size(), known->second);
+        return;
+    }
+    // libi2pd answers a lookup from a destination without tunnels at once, with nothing.
+    if (!dest->IsReady() || targets->lookups.count(host) != 0)
+    {
+        return;
+    }
+    const auto missed = targets->missedAt.find(host);
+    const bool first = missed == targets->missedAt.end();
+    if (!first && std::chrono::steady_clock::now() - missed->second < kRawLookupPause)
+    {
+        return;
+    }
+    targets->lookups.insert(host);
+    if (first)
+    {
+        bazarish::log::info("i2p: looking up {} to send it datagrams", host);
+    }
+    auto blinded = std::make_shared<i2pd::data::BlindedPublicKey>(std::string_view(label));
+    dest->RequestDestinationWithEncryptedLeaseSet(blinded,
+        [targets, host, first](std::shared_ptr<i2pd::data::LeaseSet> ls)
+        {
+            targets->lookups.erase(host);
+            if (!ls)
+            {
+                targets->missedAt[host] = std::chrono::steady_clock::now();
+                if (first)
+                {
+                    bazarish::log::warn("i2p: {} has no leaseset yet; it is asked again"
+                        " every {} s", host, kRawLookupPause.count());
+                }
+                return;
+            }
+            targets->resolved[host] = ls->GetIdentHash();
+            targets->missedAt.erase(host);
+            bazarish::log::info("i2p: {} answered; datagrams to it can go", host);
+        });
 }
 
 std::vector<std::uint8_t> EmbeddedEndpoint::receiveRawDatagram(std::chrono::milliseconds timeout)
