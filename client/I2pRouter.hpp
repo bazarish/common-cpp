@@ -64,6 +64,8 @@ bool i2pEnabled();
 void setSamTransport(std::string host, int port);
 bool usingSamTransport();
 
+void setRouterTransit(bool transit);
+
 void setGatewayTransport(const GatewayAddress& address, std::string pin);
 bool usingGatewayTransport();
 std::string samTransportHost();

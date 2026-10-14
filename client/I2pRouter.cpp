@@ -87,6 +87,7 @@ std::string g_samHost;
 std::optional<GatewayAddress> g_gateway;
 std::string g_gatewayPin;
 int g_samPort = 0;
+bool g_transit = false;
 int g_proxyPort = 0;
 
 std::mutex& proxyMutex()
@@ -194,6 +195,12 @@ void setSamTransport(std::string host, const int port)
     g_samPort = port;
 }
 
+void setRouterTransit(const bool transit)
+{
+    const std::lock_guard<std::mutex> lock(proxyMutex());
+    g_transit = transit;
+}
+
 bool usingSamTransport()
 {
     const std::lock_guard<std::mutex> lock(proxyMutex());
@@ -229,7 +236,10 @@ bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir
 {
     bazarish::i2p::RouterConfig config;
     config.dataDir = dataDir;
-    config.role = bazarish::i2p::Role::eClient;
+    {
+        const std::lock_guard<std::mutex> lock(proxyMutex());
+        config.role = g_transit ? bazarish::i2p::Role::eServer : bazarish::i2p::Role::eClient;
+    }
     config.reseedUrls = reseedUrls();
     config.socksProxyHost = i2pSocksProxyHost();
     config.socksProxyPort = i2pSocksProxyPort();
