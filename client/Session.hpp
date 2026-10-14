@@ -388,6 +388,7 @@ public:
     void forgetPendingContactAdd(const std::string& opId);
     struct ContactCardResolved {
         bool ok = false;
+        bool aliasUnknown = false;
         std::string error;
         std::string fingerprint;
         ContactInfo info;

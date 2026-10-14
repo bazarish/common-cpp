@@ -135,6 +135,10 @@ int main()
             outcome.errorCode = "ALIAS_UNKNOWN";
             return outcome;
         }
+        if (query.alias == "down") {
+            outcome.errorCode = "HTTP_503";
+            return outcome;
+        }
         const std::string recordAlias = query.alias == "swap" ? "other" : query.alias;
         const Descriptor descriptor{bob.fingerprint(), bobDest};
         const ResolveRecord record{recordAlias, descriptor, now, now + resolverWeek};
@@ -233,17 +237,31 @@ int main()
         }
         return false;
     };
+    const auto unknown = [&](const auto& fn) {
+        try {
+            fn();
+        } catch (const AliasUnknown&) {
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
+        return false;
+    };
     {
         const Descriptor descriptor = client.resolveAlias("bob", resolver, now, directDial);
         CHECK(descriptor.fingerprint == bob.fingerprint());
         CHECK(descriptor.dest == bobDest);
 
-        CHECK(rejects([&]() { (void)client.resolveAlias("ghost", resolver, now, directDial); }));
+        CHECK(unknown([&]() { (void)client.resolveAlias("ghost", resolver, now, directDial); }));
+        CHECK(rejects([&]() { (void)client.resolveAlias("down", resolver, now, directDial); }));
+        CHECK(!unknown([&]() { (void)client.resolveAlias("down", resolver, now, directDial); }));
 
         const ResolverCoordinate wrongRoot{Identity::generate().fingerprint(), resolverDest};
         CHECK(rejects([&]() { (void)client.resolveAlias("bob", wrongRoot, now, directDial); }));
+        CHECK(!unknown([&]() { (void)client.resolveAlias("bob", wrongRoot, now, directDial); }));
 
         CHECK(rejects([&]() { (void)client.resolveAlias("swap", resolver, now, directDial); }));
+        CHECK(!unknown([&]() { (void)client.resolveAlias("swap", resolver, now, directDial); }));
     }
 
     {

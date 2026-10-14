@@ -1758,6 +1758,10 @@ Session::ContactCardResolved Session::resolveContactCard(
         }
         out.ok = true;
         bazarish::log::info("contact-add: card resolved off-thread in {} ms", elapsedMs());
+    } catch (const AliasUnknown& error) {
+        out.error = error.what();
+        out.aliasUnknown = true;
+        bazarish::log::info("contact-add: no such alias after {} ms", elapsedMs());
     } catch (const std::exception& error) {
         out.error = error.what();
         out.ok = false;

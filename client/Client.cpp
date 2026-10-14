@@ -212,6 +212,9 @@ Descriptor Client::resolveAlias(const std::string& alias, const ResolverCoordina
                                         : outcome.errorCode;
         log::info("alias {} did not resolve: {}", alias, code);
         const std::optional<ErrorCode> known = errorCodeFromString(code);
+        if (known == ErrorCode::eAliasUnknown) {
+            throw AliasUnknown(std::string(readable(*known)));
+        }
         throw std::runtime_error(known ? std::string(readable(*known))
                                        : "The alias registry refused to answer.");
     }

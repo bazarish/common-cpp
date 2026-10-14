@@ -14,6 +14,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,11 @@ struct FetchOutcome {
 
 using FetchTransport
     = std::function<FetchOutcome(const std::string& toDest, const std::string& op, const Bytes& sealed)>;
+
+class AliasUnknown : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 Bytes sealDeliveryEnvelope(const std::string& deliveryClass, const std::string& mailbox,
     const std::string& deliveryId, const Bytes& pass, const Key& recipientSealingKey);
