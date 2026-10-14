@@ -96,6 +96,8 @@ public:
     void endStreamsOf(std::uint32_t endpoint);
 
     mutable std::mutex mutex;
+    // Held while a frame is handed to a stream: a stream is erased from `streams` only under it.
+    std::mutex delivering;
     gateway::Ids ids_;
     http::SocketPtr control;
     std::string cookie;
@@ -317,6 +319,8 @@ public:
 private:
     void arrived(const http::SocketPtr& socket, const std::vector<unsigned char>& message);
     void dispatch(const Frame& frame);
+    void deliver(const Frame& frame);
+    std::vector<std::shared_ptr<GatewayEndpoint>> endpointsHeld() const;
     http::SocketDial dialFor() const;
     void openControl();
     void closeControl();
@@ -394,6 +398,7 @@ std::size_t GatewayStream::readSome(void* const buffer, const std::size_t size)
         : std::chrono::steady_clock::time_point::max();
     while (inbox_.empty() && !finished_ && !closed_) {
         if (arrived_.wait_until(lock, deadline) == std::cv_status::timeout) {
+            lock.unlock();
             bazarish::log::warn("i2p: gateway stream #{} silent; {}", id_, link_->describe());
             throw std::runtime_error("bazarish::i2p: the stream said nothing in time");
         }
@@ -805,6 +810,8 @@ void GatewayRouter::openControl()
     std::vector<Bytes> replay;
     std::vector<Bytes> credits;
     std::vector<std::shared_ptr<GatewayEndpoint>> gone;
+    // Let go only once the link's mutex is released.
+    std::vector<std::shared_ptr<GatewayEndpoint>> told;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->cookie = body.value("session", std::string());
@@ -844,10 +851,11 @@ void GatewayRouter::openControl()
                 if (at == link_->endpoints.end()) {
                     continue;
                 }
-                if (const std::shared_ptr<GatewayEndpoint> endpoint = at->second.lock()) {
+                if (std::shared_ptr<GatewayEndpoint> endpoint = at->second.lock()) {
                     endpoint->statusChanged(one.value("ready", false), one.value("tunnelsIn", 0),
                         one.value("tunnelsOut", 0), one.value("leaseSets", 0),
                         one.value("localRoute", false));
+                    told.push_back(std::move(endpoint));
                 }
             }
         }
@@ -1164,11 +1172,13 @@ Frame Link::call(
 
 void Link::remember(const std::uint32_t id, GatewayStream* const stream)
 {
-    const std::lock_guard<std::mutex> lock(mutex);
     if (stream == nullptr) {
+        const std::lock_guard<std::mutex> handing(delivering);
+        const std::lock_guard<std::mutex> lock(mutex);
         streams.erase(id);
         return;
     }
+    const std::lock_guard<std::mutex> lock(mutex);
     streams[id] = stream;
 }
 
@@ -1235,14 +1245,25 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
     return endpoint;
 }
 
-void GatewayRouter::retagEndpoint(
-    const EndpointBackend& endpoint, std::string label, std::string owner)
+// The last owner may let go meanwhile, and an endpoint's destructor takes the link's mutex.
+std::vector<std::shared_ptr<GatewayEndpoint>> GatewayRouter::endpointsHeld() const
 {
+    std::vector<std::shared_ptr<GatewayEndpoint>> standing;
     const std::lock_guard<std::mutex> lock(link_->mutex);
     for (const auto& [id, held] : link_->endpoints) {
         (void)id;
-        const std::shared_ptr<GatewayEndpoint> mine = held.lock();
-        if (mine != nullptr && mine.get() == &endpoint) {
+        if (std::shared_ptr<GatewayEndpoint> endpoint = held.lock()) {
+            standing.push_back(std::move(endpoint));
+        }
+    }
+    return standing;
+}
+
+void GatewayRouter::retagEndpoint(
+    const EndpointBackend& endpoint, std::string label, std::string owner)
+{
+    for (const std::shared_ptr<GatewayEndpoint>& mine : endpointsHeld()) {
+        if (mine.get() == &endpoint) {
             mine->retag(std::move(label), std::move(owner));
             return;
         }
@@ -1252,13 +1273,7 @@ void GatewayRouter::retagEndpoint(
 std::vector<LocalDestination> GatewayRouter::localDestinations() const
 {
     std::vector<LocalDestination> destinations;
-    const std::lock_guard<std::mutex> lock(link_->mutex);
-    for (const auto& [id, held] : link_->endpoints) {
-        (void)id;
-        const std::shared_ptr<GatewayEndpoint> endpoint = held.lock();
-        if (endpoint == nullptr) {
-            continue;
-        }
+    for (const std::shared_ptr<GatewayEndpoint>& endpoint : endpointsHeld()) {
         LocalDestination entry;
         entry.label = endpoint->label();
         entry.owner = endpoint->owner();
@@ -1304,16 +1319,11 @@ void GatewayRouter::dispatch(const Frame& frame)
     }
 
     std::shared_ptr<GatewayEndpoint> endpoint;
-    GatewayStream* stream = nullptr;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         const auto atEndpoint = link_->endpoints.find(frame.ref);
         if (atEndpoint != link_->endpoints.end()) {
             endpoint = atEndpoint->second.lock();
-        }
-        const auto atStream = link_->streams.find(frame.ref);
-        if (atStream != link_->streams.end()) {
-            stream = atStream->second;
         }
     }
 
@@ -1354,24 +1364,10 @@ void GatewayRouter::dispatch(const Frame& frame)
             return;
         }
         case FrameType::eStreamData:
-            if (stream != nullptr) {
-                stream->arrived(frame.body);
-            }
-            return;
         case FrameType::eStreamCredit:
-            if (stream != nullptr) {
-                stream->creditedBy(gateway::decodeCredit(frame));
-            }
-            return;
         case FrameType::eStreamClose:
-            if (stream != nullptr) {
-                stream->farSideFinished();
-            }
-            return;
         case FrameType::eStreamReset:
-            if (stream != nullptr) {
-                stream->reset();
-            }
+            deliver(frame);
             return;
         case FrameType::eError: {
             const nlohmann::json body = gateway::bodyJson(frame);
@@ -1379,6 +1375,36 @@ void GatewayRouter::dispatch(const Frame& frame)
                 body.value("message", std::string()));
             return;
         }
+        default:
+            return;
+    }
+}
+
+void GatewayRouter::deliver(const Frame& frame)
+{
+    const std::lock_guard<std::mutex> handing(link_->delivering);
+    GatewayStream* stream = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        const auto found = link_->streams.find(frame.ref);
+        if (found == link_->streams.end()) {
+            return;
+        }
+        stream = found->second;
+    }
+    switch (frame.type) {
+        case FrameType::eStreamData:
+            stream->arrived(frame.body);
+            return;
+        case FrameType::eStreamCredit:
+            stream->creditedBy(gateway::decodeCredit(frame));
+            return;
+        case FrameType::eStreamClose:
+            stream->farSideFinished();
+            return;
+        case FrameType::eStreamReset:
+            stream->reset();
+            return;
         default:
             return;
     }
