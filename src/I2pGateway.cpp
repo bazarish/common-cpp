@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <set>
 #include <string>
@@ -102,7 +103,7 @@ public:
     void send(const Bytes& frame);
     http::SocketPtr socketFor(std::uint32_t flow) const;
     http::SocketPtr socketFor(std::uint32_t stream, std::uint32_t endpoint) const;
-    Frame call(const Bytes& frame, std::uint32_t ref, std::chrono::seconds timeout);
+    std::optional<Frame> call(const Bytes& frame, std::uint32_t ref, std::chrono::seconds timeout);
     void forget(std::uint32_t id);
     void remember(std::uint32_t id, GatewayStream* stream);
     void endStreamsOf(std::uint32_t endpoint);
@@ -588,8 +589,8 @@ std::unique_ptr<StreamBackend> GatewayEndpoint::connect(
     auto stream = std::make_unique<GatewayStream>(link_, id, id_);
     const Bytes ask = gateway::encodeJson(FrameType::eStreamOpen, id,
         {{"endpoint", id_}, {"host", host}, {"deadline", timeout.count()}});
-    const Frame answer = link_->call(ask, id, timeout + kCallTimeout);
-    if (answer.type != FrameType::eStreamOpened) {
+    const std::optional<Frame> answer = link_->call(ask, id, timeout + kCallTimeout);
+    if (!answer || answer->type != FrameType::eStreamOpened) {
         return nullptr;
     }
     return stream;
@@ -1140,7 +1141,7 @@ void GatewayRouter::reattachOrphans()
     }
 }
 
-Frame Link::call(
+std::optional<Frame> Link::call(
     const Bytes& frame, const std::uint32_t ref, const std::chrono::seconds timeout)
 {
     const std::shared_ptr<Pending> pending = std::make_shared<Pending>();
@@ -1167,7 +1168,7 @@ Frame Link::call(
         bazarish::log::warn("i2p: the gateway left {} #{} unanswered for {} s, sent {}",
             gateway::frameTypeName(static_cast<FrameType>(frame.front())), ref, timeout.count(),
             live ? "on a live socket" : "while no socket was open");
-        throw std::runtime_error("bazarish::i2p: the gateway did not answer in time");
+        return std::nullopt;
     }
     return answer;
 }
@@ -1222,13 +1223,16 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
     const bool raw = config.traffic == Traffic::eRaw;
     const nlohmann::json ask = {{"kind", raw ? "raw" : "stream"},
         {"published", config.published}, {"realtime", config.realtime}};
-    const Frame answer
+    const std::optional<Frame> answer
         = link_->call(gateway::encodeJson(FrameType::eEndpointCreate, id, ask), id,
             kCallTimeout);
-    if (answer.type != FrameType::eOk) {
+    if (!answer) {
+        throw std::runtime_error("bazarish::i2p: the gateway did not answer in time");
+    }
+    if (answer->type != FrameType::eOk) {
         throw std::runtime_error("bazarish::i2p: the gateway refused a destination");
     }
-    const std::string host = gateway::bodyJson(answer).value("host", std::string());
+    const std::string host = gateway::bodyJson(*answer).value("host", std::string());
     if (host.empty()) {
         throw std::runtime_error("bazarish::i2p: the gateway named no address");
     }
