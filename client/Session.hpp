@@ -539,6 +539,15 @@ public:
         eActive,
     };
 
+    enum class CallStage {
+        eNone,
+        ePreparing,
+        eDelivering,
+        eDelivered,
+        eRinging,
+        eOpening,
+    };
+
     enum class CallOutcome {
         eAnswered,
         eNoAnswer,
@@ -564,7 +573,7 @@ public:
         bool muted = false;
         std::uint64_t packetsSent = 0;
         std::uint64_t packetsReceived = 0;
-        std::string stage;
+        CallStage stage = CallStage::eNone;
         bool peerRinging = false;
         std::int64_t connectedAtMs = 0;
         float inputLevel = 0.0F;
@@ -800,7 +809,7 @@ private:
         std::int64_t startedAtMs = 0;
         std::int64_t invitedAtMs = 0;
         std::int64_t deliveredAtMs = 0;
-        std::string stage;
+        CallStage stage = CallStage::eNone;
         std::int64_t peerRingingAtMs = 0;
         std::int64_t connectedAtMs = 0;
         std::uint64_t lastPacketsReceived = 0;

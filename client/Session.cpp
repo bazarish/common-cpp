@@ -62,7 +62,6 @@ bool isBlank(const std::string& text)
 const char* const kTypeFile = "file";
 const char* const kTypeImage = "image";
 const char* const kTypeAudio = "audio";
-const char* const kCallOpeningStage = "Opening the audio path";
 constexpr std::size_t kDeliveryIdBytes = 16;
 constexpr std::size_t kContactBookChunkBytes = 128 * 1024;
 constexpr std::size_t kRequestIdBytes = 8;
@@ -92,8 +91,6 @@ constexpr const char* kPendingAddsKey = "pending-contact-adds";
 constexpr const char* kChosenNamesKey = "chosen-contact-names";
 
 constexpr std::size_t kDeliveryIdSeedBytes = 32;
-const char* const kCallDeliveredStage = "Invitation delivered";
-const char* const kCallAlertingStage = "Their device is ringing";
 
 namespace fs = std::filesystem;
 
@@ -3649,7 +3646,7 @@ void Session::startCallMedia()
     call_.media->setOnConnected([this]() {
         if (call_.connectedAtMs == 0) {
             call_.connectedAtMs = nowMillis();
-            call_.stage.clear();
+            call_.stage = CallStage::eNone;
         }
     });
     bazarish::log::info("call media: from {} to {}",
@@ -3713,7 +3710,7 @@ void Session::startCall(const std::string& peerFingerprint)
     if (contacts_.find(peerFingerprint) == contacts_.end()) {
         throw std::runtime_error("unknown contact: " + peerFingerprint);
     }
-    call_.stage = "Preparing your call address";
+    call_.stage = CallStage::ePreparing;
     auto dgram = openCallMediaSession();
     const std::string callId = toHex(randomBytes(8));
     const Bytes mediaKey = randomBytes(kAeadKeyBytes);
@@ -3735,9 +3732,9 @@ void Session::startCall(const std::string& peerFingerprint)
     call_.dgram = std::move(dgram);
     if (delivered) {
         call_.deliveredAtMs = nowMillis();
-        call_.stage = kCallDeliveredStage;
+        call_.stage = CallStage::eDelivered;
     } else {
-        call_.stage = "Delivering the invitation";
+        call_.stage = CallStage::eDelivering;
     }
 }
 
@@ -3757,7 +3754,7 @@ void Session::acceptCall(const std::string& callId)
     announceCallTaken(callId);
     call_.dgram = std::move(dgram);
     call_.state = CallState::eActive;
-    call_.stage = kCallOpeningStage;
+    call_.stage = CallStage::eOpening;
     startCallMedia();
 }
 
@@ -3932,7 +3929,7 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
         if (call_.state == CallState::eOutgoing && call_.callId == message.callId
             && from == call_.peerFingerprint) {
             call_.peerRingingAtMs = nowMillis();
-            call_.stage = kCallAlertingStage;
+            call_.stage = CallStage::eRinging;
         }
         return;
     }
@@ -3950,7 +3947,7 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
             && from == call_.peerFingerprint) {
             call_.peerMediaDest = body.value("dest", std::string());
             call_.state = CallState::eActive;
-            call_.stage = kCallOpeningStage;
+            call_.stage = CallStage::eOpening;
             startCallMedia();
         }
         return;
