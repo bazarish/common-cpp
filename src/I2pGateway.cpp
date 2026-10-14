@@ -65,6 +65,18 @@ std::chrono::milliseconds drawBetween(
             static_cast<std::uint64_t>(high.count()))));
 }
 
+// A steady max() deadline overflows where libstdc++ waits on the system clock (musl).
+template <class Wakes>
+bool waitWithin(std::condition_variable& signal, std::unique_lock<std::mutex>& lock,
+    const std::chrono::seconds timeout, Wakes wakes)
+{
+    if (timeout.count() <= 0) {
+        signal.wait(lock, wakes);
+        return true;
+    }
+    return signal.wait_for(lock, timeout, wakes);
+}
+
 [[noreturn]] void notWithAGateway(const char* const what)
 {
     throw std::runtime_error(
@@ -393,15 +405,11 @@ void GatewayStream::reset()
 std::size_t GatewayStream::readSome(void* const buffer, const std::size_t size)
 {
     std::unique_lock<std::mutex> lock(mutex_);
-    const auto deadline = readTimeout_.count() > 0
-        ? std::chrono::steady_clock::now() + readTimeout_
-        : std::chrono::steady_clock::time_point::max();
-    while (inbox_.empty() && !finished_ && !closed_) {
-        if (arrived_.wait_until(lock, deadline) == std::cv_status::timeout) {
-            lock.unlock();
-            bazarish::log::warn("i2p: gateway stream #{} silent; {}", id_, link_->describe());
-            throw std::runtime_error("bazarish::i2p: the stream said nothing in time");
-        }
+    if (!waitWithin(arrived_, lock, readTimeout_,
+            [this]() { return !inbox_.empty() || finished_ || closed_; })) {
+        lock.unlock();
+        bazarish::log::warn("i2p: gateway stream #{} silent; {}", id_, link_->describe());
+        throw std::runtime_error("bazarish::i2p: the stream said nothing in time");
     }
     if (inbox_.empty()) {
         return 0;
@@ -592,14 +600,8 @@ std::unique_ptr<StreamBackend> GatewayEndpoint::accept(
 {
     mustCarryStreams();
     std::unique_lock<std::mutex> lock(mutex_);
-    const auto deadline = timeout.count() > 0
-        ? std::chrono::steady_clock::now() + timeout
-        : std::chrono::steady_clock::time_point::max();
-    while (callers_.empty() && !stopped_.load()) {
-        if (arrived_.wait_until(lock, deadline) == std::cv_status::timeout) {
-            return nullptr;
-        }
-    }
+    (void)waitWithin(
+        arrived_, lock, timeout, [this]() { return !callers_.empty() || stopped_.load(); });
     if (callers_.empty()) {
         return nullptr;
     }
