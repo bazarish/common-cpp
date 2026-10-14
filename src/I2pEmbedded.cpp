@@ -71,6 +71,7 @@ constexpr int kSessionSnapshotSeconds = 2;
 constexpr int kDialRoundMillis = 30000;
 constexpr int kDialSliceMillis = 250;
 constexpr int kDialRetryPauseMillis = 2000;
+constexpr std::chrono::seconds kRawLookupPause{2};
 
 // libi2pd's crypto state must be initialised once before any key operation.
 void ensureCryptoInit()
@@ -472,6 +473,7 @@ public:
         std::mutex mutex;
         std::map<std::string, i2pd::data::IdentHash> resolved;
         std::set<std::string> lookups;
+        std::map<std::string, std::chrono::steady_clock::time_point> missedAt;
     };
     std::shared_ptr<RawTargets> rawTargets = std::make_shared<RawTargets>();
 };
@@ -695,6 +697,7 @@ void EmbeddedEndpoint::sendRawDatagram(const std::string& host, const void* data
         else
         {
             const std::shared_ptr<RawTargets> targets = rawTargets;
+            bool first = false;
             {
                 const std::lock_guard<std::mutex> lock(targets->mutex);
                 const auto known = targets->resolved.find(host);
@@ -703,25 +706,41 @@ void EmbeddedEndpoint::sendRawDatagram(const std::string& host, const void* data
                     datagram->SendRawDatagramTo(payload, size, known->second);
                     return;
                 }
-                if (!targets->lookups.insert(host).second)
+                // libi2pd answers a lookup from a destination without tunnels at once, with nothing.
+                if (!dest->IsReady() || targets->lookups.count(host) != 0)
                 {
                     return;
                 }
+                const auto missed = targets->missedAt.find(host);
+                first = missed == targets->missedAt.end();
+                if (!first && std::chrono::steady_clock::now() - missed->second < kRawLookupPause)
+                {
+                    return;
+                }
+                targets->lookups.insert(host);
             }
-            bazarish::log::info("i2p: looking up {} to send it datagrams", host);
+            if (first)
+            {
+                bazarish::log::info("i2p: looking up {} to send it datagrams", host);
+            }
             auto blinded = std::make_shared<i2pd::data::BlindedPublicKey>(std::string_view(label));
             dest->RequestDestinationWithEncryptedLeaseSet(blinded,
-                [targets, host](std::shared_ptr<i2pd::data::LeaseSet> ls)
+                [targets, host, first](std::shared_ptr<i2pd::data::LeaseSet> ls)
                 {
                     const std::lock_guard<std::mutex> lock(targets->mutex);
                     targets->lookups.erase(host);
                     if (!ls)
                     {
-                        bazarish::log::warn("i2p: {} has no leaseset; datagrams to it go nowhere",
-                            host);
+                        targets->missedAt[host] = std::chrono::steady_clock::now();
+                        if (first)
+                        {
+                            bazarish::log::warn("i2p: {} has no leaseset yet; it is asked again"
+                                " every {} s", host, kRawLookupPause.count());
+                        }
                         return;
                     }
                     targets->resolved[host] = ls->GetIdentHash();
+                    targets->missedAt.erase(host);
                     bazarish::log::info("i2p: {} answered; datagrams to it can go", host);
                 });
         }
