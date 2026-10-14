@@ -3652,7 +3652,12 @@ void Session::startCallMedia()
     bazarish::log::info("call media: from {} to {}",
         bazarish::log::redact(call_.dgram->routingHost()),
         bazarish::log::redact(call_.peerMediaDest));
-    call_.media->start();
+    try {
+        call_.media->start();
+    } catch (const std::exception&) {
+        endCall();
+        throw;
+    }
 }
 
 void Session::clearCall()
