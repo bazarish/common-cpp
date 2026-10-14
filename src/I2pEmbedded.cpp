@@ -21,6 +21,7 @@
 #include "Identity.h"
 #include "Log.h"
 #include "NetDb.hpp"
+#include "RouterContext.h"
 #include "RouterInfo.h"
 #include "NTCP2.h"
 #include "SSU2.h"
@@ -65,6 +66,7 @@ constexpr i2pd::data::SigningKeyType kB33SigType
 constexpr int kMaxB33Days = 0xFFFF;
 constexpr std::size_t kB32SuffixLen = 8;
 constexpr int kReceivePollSeconds = 5;
+constexpr int kServerShareRatio = 100;
 constexpr int kSessionSnapshotSeconds = 2;
 constexpr int kDialRoundMillis = 30000;
 constexpr int kDialSliceMillis = 250;
@@ -838,15 +840,6 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
     std::vector<std::string> args;
     args.push_back("bazarish-i2p");
     args.push_back("--datadir=" + config.dataDir.string());
-    if (config.role == Role::eClient)
-    {
-        args.push_back("--notransit");
-    }
-    else
-    {
-        args.push_back("--bandwidth=X");
-        args.push_back("--share=100");
-    }
     args.push_back("--loglevel=warn");
     args.push_back("--persist.profiles=false");
 
@@ -856,6 +849,14 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
 
     i2pd::api::InitI2P(static_cast<int>(argv.size()), argv.data(), "bazarish-i2p");
     inited = true;
+    // libi2pd parses transit and bandwidth options but only the i2pd daemon applies them.
+    const bool server = config.role == Role::eServer;
+    i2pd::context.SetAcceptsTunnels(server);
+    if (server)
+    {
+        i2pd::context.SetBandwidth(i2pd::data::CAPS_FLAG_EXTRA_BANDWIDTH2);
+        i2pd::context.SetShareRatio(kServerShareRatio);
+    }
     bazarish::log::info("i2p: engine initialised");
     i2pd::config::GetOption("reseed.urls", builtInReseedUrls);
     if (!i2pd::config::SetOption("reseed.file", config.reseedFile.string()))
