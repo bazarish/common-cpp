@@ -4095,8 +4095,8 @@ std::string Session::contactInviteUri(const std::string& peerFingerprint) const
     if (found == contacts_.end()) {
         throw std::runtime_error("not a contact");
     }
-    if (found->second.dest.empty() || found->second.servingSealingB64.empty()) {
-        throw std::runtime_error("no routing held for this contact yet");
+    if (found->second.dest.empty()) {
+        throw std::runtime_error("no address held for this contact");
     }
     Descriptor descriptor;
     descriptor.fingerprint = peerFingerprint;
