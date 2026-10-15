@@ -421,6 +421,36 @@ void EmbeddedStream::close()
     }
 }
 
+class DestTag {
+public:
+    DestTag(std::string label, std::string owner)
+        : label_(std::move(label))
+        , owner_(std::move(owner))
+    {
+    }
+    std::string label() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return label_;
+    }
+    std::string owner() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return owner_;
+    }
+    void retag(std::string label, std::string owner)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        label_ = std::move(label);
+        owner_ = std::move(owner);
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::string label_;
+    std::string owner_;
+};
+
 class EmbeddedEndpoint final : public backend::EndpointBackend,
                                public std::enable_shared_from_this<EmbeddedEndpoint> {
 public:
@@ -448,7 +478,7 @@ public:
     std::shared_ptr<i2pd::client::ClientDestination> dest;
     std::shared_ptr<i2pd::datagram::DatagramDestination> datagram;
 
-    std::string label;
+    std::shared_ptr<DestTag> tag;
     std::string publicDestination;
     std::string hostAddress;
     Bytes keysBlob;
@@ -488,6 +518,7 @@ EmbeddedEndpoint::~EmbeddedEndpoint()
         return;
     }
     const std::shared_ptr<i2pd::client::ClientDestination> closing = dest;
+    const std::string label = tag->label();
     bazarish::log::info("i2p: closing destination {} ({})",
         label.empty() ? std::string("unnamed") : label, hostAddress);
     std::deque<std::shared_ptr<i2pd::stream::Stream>> pending;
@@ -812,8 +843,7 @@ public:
 
     struct DestEntry {
         std::weak_ptr<i2pd::client::ClientDestination> dest;
-        std::string label;
-        std::string owner;
+        std::shared_ptr<DestTag> tag;
         std::string host;
         bool published = false;
     };
@@ -1026,16 +1056,7 @@ std::vector<TransportPeer> EmbeddedRouter::transportPeers() const
 void EmbeddedRouter::retagEndpoint(
     const backend::EndpointBackend& endpoint, std::string label, std::string owner)
 {
-    const std::shared_ptr<i2pd::client::ClientDestination> dest
-        = static_cast<const EmbeddedEndpoint&>(endpoint).dest;
-    std::lock_guard<std::mutex> lock(destsMutex);
-    for (DestEntry& entry : dests) {
-        if (entry.dest.lock() == dest) {
-            entry.label = std::move(label);
-            entry.owner = std::move(owner);
-            return;
-        }
-    }
+    static_cast<const EmbeddedEndpoint&>(endpoint).tag->retag(std::move(label), std::move(owner));
 }
 
 std::vector<LocalDestination> EmbeddedRouter::localDestinations() const
@@ -1048,8 +1069,8 @@ std::vector<LocalDestination> EmbeddedRouter::localDestinations() const
         const std::shared_ptr<i2pd::client::ClientDestination> dest = entry.dest.lock();
         if (!dest) { continue; }
         LocalDestination info;
-        info.label = entry.label;
-        info.owner = entry.owner;
+        info.label = entry.tag->label();
+        info.owner = entry.tag->owner();
         info.host = entry.host;
         info.published = entry.published;
         info.ready = dest->IsReady();
@@ -1076,7 +1097,7 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     const Keys keys = config.keys.has_value() ? config.keys.value() : Keys::generate();
 
     auto impl = std::make_shared<EmbeddedEndpoint>();
-    impl->label = config.label;
+    impl->tag = std::make_shared<DestTag>(config.label, config.owner);
     impl->publicDestination = keys.publicBase64();
     impl->hostAddress = bazarish::i2p::routingHost(impl->publicDestination);
     impl->keysBlob = keys.blob();
@@ -1106,8 +1127,7 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
         std::lock_guard<std::mutex> lock(destsMutex);
         std::erase_if(dests,
             [](const DestEntry& entry) { return entry.dest.expired(); });
-        dests.push_back(DestEntry{
-            impl->dest, config.label, config.owner, impl->hostAddress, config.published});
+        dests.push_back(DestEntry{impl->dest, impl->tag, impl->hostAddress, config.published});
     }
 
     const std::weak_ptr<EmbeddedEndpoint> weak = impl;
