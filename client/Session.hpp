@@ -98,6 +98,7 @@ struct RelayedPost {
     std::int64_t durationMs = 0;
     std::string author;
     bool contactable = false;
+    bool fromHost = false;
 };
 
 struct IncomingMessage {
@@ -134,6 +135,7 @@ struct IncomingMessage {
     std::optional<GroupBlock> group;
     std::string author;
     bool contactable = false;
+    bool fromHost = false;
     std::string groupReactionsJson;
 };
 

@@ -884,24 +884,35 @@ int main()
             post.contactable = true;
             CHECK(alice.relayFits(post));
             alice.relayPost(bob.fingerprint(), post);
+            RelayedPost hostPost;
+            hostPost.type = "text";
+            hostPost.id = "group-post-2";
+            hostPost.sentAt = kPostSentAt;
+            hostPost.text = "from the host";
+            hostPost.fromHost = true;
+            alice.relayPost(bob.fingerprint(), hostPost);
             alice.sendGroupReactions(bob.fingerprint(),
                 nlohmann::json::array({{{"ref", "group-post-1"}, {"counts", {{"+", 2}}}}}));
             alice.sendGroupState(bob.fingerprint());
             alice.sendMessage(bob.fingerprint(), "plain");
 
             std::map<std::string, IncomingMessage> seen;
-            for (int round = 0; round < 3 && seen.size() < 4; ++round) {
+            for (int round = 0; round < 3 && seen.size() < 5; ++round) {
                 for (const IncomingMessage& item : bob.sync()) {
                     seen[item.contentType == "text" ? item.text : item.contentType] = item;
                 }
             }
-            CHECK(seen.size() == 4);
+            CHECK(seen.size() == 5);
             const IncomingMessage& relayed = seen["relayed"];
             CHECK(relayed.e2eId == "group-post-1");
             CHECK(relayed.sentAt == kPostSentAt);
             CHECK(relayed.replyTo == "group-post-0");
             CHECK(relayed.author == "Ann");
             CHECK(relayed.contactable);
+            CHECK(!relayed.fromHost);
+            CHECK(seen["from the host"].fromHost);
+            CHECK(seen["from the host"].author.empty());
+            CHECK(!seen["from the host"].contactable);
             CHECK(relayed.group.has_value());
             CHECK(relayed.group->kind == GroupKind::eChannel);
             CHECK(relayed.group->members == kMembers);
@@ -913,6 +924,7 @@ int main()
                       .at(0).at("counts").at("+") == 2);
             CHECK(seen["plain"].group.has_value());
             CHECK(seen["plain"].author.empty());
+            CHECK(!seen["plain"].fromHost);
 
             RelayedPost oversized = post;
             oversized.type = "image";

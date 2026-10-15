@@ -2059,8 +2059,12 @@ nlohmann::json Session::relayedEnvelope(const RelayedPost& post) const
         throw std::runtime_error("a group relays text, pictures and voice, not " + post.type);
     }
     inner["sentAt"] = post.sentAt;
-    inner["author"] = post.author;
-    inner["contactable"] = post.contactable;
+    if (post.fromHost) {
+        inner["fromHost"] = true;
+    } else {
+        inner["author"] = post.author;
+        inner["contactable"] = post.contactable;
+    }
     addReplyAndForward(inner, post.replyTo, false);
     return inner;
 }
@@ -2937,6 +2941,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 message.group = groupBlockFromJson(body.at("group"));
                 message.author = body.value("author", std::string());
                 message.contactable = body.value("contactable", false);
+                message.fromHost = body.value("fromHost", false);
             }
 
             if (type == "text" || type == "contact.request") {
