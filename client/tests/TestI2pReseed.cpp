@@ -4,11 +4,8 @@
 #include "TestRouter.hpp"
 #include "TestUtil.hpp"
 
-#include "Log.h"
-
 #include <cstdio>
 #include <filesystem>
-#include <memory>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -31,42 +28,36 @@ int main()
     bazarish::i2p::RouterConfig config = bazarish::i2p::offlineRouter(dir);
     config.role = bazarish::i2p::Role::eClient;
     std::fprintf(stderr, "reseed: starting the router\n");
-    auto router = std::make_unique<bazarish::i2p::Router>(config);
+    bazarish::i2p::Router router(config);
     std::fprintf(stderr, "reseed: router started\n");
-    i2p::log::Logger().SetLogLevel("info");
-    CHECK(router->running());
-    CHECK(router->capabilities().reseed);
+    CHECK(router.running());
+    CHECK(router.capabilities().reseed);
 
     {
-        const bazarish::i2p::ReseedState state = router->reseedState();
+        const bazarish::i2p::ReseedState state = router.reseedState();
         CHECK(state.file == archive);
         CHECK(!state.urls.empty());
     }
-    const std::string builtIn = router->reseedState().urls;
+    const std::string builtIn = router.reseedState().urls;
 
-    router->setReseedUrls({"https://seed.example.org"});
+    router.setReseedUrls({"https://seed.example.org"});
     {
-        const bazarish::i2p::ReseedState state = router->reseedState();
+        const bazarish::i2p::ReseedState state = router.reseedState();
         CHECK(state.urls == "https://seed.example.org/");
         CHECK(state.file == archive);
     }
 
-    router->setReseedUrls({"https://one.example/", "https://two.example"});
-    CHECK(router->reseedState().urls == "https://one.example/,https://two.example/");
+    router.setReseedUrls({"https://one.example/", "https://two.example"});
+    CHECK(router.reseedState().urls == "https://one.example/,https://two.example/");
 
-    router->setReseedUrls({});
-    CHECK(router->reseedState().urls == builtIn);
+    router.setReseedUrls({});
+    CHECK(router.reseedState().urls == builtIn);
 
-    CHECK_THROWS(router->setReseedUrls({archive}));
-    CHECK_THROWS(router->setReseedUrls({"https://one.example/", "http://two.example/"}));
-    CHECK(router->reseedState().urls == builtIn);
+    CHECK_THROWS(router.setReseedUrls({archive}));
+    CHECK_THROWS(router.setReseedUrls({"https://one.example/", "http://two.example/"}));
+    CHECK(router.reseedState().urls == builtIn);
 
-    std::fprintf(stderr, "reseed: stopping the router\n");
-    router->stop();
-    std::fprintf(stderr, "reseed: router stopped\n");
-    router.reset();
-    std::fprintf(stderr, "reseed: router released\n");
     fs::remove_all(dir);
-    std::fprintf(stderr, "TestI2pReseed passed\n");
+    std::puts("TestI2pReseed passed");
     return 0;
 }
