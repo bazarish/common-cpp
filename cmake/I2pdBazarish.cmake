@@ -109,6 +109,16 @@ if(WIN32)
     # about which of them wins.
     target_compile_definitions(i2pd_bazarish PUBLIC WIN32_LEAN_AND_MEAN)
     target_compile_definitions(i2pd_bazarish PRIVATE WINVER=0x0602 _WIN32_WINNT=0x0602)
+    # Asio picks its threads and locks by _POSIX_THREADS, which libstdc++ here
+    # defines only where it was included first: one object, two layouts, a join
+    # that waits on a pthread_t read as a handle. So every file gets one answer.
+    include(CheckCXXSourceCompiles)
+    check_cxx_source_compiles(
+        "#include <mutex>\n#include <thread>\n#ifndef _POSIX_THREADS\n#error\n#endif\nint main() { return 0; }"
+        BAZARISH_STD_THREADS_ARE_POSIX)
+    if(BAZARISH_STD_THREADS_ARE_POSIX)
+        target_compile_definitions(i2pd_bazarish PUBLIC BOOST_ASIO_HAS_PTHREADS)
+    endif()
 elseif(NOT APPLE)
     # libatomic is GCC's runtime; Clang on macOS has the builtins and no such library.
     target_link_libraries(i2pd_bazarish PUBLIC atomic)
