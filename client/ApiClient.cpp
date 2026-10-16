@@ -266,7 +266,8 @@ bool ApiClient::ensureSessionLocked()
         return false;
     } catch (const std::exception& error) {
         sessionId_.clear();
-        sessionBlockedUntil_ = now + sessionBackoffSeconds(1);
+        // An answer that does not open is a broken carry, not a refusal: try again as after silence.
+        sessionBlockedUntil_ = now + sessionBackoffSeconds(0);
         lastTunnelError_ = error.what();
         bazarish::log::info("no tunnel: {}", error.what());
         return false;
