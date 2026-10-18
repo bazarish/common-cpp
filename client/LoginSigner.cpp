@@ -37,7 +37,7 @@ std::string LoginSigner::sign(const std::string& challenge) const
     return signLoginChallenge(identity_, challenge);
 }
 
-int LoginSigner::send(const std::string& challenge) const
+std::optional<int> LoginSigner::send(const std::string& challenge) const
 {
     const std::optional<service::LoginCallback> callback = service::readLoginCallback(challenge);
     if (!callback) {

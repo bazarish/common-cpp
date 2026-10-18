@@ -201,6 +201,15 @@ std::optional<LoginCallback> readLoginCallback(const std::string& challenge)
     return parseLoginCallback(envelope.at("callback").get<std::string>(), consumer);
 }
 
+std::int64_t loginChallengeExpiresAt(const std::string& challenge)
+{
+    const nlohmann::json envelope = nlohmann::json::parse(decodeLoginChallenge(challenge));
+    if (!envelope.contains("ts") || !envelope.at("ts").is_number_integer()) {
+        throw std::runtime_error("this login challenge does not say when it was made");
+    }
+    return envelope.at("ts").get<std::int64_t>() + kLoginWindowSeconds;
+}
+
 std::string signLoginBlob(
     const Identity& identity, const std::int64_t timestamp, const std::string& challenge)
 {

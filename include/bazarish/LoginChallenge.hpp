@@ -12,7 +12,8 @@ namespace bazarish::service {
 
 class LoginChallenge {
 public:
-    LoginChallenge(std::string secret, LoginConsumer consumer, std::int64_t windowSeconds = 300);
+    LoginChallenge(std::string secret, LoginConsumer consumer,
+        std::int64_t windowSeconds = kLoginWindowSeconds);
 
     std::string issue(std::int64_t now, const std::string& callback = {});
 

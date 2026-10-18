@@ -4,6 +4,7 @@
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Portal.hpp>
 
+#include <optional>
 #include <string>
 
 namespace bazarish::client {
@@ -16,8 +17,8 @@ public:
 
     std::string sign(const std::string& challenge) const;
 
-    // Signs and hands both to the challenge's callback; the HTTP status the site answered with.
-    int send(const std::string& challenge) const;
+    // Signs and hands both to the challenge's callback; the HTTP status, empty if unreached.
+    std::optional<int> send(const std::string& challenge) const;
 
 private:
     Identity identity_;

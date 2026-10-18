@@ -192,15 +192,16 @@ FetchOutcome resolverFetchOverI2p(bazarish::i2p::Router& router, const std::stri
     return fetchOver(*endpoint, host, op, body, Face::eResolverHttp);
 }
 
-int postLoginOverI2p(bazarish::i2p::Router& router, const service::LoginCallback& callback,
-    const std::string& challenge, const std::string& blob,
+std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
+    const service::LoginCallback& callback, const std::string& challenge, const std::string& blob,
     const bazarish::i2p::Privacy privacy, const std::string& owner)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
         = takeThrowawayDest(router, privacy, owner, kSignInLabel);
+    sayStage(FetchStage::eReaching);
     const auto stream = endpoint->connect(callback.host, std::chrono::seconds(kDialSeconds));
     if (!stream) {
-        throw std::runtime_error("the site at " + callback.host + " did not answer over I2P");
+        return std::nullopt;
     }
     stream->setReadTimeout(std::chrono::seconds(kReplySeconds));
     const std::string body = nlohmann::json{{"challenge", challenge}, {"blob", blob}}.dump();
@@ -208,6 +209,7 @@ int postLoginOverI2p(bazarish::i2p::Router& router, const service::LoginCallback
         {{"Content-Type", "application/json"}}, body.size());
     stream->writeAll(head.data(), head.size());
     stream->writeAll(body.data(), body.size());
+    sayStage(FetchStage::eWaiting);
     return readI2pHttpHead(*stream).status;
 }
 

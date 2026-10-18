@@ -17,6 +17,8 @@ inline constexpr const char* kLoginPath = "/portal/login";
 
 // A challenge is bazarish://sign?c=base64url(JSON {v, nonce, ts, consumer, tag[, callback]}).
 inline constexpr int kLoginChallengeVersion = 1;
+// SignInWithKey.md, "The challenge": ts is honoured this long either side.
+inline constexpr std::int64_t kLoginWindowSeconds = 300;
 inline constexpr char kLoginChallengeField[] = "c=";
 
 struct LoginConsumer {
@@ -53,6 +55,9 @@ void requireUsableConsumer(const LoginConsumer& consumer);
 LoginCallback parseLoginCallback(const std::string& callback, const LoginConsumer& consumer);
 
 std::optional<LoginCallback> readLoginCallback(const std::string& challenge);
+
+// Seconds since the epoch, by the clock of the site that minted it.
+std::int64_t loginChallengeExpiresAt(const std::string& challenge);
 
 std::string canonicalConsumer(const LoginConsumer& consumer);
 

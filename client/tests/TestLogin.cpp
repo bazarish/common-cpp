@@ -108,6 +108,13 @@ void testCallbacks(const Session& session)
         == session.fingerprint());
     CHECK(site.verify(issued, session.signLogin(issued), now()) == session.fingerprint());
     CHECK_THROWS(site.issue(now(), "http://" + elsewhere + "/login"));
+
+    const std::int64_t minted = now();
+    CHECK(service::loginChallengeExpiresAt(site.issue(minted))
+        == minted + service::kLoginWindowSeconds);
+    nlohmann::json undated = envelopeWith(siteConsumer());
+    undated.erase("ts");
+    CHECK_THROWS(service::loginChallengeExpiresAt(encodedChallenge(undated)));
 }
 
 }  // namespace
