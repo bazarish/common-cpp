@@ -53,19 +53,22 @@ std::string LoginChallenge::currentCanonical() const
     return canonicalConsumer_;
 }
 
-std::string LoginChallenge::issue(const std::int64_t now)
+std::string LoginChallenge::issue(const std::int64_t now, const std::string& callback)
 {
     const std::string canonical = currentCanonical();
     const std::string nonce = toHex(randomBytes(16));
-    const nlohmann::json challenge = {
+    nlohmann::json challenge = {
         {"v", kLoginChallengeVersion},
         {"nonce", nonce},
         {"ts", now},
         {"consumer", nlohmann::json::parse(canonical)},
         {"tag", tagFor(secret_, nonce, now, canonical)},
     };
-    const std::string text = challenge.dump();
-    return toBase64(Bytes(text.begin(), text.end()));
+    if (!callback.empty()) {
+        const LoginCallback checked = parseLoginCallback(callback, consumer());
+        challenge["callback"] = kLoginCallbackScheme + checked.host + checked.path;
+    }
+    return encodeLoginChallenge(challenge.dump());
 }
 
 void LoginChallenge::pruneExpired(const std::int64_t now)
@@ -86,8 +89,7 @@ std::string LoginChallenge::verify(
     if (canonicalConsumer(readLoginConsumer(challenge)) != canonical) {
         throw std::runtime_error("login challenge: it names another consumer");
     }
-    const Bytes raw = fromBase64(challenge);
-    const nlohmann::json parsed = nlohmann::json::parse(raw.begin(), raw.end());
+    const nlohmann::json parsed = nlohmann::json::parse(decodeLoginChallenge(challenge));
     const std::string nonce = parsed.at("nonce").get<std::string>();
     const std::int64_t ts = parsed.at("ts").get<std::int64_t>();
     const std::string tag = parsed.at("tag").get<std::string>();

@@ -2,6 +2,7 @@
 #include "Session.hpp"
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/Links.hpp>
 #include <bazarish/LoginChallenge.hpp>
 #include <bazarish/Portal.hpp>
 
@@ -14,6 +15,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 using namespace bazarish;
@@ -34,12 +36,6 @@ service::LoginConsumer portalConsumer()
         "Bazarish service node", {"http://node.example"}, "Account owner"};
 }
 
-std::string encodedChallenge(const nlohmann::json& envelope)
-{
-    const std::string text = envelope.dump();
-    return toBase64(Bytes(text.begin(), text.end()));
-}
-
 nlohmann::json envelopeWith(const service::LoginConsumer& consumer)
 {
     return nlohmann::json{
@@ -50,6 +46,68 @@ nlohmann::json envelopeWith(const service::LoginConsumer& consumer)
             {{"name", consumer.name}, {"place", consumer.place}, {"role", consumer.role}}},
         {"tag", "irrelevant-to-the-client"},
     };
+}
+
+std::string encodedChallenge(const nlohmann::json& envelope)
+{
+    return service::encodeLoginChallenge(envelope.dump());
+}
+
+const std::string kSiteHost = std::string(52, 'a') + ".b32.i2p";
+const std::string kBlindedHost = std::string(56, 'b') + ".b32.i2p";
+
+service::LoginConsumer siteConsumer()
+{
+    return service::LoginConsumer{
+        "An I2P site", {"https://site.example", "http://" + kSiteHost, kBlindedHost}, "Member"};
+}
+
+std::string withCallback(const nlohmann::json& callback)
+{
+    nlohmann::json envelope = envelopeWith(siteConsumer());
+    envelope["callback"] = callback;
+    return encodedChallenge(envelope);
+}
+
+void testCallbacks(const Session& session)
+{
+    const std::optional<service::LoginCallback> none
+        = service::readLoginCallback(encodedChallenge(envelopeWith(siteConsumer())));
+    CHECK(!none.has_value());
+
+    const std::optional<service::LoginCallback> plain
+        = service::readLoginCallback(withCallback("http://" + kSiteHost + "/login?step=2&x=%20"));
+    CHECK(plain.has_value() && plain->host == kSiteHost && plain->path == "/login?step=2&x=%20");
+    const std::optional<service::LoginCallback> blinded
+        = service::readLoginCallback(withCallback("http://" + kBlindedHost + "/in"));
+    CHECK(blinded.has_value() && blinded->host == kBlindedHost);
+
+    const std::string elsewhere = std::string(52, 'c') + ".b32.i2p";
+    for (const std::string& refused : {
+             "http://" + elsewhere + "/login",
+             "https://" + kSiteHost + "/login",
+             "http://" + kSiteHost + ":8080/login",
+             "http://" + kSiteHost,
+             "http://" + kSiteHost + "/a b",
+             "http://" + kSiteHost + "/login#here",
+             "http://" + kSiteHost + "/say\"hi\"",
+             "http://" + kSiteHost + "/back\\slash",
+             "http://" + kSiteHost + "/<b>",
+             std::string("http://site.example/login"),
+             "http://user@" + kSiteHost + "/login",
+         }) {
+        CHECK_THROWS(service::readLoginCallback(withCallback(refused)));
+        CHECK_THROWS(session.signLogin(withCallback(refused)));
+    }
+    CHECK_THROWS(service::readLoginCallback(withCallback(42)));
+
+    service::LoginChallenge site("site-secret", siteConsumer());
+    const std::string issued = site.issue(now(), "http://" + kSiteHost + "/login");
+    CHECK(service::readLoginCallback(issued)->path == "/login");
+    CHECK(service::verifyLoginBlob(session.signLogin(issued), now(), issued)
+        == session.fingerprint());
+    CHECK(site.verify(issued, session.signLogin(issued), now()) == session.fingerprint());
+    CHECK_THROWS(site.issue(now(), "http://" + elsewhere + "/login"));
 }
 
 }  // namespace
@@ -77,6 +135,10 @@ int main()
         CHECK_THROWS(service::verifyLoginBlob(blob, now() + 100000, challenge));
 
         CHECK_THROWS(session.signLogin("portal-challenge-" + toHex(randomBytes(16))));
+        const std::string text = envelopeWith(portalConsumer()).dump();
+        CHECK_THROWS(session.signLogin(toBase64(Bytes(text.begin(), text.end()))));
+        CHECK_THROWS(session.signLogin(challenge + "&c=x"));
+        CHECK_THROWS(session.signLogin(std::string(kInviteUri) + challenge.substr(16)));
         CHECK_THROWS(session.signLogin(encodedChallenge(
             {{"v", service::kLoginChallengeVersion}, {"nonce", "abc"}, {"ts", now()}})));
 
@@ -110,6 +172,8 @@ int main()
         nlohmann::json future = envelopeWith(portalConsumer());
         future["v"] = service::kLoginChallengeVersion + 1;
         CHECK_THROWS(session.signLogin(encodedChallenge(future)));
+
+        testCallbacks(session);
     }
 
     fs::remove_all(dir);

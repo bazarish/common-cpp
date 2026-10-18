@@ -3,13 +3,17 @@
 
 #include <bazarish/Auth.hpp>
 #include <bazarish/Bytes.hpp>
+#include <bazarish/I2pAddress.hpp>
+#include <bazarish/Links.hpp>
 
 #include <nlohmann/json.hpp>
 #include <openssl/asn1.h>
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <stdexcept>
+#include <string_view>
 
 namespace bazarish::service {
 
@@ -62,7 +66,77 @@ void requireField(const std::string& value, const std::size_t limit, const std::
     }
 }
 
+// RFC 3986: unreserved, sub-delims, ':', '@', '/', '?' and the percent sign.
+constexpr char kCallbackPathMarks[] = "-._~!$&'()*+,;=:@/?%";
+
+std::string placeHost(const std::string& place)
+{
+    std::string rest = place;
+    if (rest.rfind(kLoginCallbackScheme, 0) == 0) {
+        rest = rest.substr(std::string(kLoginCallbackScheme).size());
+    } else if (rest.find("://") != std::string::npos) {
+        return {};
+    }
+    return rest.substr(0, rest.find('/'));
+}
+
 }  // namespace
+
+std::string encodeLoginChallenge(const std::string& envelope)
+{
+    return std::string(kSignUri) + kLoginChallengeField
+        + toBase64Url(Bytes(envelope.begin(), envelope.end()));
+}
+
+std::string decodeLoginChallenge(const std::string& challenge)
+{
+    const std::string prefix = std::string(kSignUri) + kLoginChallengeField;
+    if (challenge.rfind(prefix, 0) != 0) {
+        throw std::runtime_error("it is not a bazarish://sign link");
+    }
+    const std::string encoded = challenge.substr(prefix.size());
+    const bool base64Url = !encoded.empty()
+        && std::all_of(encoded.begin(), encoded.end(), [](const char c) {
+               return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_';
+           });
+    if (!base64Url) {
+        throw std::runtime_error("the link carries something other than one challenge");
+    }
+    const Bytes raw = fromBase64Url(encoded);
+    return std::string(raw.begin(), raw.end());
+}
+
+LoginCallback parseLoginCallback(const std::string& callback, const LoginConsumer& consumer)
+{
+    if (callback.size() > kLoginCallbackMax) {
+        throw std::runtime_error("the callback is too long");
+    }
+    if (callback.rfind(kLoginCallbackScheme, 0) != 0) {
+        throw std::runtime_error("the callback is not an http address");
+    }
+    const std::string rest = callback.substr(std::string(kLoginCallbackScheme).size());
+    const std::size_t slash = rest.find('/');
+    if (slash == std::string::npos) {
+        throw std::runtime_error("the callback has no path");
+    }
+    LoginCallback parsed{rest.substr(0, slash), rest.substr(slash)};
+    if (!isB32I2pHost(parsed.host)) {
+        throw std::runtime_error("the callback is not a .b32.i2p address");
+    }
+    for (const char c : parsed.path) {
+        const bool allowed = std::isalnum(static_cast<unsigned char>(c))
+            || std::string_view(kCallbackPathMarks).find(c) != std::string_view::npos;
+        if (!allowed) {
+            throw std::runtime_error("the callback's path carries characters it may not");
+        }
+    }
+    const bool listed = std::any_of(consumer.place.begin(), consumer.place.end(),
+        [&parsed](const std::string& place) { return placeHost(place) == parsed.host; });
+    if (!listed) {
+        throw std::runtime_error("the callback goes to an address the consumer does not list");
+    }
+    return parsed;
+}
 
 void requireUsableConsumer(const LoginConsumer& consumer)
 {
@@ -95,8 +169,7 @@ LoginConsumer readLoginConsumer(const std::string& challenge)
 {
     LoginConsumer consumer;
     try {
-        const Bytes raw = fromBase64(challenge);
-        const nlohmann::json envelope = nlohmann::json::parse(raw.begin(), raw.end());
+        const nlohmann::json envelope = nlohmann::json::parse(decodeLoginChallenge(challenge));
         if (!envelope.contains("v") || envelope.at("v").get<int>() != kLoginChallengeVersion) {
             throw std::runtime_error("it is of a version this client does not know");
         }
@@ -113,6 +186,19 @@ LoginConsumer readLoginConsumer(const std::string& challenge)
     }
     requireUsableConsumer(consumer);
     return consumer;
+}
+
+std::optional<LoginCallback> readLoginCallback(const std::string& challenge)
+{
+    const LoginConsumer consumer = readLoginConsumer(challenge);
+    const nlohmann::json envelope = nlohmann::json::parse(decodeLoginChallenge(challenge));
+    if (!envelope.contains("callback")) {
+        return std::nullopt;
+    }
+    if (!envelope.at("callback").is_string()) {
+        throw std::runtime_error("this login challenge's callback is not text");
+    }
+    return parseLoginCallback(envelope.at("callback").get<std::string>(), consumer);
 }
 
 std::string signLoginBlob(
@@ -136,16 +222,16 @@ std::string verifyLoginBlob(
 {
     const char* const kNotASignature
         = "this is not a signature: the field wants what your client's Signature window copied";
+    if (blob.rfind(kSignUri, 0) == 0) {
+        throw std::runtime_error(
+            "this is the challenge, not the signature: paste what your client copied");
+    }
     nlohmann::json parsed;
     try {
         const Bytes raw = fromBase64(blob);
         parsed = nlohmann::json::parse(raw.begin(), raw.end());
     } catch (const std::exception&) {
         throw std::runtime_error(kNotASignature);
-    }
-    if (parsed.contains("consumer") && parsed.contains("nonce")) {
-        throw std::runtime_error(
-            "this is the challenge, not the signature: paste what your client copied");
     }
     auth::Headers headers;
     try {

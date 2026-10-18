@@ -30,6 +30,8 @@ constexpr int kLeastDialSeconds = 10;
 constexpr int kLeastReplySeconds = 20;
 constexpr int kFetchRetryGapSeconds[kFetchAttempts - 1] = {2, 6};
 constexpr int kFetchRunSeconds = kDialSeconds + kReplySeconds;
+constexpr char kContactLookupLabel[] = "Contact lookup";
+constexpr char kSignInLabel[] = "Sign-in";
 
 namespace {
 
@@ -42,20 +44,21 @@ void sayStage(const FetchStage stage)
     }
 }
 
-std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(
-    bazarish::i2p::Router& router, const bazarish::i2p::Privacy privacy, const std::string& owner)
+std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(bazarish::i2p::Router& router,
+    const bazarish::i2p::Privacy privacy, const std::string& owner,
+    const char* const label = kContactLookupLabel)
 {
     std::shared_ptr<bazarish::i2p::Endpoint> endpoint = acquireWarmDest();
     if (endpoint) {
         sayStage(FetchStage::eTakingDest);
-        router.retagEndpoint(*endpoint, "Contact lookup", owner);
+        router.retagEndpoint(*endpoint, label, owner);
         return endpoint;
     }
     sayStage(FetchStage::eBuildingDest);
     bazarish::i2p::EndpointConfig config;
     config.privacy = privacy;
     config.published = false;
-    config.label = "Contact lookup";
+    config.label = label;
     config.owner = owner;
     endpoint = router.createEndpoint(config);
     if (!endpoint->waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
@@ -187,6 +190,25 @@ FetchOutcome resolverFetchOverI2p(bazarish::i2p::Router& router, const std::stri
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
         = takeThrowawayDest(router, privacy, owner);
     return fetchOver(*endpoint, host, op, body, Face::eResolverHttp);
+}
+
+int postLoginOverI2p(bazarish::i2p::Router& router, const service::LoginCallback& callback,
+    const std::string& challenge, const std::string& blob,
+    const bazarish::i2p::Privacy privacy, const std::string& owner)
+{
+    const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
+        = takeThrowawayDest(router, privacy, owner, kSignInLabel);
+    const auto stream = endpoint->connect(callback.host, std::chrono::seconds(kDialSeconds));
+    if (!stream) {
+        throw std::runtime_error("the site at " + callback.host + " did not answer over I2P");
+    }
+    stream->setReadTimeout(std::chrono::seconds(kReplySeconds));
+    const std::string body = nlohmann::json{{"challenge", challenge}, {"blob", blob}}.dump();
+    const std::string head = buildI2pHttpRequest("POST", callback.host, callback.path,
+        {{"Content-Type", "application/json"}}, body.size());
+    stream->writeAll(head.data(), head.size());
+    stream->writeAll(body.data(), body.size());
+    return readI2pHttpHead(*stream).status;
 }
 
 FetchTransport resolverHeldDest(

@@ -7,5 +7,6 @@ inline constexpr char kUriScheme[] = "bazarish";
 inline constexpr char kInviteUri[] = "bazarish://invite?";
 inline constexpr char kServerUri[] = "bazarish://server?";
 inline constexpr char kPairUri[] = "bazarish://pair?";
+inline constexpr char kSignUri[] = "bazarish://sign?";
 
 }  // namespace bazarish

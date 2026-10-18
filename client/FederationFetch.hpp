@@ -5,6 +5,7 @@
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/I2p.hpp>
+#include <bazarish/Portal.hpp>
 
 #include <functional>
 #include <string>
@@ -30,6 +31,11 @@ FetchOutcome resolverFetchOverI2p(bazarish::i2p::Router& router, const std::stri
     const std::string& op, const Bytes& body,
     bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax,
     const std::string& owner = {});
+
+// The HTTP status the site answered with; throws when it could not be reached.
+int postLoginOverI2p(bazarish::i2p::Router& router, const service::LoginCallback& callback,
+    const std::string& challenge, const std::string& blob, bazarish::i2p::Privacy privacy,
+    const std::string& owner);
 
 FetchTransport resolverHeldDest(bazarish::i2p::Router& router,
     bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax,

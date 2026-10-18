@@ -1438,7 +1438,7 @@ std::string Session::signLogin(const std::string& challenge) const
 std::shared_ptr<LoginSigner> Session::loginSigner() const
 {
     return std::make_shared<LoginSigner>(
-        Identity::fromPrivatePem(client_->identity().privatePem()));
+        Identity::fromPrivatePem(client_->identity().privatePem()), destinationOwner());
 }
 
 Bytes Session::passIdFor(const std::string& peerFingerprint) const

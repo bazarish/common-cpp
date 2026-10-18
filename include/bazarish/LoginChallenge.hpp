@@ -14,7 +14,7 @@ class LoginChallenge {
 public:
     LoginChallenge(std::string secret, LoginConsumer consumer, std::int64_t windowSeconds = 300);
 
-    std::string issue(std::int64_t now);
+    std::string issue(std::int64_t now, const std::string& callback = {});
 
     std::string verify(
         const std::string& challenge, const std::string& loginBlob, std::int64_t now);

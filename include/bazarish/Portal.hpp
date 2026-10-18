@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -14,8 +15,9 @@ namespace bazarish::service {
 inline constexpr const char* kLoginMethod = "BZ-LOGIN";
 inline constexpr const char* kLoginPath = "/portal/login";
 
-// The challenge envelope: base64(JSON {v, nonce, ts, consumer, tag}).
+// A challenge is bazarish://sign?c=base64url(JSON {v, nonce, ts, consumer, tag[, callback]}).
 inline constexpr int kLoginChallengeVersion = 1;
+inline constexpr char kLoginChallengeField[] = "c=";
 
 struct LoginConsumer {
     std::string name;
@@ -34,7 +36,23 @@ inline constexpr std::size_t kConsumerRoleMax = 48;
 // address in it at a glance.
 inline constexpr std::size_t kConsumerPlacesMax = 4;
 
+struct LoginCallback {
+    std::string host;
+    std::string path;
+};
+
+inline constexpr std::size_t kLoginCallbackMax = 256;
+inline constexpr char kLoginCallbackScheme[] = "http://";
+
+std::string encodeLoginChallenge(const std::string& envelope);
+std::string decodeLoginChallenge(const std::string& challenge);
+
 void requireUsableConsumer(const LoginConsumer& consumer);
+
+// Only http to a .b32.i2p host that the consumer lists among its own places.
+LoginCallback parseLoginCallback(const std::string& callback, const LoginConsumer& consumer);
+
+std::optional<LoginCallback> readLoginCallback(const std::string& challenge);
 
 std::string canonicalConsumer(const LoginConsumer& consumer);
 

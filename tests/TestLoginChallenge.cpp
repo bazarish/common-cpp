@@ -83,13 +83,11 @@ void testRelabelling()
     LoginChallenge issuer("portal-secret", panel());
     const std::string challenge = issuer.issue(t);
 
-    const Bytes raw = fromBase64(challenge);
-    nlohmann::json envelope = nlohmann::json::parse(raw.begin(), raw.end());
+    nlohmann::json envelope = nlohmann::json::parse(decodeLoginChallenge(challenge));
     LoginConsumer forged = panel();
     forged.name = "Somewhere else entirely";
     envelope["consumer"]["name"] = forged.name;
-    const std::string text = envelope.dump();
-    const std::string relabelled = toBase64(Bytes(text.begin(), text.end()));
+    const std::string relabelled = encodeLoginChallenge(envelope.dump());
     const std::string blob = signLoginBlob(identity, t, relabelled);
 
     CHECK_THROWS(issuer.verify(relabelled, blob, t));
