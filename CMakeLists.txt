@@ -60,6 +60,7 @@ add_library(bazarish_common STATIC
     src/HttpClient.cpp
     src/GatewayProtocol.cpp
     src/GatewayStreamBook.cpp
+    src/RawPathChooser.cpp
     src/HttpServer.cpp
     src/WebSocketClient.cpp
     src/Hmac.cpp
@@ -146,6 +147,7 @@ bazarish_add_test(TestLog)
 bazarish_add_test(TestHttpClient)
 bazarish_add_test(TestGatewayProtocol)
 bazarish_add_test(TestGatewayStreamBook)
+bazarish_add_test(TestRawPathChooser)
 bazarish_add_test(TestWebSocket)
 bazarish_add_test(TestWebSocketClient)
 bazarish_add_test(TestLoginChallenge)

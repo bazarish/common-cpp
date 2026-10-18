@@ -1,0 +1,36 @@
+diff --git a/libi2pd/Datagram.cpp b/libi2pd/Datagram.cpp
+index 9fb7776e..5e7a67fe 100644
+--- a/libi2pd/Datagram.cpp
++++ b/libi2pd/Datagram.cpp
+@@ -597,6 +597,16 @@ namespace datagram
+ 			return DatagramSession::Info(nullptr, nullptr, m_LastUse);
+ 	}
+ 
++	std::shared_ptr<i2p::garlic::GarlicRoutingPath> DatagramSession::GetRoutingPath () const
++	{
++		return m_RoutingSession ? m_RoutingSession->GetSharedRoutingPath () : nullptr;
++	}
++
++	void DatagramSession::SetRoutingPath (std::shared_ptr<i2p::garlic::GarlicRoutingPath> path)
++	{
++		if (m_RoutingSession) m_RoutingSession->SetSharedRoutingPath (path);
++	}
++
+ 	void DatagramSession::Ack()
+ 	{
+ 		m_LastUse = i2p::util::GetMillisecondsSinceEpoch();
+diff --git a/libi2pd/Datagram.h b/libi2pd/Datagram.h
+index 478ec51d..ede0e5c8 100644
+--- a/libi2pd/Datagram.h
++++ b/libi2pd/Datagram.h
+@@ -86,6 +86,10 @@ namespace datagram
+ 			void SetVersion (DatagramVersion version) { m_Version = version; }
+ 
+ 			void DropSharedRoutingPath () { if (m_RoutingSession) { m_RoutingSession->SetSharedRoutingPath (nullptr); m_NumPathDrops++; } }
++			/** the path the next messages take, nullptr if none is chosen yet */
++			std::shared_ptr<i2p::garlic::GarlicRoutingPath> GetRoutingPath () const;
++			/** pin the path for the next messages; no effect before the session has sent its first one */
++			void SetRoutingPath (std::shared_ptr<i2p::garlic::GarlicRoutingPath> path);
+ 			// request LeaseSet update from floodfill in case our copy contains dead leases
+ 			void RequestUpdatedLeaseSet ();
+ 

@@ -5,6 +5,7 @@
 
 #include "bazarish/I2pAddress.hpp"
 #include "bazarish/Log.hpp"
+#include "bazarish/RawPathChooser.hpp"
 
 #include <utility>
 
@@ -49,6 +50,7 @@
 #include <functional>
 #include <future>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -72,6 +74,13 @@ constexpr int kDialRoundMillis = 30000;
 constexpr int kDialSliceMillis = 250;
 constexpr int kDialRetryPauseMillis = 2000;
 constexpr std::chrono::seconds kRawLookupPause{2};
+// RFC 862's echo port: path probes and their echoes, apart from the call media on port 0.
+constexpr std::uint16_t kPathProbePort = 7;
+constexpr std::uint8_t kPathProbe = 1;
+constexpr std::uint8_t kPathEcho = 2;
+constexpr std::size_t kPathProbeIdOffset = 1;
+constexpr std::size_t kPathProbeBytes = kPathProbeIdOffset + sizeof(std::uint64_t);
+constexpr std::chrono::seconds kPathPeerActive{5};
 
 // libi2pd's crypto state must be initialised once before any key operation.
 void ensureCryptoInit()
@@ -451,6 +460,130 @@ private:
     std::string owner_;
 };
 
+namespace {
+
+struct LivePath {
+    std::shared_ptr<i2pd::tunnel::OutboundTunnel> tunnel;
+    std::shared_ptr<const i2pd::data::Lease> lease;
+};
+
+struct RawRoute {
+    i2pd::data::IdentHash ident;
+    RawPathChooser chooser;
+    std::map<RawPath, LivePath> live;
+    std::chrono::steady_clock::time_point lastSent{};
+};
+
+bool leaseLasts(const i2pd::data::Lease& lease)
+{
+    return !lease.ExpiresWithin(i2pd::datagram::DATAGRAM_SESSION_LEASE_HANDOVER_WINDOW);
+}
+
+std::shared_ptr<i2pd::garlic::GarlicRoutingPath> routingPathOf(
+    const RawRoute& route, const std::optional<RawPath>& path)
+{
+    if (!path.has_value())
+    {
+        return nullptr;
+    }
+    const auto found = route.live.find(path.value());
+    if (found == route.live.end() || !found->second.tunnel->IsEstablished()
+        || !leaseLasts(*found->second.lease))
+    {
+        return nullptr;
+    }
+    return std::make_shared<i2pd::garlic::GarlicRoutingPath>(
+        i2pd::garlic::GarlicRoutingPath{found->second.tunnel, found->second.lease, 0, 0});
+}
+
+std::vector<RawPath> livePaths(RawRoute& route, i2pd::client::ClientDestination& dest,
+    const i2pd::datagram::DatagramSession& session)
+{
+    route.live.clear();
+    const std::shared_ptr<const i2pd::data::LeaseSet> leaseSet = session.GetRemoteLeaseSet();
+    if (!leaseSet)
+    {
+        return {};
+    }
+    const auto leases = leaseSet->GetNonExpiredLeases();
+    std::vector<RawPath> paths;
+    for (const auto& tunnel : dest.GetTunnelPool()->GetOutboundTunnelsList())
+    {
+        if (!tunnel->IsEstablished())
+        {
+            continue;
+        }
+        for (const auto& lease : leases)
+        {
+            if (!leaseLasts(*lease))
+            {
+                continue;
+            }
+            RawPath path;
+            path.outboundTunnel = tunnel->GetTunnelID();
+            std::copy_n(lease->tunnelGateway.data(), path.leaseGateway.size(),
+                path.leaseGateway.begin());
+            path.leaseTunnel = lease->tunnelID;
+            route.live.emplace(path, LivePath{tunnel, lease});
+            paths.push_back(path);
+        }
+    }
+    return paths;
+}
+
+void sendOnRoute(i2pd::datagram::DatagramDestination& datagram,
+    const std::shared_ptr<i2pd::datagram::DatagramSession>& session, const RawRoute& route,
+    const std::vector<std::uint8_t>& payload, const std::uint16_t port)
+{
+    if (const auto path = routingPathOf(route, route.chooser.chosen()))
+    {
+        session->SetRoutingPath(path);
+    }
+    datagram.SendRawDatagram(session, payload.data(), payload.size(), 0, port);
+    datagram.FlushSendQueue(session);
+}
+
+// The path the session had goes back afterwards, so a probe never moves the call.
+void sendProbe(i2pd::datagram::DatagramDestination& datagram,
+    const std::shared_ptr<i2pd::datagram::DatagramSession>& session, const RawRoute& route,
+    const std::shared_ptr<i2pd::garlic::GarlicRoutingPath>& kept,
+    const RawPathChooser::Probe& probe)
+{
+    const auto path = routingPathOf(route, probe.path);
+    if (!path)
+    {
+        return;
+    }
+    std::vector<std::uint8_t> frame(kPathProbeBytes);
+    frame[0] = kPathProbe;
+    htobe64buf(frame.data() + kPathProbeIdOffset, probe.id);
+    session->SetRoutingPath(path);
+    datagram.SendRawDatagram(session, frame.data(), frame.size(), 0, kPathProbePort);
+    datagram.FlushSendQueue(session);
+    session->SetRoutingPath(kept);
+}
+
+void reportPath(const std::string& host, const RawPathChooser& chooser,
+    const std::optional<RawPath>& before)
+{
+    const std::optional<RawPath> chosen = chooser.chosen();
+    if (!chosen.has_value() || chosen == before)
+    {
+        return;
+    }
+    const std::chrono::milliseconds roundTrip = chooser.roundTrip(chosen.value()).value();
+    const auto was = before.has_value() ? chooser.roundTrip(before.value()) : std::nullopt;
+    if (was.has_value())
+    {
+        bazarish::log::info("i2p: datagrams to {} moved to a {} ms path from a {} ms one",
+            host, roundTrip.count(), was->count());
+        return;
+    }
+    bazarish::log::info("i2p: datagrams to {} take a {} ms path", host, roundTrip.count());
+}
+
+}  // namespace
+
 class EmbeddedEndpoint final : public backend::EndpointBackend,
                                public std::enable_shared_from_this<EmbeddedEndpoint> {
 public:
@@ -503,13 +636,21 @@ public:
         std::map<std::string, i2pd::data::IdentHash> resolved;
         std::set<std::string> lookups;
         std::map<std::string, std::chrono::steady_clock::time_point> missedAt;
+        bool steered = false;
+        std::map<std::string, RawRoute> routes;
     };
     std::shared_ptr<RawTargets> rawTargets = std::make_shared<RawTargets>();
+
+    void answerPathProbe(const std::uint8_t* frame, std::size_t size);
 
 private:
     static void sendRawOnLane(const std::shared_ptr<i2pd::client::ClientDestination>& dest,
         i2pd::datagram::DatagramDestination& datagram, const std::shared_ptr<RawTargets>& targets,
         const std::string& host, const std::vector<std::uint8_t>& payload);
+    static void deliverRaw(i2pd::client::ClientDestination& dest,
+        i2pd::datagram::DatagramDestination& datagram, RawTargets& targets,
+        const std::string& host, const i2pd::data::IdentHash& ident,
+        const std::vector<std::uint8_t>& payload);
 };
 
 EmbeddedEndpoint::~EmbeddedEndpoint()
@@ -744,7 +885,7 @@ void EmbeddedEndpoint::sendRawOnLane(const std::shared_ptr<i2pd::client::ClientD
         auto identity = std::make_shared<i2pd::data::IdentityEx>();
         if (identity->FromBase64(host) > 0)
         {
-            datagram.SendRawDatagramTo(payload.data(), payload.size(), identity->GetIdentHash());
+            deliverRaw(*dest, datagram, *targets, host, identity->GetIdentHash(), payload);
         }
         return;
     }
@@ -752,13 +893,13 @@ void EmbeddedEndpoint::sendRawOnLane(const std::shared_ptr<i2pd::client::ClientD
     std::uint8_t rawHash[64];
     if (i2pd::data::Base32ToByteStream(label, rawHash, sizeof rawHash) == 32)
     {
-        datagram.SendRawDatagramTo(payload.data(), payload.size(), i2pd::data::IdentHash(rawHash));
+        deliverRaw(*dest, datagram, *targets, host, i2pd::data::IdentHash(rawHash), payload);
         return;
     }
     const auto known = targets->resolved.find(host);
     if (known != targets->resolved.end())
     {
-        datagram.SendRawDatagramTo(payload.data(), payload.size(), known->second);
+        deliverRaw(*dest, datagram, *targets, host, known->second, payload);
         return;
     }
     // libi2pd answers a lookup from a destination without tunnels at once, with nothing.
@@ -796,6 +937,73 @@ void EmbeddedEndpoint::sendRawOnLane(const std::shared_ptr<i2pd::client::ClientD
             targets->missedAt.erase(host);
             bazarish::log::info("i2p: {} answered; datagrams to it can go", host);
         });
+}
+
+void EmbeddedEndpoint::deliverRaw(i2pd::client::ClientDestination& dest,
+    i2pd::datagram::DatagramDestination& datagram, RawTargets& targets, const std::string& host,
+    const i2pd::data::IdentHash& ident, const std::vector<std::uint8_t>& payload)
+{
+    if (!targets.steered)
+    {
+        datagram.SendRawDatagramTo(payload.data(), payload.size(), ident);
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    RawRoute& route = targets.routes[host];
+    route.ident = ident;
+    route.lastSent = now;
+    const std::shared_ptr<i2pd::datagram::DatagramSession> session = datagram.GetSession(ident);
+    sendOnRoute(datagram, session, route, payload, 0);
+    // No path yet means no garlic session yet: a probe could not be pinned to its path.
+    const std::shared_ptr<i2pd::garlic::GarlicRoutingPath> kept = session->GetRoutingPath();
+    if (!kept || !route.chooser.probeDue(now))
+    {
+        return;
+    }
+    const std::optional<RawPath> before = route.chooser.chosen();
+    route.chooser.offer(livePaths(route, dest, *session));
+    const std::optional<RawPathChooser::Probe> probe = route.chooser.probe(now);
+    reportPath(host, route.chooser, before);
+    if (probe.has_value())
+    {
+        sendProbe(datagram, session, route, kept, probe.value());
+    }
+}
+
+void EmbeddedEndpoint::answerPathProbe(const std::uint8_t* const frame, const std::size_t size)
+{
+    if (size != kPathProbeBytes || !datagram)
+    {
+        return;
+    }
+    const std::uint64_t id = bufbe64toh(frame + kPathProbeIdOffset);
+    const auto now = std::chrono::steady_clock::now();
+    if (frame[0] == kPathEcho)
+    {
+        for (auto& [host, route] : rawTargets->routes)
+        {
+            const std::optional<RawPath> before = route.chooser.chosen();
+            if (route.chooser.echoed(id, now))
+            {
+                reportPath(host, route.chooser, before);
+                return;
+            }
+        }
+        return;
+    }
+    if (frame[0] != kPathProbe)
+    {
+        return;
+    }
+    std::vector<std::uint8_t> echo(frame, frame + size);
+    echo[0] = kPathEcho;
+    for (const auto& [host, route] : rawTargets->routes)
+    {
+        if (now - route.lastSent <= kPathPeerActive)
+        {
+            sendOnRoute(*datagram, datagram->GetSession(route.ident), route, echo, kPathProbePort);
+        }
+    }
 }
 
 std::vector<std::uint8_t> EmbeddedEndpoint::receiveRawDatagram(std::chrono::milliseconds timeout)
@@ -1168,6 +1376,16 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
         }
         held->rawCv.notify_one();
     });
+    if (config.realtime)
+    {
+        impl->rawTargets->steered = true;
+        impl->datagram->SetRawReceiver([weak](std::uint16_t, std::uint16_t,
+            const std::uint8_t* buf, std::size_t len)
+        {
+            const std::shared_ptr<EmbeddedEndpoint> held = weak.lock();
+            if (held) { held->answerPathProbe(buf, len); }
+        }, kPathProbePort);
+    }
 
     return impl;
 }

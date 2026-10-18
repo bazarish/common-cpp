@@ -46,3 +46,12 @@ file here.
   named after the destination, so on a router that serves one destination per
   user they amount to a plain-text roster of the addresses this installation has
   served. Drop this patch if/when the parameter is merged upstream.
+- `0003-libi2pd-datagram-session-routing-path.patch` - adds
+  `DatagramSession::GetRoutingPath` / `SetRoutingPath`, so an embedder can read and
+  pin the outbound tunnel and remote lease its datagrams to one peer take. Today
+  the path is picked at random and kept until it breaks, and the garlic session it
+  lives on is private to the datagram session: `GetRoutingSession` can hand back a
+  different one while both ends are still setting up, which is exactly when a
+  call starts. A call uses it to send each probe on the path being measured and
+  its audio on the fastest one. Drop this patch if/when the accessors are merged
+  upstream.

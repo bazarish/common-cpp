@@ -22,6 +22,8 @@ std::string_view privacyName(Privacy privacy);
 
 inline constexpr int kDefaultTunnelQuantity = 3;
 inline constexpr int kMaxTunnelQuantity = 16;
+// A call sends on the fastest of these tunnels crossed with the peer's.
+inline constexpr int kCallTunnelQuantity = 6;
 
 enum class Role { eClient, eServer };
 

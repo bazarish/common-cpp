@@ -3636,6 +3636,7 @@ std::shared_ptr<bazarish::i2p::Endpoint> Session::openCallMediaSession()
 {
     bazarish::i2p::EndpointConfig config;
     config.privacy = bazarish::i2p::Privacy::eMinimal;
+    config.tunnelQuantity = bazarish::i2p::kCallTunnelQuantity;
     config.published = true;
     config.label = "Call media";
     config.owner = destinationOwner();
