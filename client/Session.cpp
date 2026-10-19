@@ -2355,7 +2355,7 @@ void Session::setTransferHandler(TransferEventFn handler)
 
 void Session::emitTransfer(const std::string& e2eId, const TransferState state,
     const std::uint64_t bytes, const std::uint64_t total, const std::string& error,
-    const std::string& stage, const std::string& peer)
+    const TransferStage stage, const std::string& peer)
 {
     TransferEventFn handler;
     {
@@ -2377,7 +2377,7 @@ void Session::requestFile(
         transfers_->pending[e2eId] = PendingTransfer{
             std::move(target), std::make_shared<std::atomic<bool>>(false), peerFingerprint, ask};
     }
-    emitTransfer(e2eId, TransferState::eRequested, 0, 0, {}, "Asking the sender",
+    emitTransfer(e2eId, TransferState::eRequested, 0, 0, {}, TransferStage::eAsking,
         peerFingerprint);
     nlohmann::json inner = envelope("file.request", toHex(randomBytes(8)), {
         {"fileId", e2eId},
@@ -2437,7 +2437,8 @@ std::vector<Session::StoppedHalf> Session::stopTransfer(
     }
     for (const StoppedHalf& half : stopped) {
         emitTransfer(fileId, TransferState::eFailed, 0, 0,
-            fromPeer.empty() ? "you stopped this transfer" : "the transfer was stopped", {},
+            fromPeer.empty() ? "you stopped this transfer" : "the transfer was stopped",
+            TransferStage::eNone,
             half.peer);
     }
     return stopped;
@@ -2531,9 +2532,9 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                     cancel]() {
         try {
             emitTransfer(
-                fileId, TransferState::eRequested, 0, 0, {}, "Encrypting", peerFingerprint);
+                fileId, TransferState::eRequested, 0, 0, {}, TransferStage::eEncrypting, peerFingerprint);
             const PreparedFile prepared = prepareFile(source, ciphertextPath);
-            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, "Making an address",
+            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, TransferStage::eMakingAddress,
                 peerFingerprint);
             bazarish::i2p::EndpointConfig config;
             config.privacy = transferPrivacy();
@@ -2543,7 +2544,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             config.owner = destinationOwner();
             const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
                 = i2pRouter().createEndpoint(config);
-            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, "Publishing the address",
+            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, TransferStage::ePublishing,
                 peerFingerprint);
             const auto publishDeadline
                 = std::chrono::steady_clock::now() + std::chrono::seconds(kPublishWaitSeconds);
@@ -2568,14 +2569,14 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                 {"forAsk", forAsk},
             });
             sendContent(peerFingerprint, std::move(inner));
-            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, "Waiting for them",
+            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, TransferStage::eWaiting,
                 peerFingerprint);
 
             const bool served
                 = serveFile(*endpoint, ciphertextPath, std::chrono::seconds(kServeWindowSeconds),
                     [this, fileId, peerFingerprint](const std::uint64_t sent,
                         const std::uint64_t total) {
-                        emitTransfer(fileId, TransferState::eRunning, sent, total, {}, "Sending",
+                        emitTransfer(fileId, TransferState::eRunning, sent, total, {}, TransferStage::eSending,
                             peerFingerprint);
                     },
                     cancel.get());
@@ -2583,7 +2584,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                 throw std::runtime_error(
                     cancel->load() ? "transfer stopped" : "your contact never connected");
             }
-            emitTransfer(fileId, TransferState::eDone, 0, 0, {}, {}, peerFingerprint);
+            emitTransfer(fileId, TransferState::eDone, 0, 0, {}, TransferStage::eNone, peerFingerprint);
             dropServe(serveId, cancel);
         } catch (const std::exception& error) {
             if (cancel->load()) {
@@ -2629,14 +2630,15 @@ void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& pee
 
     std::thread([this, offer, target, cancel, peer]() {
         try {
-            emitTransfer(offer.fileId, TransferState::eRequested, 0, 0, {}, "Connecting", peer);
+            emitTransfer(offer.fileId, TransferState::eRequested, 0, 0, {}, TransferStage::eConnecting, peer);
             fetchFileOverI2p(i2pRouter(), offer, target, transferPrivacy(),
                 [this, &offer, &peer](const std::uint64_t got, const std::uint64_t total) {
                     emitTransfer(
-                        offer.fileId, TransferState::eRunning, got, total, {}, "Receiving", peer);
+                        offer.fileId, TransferState::eRunning, got, total, {}, TransferStage::eReceiving, peer);
                 },
                 cancel.get(), destinationOwner());
-            emitTransfer(offer.fileId, TransferState::eDone, offer.size, offer.size, {}, {}, peer);
+            emitTransfer(offer.fileId, TransferState::eDone, offer.size, offer.size, {},
+                TransferStage::eNone, peer);
         } catch (const std::exception& error) {
             if (!cancel->load()) {
                 emitTransfer(offer.fileId, TransferState::eFailed, 0, 0, error.what(), {}, peer);

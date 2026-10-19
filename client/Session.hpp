@@ -153,6 +153,18 @@ enum class TransferState {
     eFailed,
 };
 
+enum class TransferStage {
+    eNone,
+    eAsking,
+    eEncrypting,
+    eMakingAddress,
+    ePublishing,
+    eWaiting,
+    eSending,
+    eConnecting,
+    eReceiving,
+};
+
 struct TransferEvent {
     std::string e2eId;
     std::string peer;
@@ -160,7 +172,7 @@ struct TransferEvent {
     std::uint64_t bytes = 0;
     std::uint64_t total = 0;
     std::string error;
-    std::string stage;
+    TransferStage stage = TransferStage::eNone;
 };
 
 using TransferEventFn = std::function<void(const TransferEvent&)>;
@@ -766,7 +778,7 @@ private:
     void startAnnouncedFetch(const FileOffer& offer, const std::string& peer);
     void emitTransfer(const std::string& e2eId, TransferState state, std::uint64_t bytes,
         std::uint64_t total, const std::string& error = {},
-        const std::string& stage = {},
+        TransferStage stage = TransferStage::eNone,
         const std::string& peer = {});
     void loadSentFiles();
     void persistSentFiles() const;
