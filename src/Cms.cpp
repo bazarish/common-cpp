@@ -147,13 +147,12 @@ Bytes sealWithPassword(const Bytes& plaintext, const std::string& password)
     return bioToBytes(output.get());
 }
 
-Bytes sealWithPasswordDetached(const std::filesystem::path& inPath,
-    const std::filesystem::path& contentPath, const std::string& password)
+Bytes sealWithPasswordDetached(const PlainReadFn& read, const std::filesystem::path& contentPath,
+    const std::string& password)
 {
     if (password.empty()) {
         throw std::invalid_argument("password must not be empty");
     }
-    const BioPtr input = makeReadFileBio(inPath);
     BioPtr content = makeWriteFileBio(contentPath);
     const CmsPtr cms(CMS_encrypt(nullptr, nullptr, EVP_aes_256_cbc(),
         CMS_BINARY | CMS_PARTIAL | CMS_DETACHED | CMS_STREAM));
@@ -168,10 +167,7 @@ Bytes sealWithPasswordDetached(const std::filesystem::path& inPath,
     content.release();
     std::array<unsigned char, kStreamChunkBytes> buffer{};
     for (;;) {
-        const int got = BIO_read(input.get(), buffer.data(), static_cast<int>(buffer.size()));
-        if (got < 0) {
-            throw std::runtime_error("reading " + inPath.string() + " failed");
-        }
+        const int got = static_cast<int>(read(buffer.data(), buffer.size()));
         if (got == 0) {
             break;
         }

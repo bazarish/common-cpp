@@ -32,6 +32,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -176,6 +177,7 @@ nlohmann::json keyboardToJson(const InlineKeyboard& keyboard)
 
 constexpr int kServeWindowSeconds = 30 * 60;
 constexpr std::int64_t kFileRequestFreshnessMs = 5 * 60 * 1000;
+constexpr std::size_t kHashChunkBytes = 64 * 1024;
 constexpr int kPublishWaitSeconds = 180;
 constexpr int kPublishPollSeconds = 2;
 
@@ -1999,7 +2001,7 @@ bool Session::sendMessage(const std::string& peerFingerprint, const std::string&
     return sendContent(peerFingerprint, std::move(inner), watch);
 }
 
-bool Session::sendFile(const std::string& peerFingerprint, const fs::path& path,
+bool Session::sendFile(const std::string& peerFingerprint, const std::string& location,
     const std::string& e2eId, const DeliveryWatch& watch, const std::string& replyTo,
     const bool forwarded)
 {
@@ -2009,7 +2011,7 @@ bool Session::sendFile(const std::string& peerFingerprint, const fs::path& path,
             " on another device");
     }
     return announceTransfer(
-        kTypeFile, peerFingerprint, path, e2eId, watch, replyTo, forwarded);
+        kTypeFile, peerFingerprint, location, e2eId, watch, replyTo, forwarded);
 }
 
 bool Session::sendPicture(const std::string& peerFingerprint, const Bytes& bytes,
@@ -2101,22 +2103,31 @@ void Session::sendGroupReactions(const std::string& peerFingerprint,
 }
 
 bool Session::announceTransfer(const std::string& type, const std::string& peerFingerprint,
-    const fs::path& path, const std::string& e2eId,
+    const std::string& location, const std::string& e2eId,
     const DeliveryWatch& watch, const std::string& replyTo, const bool forwarded)
 {
     const std::string id = e2eId.empty() ? toHex(randomBytes(8)) : e2eId;
-    const std::uint64_t size = fs::file_size(path);
-    const std::string digest = toHex(sha256File(path));
-    sentFiles_[id] = SentFile{path, digest, size, peerFingerprint};
+    const std::unique_ptr<FileInput> input = files_->open(location);
+    Sha256 hash;
+    std::uint64_t size = 0;
+    std::array<char, kHashChunkBytes> buffer{};
+    for (std::size_t got = input->read(buffer.data(), buffer.size()); got > 0;
+        got = input->read(buffer.data(), buffer.size())) {
+        hash.update(buffer.data(), got);
+        size += got;
+    }
+    const std::string digest = toHex(hash.digest());
+    const std::string name = files_->name(location);
+    sentFiles_[id] = SentFile{location, digest, size, peerFingerprint};
     persistSentFiles();
 
     nlohmann::json inner = envelope(type, id, {
         {"file",
             {
-                {"name", path.filename().string()},
+                {"name", name},
                 {"size", size},
                 {"sha256", digest},
-                {"mime", guessMime(path)},
+                {"mime", guessMime(name)},
             }},
     });
     addReplyAndForward(inner, replyTo, forwarded);
@@ -2347,6 +2358,11 @@ void Session::sendChatClear(const std::string& peerFingerprint)
     sendContent(peerFingerprint, std::move(inner));
 }
 
+void Session::setFileSource(std::shared_ptr<const FileSource> files)
+{
+    files_ = std::move(files);
+}
+
 void Session::setTransferHandler(TransferEventFn handler)
 {
     const std::lock_guard<std::mutex> lock(transfers_->mutex);
@@ -2367,15 +2383,15 @@ void Session::emitTransfer(const std::string& e2eId, const TransferState state,
     }
 }
 
-void Session::requestFile(
-    const std::string& peerFingerprint, const std::string& e2eId, FileTarget target)
+void Session::requestFile(const std::string& peerFingerprint, const std::string& e2eId,
+    const std::string& announcedSha256, FileTarget target)
 {
 
     const std::string ask = toHex(randomBytes(kTransferAskBytes));
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
-        transfers_->pending[e2eId] = PendingTransfer{
-            std::move(target), std::make_shared<std::atomic<bool>>(false), peerFingerprint, ask};
+        transfers_->pending[e2eId] = PendingTransfer{std::move(target), announcedSha256,
+            std::make_shared<std::atomic<bool>>(false), peerFingerprint, ask};
     }
     emitTransfer(e2eId, TransferState::eRequested, 0, 0, {}, TransferStage::eAsking,
         peerFingerprint);
@@ -2509,14 +2525,15 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             bazarish::log::redact(peerFingerprint));
         return;
     }
-    if (!fs::exists(found->second.path)) {
+    if (!files_->exists(found->second.path)) {
         nlohmann::json inner = envelope("file.unavailable", toHex(randomBytes(8)), {
             {"fileId", fileId},
         });
         sendContent(peerFingerprint, std::move(inner));
         return;
     }
-    const fs::path source = found->second.path;
+    const std::string source = found->second.path;
+    const std::shared_ptr<const FileSource> files = files_;
     const fs::path scratch = accountPath_.parent_path() / ".transfers";
     fs::create_directories(scratch);
     const fs::path ciphertextPath = scratch / ("file-serve-" + toHex(randomBytes(8)) + ".tmp");
@@ -2528,12 +2545,12 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
         transfers_->serving[serveId]
             = ServingTransfer{cancel, fileId, peerFingerprint, forAsk};
     }
-    std::thread([this, peerFingerprint, fileId, serveId, forAsk, source, ciphertextPath,
+    std::thread([this, peerFingerprint, fileId, serveId, forAsk, source, files, ciphertextPath,
                     cancel]() {
         try {
-            emitTransfer(
-                fileId, TransferState::eRequested, 0, 0, {}, TransferStage::eEncrypting, peerFingerprint);
-            const PreparedFile prepared = prepareFile(source, ciphertextPath);
+            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, TransferStage::eEncrypting,
+                peerFingerprint);
+            const PreparedFile prepared = prepareFile(*files->open(source), ciphertextPath);
             emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, TransferStage::eMakingAddress,
                 peerFingerprint);
             bazarish::i2p::EndpointConfig config;
@@ -2576,7 +2593,8 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                 = serveFile(*endpoint, ciphertextPath, std::chrono::seconds(kServeWindowSeconds),
                     [this, fileId, peerFingerprint](const std::uint64_t sent,
                         const std::uint64_t total) {
-                        emitTransfer(fileId, TransferState::eRunning, sent, total, {}, TransferStage::eSending,
+                        emitTransfer(fileId, TransferState::eRunning, sent, total, {},
+                            TransferStage::eSending,
                             peerFingerprint);
                     },
                     cancel.get());
@@ -2584,7 +2602,8 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                 throw std::runtime_error(
                     cancel->load() ? "transfer stopped" : "your contact never connected");
             }
-            emitTransfer(fileId, TransferState::eDone, 0, 0, {}, TransferStage::eNone, peerFingerprint);
+            emitTransfer(
+                fileId, TransferState::eDone, 0, 0, {}, TransferStage::eNone, peerFingerprint);
             dropServe(serveId, cancel);
         } catch (const std::exception& error) {
             if (cancel->load()) {
@@ -2612,6 +2631,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
 void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& peer)
 {
     FileTarget target;
+    std::string announcedSha256;
     std::shared_ptr<std::atomic<bool>> cancel;
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
@@ -2625,16 +2645,19 @@ void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& pee
         }
         found->second.fetching = true;
         target = found->second.target;
+        announcedSha256 = found->second.announcedSha256;
         cancel = found->second.cancel;
     }
 
-    std::thread([this, offer, target, cancel, peer]() {
+    std::thread([this, offer, target, announcedSha256, cancel, peer]() {
         try {
-            emitTransfer(offer.fileId, TransferState::eRequested, 0, 0, {}, TransferStage::eConnecting, peer);
-            fetchFileOverI2p(i2pRouter(), offer, target, transferPrivacy(),
+            emitTransfer(offer.fileId, TransferState::eRequested, 0, 0, {},
+                TransferStage::eConnecting, peer);
+            fetchFileOverI2p(i2pRouter(), offer, announcedSha256, target, transferPrivacy(),
                 [this, &offer, &peer](const std::uint64_t got, const std::uint64_t total) {
                     emitTransfer(
-                        offer.fileId, TransferState::eRunning, got, total, {}, TransferStage::eReceiving, peer);
+                        offer.fileId, TransferState::eRunning, got, total, {},
+                        TransferStage::eReceiving, peer);
                 },
                 cancel.get(), destinationOwner());
             emitTransfer(offer.fileId, TransferState::eDone, offer.size, offer.size, {},
@@ -2774,7 +2797,7 @@ void Session::loadSentFiles()
     }
     const nlohmann::json stored = nlohmann::json::parse(db_->text("sent-files"));
     for (const auto& [id, entry] : stored.items()) {
-        sentFiles_[id] = SentFile{fs::path(entry.at("path").get<std::string>()),
+        sentFiles_[id] = SentFile{entry.at("path").get<std::string>(),
             entry.value("sha256", std::string()), entry.value("size", std::uint64_t{0}),
             entry.value("peer", std::string())};
     }
@@ -2785,7 +2808,7 @@ void Session::persistSentFiles() const
     nlohmann::json stored = nlohmann::json::object();
     for (const auto& [id, file] : sentFiles_) {
         stored[id] = {
-            {"path", file.path.string()},
+            {"path", file.path},
             {"sha256", file.sha256},
             {"size", file.size},
             {"peer", file.peer},

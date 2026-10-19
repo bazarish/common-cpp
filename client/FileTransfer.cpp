@@ -79,11 +79,13 @@ private:
 
 }  // namespace
 
-PreparedFile prepareFile(const fs::path& path, const fs::path& ciphertextPath)
+PreparedFile prepareFile(FileInput& input, const fs::path& ciphertextPath)
 {
     PreparedFile prepared;
     prepared.key = toHex(randomBytes(32));
-    prepared.header = cms::sealWithPasswordDetached(path, ciphertextPath, prepared.key);
+    prepared.header = cms::sealWithPasswordDetached(
+        [&input](void* const buffer, const std::size_t size) { return input.read(buffer, size); },
+        ciphertextPath, prepared.key);
     prepared.ciphertextPath = ciphertextPath;
     prepared.sha256 = toHex(sha256File(ciphertextPath));
     prepared.size = fs::file_size(ciphertextPath);
@@ -168,12 +170,66 @@ public:
         }
     }
 
+    void discard() noexcept override
+    {
+        out_.close();
+        std::error_code ec;
+        if (!fs::remove(path_, ec) && ec) {
+            log::warn("a broken download stays at {}: {}", path_.string(), ec.message());
+        }
+    }
+
 private:
     fs::path path_;
     std::ofstream out_;
 };
 
+class LocalFileInput : public FileInput {
+public:
+    explicit LocalFileInput(const std::string& path)
+        : path_(path)
+        , in_(path_, std::ios::binary)
+    {
+        if (!in_) {
+            throw std::runtime_error("failed to open " + path_);
+        }
+    }
+
+    std::size_t read(void* const buffer, const std::size_t size) override
+    {
+        in_.read(static_cast<char*>(buffer), static_cast<std::streamsize>(size));
+        if (in_.bad()) {
+            throw std::runtime_error("failed to read " + path_);
+        }
+        return static_cast<std::size_t>(in_.gcount());
+    }
+
+private:
+    std::string path_;
+    std::ifstream in_;
+};
+
+class LocalFiles : public FileSource {
+public:
+    bool exists(const std::string& location) const override { return fs::exists(location); }
+
+    std::string name(const std::string& location) const override
+    {
+        return fs::path(location).filename().string();
+    }
+
+    std::unique_ptr<FileInput> open(const std::string& location) const override
+    {
+        return std::make_unique<LocalFileInput>(location);
+    }
+};
+
 }  // namespace
+
+std::shared_ptr<const FileSource> localFiles()
+{
+    return std::make_shared<const LocalFiles>();
+}
 
 FileTarget fileTargetAt(const fs::path& dest)
 {
@@ -181,7 +237,8 @@ FileTarget fileTargetAt(const fs::path& dest)
         [dest]() { return std::make_unique<LocalFileOutput>(dest); }};
 }
 
-void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer, const FileTarget& target,
+void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer,
+    const std::string& announcedSha256, const FileTarget& target,
     const TransferProgressFn& onProgress, const std::atomic<bool>* cancel)
 {
     const fs::path& partPath = target.part;
@@ -223,9 +280,21 @@ void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer, const File
             throw std::runtime_error("file digest mismatch");
         }
         const std::unique_ptr<FileOutput> out = target.open();
-        cms::unsealWithPasswordDetached(offer.header, partPath, offer.key,
-            [&out](const void* data, const std::size_t size) { out->write(data, size); });
-        out->finish();
+        try {
+            Sha256 plain;
+            cms::unsealWithPasswordDetached(offer.header, partPath, offer.key,
+                [&out, &plain](const void* data, const std::size_t size) {
+                    plain.update(data, size);
+                    out->write(data, size);
+                });
+            out->finish();
+            if (toHex(plain.digest()) != announcedSha256) {
+                throw std::runtime_error("the file differs from the one announced");
+            }
+        } catch (...) {
+            out->discard();
+            throw;
+        }
     } catch (...) {
         std::error_code ec;
         fs::remove(partPath, ec);
@@ -342,7 +411,8 @@ constexpr int kDialSeconds = 90;
 constexpr int kSenderQuietSeconds = 120;
 
 void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
-    const FileTarget& target, const bazarish::i2p::Privacy privacy,
+    const std::string& announcedSha256, const FileTarget& target,
+    const bazarish::i2p::Privacy privacy,
     const TransferProgressFn& onProgress, const std::atomic<bool>* cancel,
     const std::string& owner)
 {
@@ -387,7 +457,7 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
               }
               stream->close();
           };
-    receiveFile(fetch, offer, target, onProgress, cancel);
+    receiveFile(fetch, offer, announcedSha256, target, onProgress, cancel);
 }
 
 }  // namespace bazarish::client

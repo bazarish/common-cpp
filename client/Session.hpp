@@ -140,7 +140,8 @@ struct IncomingMessage {
 };
 
 struct SentFile {
-    std::filesystem::path path;
+    // A path on this device, or a location only the session's FileSource opens.
+    std::string path;
     std::string sha256;
     std::uint64_t size = 0;
     std::string peer;
@@ -431,7 +432,7 @@ public:
         const DeliveryWatch& watch = {}, const std::string& replyTo = {},
         bool forwarded = false);
 
-    bool sendFile(const std::string& peerFingerprint, const std::filesystem::path& path,
+    bool sendFile(const std::string& peerFingerprint, const std::string& location,
         const std::string& e2eId = {},
         const DeliveryWatch& watch = {}, const std::string& replyTo = {},
         bool forwarded = false);
@@ -533,12 +534,15 @@ public:
 
     std::string deliveryIdFor(const std::string& e2eId, const std::string& mailbox) const;
 
-    void requestFile(
-        const std::string& peerFingerprint, const std::string& e2eId, FileTarget target);
+    void requestFile(const std::string& peerFingerprint, const std::string& e2eId,
+        const std::string& announcedSha256, FileTarget target);
 
     void cancelTransfer(const std::string& e2eId);
 
     void setTransferHandler(TransferEventFn handler);
+
+    // Where sent files are read from; set before the first file is sent.
+    void setFileSource(std::shared_ptr<const FileSource> files);
 
     void forgetSentFilesFor(const std::string& peerFingerprint);
     void unsend(const std::string& e2eId);
@@ -762,7 +766,7 @@ private:
     bool deviceSync_ = true;
     GroupBlockSource groupBlockSource_;
     bool announceTransfer(const std::string& type, const std::string& peerFingerprint,
-        const std::filesystem::path& path, const std::string& e2eId, const DeliveryWatch& watch,
+        const std::string& location, const std::string& e2eId, const DeliveryWatch& watch,
         const std::string& replyTo, bool forwarded);
 
     void serveRequestedFile(const std::string& peerFingerprint, const std::string& fileId,
@@ -838,8 +842,10 @@ private:
     ActiveCall call_;
     std::vector<CompletedCall> pendingCallLog_;
     std::map<std::string, SentFile> sentFiles_;
+    std::shared_ptr<const FileSource> files_ = localFiles();
     struct PendingTransfer {
         FileTarget target;
+        std::string announcedSha256;
         std::shared_ptr<std::atomic<bool>> cancel;
         std::string peer;
         std::string ask;

@@ -47,7 +47,16 @@ int main()
             out.write(reinterpret_cast<const char*>(bigPlain.data()),
                 static_cast<std::streamsize>(bigPlain.size()));
         }
-        const Bytes header = cms::sealWithPasswordDetached(plainPath, contentPath, password);
+        const auto sealed = [&](const std::string& secret) {
+            std::ifstream in(plainPath, std::ios::binary);
+            return cms::sealWithPasswordDetached(
+                [&in](void* const buffer, const std::size_t size) {
+                    in.read(static_cast<char*>(buffer), static_cast<std::streamsize>(size));
+                    return static_cast<std::size_t>(in.gcount());
+                },
+                contentPath, secret);
+        };
+        const Bytes header = sealed(password);
         const std::uintmax_t contentBytes = std::filesystem::file_size(contentPath);
         CHECK(contentBytes == (bigPlain.size() / kAesBlock + 1) * kAesBlock);
         CHECK(header.size() < bigPlain.size());
@@ -69,7 +78,7 @@ int main()
         std::filesystem::resize_file(contentPath, contentBytes - kAesBlock);
         CHECK_THROWS(unsealed(header, password));
 
-        CHECK_THROWS(cms::sealWithPasswordDetached(plainPath, contentPath, ""));
+        CHECK_THROWS(sealed(""));
         std::filesystem::remove(plainPath);
         std::filesystem::remove(contentPath);
     }

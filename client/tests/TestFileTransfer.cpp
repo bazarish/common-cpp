@@ -57,7 +57,8 @@ int main()
     const fs::path source = root / "source.bin";
     writeFile(source, original);
 
-    const PreparedFile prepared = prepareFile(source, root / "source.enc");
+    const PreparedFile prepared = prepareFile(*localFiles()->open(source), root / "source.enc");
+    const std::string announced = toHex(sha256File(source));
     CHECK(prepared.size == fs::file_size(prepared.ciphertextPath));
     CHECK(prepared.sha256.size() == 64);
     CHECK(!prepared.key.empty());
@@ -85,7 +86,7 @@ int main()
         const fs::path dest = root / "received.bin";
         std::uint64_t lastSeen = 0;
         std::uint64_t lastTotal = 0;
-        receiveFile(servingFrom(ciphertext, 40 * 1024), offer, fileTargetAt(dest),
+        receiveFile(servingFrom(ciphertext, 40 * 1024), offer, announced, fileTargetAt(dest),
             [&lastSeen, &lastTotal](const std::uint64_t got, const std::uint64_t total) {
                 CHECK(got >= lastSeen);
                 lastSeen = got;
@@ -99,7 +100,8 @@ int main()
 
     {
         const fs::path dest = root / "received-oneshot.bin";
-        receiveFile(servingFrom(ciphertext, ciphertext.size()), offer, fileTargetAt(dest));
+        receiveFile(
+            servingFrom(ciphertext, ciphertext.size()), offer, announced, fileTargetAt(dest));
         CHECK(readFile(dest) == original);
     }
 
@@ -109,7 +111,8 @@ int main()
         const fs::path dest = root / "tampered.bin";
         bool threw = false;
         try {
-            receiveFile(servingFrom(tampered, tampered.size()), offer, fileTargetAt(dest));
+            receiveFile(
+                servingFrom(tampered, tampered.size()), offer, announced, fileTargetAt(dest));
         } catch (const std::exception&) {
             threw = true;
         }
@@ -127,7 +130,7 @@ int main()
                     sink.total(ciphertext.size() + 1);
                     sink.append(ciphertext.data(), ciphertext.size());
                 },
-                offer, fileTargetAt(dest));
+                offer, announced, fileTargetAt(dest));
         } catch (const std::exception&) {
             threw = true;
         }
@@ -143,7 +146,7 @@ int main()
             receiveFile([&attempts](const std::uint64_t, TransferSink& sink) {
                 ++attempts;
                 sink.total(0);
-            }, offer, fileTargetAt(dest));
+            }, offer, announced, fileTargetAt(dest));
         } catch (const std::exception&) {
             threw = true;
         }
@@ -157,7 +160,22 @@ int main()
         std::atomic<bool> cancel{true};
         bool threw = false;
         try {
-            receiveFile(servingFrom(ciphertext, 1024), offer, fileTargetAt(dest), {}, &cancel);
+            receiveFile(servingFrom(ciphertext, 1024), offer, announced, fileTargetAt(dest), {},
+                &cancel);
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        CHECK(threw);
+        CHECK(!fs::exists(dest));
+        CHECK(!fs::exists(dest.string() + ".part"));
+    }
+
+    {
+        const fs::path dest = root / "not-announced.bin";
+        bool threw = false;
+        try {
+            receiveFile(servingFrom(ciphertext, ciphertext.size()), offer,
+                toHex(sha256(Bytes{1, 2, 3})), fileTargetAt(dest));
         } catch (const std::exception&) {
             threw = true;
         }

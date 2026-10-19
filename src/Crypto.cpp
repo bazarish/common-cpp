@@ -370,26 +370,44 @@ Bytes sha256File(const std::filesystem::path& path)
     if (!input) {
         throw std::runtime_error("cannot open file for hashing: " + path.string());
     }
-    const std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
-        EVP_MD_CTX_new(), &EVP_MD_CTX_free);
-    if (ctx == nullptr || EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1) {
-        throw std::runtime_error("EVP_DigestInit_ex failed");
-    }
+    Sha256 hash;
     std::array<char, 64 * 1024> buffer;
     while (input) {
         input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        const std::streamsize got = input.gcount();
-        if (got > 0
-            && EVP_DigestUpdate(ctx.get(), buffer.data(), static_cast<std::size_t>(got)) != 1) {
-            throw std::runtime_error("EVP_DigestUpdate failed");
-        }
+        hash.update(buffer.data(), static_cast<std::size_t>(input.gcount()));
     }
     if (input.bad()) {
         throw std::runtime_error("read error while hashing: " + path.string());
     }
+    return hash.digest();
+}
+
+void Sha256::ContextDeleter::operator()(EVP_MD_CTX* const context) const
+{
+    EVP_MD_CTX_free(context);
+}
+
+Sha256::Sha256()
+    : context_(EVP_MD_CTX_new())
+{
+    if (context_ == nullptr || EVP_DigestInit_ex(context_.get(), EVP_sha256(), nullptr) != 1) {
+        throw std::runtime_error("EVP_DigestInit_ex failed");
+    }
+}
+
+void Sha256::update(const void* const data, const std::size_t size)
+{
+    if (size > 0 && EVP_DigestUpdate(context_.get(), data, size) != 1) {
+        throw std::runtime_error("EVP_DigestUpdate failed");
+    }
+}
+
+Bytes Sha256::digest()
+{
     Bytes digest(kFingerprintBytes);
     unsigned int size = 0;
-    if (EVP_DigestFinal_ex(ctx.get(), digest.data(), &size) != 1 || size != kFingerprintBytes) {
+    if (EVP_DigestFinal_ex(context_.get(), digest.data(), &size) != 1
+        || size != kFingerprintBytes) {
         throw std::runtime_error("EVP_DigestFinal_ex failed");
     }
     return digest;

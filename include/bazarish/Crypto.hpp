@@ -3,12 +3,14 @@
 
 #include "bazarish/Bytes.hpp"
 
+#include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
 
 typedef struct evp_pkey_st EVP_PKEY;
+typedef struct evp_md_ctx_st EVP_MD_CTX;
 
 namespace bazarish {
 
@@ -69,6 +71,20 @@ Bytes aeadSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext);
 std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed);
 
 Bytes sha256File(const std::filesystem::path& path);
+
+// A SHA-256 fed in pieces, for what is read in pieces.
+class Sha256 {
+public:
+    Sha256();
+    void update(const void* data, std::size_t size);
+    Bytes digest();
+
+private:
+    struct ContextDeleter {
+        void operator()(EVP_MD_CTX* context) const;
+    };
+    std::unique_ptr<EVP_MD_CTX, ContextDeleter> context_;
+};
 
 class Identity {
 public:
