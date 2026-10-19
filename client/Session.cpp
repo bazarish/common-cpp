@@ -2368,14 +2368,14 @@ void Session::emitTransfer(const std::string& e2eId, const TransferState state,
 }
 
 void Session::requestFile(
-    const std::string& peerFingerprint, const std::string& e2eId, const fs::path& dest)
+    const std::string& peerFingerprint, const std::string& e2eId, FileTarget target)
 {
 
     const std::string ask = toHex(randomBytes(kTransferAskBytes));
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
         transfers_->pending[e2eId] = PendingTransfer{
-            dest, std::make_shared<std::atomic<bool>>(false), peerFingerprint, ask};
+            std::move(target), std::make_shared<std::atomic<bool>>(false), peerFingerprint, ask};
     }
     emitTransfer(e2eId, TransferState::eRequested, 0, 0, {}, "Asking the sender",
         peerFingerprint);
@@ -2559,6 +2559,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             FileOffer offer;
             offer.fileId = fileId;
             offer.host = endpoint->routingHost();
+            offer.header = prepared.header;
             offer.key = prepared.key;
             offer.sha256 = prepared.sha256;
             offer.size = prepared.size;
@@ -2609,7 +2610,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
 
 void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& peer)
 {
-    fs::path dest;
+    FileTarget target;
     std::shared_ptr<std::atomic<bool>> cancel;
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
@@ -2622,14 +2623,14 @@ void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& pee
             return;
         }
         found->second.fetching = true;
-        dest = found->second.dest;
+        target = found->second.target;
         cancel = found->second.cancel;
     }
 
-    std::thread([this, offer, dest, cancel, peer]() {
+    std::thread([this, offer, target, cancel, peer]() {
         try {
             emitTransfer(offer.fileId, TransferState::eRequested, 0, 0, {}, "Connecting", peer);
-            fetchFileOverI2p(i2pRouter(), offer, dest, transferPrivacy(),
+            fetchFileOverI2p(i2pRouter(), offer, target, transferPrivacy(),
                 [this, &offer, &peer](const std::uint64_t got, const std::uint64_t total) {
                     emitTransfer(
                         offer.fileId, TransferState::eRunning, got, total, {}, "Receiving", peer);

@@ -521,8 +521,8 @@ public:
 
     std::string deliveryIdFor(const std::string& e2eId, const std::string& mailbox) const;
 
-    void requestFile(const std::string& peerFingerprint, const std::string& e2eId,
-        const std::filesystem::path& dest);
+    void requestFile(
+        const std::string& peerFingerprint, const std::string& e2eId, FileTarget target);
 
     void cancelTransfer(const std::string& e2eId);
 
@@ -827,7 +827,7 @@ private:
     std::vector<CompletedCall> pendingCallLog_;
     std::map<std::string, SentFile> sentFiles_;
     struct PendingTransfer {
-        std::filesystem::path dest;
+        FileTarget target;
         std::shared_ptr<std::atomic<bool>> cancel;
         std::string peer;
         std::string ask;

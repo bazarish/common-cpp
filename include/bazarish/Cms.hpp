@@ -3,7 +3,9 @@
 
 #include "bazarish/Bytes.hpp"
 
+#include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <string>
 
 namespace bazarish::cms {
@@ -12,11 +14,13 @@ namespace bazarish::cms {
 Bytes sealWithPassword(const Bytes& plaintext, const std::string& password);
 Bytes unsealWithPassword(const Bytes& der, const std::string& password);
 
-// The file forms stream, so a payload never has to fit in memory.
-void sealWithPasswordToFile(const std::filesystem::path& inPath,
-    const std::filesystem::path& outPath, const std::string& password);
+// The file forms keep the content apart from a small header: an envelope that carries
+// its content is read whole into memory by the decoder.
+Bytes sealWithPasswordDetached(const std::filesystem::path& inPath,
+    const std::filesystem::path& contentPath, const std::string& password);
 
-void unsealWithPasswordToFile(const std::filesystem::path& derPath,
-    const std::filesystem::path& outPath, const std::string& password);
+using PlainWriteFn = std::function<void(const void* data, std::size_t size)>;
+void unsealWithPasswordDetached(const Bytes& header, const std::filesystem::path& contentPath,
+    const std::string& password, const PlainWriteFn& write);
 
 }  // namespace bazarish::cms

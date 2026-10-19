@@ -68,6 +68,7 @@ int main()
     FileOffer offer;
     offer.fileId = "msg-1";
     offer.host = "example.b32.i2p";
+    offer.header = prepared.header;
     offer.key = prepared.key;
     offer.sha256 = prepared.sha256;
     offer.size = prepared.size;
@@ -75,6 +76,7 @@ int main()
     const FileOffer roundTripped = fileOfferFromJson(fileOfferToJson(offer));
     CHECK(roundTripped.fileId == offer.fileId);
     CHECK(roundTripped.host == offer.host);
+    CHECK(roundTripped.header == offer.header);
     CHECK(roundTripped.key == offer.key);
     CHECK(roundTripped.sha256 == offer.sha256);
     CHECK(roundTripped.size == offer.size);
@@ -83,7 +85,7 @@ int main()
         const fs::path dest = root / "received.bin";
         std::uint64_t lastSeen = 0;
         std::uint64_t lastTotal = 0;
-        receiveFile(servingFrom(ciphertext, 40 * 1024), offer, dest,
+        receiveFile(servingFrom(ciphertext, 40 * 1024), offer, fileTargetAt(dest),
             [&lastSeen, &lastTotal](const std::uint64_t got, const std::uint64_t total) {
                 CHECK(got >= lastSeen);
                 lastSeen = got;
@@ -97,7 +99,7 @@ int main()
 
     {
         const fs::path dest = root / "received-oneshot.bin";
-        receiveFile(servingFrom(ciphertext, ciphertext.size()), offer, dest);
+        receiveFile(servingFrom(ciphertext, ciphertext.size()), offer, fileTargetAt(dest));
         CHECK(readFile(dest) == original);
     }
 
@@ -107,7 +109,7 @@ int main()
         const fs::path dest = root / "tampered.bin";
         bool threw = false;
         try {
-            receiveFile(servingFrom(tampered, tampered.size()), offer, dest);
+            receiveFile(servingFrom(tampered, tampered.size()), offer, fileTargetAt(dest));
         } catch (const std::exception&) {
             threw = true;
         }
@@ -125,7 +127,7 @@ int main()
                     sink.total(ciphertext.size() + 1);
                     sink.append(ciphertext.data(), ciphertext.size());
                 },
-                offer, dest);
+                offer, fileTargetAt(dest));
         } catch (const std::exception&) {
             threw = true;
         }
@@ -141,7 +143,7 @@ int main()
             receiveFile([&attempts](const std::uint64_t, TransferSink& sink) {
                 ++attempts;
                 sink.total(0);
-            }, offer, dest);
+            }, offer, fileTargetAt(dest));
         } catch (const std::exception&) {
             threw = true;
         }
@@ -155,7 +157,7 @@ int main()
         std::atomic<bool> cancel{true};
         bool threw = false;
         try {
-            receiveFile(servingFrom(ciphertext, 1024), offer, dest, {}, &cancel);
+            receiveFile(servingFrom(ciphertext, 1024), offer, fileTargetAt(dest), {}, &cancel);
         } catch (const std::exception&) {
             threw = true;
         }

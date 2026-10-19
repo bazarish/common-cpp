@@ -83,7 +83,7 @@ PreparedFile prepareFile(const fs::path& path, const fs::path& ciphertextPath)
 {
     PreparedFile prepared;
     prepared.key = toHex(randomBytes(32));
-    cms::sealWithPasswordToFile(path, ciphertextPath, prepared.key);
+    prepared.header = cms::sealWithPasswordDetached(path, ciphertextPath, prepared.key);
     prepared.ciphertextPath = ciphertextPath;
     prepared.sha256 = toHex(sha256File(ciphertextPath));
     prepared.size = fs::file_size(ciphertextPath);
@@ -95,6 +95,7 @@ nlohmann::json fileOfferToJson(const FileOffer& offer)
     return {
         {"fileId", offer.fileId},
         {"host", offer.host},
+        {"header", toBase64(offer.header)},
         {"key", offer.key},
         {"sha256", offer.sha256},
         {"size", offer.size},
@@ -106,6 +107,7 @@ FileOffer fileOfferFromJson(const nlohmann::json& json)
     FileOffer offer;
     offer.fileId = json.at("fileId").get<std::string>();
     offer.host = json.at("host").get<std::string>();
+    offer.header = fromBase64(json.at("header").get<std::string>());
     offer.key = json.at("key").get<std::string>();
     offer.sha256 = json.at("sha256").get<std::string>();
     offer.size = json.at("size").get<std::uint64_t>();
@@ -139,12 +141,50 @@ private:
     TransferProgressFn onProgress_;
 };
 
+class LocalFileOutput : public FileOutput {
+public:
+    explicit LocalFileOutput(fs::path path)
+        : path_(std::move(path))
+        , out_(path_, std::ios::binary | std::ios::trunc)
+    {
+        if (!out_) {
+            throw std::runtime_error("failed to open " + path_.string());
+        }
+    }
+
+    void write(const void* data, const std::size_t size) override
+    {
+        out_.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+        if (!out_) {
+            throw std::runtime_error("failed to write " + path_.string());
+        }
+    }
+
+    void finish() override
+    {
+        out_.close();
+        if (!out_) {
+            throw std::runtime_error("failed to close " + path_.string());
+        }
+    }
+
+private:
+    fs::path path_;
+    std::ofstream out_;
+};
+
 }  // namespace
 
-void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer, const fs::path& destPath,
+FileTarget fileTargetAt(const fs::path& dest)
+{
+    return FileTarget{fs::path(dest.string() + ".part"),
+        [dest]() { return std::make_unique<LocalFileOutput>(dest); }};
+}
+
+void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer, const FileTarget& target,
     const TransferProgressFn& onProgress, const std::atomic<bool>* cancel)
 {
-    const fs::path partPath = destPath.string() + ".part";
+    const fs::path& partPath = target.part;
     try {
         PartialFile part(partPath);
         int stalled = 0;
@@ -182,7 +222,10 @@ void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer, const fs::
         if (toHex(sha256File(partPath)) != offer.sha256) {
             throw std::runtime_error("file digest mismatch");
         }
-        cms::unsealWithPasswordToFile(partPath, destPath, offer.key);
+        const std::unique_ptr<FileOutput> out = target.open();
+        cms::unsealWithPasswordDetached(offer.header, partPath, offer.key,
+            [&out](const void* data, const std::size_t size) { out->write(data, size); });
+        out->finish();
     } catch (...) {
         std::error_code ec;
         fs::remove(partPath, ec);
@@ -299,7 +342,7 @@ constexpr int kDialSeconds = 90;
 constexpr int kSenderQuietSeconds = 120;
 
 void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
-    const fs::path& destPath, const bazarish::i2p::Privacy privacy,
+    const FileTarget& target, const bazarish::i2p::Privacy privacy,
     const TransferProgressFn& onProgress, const std::atomic<bool>* cancel,
     const std::string& owner)
 {
@@ -344,7 +387,7 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
               }
               stream->close();
           };
-    receiveFile(fetch, offer, destPath, onProgress, cancel);
+    receiveFile(fetch, offer, target, onProgress, cancel);
 }
 
 }  // namespace bazarish::client

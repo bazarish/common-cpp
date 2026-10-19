@@ -7,6 +7,8 @@
 #include <openssl/evp.h>
 #include <openssl/objects.h>
 
+#include <array>
+#include <cstddef>
 #include <memory>
 #include <stdexcept>
 
@@ -21,6 +23,16 @@ struct BioDeleter {
     }
 };
 using BioPtr = std::unique_ptr<BIO, BioDeleter>;
+
+struct BioChainDeleter {
+    void operator()(BIO* bio) const
+    {
+        BIO_free_all(bio);
+    }
+};
+using BioChainPtr = std::unique_ptr<BIO, BioChainDeleter>;
+
+constexpr std::size_t kStreamChunkBytes = 64 * 1024;
 
 struct CmsDeleter {
     void operator()(CMS_ContentInfo* cms) const
@@ -135,23 +147,52 @@ Bytes sealWithPassword(const Bytes& plaintext, const std::string& password)
     return bioToBytes(output.get());
 }
 
-void sealWithPasswordToFile(const std::filesystem::path& inPath,
-    const std::filesystem::path& outPath, const std::string& password)
+Bytes sealWithPasswordDetached(const std::filesystem::path& inPath,
+    const std::filesystem::path& contentPath, const std::string& password)
 {
     if (password.empty()) {
         throw std::invalid_argument("password must not be empty");
     }
     const BioPtr input = makeReadFileBio(inPath);
-    const BioPtr output = makeWriteFileBio(outPath);
-    const CmsPtr cms(CMS_encrypt(
-        nullptr, input.get(), EVP_aes_256_cbc(), CMS_BINARY | CMS_PARTIAL | CMS_STREAM));
+    BioPtr content = makeWriteFileBio(contentPath);
+    const CmsPtr cms(CMS_encrypt(nullptr, nullptr, EVP_aes_256_cbc(),
+        CMS_BINARY | CMS_PARTIAL | CMS_DETACHED | CMS_STREAM));
     if (cms == nullptr) {
         throw std::runtime_error("CMS_encrypt failed");
     }
     addPasswordRecipient(cms.get(), password);
-    if (i2d_CMS_bio_stream(output.get(), cms.get(), input.get(), CMS_BINARY | CMS_STREAM) != 1) {
-        throw std::runtime_error("i2d_CMS_bio_stream failed");
+    const BioChainPtr chain(CMS_dataInit(cms.get(), content.get()));
+    if (chain == nullptr) {
+        throw std::runtime_error("CMS_dataInit failed");
     }
+    content.release();
+    std::array<unsigned char, kStreamChunkBytes> buffer{};
+    for (;;) {
+        const int got = BIO_read(input.get(), buffer.data(), static_cast<int>(buffer.size()));
+        if (got < 0) {
+            throw std::runtime_error("reading " + inPath.string() + " failed");
+        }
+        if (got == 0) {
+            break;
+        }
+        if (BIO_write(chain.get(), buffer.data(), got) != got) {
+            throw std::runtime_error("writing " + contentPath.string() + " failed");
+        }
+    }
+    if (BIO_flush(chain.get()) != 1) {
+        throw std::runtime_error("BIO_flush failed");
+    }
+    if (CMS_dataFinal(cms.get(), chain.get()) != 1) {
+        throw std::runtime_error("CMS_dataFinal failed");
+    }
+    if (CMS_set_detached(cms.get(), 1) != 1) {
+        throw std::runtime_error("CMS_set_detached failed");
+    }
+    const BioPtr header = makeMemoryBio();
+    if (i2d_CMS_bio(header.get(), cms.get()) != 1) {
+        throw std::runtime_error("i2d_CMS_bio failed");
+    }
+    return bioToBytes(header.get());
 }
 
 Bytes unsealWithPassword(const Bytes& der, const std::string& password)
@@ -165,17 +206,46 @@ Bytes unsealWithPassword(const Bytes& der, const std::string& password)
     return bioToBytes(output.get());
 }
 
-void unsealWithPasswordToFile(const std::filesystem::path& derPath,
-    const std::filesystem::path& outPath, const std::string& password)
+void unsealWithPasswordDetached(const Bytes& header, const std::filesystem::path& contentPath,
+    const std::string& password, const PlainWriteFn& write)
 {
     if (password.empty()) {
         throw std::invalid_argument("password must not be empty");
     }
-    const BioPtr input = makeReadFileBio(derPath);
-    const BioPtr output = makeWriteFileBio(outPath);
-    unsealWithPasswordBio(input.get(), output.get(), password);
-    if (BIO_flush(output.get()) != 1) {
-        throw std::runtime_error("BIO_flush failed");
+    const BioPtr headerBio = makeInputBio(header);
+    const CmsPtr cms(d2i_CMS_bio(headerBio.get(), nullptr));
+    if (cms == nullptr) {
+        throw std::runtime_error("d2i_CMS_bio failed");
+    }
+    if (CMS_is_detached(cms.get()) != 1) {
+        throw std::runtime_error("the envelope carries its content");
+    }
+    if (CMS_decrypt_set1_password(cms.get(),
+            reinterpret_cast<unsigned char*>(const_cast<char*>(password.data())),
+            static_cast<int>(password.size()))
+        != 1) {
+        throw std::runtime_error("CMS_decrypt_set1_password failed");
+    }
+    BioPtr content = makeReadFileBio(contentPath);
+    const BioChainPtr chain(CMS_dataInit(cms.get(), content.get()));
+    if (chain == nullptr) {
+        throw std::runtime_error("CMS_dataInit failed");
+    }
+    content.release();
+    std::array<unsigned char, kStreamChunkBytes> buffer{};
+    for (;;) {
+        const int got = BIO_read(chain.get(), buffer.data(), static_cast<int>(buffer.size()));
+        if (got < 0) {
+            throw std::runtime_error("reading " + contentPath.string() + " failed");
+        }
+        if (got == 0) {
+            break;
+        }
+        write(buffer.data(), static_cast<std::size_t>(got));
+    }
+    // The padding of the last block is checked only once the content has run out.
+    if (BIO_get_cipher_status(chain.get()) != 1) {
+        throw std::runtime_error("the content does not decrypt (wrong password?)");
     }
 }
 

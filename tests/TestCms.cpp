@@ -3,6 +3,8 @@
 
 #include "TestUtil.hpp"
 
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -26,67 +28,50 @@ int main()
         for (int i = 0; i < 100000; ++i) {
             bigSecret.push_back(static_cast<unsigned char>(i));
         }
-        const Bytes bigEnvelope = cms::sealWithPassword(bigSecret, password);
-        const std::filesystem::path derPath
-            = std::filesystem::temp_directory_path() / "bz-test-pwri.der";
-        const std::filesystem::path outPath
-            = std::filesystem::temp_directory_path() / "bz-test-pwri.out";
-        {
-            std::ofstream out(derPath, std::ios::binary);
-            out.write(reinterpret_cast<const char*>(bigEnvelope.data()),
-                static_cast<std::streamsize>(bigEnvelope.size()));
-        }
-        cms::unsealWithPasswordToFile(derPath, outPath, password);
-        Bytes recovered;
-        {
-            std::ifstream in(outPath, std::ios::binary);
-            recovered.assign(
-                (std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        }
-        CHECK(recovered == bigSecret);
-        CHECK_THROWS(cms::unsealWithPasswordToFile(derPath, outPath, "guess"));
-        CHECK_THROWS(cms::unsealWithPasswordToFile(derPath, outPath, ""));
-        std::filesystem::remove(derPath);
-        std::filesystem::remove(outPath);
+        CHECK(cms::unsealWithPassword(cms::sealWithPassword(bigSecret, password), password)
+            == bigSecret);
     }
 
     {
+        constexpr std::size_t kAesBlock = 16;  // AES block, PKCS#7 padding adds 1..16 bytes
         Bytes bigPlain;
         for (int i = 0; i < 100000; ++i) {
             bigPlain.push_back(static_cast<unsigned char>(i * 11 + 5));
         }
         const std::filesystem::path plainPath
             = std::filesystem::temp_directory_path() / "bz-test-seal.in";
-        const std::filesystem::path cipherPath
-            = std::filesystem::temp_directory_path() / "bz-test-seal.der";
-        const std::filesystem::path outPath
-            = std::filesystem::temp_directory_path() / "bz-test-seal.out";
+        const std::filesystem::path contentPath
+            = std::filesystem::temp_directory_path() / "bz-test-seal.content";
         {
             std::ofstream out(plainPath, std::ios::binary);
             out.write(reinterpret_cast<const char*>(bigPlain.data()),
                 static_cast<std::streamsize>(bigPlain.size()));
         }
-        cms::sealWithPasswordToFile(plainPath, cipherPath, password);
+        const Bytes header = cms::sealWithPasswordDetached(plainPath, contentPath, password);
+        const std::uintmax_t contentBytes = std::filesystem::file_size(contentPath);
+        CHECK(contentBytes == (bigPlain.size() / kAesBlock + 1) * kAesBlock);
+        CHECK(header.size() < bigPlain.size());
 
-        cms::unsealWithPasswordToFile(cipherPath, outPath, password);
-        Bytes recovered;
-        Bytes envelope;
-        {
-            std::ifstream fromFile(outPath, std::ios::binary);
-            recovered.assign(
-                (std::istreambuf_iterator<char>(fromFile)), std::istreambuf_iterator<char>());
-            std::ifstream cipherIn(cipherPath, std::ios::binary);
-            envelope.assign(
-                (std::istreambuf_iterator<char>(cipherIn)), std::istreambuf_iterator<char>());
-        }
-        CHECK(recovered == bigPlain);
-        // ...and the streamed envelope is a valid CMS that the in-memory path reads too.
-        CHECK(cms::unsealWithPassword(envelope, password) == bigPlain);
+        const auto unsealed = [&](const Bytes& envelope, const std::string& secret) {
+            Bytes plain;
+            cms::unsealWithPasswordDetached(envelope, contentPath, secret,
+                [&plain](const void* data, const std::size_t size) {
+                    const auto* const bytes = static_cast<const unsigned char*>(data);
+                    plain.insert(plain.end(), bytes, bytes + size);
+                });
+            return plain;
+        };
+        CHECK(unsealed(header, password) == bigPlain);
+        CHECK_THROWS(unsealed(header, "guess"));
+        CHECK_THROWS(unsealed(header, ""));
+        CHECK_THROWS(unsealed(cms::sealWithPassword(bigPlain, password), password));
 
-        CHECK_THROWS(cms::sealWithPasswordToFile(plainPath, cipherPath, ""));
+        std::filesystem::resize_file(contentPath, contentBytes - kAesBlock);
+        CHECK_THROWS(unsealed(header, password));
+
+        CHECK_THROWS(cms::sealWithPasswordDetached(plainPath, contentPath, ""));
         std::filesystem::remove(plainPath);
-        std::filesystem::remove(cipherPath);
-        std::filesystem::remove(outPath);
+        std::filesystem::remove(contentPath);
     }
 
     return 0;
