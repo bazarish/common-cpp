@@ -45,7 +45,7 @@ void sayStage(const FetchStage stage)
 }
 
 std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(bazarish::i2p::Router& router,
-    const bazarish::i2p::Privacy privacy, const std::string& owner,
+    const bazarish::i2p::Privacy privacy, const std::string& owner, const std::string& target,
     const char* const label = kContactLookupLabel)
 {
     std::shared_ptr<bazarish::i2p::Endpoint> endpoint = acquireWarmDest();
@@ -60,6 +60,7 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(bazarish::i2p::Router
     config.published = false;
     config.label = label;
     config.owner = owner;
+    config.target = target;
     endpoint = router.createEndpoint(config);
     if (!endpoint->waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
         throw std::runtime_error("federation fetch: this device has no I2P tunnels yet");
@@ -179,7 +180,7 @@ FetchOutcome federationFetchOverI2p(bazarish::i2p::Router& router, const std::st
     const std::string& owner)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
-        = takeThrowawayDest(router, privacy, owner);
+        = takeThrowawayDest(router, privacy, owner, dest);
     return fetchOver(*endpoint, dest, op, sealed, Face::eFederationFrame);
 }
 
@@ -188,7 +189,7 @@ FetchOutcome resolverFetchOverI2p(bazarish::i2p::Router& router, const std::stri
     const std::string& owner)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
-        = takeThrowawayDest(router, privacy, owner);
+        = takeThrowawayDest(router, privacy, owner, host);
     return fetchOver(*endpoint, host, op, body, Face::eResolverHttp);
 }
 
@@ -197,7 +198,7 @@ std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
     const bazarish::i2p::Privacy privacy, const std::string& owner)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
-        = takeThrowawayDest(router, privacy, owner, kSignInLabel);
+        = takeThrowawayDest(router, privacy, owner, callback.host, kSignInLabel);
     sayStage(FetchStage::eReaching);
     const auto stream = endpoint->connect(callback.host, std::chrono::seconds(kDialSeconds));
     if (!stream) {
@@ -217,7 +218,7 @@ FetchTransport resolverHeldDest(
     bazarish::i2p::Router& router, const bazarish::i2p::Privacy privacy, const std::string& owner)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> held
-        = takeThrowawayDest(router, privacy, owner);
+        = takeThrowawayDest(router, privacy, owner, std::string());
     return [held](const std::string& host, const std::string& op, const Bytes& body) {
         return fetchOver(*held, host, op, body, Face::eResolverHttp);
     };
@@ -227,7 +228,7 @@ FetchTransport federationHeldDest(
     bazarish::i2p::Router& router, const bazarish::i2p::Privacy privacy, const std::string& owner)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> held
-        = takeThrowawayDest(router, privacy, owner);
+        = takeThrowawayDest(router, privacy, owner, std::string());
     return [held](const std::string& dest, const std::string& op, const Bytes& sealed) {
         return fetchOver(*held, dest, op, sealed, Face::eFederationFrame);
     };

@@ -150,6 +150,9 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
                 config.published = false;
                 config.label = label;
                 config.owner = owner_;
+                if (key == toDest) {
+                    config.target = toDest;
+                }
                 endpoint = router_.createEndpoint(config);
             }
         } catch (...) {

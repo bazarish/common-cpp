@@ -305,13 +305,14 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     if (bootstrapI2pRouter(i2pDataDir_) == I2pBootstrap::eEmpty) {
         return std::nullopt;
     }
-    if (i2pOut_ && i2pOut_->lost()) {
+    if (i2pOut_ && (i2pOut_->lost() || i2pOutHost_ != facade.host)) {
         i2pStream_.reset();
         i2pOut_.reset();
     }
     if (!i2pOut_) {
         reportConnectProgress(40, "Building your I2P tunnels");
-        i2pOut_ = facadeLinkFor(destinationOwner_, tunnelPrivacy());
+        i2pOut_ = facadeLinkFor(destinationOwner_, tunnelPrivacy(), facade.host);
+        i2pOutHost_ = facade.host;
         if (!i2pOut_) {
             return std::nullopt;
         }

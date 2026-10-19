@@ -23,7 +23,7 @@ bazarish::i2p::Router* sharedI2pRouterIfRunning();
 std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest();
 
 std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
-    const std::string& owner, bazarish::i2p::Privacy privacy);
+    const std::string& owner, bazarish::i2p::Privacy privacy, const std::string& facadeHost);
 
 void stopFacadeLinkFor(const std::string& owner);
 

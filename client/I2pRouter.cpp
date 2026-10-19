@@ -12,6 +12,8 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 namespace bazarish::client {
 
@@ -52,9 +54,11 @@ std::mutex& facadeLinksMutex()
     return mutex;
 }
 
-std::map<std::string, std::weak_ptr<bazarish::i2p::Endpoint>>& facadeLinks()
+using FacadeLinkKey = std::pair<std::string, std::string>;
+
+std::map<FacadeLinkKey, std::weak_ptr<bazarish::i2p::Endpoint>>& facadeLinks()
 {
-    static std::map<std::string, std::weak_ptr<bazarish::i2p::Endpoint>> links;
+    static std::map<FacadeLinkKey, std::weak_ptr<bazarish::i2p::Endpoint>> links;
     return links;
 }
 
@@ -291,49 +295,55 @@ bazarish::i2p::Router* sharedI2pRouterIfRunning()
     return (router != nullptr && router->running()) ? router : nullptr;
 }
 
-std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
-    const std::string& owner, const bazarish::i2p::Privacy privacy)
+std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(const std::string& owner,
+    const bazarish::i2p::Privacy privacy, const std::string& facadeHost)
 {
     bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
     if (router == nullptr) {
         return nullptr;
     }
-    const auto build = [router, &owner, privacy]() {
+    const auto build = [router, &owner, privacy, &facadeHost]() {
         bazarish::i2p::EndpointConfig config;
         config.privacy = privacy;
         config.published = false;
         config.label = "Facade link";
         config.owner = owner;
+        config.target = facadeHost;
         return router->createEndpoint(config);
     };
     if (owner.empty()) {
         return build();
     }
+    const FacadeLinkKey key{owner, facadeHost};
     const std::lock_guard<std::mutex> lock(facadeLinksMutex());
-    if (const std::shared_ptr<bazarish::i2p::Endpoint> existing = facadeLinks()[owner].lock()) {
+    if (const std::shared_ptr<bazarish::i2p::Endpoint> existing = facadeLinks()[key].lock()) {
         if (!existing->lost()) {
             return existing;
         }
-        facadeLinks().erase(owner);
+        facadeLinks().erase(key);
     }
     const std::shared_ptr<bazarish::i2p::Endpoint> link = build();
-    facadeLinks()[owner] = link;
+    facadeLinks()[key] = link;
     return link;
 }
 
 void stopFacadeLinkFor(const std::string& owner)
 {
-    std::shared_ptr<bazarish::i2p::Endpoint> link;
+    std::vector<std::shared_ptr<bazarish::i2p::Endpoint>> links;
     {
         const std::lock_guard<std::mutex> lock(facadeLinksMutex());
-        const auto found = facadeLinks().find(owner);
-        if (found == facadeLinks().end()) {
-            return;
+        for (auto at = facadeLinks().begin(); at != facadeLinks().end();) {
+            if (at->first.first != owner) {
+                ++at;
+                continue;
+            }
+            if (std::shared_ptr<bazarish::i2p::Endpoint> link = at->second.lock()) {
+                links.push_back(std::move(link));
+            }
+            at = facadeLinks().erase(at);
         }
-        link = found->second.lock();
-        facadeLinks().erase(found);
     }
-    if (link) {
+    for (const std::shared_ptr<bazarish::i2p::Endpoint>& link : links) {
         link->stop();
     }
 }

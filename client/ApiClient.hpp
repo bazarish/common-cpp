@@ -132,6 +132,7 @@ private:
 
     WireLog* wireLog_ = nullptr;
     std::shared_ptr<bazarish::i2p::Endpoint> i2pOut_;
+    std::string i2pOutHost_;
     std::unique_ptr<bazarish::i2p::Stream> i2pStream_;
     std::chrono::steady_clock::time_point i2pStreamUsedAt_;
     std::size_t activeFacade_ = 0;

@@ -312,6 +312,7 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
               config.label = "File download";
               config.bulk = true;
               config.owner = owner;
+              config.target = offer.host;
               const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
                   = router.createEndpoint(config);
               if (!endpoint->waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
