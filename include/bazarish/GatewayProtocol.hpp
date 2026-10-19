@@ -53,6 +53,7 @@ enum class FrameType : std::uint8_t {
     eEndpointCreate = 0x10,
     eEndpointStop = 0x11,
     eEndpointStatus = 0x12,
+    eEndpointLost = 0x13,
     eStreamOpen = 0x20,
     eStreamOpened = 0x21,
     eStreamInbound = 0x22,

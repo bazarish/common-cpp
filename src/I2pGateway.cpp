@@ -1221,8 +1221,11 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
     }
     const std::uint32_t id = link_->nextId();
     const bool raw = config.traffic == Traffic::eRaw;
-    const nlohmann::json ask = {{"kind", raw ? "raw" : "stream"},
+    nlohmann::json ask = {{"kind", raw ? "raw" : "stream"},
         {"published", config.published}, {"realtime", config.realtime}};
+    if (!config.target.empty()) {
+        ask["target"] = config.target;
+    }
     const std::optional<Frame> answer
         = link_->call(gateway::encodeJson(FrameType::eEndpointCreate, id, ask), id,
             kCallTimeout);
@@ -1342,6 +1345,12 @@ void GatewayRouter::dispatch(const Frame& frame)
             endpoint->statusChanged(body.value("ready", false), body.value("tunnelsIn", 0),
                 body.value("tunnelsOut", 0), body.value("leaseSets", 0),
                 body.value("localRoute", false));
+            return;
+        }
+        case FrameType::eEndpointLost: {
+            if (endpoint != nullptr) {
+                endpoint->lost();
+            }
             return;
         }
         case FrameType::eRawRecv: {

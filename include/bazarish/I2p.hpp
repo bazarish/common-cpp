@@ -102,6 +102,8 @@ struct EndpointConfig {
     Traffic traffic = Traffic::eStream;
     bool realtime = false;
     bool bulk = false;
+    // The one host an unpublished stream destination will dial; empty when it dials several.
+    std::string target = {};
 };
 
 class Endpoint {

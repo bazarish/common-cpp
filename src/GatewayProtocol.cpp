@@ -86,6 +86,7 @@ std::string_view frameTypeName(const FrameType type)
         case FrameType::eEndpointCreate: return "endpoint-create";
         case FrameType::eEndpointStop: return "endpoint-stop";
         case FrameType::eEndpointStatus: return "endpoint-status";
+        case FrameType::eEndpointLost: return "endpoint-lost";
         case FrameType::eStreamOpen: return "stream-open";
         case FrameType::eStreamOpened: return "stream-opened";
         case FrameType::eStreamInbound: return "stream-inbound";
@@ -111,6 +112,7 @@ std::optional<FrameType> frameTypeFromByte(const std::uint8_t value)
         case FrameType::eEndpointCreate:
         case FrameType::eEndpointStop:
         case FrameType::eEndpointStatus:
+        case FrameType::eEndpointLost:
         case FrameType::eStreamOpen:
         case FrameType::eStreamOpened:
         case FrameType::eStreamInbound:
