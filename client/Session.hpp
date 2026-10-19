@@ -403,8 +403,9 @@ public:
     static std::unique_ptr<Client> makeEventClient(const ContactFetchContext& context);
     static std::vector<PendingEntry> waitForMail(Client& waiter, int waitSeconds);
 
-    static ContactCardResolved resolveContactCard(
-        const ContactFetchContext& context, const ContactCardRequest& request);
+    enum class CardStep { eLookingUpAlias, eFetchingCard };
+    static ContactCardResolved resolveContactCard(const ContactFetchContext& context,
+        const ContactCardRequest& request, const std::function<void(CardStep)>& onStep);
     std::string commitContactAdd(const ContactCardResolved& resolved, const DeliveryWatch& watch);
     void sendContactRequest(const std::string& peerFingerprint, const std::string& requestId,
         const std::string& text, const DeliveryWatch& watch, bool waitForOutcome);

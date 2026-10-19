@@ -1716,8 +1716,8 @@ std::vector<PendingEntry> Session::waitForMail(Client& waiter, const int waitSec
     return waiter.waitForPending(waitSeconds);
 }
 
-Session::ContactCardResolved Session::resolveContactCard(
-    const ContactFetchContext& context, const ContactCardRequest& request)
+Session::ContactCardResolved Session::resolveContactCard(const ContactFetchContext& context,
+    const ContactCardRequest& request, const std::function<void(CardStep)>& onStep)
 {
     ContactCardResolved out;
     out.introText = request.introText;
@@ -1749,13 +1749,16 @@ Session::ContactCardResolved Session::resolveContactCard(
 
         if (request.byAlias) {
             const std::string alias = normalizeAlias(request.uriOrAlias);
+            onStep(CardStep::eLookingUpAlias);
             const Descriptor descriptor
                 = fetchClient.resolveAlias(alias, context.resolver, nowSeconds(), toRegistry);
+            onStep(CardStep::eFetchingCard);
             out.info = fetchClient.fetchCard(descriptor, transport);
             out.fingerprint = descriptor.fingerprint;
             out.displayName = safeContactName(alias);
         } else {
             const Descriptor descriptor = parseDescriptor(request.uriOrAlias);
+            onStep(CardStep::eFetchingCard);
             out.info = fetchClient.fetchCard(descriptor, transport);
             out.fingerprint = descriptor.fingerprint;
             out.displayName = safeContactName(descriptor.name);
