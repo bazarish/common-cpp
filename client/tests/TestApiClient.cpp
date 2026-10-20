@@ -2,6 +2,7 @@
 #include "ApiClient.hpp"
 
 #include "TunnelStub.hpp"
+#include "../../src/I2pBackend.hpp"
 
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
@@ -14,6 +15,7 @@
 #include "TestUtil.hpp"
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -169,8 +171,47 @@ int main()
         CHECK(threw);
     }
 
-    CHECK(ApiClient::sessionBackoffSeconds(0) < ApiClient::sessionBackoffSeconds(503));
-    CHECK(ApiClient::sessionBackoffSeconds(503) == ApiClient::sessionBackoffSeconds(401));
+    {
+        http::Server upstreamless(localOptions());
+        const Bytes card = ServerCard::issue(serverIdentity,
+            Key::fromPublicDer(serverSealing.publicDer()), static_cast<std::int64_t>(std::time(nullptr)));
+        upstreamless.get(std::string(tunnel::kServerCardPath), [card](const http::Request&) {
+            http::Response response;
+            response.contentType = "application/octet-stream";
+            response.body = std::string(card.begin(), card.end());
+            return response;
+        });
+        std::atomic<int> hellos{0};
+        upstreamless.post(std::string(tunnel::kTunnelPath), [&hellos](const http::Request&) {
+            ++hellos;
+            http::Response response;
+            response.status = 502;
+            response.body = R"({"error":{"code":"FACADE_UPSTREAM","message":"backend unreachable"}})";
+            return response;
+        });
+        ServerEndpoint behind = endpoint;
+        behind.facades[0].port = upstreamless.start();
+        ApiClient api(alice, "abc123", behind);
+        const auto refused = [&api]() {
+            try {
+                (void)api.get("/v1/messaging/storage-usage");
+            } catch (const ApiError&) {
+                return true;
+            }
+            return false;
+        };
+        CHECK(refused());
+        CHECK(hellos.load() == 1);
+        CHECK(refused());
+        CHECK(hellos.load() == 1);
+        bazarish::i2p::backend::noteCarryReturned();
+        CHECK(refused());
+        CHECK(hellos.load() == 2);
+        upstreamless.stop();
+    }
+
+    CHECK(ApiClient::sessionBackoffSeconds(0) < ApiClient::sessionBackoffSeconds(401));
+    CHECK(ApiClient::sessionBackoffSeconds(502) == ApiClient::sessionBackoffSeconds(0));
 
     std::fprintf(stderr, "TestApiClient passed\n");
     return 0;

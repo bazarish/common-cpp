@@ -26,6 +26,7 @@ constexpr std::size_t kEd25519PrivateKeyBytes = 32;
 constexpr std::size_t kOfflineExpiresBytes = 4;
 
 std::atomic<bool> g_i2pLogging{false};
+std::atomic<std::uint64_t> g_carryReturns{0};
 
 }  // namespace
 
@@ -164,6 +165,16 @@ void setI2pLogging(const bool enabled)
 bool i2pLogging()
 {
     return g_i2pLogging;
+}
+
+std::uint64_t carryReturns()
+{
+    return g_carryReturns.load();
+}
+
+void backend::noteCarryReturned()
+{
+    ++g_carryReturns;
 }
 
 struct Stream::Impl {

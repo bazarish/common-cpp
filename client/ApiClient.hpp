@@ -122,9 +122,11 @@ private:
     std::int64_t sessionUntil_ = 0;
     std::uint64_t sessionSeq_ = 0;
     std::int64_t sessionBlockedUntil_ = 0;
+    std::uint64_t blockedAtCarry_ = 0;
     int sessionRefusals_ = 0;
     std::string lastTunnelError_;
     bool ensureSessionLocked();
+    void standOffLocked(std::int64_t seconds);
     void ensureServerKeyLocked();
     ApiResponse tunnelledLocked(const std::string& method, const std::string& path,
         const std::string& query, const Bytes& body, const std::string& contentType,

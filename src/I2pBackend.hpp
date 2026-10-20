@@ -84,6 +84,8 @@ public:
         = 0;
 };
 
+void noteCarryReturned();
+
 std::unique_ptr<RouterBackend> makeSamRouter(const RouterConfig& config);
 std::unique_ptr<RouterBackend> makeGatewayRouter(const RouterConfig& config);
 

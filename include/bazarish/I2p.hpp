@@ -224,6 +224,9 @@ struct TransportPeer {
 void setI2pLogging(bool enabled);
 bool i2pLogging();
 
+// Grows each time the link to the I2P network comes back after it was lost.
+std::uint64_t carryReturns();
+
 class Router {
 public:
     explicit Router(RouterConfig config);

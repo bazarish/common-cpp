@@ -1008,7 +1008,9 @@ void GatewayRouter::coverLoop()
             }
             try {
                 openControl();
-                openFailing_.store(false);
+                if (openFailing_.exchange(false)) {
+                    noteCarryReturned();
+                }
                 backoff = kFirstRetry;
                 churnAt = nextChurn();
             } catch (const std::exception& error) {

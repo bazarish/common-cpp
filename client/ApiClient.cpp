@@ -204,7 +204,10 @@ std::int64_t ApiClient::sessionBackoffSeconds(const int httpStatus)
 {
     constexpr std::int64_t kAfterRefusalSeconds = 900;
     constexpr std::int64_t kAfterSilenceSeconds = 60;
-    return httpStatus == 0 ? kAfterSilenceSeconds : kAfterRefusalSeconds;
+    // RFC 9110 15.6: a 5xx is the far side failing for now (a facade's 502 upstream), not refusing.
+    constexpr int kFirstServerErrorStatus = 500;
+    return httpStatus == 0 || httpStatus >= kFirstServerErrorStatus ? kAfterSilenceSeconds
+                                                                    : kAfterRefusalSeconds;
 }
 
 void ApiClient::ensureServerKeyLocked()
@@ -230,7 +233,8 @@ bool ApiClient::ensureSessionLocked()
     if (!sessionId_.empty() && now + kRenewLeadSeconds < sessionUntil_) {
         return true;
     }
-    if (now < sessionBlockedUntil_) {
+    // A wait belongs to the link that failed; one that has come back since is tried at once.
+    if (now < sessionBlockedUntil_ && blockedAtCarry_ == bazarish::i2p::carryReturns()) {
         return false;
     }
     sessionId_.clear();
@@ -260,18 +264,24 @@ bool ApiClient::ensureSessionLocked()
         return true;
     } catch (const ApiError& error) {
         sessionId_.clear();
-        sessionBlockedUntil_ = now + sessionBackoffSeconds(error.httpStatus);
+        standOffLocked(sessionBackoffSeconds(error.httpStatus));
         lastTunnelError_ = error.what();
         bazarish::log::info("no tunnel: {}", error.what());
         return false;
     } catch (const std::exception& error) {
         sessionId_.clear();
         // An answer that does not open is a broken carry, not a refusal: try again as after silence.
-        sessionBlockedUntil_ = now + sessionBackoffSeconds(0);
+        standOffLocked(sessionBackoffSeconds(0));
         lastTunnelError_ = error.what();
         bazarish::log::info("no tunnel: {}", error.what());
         return false;
     }
+}
+
+void ApiClient::standOffLocked(const std::int64_t seconds)
+{
+    sessionBlockedUntil_ = nowSeconds() + seconds;
+    blockedAtCarry_ = bazarish::i2p::carryReturns();
 }
 
 void ApiClient::setDestinationOwner(std::string owner)
@@ -524,7 +534,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
         sessionId_.clear();
         if (++sessionRefusals_ >= kRefusalsBeforeGivingUp) {
             sessionRefusals_ = 0;
-            sessionBlockedUntil_ = nowSeconds() + sessionBackoffSeconds(1);
+            standOffLocked(sessionBackoffSeconds(1));
             bazarish::log::warn("tunnels keep being refused; standing off for a while");
             failed(error.what());
             throw;
