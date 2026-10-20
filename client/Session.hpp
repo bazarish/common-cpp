@@ -17,6 +17,7 @@
 #include <bazarish/Limits.hpp>
 
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -101,6 +102,18 @@ struct RelayedPost {
     bool fromHost = false;
 };
 
+inline constexpr std::int64_t kSecondsPerHour = 3600;
+inline constexpr std::int64_t kSecondsPerDay = 24 * kSecondsPerHour;
+inline constexpr std::int64_t kDaysPerWeek = 7;
+// A month for the auto-delete timer.
+inline constexpr std::int64_t kDaysPerMonth = 30;
+inline constexpr std::int64_t kChatTimerOff = 0;
+// The auto-delete timers a chat can carry, in seconds.
+inline constexpr std::array<std::int64_t, 5> kChatTimerChoices{kChatTimerOff, kSecondsPerHour,
+    kSecondsPerDay, kDaysPerWeek * kSecondsPerDay, kDaysPerMonth * kSecondsPerDay};
+
+bool isChatTimerChoice(std::int64_t seconds);
+
 struct IncomingMessage {
     std::string contentType;
     std::string fromFingerprint;
@@ -137,6 +150,7 @@ struct IncomingMessage {
     bool contactable = false;
     bool fromHost = false;
     std::string groupReactionsJson;
+    std::int64_t timerSeconds = kChatTimerOff;
 };
 
 struct SentFile {
@@ -529,6 +543,7 @@ public:
         const std::string& emoji);
 
     void sendChatClear(const std::string& peerFingerprint);
+    void sendChatTimer(const std::string& peerFingerprint, std::int64_t seconds);
 
     bool canWriteTo(const std::string& peerFingerprint) const;
 

@@ -817,6 +817,20 @@ int main()
         }
 
         {
+            CHECK_THROWS(alice.sendChatTimer(bob.fingerprint(), kSecondsPerHour + 1));
+            alice.sendChatTimer(bob.fingerprint(), kDaysPerWeek * kSecondsPerDay);
+            bool sawTimer = false;
+            for (const IncomingMessage& item : bob.sync()) {
+                if (item.contentType == "chat.timer") {
+                    sawTimer = true;
+                    CHECK(item.timerSeconds == kDaysPerWeek * kSecondsPerDay);
+                    CHECK(!item.sentByUs);
+                }
+            }
+            CHECK(sawTimer);
+        }
+
+        {
             const Bytes face = {0xFF, 0xD8, 0xFF, 0xE0, 'j', 'p', 'g'};
             alice.setAvatar(face, "image/jpeg");
             bob.sync();

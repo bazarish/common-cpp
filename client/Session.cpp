@@ -61,6 +61,7 @@ bool isBlank(const std::string& text)
 }
 
 const char* const kTypeFile = "file";
+const char* const kTypeChatTimer = "chat.timer";
 const char* const kTypeImage = "image";
 const char* const kTypeAudio = "audio";
 constexpr std::size_t kDeliveryIdBytes = 16;
@@ -235,7 +236,7 @@ nlohmann::json audioBody(const std::int64_t durationMs, const Bytes& opus)
 bool echoesToOwnDevices(const std::string& type)
 {
     static const std::set<std::string> kEchoed{
-        "text", "image", "audio", "edit", "delete", "reaction", "chat.clear"};
+        "text", "image", "audio", "edit", "delete", "reaction", "chat.clear", "chat.timer"};
     return kEchoed.find(type) != kEchoed.end();
 }
 
@@ -277,6 +278,12 @@ void addReplyAndForward(
 }
 
 }  // namespace
+
+bool isChatTimerChoice(const std::int64_t seconds)
+{
+    return std::find(kChatTimerChoices.begin(), kChatTimerChoices.end(), seconds)
+        != kChatTimerChoices.end();
+}
 
 nlohmann::json groupBlockToJson(const GroupBlock& block)
 {
@@ -2358,6 +2365,16 @@ void Session::sendChatClear(const std::string& peerFingerprint)
     sendContent(peerFingerprint, std::move(inner));
 }
 
+void Session::sendChatTimer(const std::string& peerFingerprint, const std::int64_t seconds)
+{
+    if (!isChatTimerChoice(seconds)) {
+        throw std::invalid_argument("not an auto-delete timer a chat can carry");
+    }
+    nlohmann::json inner
+        = envelope(kTypeChatTimer, toHex(randomBytes(8)), {{"seconds", seconds}});
+    sendContent(peerFingerprint, std::move(inner));
+}
+
 void Session::setFileSource(std::shared_ptr<const FileSource> files)
 {
     files_ = std::move(files);
@@ -3276,6 +3293,10 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 }
             } else if (type == "chat.clear") {
                 message.contentType = type;
+            } else if (type == kTypeChatTimer
+                && isChatTimerChoice(body.value("seconds", std::int64_t{-1}))) {
+                message.contentType = type;
+                message.timerSeconds = body.at("seconds").get<std::int64_t>();
             } else if (type == "contact.accept") {
                 message.contentType = type;
             } else if (type == "contact.routing") {
