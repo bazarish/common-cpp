@@ -3,9 +3,11 @@
 
 #include "TestUtil.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 using namespace bazarish;
 
@@ -70,6 +72,11 @@ int main()
     CHECK(serveWebAsset(assets.file("style.css"), asking("W/" + etag)).status == kNotModified);
     CHECK(serveWebAsset(assets.file("style.css"), asking("*")).status == kNotModified);
     CHECK(serveWebAsset(assets.file("style.css"), asking("\"other\"")).status == kOk);
+
+    write(dir / "backdrop.avif", "picture");
+    const std::vector<std::string> names = assets.published();
+    CHECK(std::find(names.begin(), names.end(), "backdrop.avif") != names.end());
+    CHECK(assets.file("backdrop.avif").contentType == "image/avif");
 
     write(dir / "copy.css", css);
     CHECK(assets.file("copy.css").etag == etag);
