@@ -820,14 +820,16 @@ int main()
             CHECK_THROWS(alice.sendChatTimer(bob.fingerprint(), kSecondsPerHour + 1));
             alice.sendChatTimer(bob.fingerprint(), kDaysPerWeek * kSecondsPerDay);
             bool sawTimer = false;
-            for (const IncomingMessage& item : bob.sync()) {
-                if (item.contentType == "chat.timer") {
-                    sawTimer = true;
-                    CHECK(item.timerSeconds == kDaysPerWeek * kSecondsPerDay);
-                    CHECK(!item.sentByUs);
+            CHECK(waitFor([&]() {
+                for (const IncomingMessage& item : bob.sync()) {
+                    if (item.contentType == "chat.timer") {
+                        sawTimer = true;
+                        CHECK(item.timerSeconds == kDaysPerWeek * kSecondsPerDay);
+                        CHECK(!item.sentByUs);
+                    }
                 }
-            }
-            CHECK(sawTimer);
+                return sawTimer;
+            }));
         }
 
         {
