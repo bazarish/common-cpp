@@ -57,7 +57,7 @@ int main()
     const fs::path source = root / "source.bin";
     writeFile(source, original);
 
-    const PreparedFile prepared = prepareFile(*localFiles()->open(source), root / "source.enc");
+    const PreparedFile prepared = prepareFile(*localFiles()->open(source.string()), root / "source.enc");
     const std::string announced = toHex(sha256File(source));
     CHECK(prepared.size == fs::file_size(prepared.ciphertextPath));
     CHECK(prepared.sha256.size() == 64);

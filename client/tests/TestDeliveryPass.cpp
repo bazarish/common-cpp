@@ -686,7 +686,7 @@ int main()
             std::ofstream(forwardedFile) << "fwd";
             alice.sendPicture(
                 bob.fingerprint(), Bytes{'P', 'N', 'G'}, "p.png", "image/png", {}, {}, {}, true);
-            alice.sendFile(bob.fingerprint(), forwardedFile, {}, {}, {}, true);
+            alice.sendFile(bob.fingerprint(), forwardedFile.string(), {}, {}, {}, true);
             alice.sendPicture(bob.fingerprint(), Bytes{'J', 'P', 'G'}, "own.jpg", "image/jpeg");
             std::map<std::string, bool> marks;
             for (int round = 0; round < 3 && marks.size() < 3; ++round) {
@@ -1008,7 +1008,7 @@ int main()
 
             bool refused = false;
             try {
-                alice.sendFile(alice.fingerprint(), aDir / "meta", "", {}, "");
+                alice.sendFile(alice.fingerprint(), (aDir / "meta").string(), "", {}, "");
             } catch (const std::exception&) {
                 refused = true;
             }
