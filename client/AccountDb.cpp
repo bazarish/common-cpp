@@ -4,6 +4,7 @@
 #include "AccountKey.hpp"
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/PathText.hpp>
 
 #include <sqlcipher/sqlite3.h>
 
@@ -35,7 +36,8 @@ void run(sqlite3* const db, const std::string& sql)
 sqlite3* openKeyed(const fs::path& file, const Bytes& key)
 {
     sqlite3* db = nullptr;
-    if (sqlite3_open(file.string().c_str(), &db) != SQLITE_OK) {
+    // SQLite takes a UTF-8 file name.
+    if (sqlite3_open(utf8OfPath(file).c_str(), &db) != SQLITE_OK) {
         sqlite3_close(db);
         return nullptr;
     }

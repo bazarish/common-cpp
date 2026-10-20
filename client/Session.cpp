@@ -12,6 +12,7 @@
 #include "I2pRouter.hpp"
 
 #include <bazarish/Address.hpp>
+#include <bazarish/PathText.hpp>
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Cms.hpp>
@@ -2134,7 +2135,7 @@ bool Session::announceTransfer(const std::string& type, const std::string& peerF
                 {"name", name},
                 {"size", size},
                 {"sha256", digest},
-                {"mime", guessMime(name)},
+                {"mime", guessMime(pathFromUtf8(name))},
             }},
     });
     addReplyAndForward(inner, replyTo, forwarded);

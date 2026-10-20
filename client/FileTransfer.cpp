@@ -4,6 +4,7 @@
 #include <bazarish/Cms.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Log.hpp>
+#include <bazarish/PathText.hpp>
 
 #include <array>
 #include <chrono>
@@ -44,7 +45,7 @@ public:
         , out_(path_, std::ios::binary | std::ios::trunc)
     {
         if (!out_) {
-            throw std::runtime_error("failed to open " + path_.string());
+            throw std::runtime_error("failed to open " + utf8OfPath(path_));
         }
     }
 
@@ -55,7 +56,7 @@ public:
         }
         out_.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
         if (!out_) {
-            throw std::runtime_error("failed to write " + path_.string());
+            throw std::runtime_error("failed to write " + utf8OfPath(path_));
         }
         size_ += size;
     }
@@ -66,7 +67,7 @@ public:
     {
         out_.flush();
         if (!out_) {
-            throw std::runtime_error("failed to flush " + path_.string());
+            throw std::runtime_error("failed to flush " + utf8OfPath(path_));
         }
         out_.close();
     }
@@ -150,7 +151,7 @@ public:
         , out_(path_, std::ios::binary | std::ios::trunc)
     {
         if (!out_) {
-            throw std::runtime_error("failed to open " + path_.string());
+            throw std::runtime_error("failed to open " + utf8OfPath(path_));
         }
     }
 
@@ -158,7 +159,7 @@ public:
     {
         out_.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
         if (!out_) {
-            throw std::runtime_error("failed to write " + path_.string());
+            throw std::runtime_error("failed to write " + utf8OfPath(path_));
         }
     }
 
@@ -166,7 +167,7 @@ public:
     {
         out_.close();
         if (!out_) {
-            throw std::runtime_error("failed to close " + path_.string());
+            throw std::runtime_error("failed to close " + utf8OfPath(path_));
         }
     }
 
@@ -175,7 +176,7 @@ public:
         out_.close();
         std::error_code ec;
         if (!fs::remove(path_, ec) && ec) {
-            log::warn("a broken download stays at {}: {}", path_.string(), ec.message());
+            log::warn("a broken download stays at {}: {}", utf8OfPath(path_), ec.message());
         }
     }
 
@@ -186,12 +187,12 @@ private:
 
 class LocalFileInput : public FileInput {
 public:
-    explicit LocalFileInput(const std::string& path)
-        : path_(path)
+    explicit LocalFileInput(fs::path path)
+        : path_(std::move(path))
         , in_(path_, std::ios::binary)
     {
         if (!in_) {
-            throw std::runtime_error("failed to open " + path_);
+            throw std::runtime_error("failed to open " + utf8OfPath(path_));
         }
     }
 
@@ -199,28 +200,31 @@ public:
     {
         in_.read(static_cast<char*>(buffer), static_cast<std::streamsize>(size));
         if (in_.bad()) {
-            throw std::runtime_error("failed to read " + path_);
+            throw std::runtime_error("failed to read " + utf8OfPath(path_));
         }
         return static_cast<std::size_t>(in_.gcount());
     }
 
 private:
-    std::string path_;
+    fs::path path_;
     std::ifstream in_;
 };
 
 class LocalFiles : public FileSource {
 public:
-    bool exists(const std::string& location) const override { return fs::exists(location); }
+    bool exists(const std::string& location) const override
+    {
+        return fs::exists(pathFromUtf8(location));
+    }
 
     std::string name(const std::string& location) const override
     {
-        return fs::path(location).filename().string();
+        return utf8OfPath(pathFromUtf8(location).filename());
     }
 
     std::unique_ptr<FileInput> open(const std::string& location) const override
     {
-        return std::make_unique<LocalFileInput>(location);
+        return std::make_unique<LocalFileInput>(pathFromUtf8(location));
     }
 };
 
@@ -233,7 +237,9 @@ std::shared_ptr<const FileSource> localFiles()
 
 FileTarget fileTargetAt(const fs::path& dest)
 {
-    return FileTarget{fs::path(dest.string() + ".part"),
+    fs::path part = dest;
+    part += ".part";
+    return FileTarget{part,
         [dest]() { return std::make_unique<LocalFileOutput>(dest); }};
 }
 

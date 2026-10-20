@@ -3,6 +3,7 @@
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Crypto.hpp>
+#include <bazarish/PathText.hpp>
 #include <bazarish/ServerDescriptor.hpp>
 
 #include "TestUtil.hpp"
@@ -182,6 +183,25 @@ int main()
         CHECK(threw);
         CHECK(!fs::exists(dest));
         CHECK(!fs::exists(dest.string() + ".part"));
+    }
+
+    {
+        const std::string fileName = "Документ №1.bin";
+        const fs::path named = root / pathFromUtf8(fileName);
+        writeFile(named, original);
+        const std::string location = utf8OfPath(named);
+        CHECK(localFiles()->exists(location));
+        CHECK(localFiles()->name(location) == fileName);
+        const std::unique_ptr<FileInput> input = localFiles()->open(location);
+        Bytes back(original.size());
+        std::size_t got = 0;
+        while (got < back.size()) {
+            const std::size_t read = input->read(back.data() + got, back.size() - got);
+            CHECK(read > 0);
+            got += read;
+        }
+        CHECK(back == original);
+        CHECK(utf8OfPath(fileTargetAt(named).part) == location + ".part");
     }
 
     fs::remove_all(root);

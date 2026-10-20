@@ -1,9 +1,11 @@
 // Bazarish project (c) 2026
+#include "AccountDb.hpp"
 #include "AccountManager.hpp"
 #include "Session.hpp"
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Cms.hpp>
+#include <bazarish/PathText.hpp>
 
 #include "TestUtil.hpp"
 
@@ -212,6 +214,16 @@ int main()
         manager.remove(b.id);
         CHECK(!manager.exists(b.id));
         CHECK(manager.list().size() == 4);
+    }
+
+    {
+        const fs::path named = root / pathFromUtf8("Профиль.db");
+        {
+            AccountDb db(named, "secret");
+            db.putText("probe", "value");
+        }
+        CHECK(fs::exists(named));
+        CHECK(AccountDb(named, "secret").text("probe") == "value");
     }
 
     fs::remove_all(root);
