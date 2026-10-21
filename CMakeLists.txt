@@ -235,6 +235,7 @@ endif()
     bazarish_client_add_test(TestAuthorship)
     bazarish_client_add_test(TestApiClient)
     bazarish_client_add_test(TestCallMedia)
+    bazarish_client_add_test(TestCallWindow)
     bazarish_client_add_test(TestClient)
 
     # Live end-to-end against a running resolver over real I2P: the coordinate a

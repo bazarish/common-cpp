@@ -102,9 +102,7 @@ fs::path i2pDirFor(const fs::path& accountFile)
     return accountFile.parent_path().parent_path() / "i2p";
 }
 
-constexpr std::int64_t kInviteDeliveryTimeoutMs = 120000;
 constexpr std::int64_t kMediaSilenceTimeoutMs = 20000;
-constexpr std::int64_t kRingTimeoutMs = 60000;
 constexpr std::size_t kEndedCallsRemembered = 32;
 
 constexpr int kMessageFormatVersion = 1;
@@ -279,6 +277,16 @@ void addReplyAndForward(
 }
 
 }  // namespace
+
+std::optional<std::int64_t> callAnswerDeadline(
+    const std::int64_t sentAtMs, const std::int64_t arrivedAtMs)
+{
+    if (arrivedAtMs - sentAtMs >= kCallAnswerWindowMs) {
+        return std::nullopt;
+    }
+    // A callee's clock behind the caller's does not lengthen the ring.
+    return std::min(sentAtMs, arrivedAtMs) + kCallAnswerWindowMs;
+}
 
 bool isChatTimerChoice(const std::int64_t seconds)
 {
@@ -3742,6 +3750,7 @@ void Session::clearCall()
     call_.initiator = false;
     call_.muted = false;
     call_.startedAtMs = 0;
+    call_.answerByMs = 0;
     call_.peerRingingAtMs = 0;
     call_.connectedAtMs = 0;
     call_.lastPacketsReceived = 0;
@@ -3783,11 +3792,13 @@ void Session::startCall(const std::string& peerFingerprint)
     auto dgram = openCallMediaSession();
     const std::string callId = toHex(randomBytes(8));
     const Bytes mediaKey = randomBytes(kAeadKeyBytes);
+    const std::int64_t invitedAt = nowMillis();
     const bool delivered = sendCallSignal(peerFingerprint, "call.invite",
         {
             {"callId", callId},
                     {"dest", dgram->routingHost()},
             {"key", toBase64(mediaKey)},
+            {"sentAt", invitedAt},
         });
     call_.state = CallState::eOutgoing;
     call_.callId = callId;
@@ -3796,7 +3807,7 @@ void Session::startCall(const std::string& peerFingerprint)
     call_.initiator = true;
     call_.muted = false;
     call_.startedAtMs = nowMillis();
-    call_.invitedAtMs = call_.startedAtMs;
+    call_.answerByMs = invitedAt + kCallAnswerWindowMs;
     call_.deliveredAtMs = 0;
     call_.dgram = std::move(dgram);
     if (delivered) {
@@ -3932,9 +3943,11 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
 
     if (type == "call.invite") {
         const std::int64_t sentAt = body.value("sentAt", static_cast<std::int64_t>(0));
-        if (sentAt > 0 && nowMillis() - sentAt > kRingTimeoutMs) {
-            bazarish::log::info("call invite ignored: it is {} ms old",
-                nowMillis() - sentAt);
+        const std::int64_t arrivedAt = nowMillis();
+        const std::optional<std::int64_t> answerBy = callAnswerDeadline(sentAt, arrivedAt);
+        if (!answerBy) {
+            bazarish::log::info("call invite ignored: it came {} ms after it was sent",
+                arrivedAt - sentAt);
             return;
         }
         if (std::find(endedCalls_.begin(), endedCalls_.end(), message.callId)
@@ -3985,7 +3998,8 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
         call_.mediaKey = std::move(key);
         call_.initiator = false;
         call_.muted = false;
-        call_.startedAtMs = nowMillis();
+        call_.startedAtMs = arrivedAt;
+        call_.answerByMs = *answerBy;
         try {
             sendCallSignal(from, "call.ring", {{"callId", message.callId}});
         } catch (const std::exception& error) {
@@ -4080,17 +4094,6 @@ void Session::tickCalls()
     if (call_.startedAtMs == 0) {
         return;
     }
-    if (call_.state == CallState::eOutgoing && call_.deliveredAtMs == 0) {
-        if (nowMillis() - call_.invitedAtMs <= kInviteDeliveryTimeoutMs) {
-            return;
-        }
-        const std::string peer = call_.peerFingerprint;
-        logCompletedCall(CallOutcome::eNoAnswer);
-        clearCall();
-        bazarish::log::warn("call invitation to {} never reached their server",
-            bazarish::log::redact(peer));
-        return;
-    }
     if (call_.state == CallState::eActive && call_.media) {
         const std::uint64_t received = call_.media->packetsReceived();
         if (received != call_.lastPacketsReceived) {
@@ -4106,14 +4109,16 @@ void Session::tickCalls()
             return;
         }
     }
-    const std::int64_t since = call_.peerRingingAtMs > 0 ? call_.peerRingingAtMs
-        : (call_.deliveredAtMs > 0 ? call_.deliveredAtMs : call_.startedAtMs);
-    if (nowMillis() - since <= kRingTimeoutMs) {
+    if (nowMillis() <= call_.answerByMs) {
         return;
     }
     if (call_.state == CallState::eOutgoing) {
         const std::string peer = call_.peerFingerprint;
         const std::string callId = call_.callId;
+        if (call_.peerRingingAtMs == 0) {
+            bazarish::log::warn("call to {}: no device of theirs reported ringing",
+                bazarish::log::redact(peer));
+        }
         logCompletedCall(CallOutcome::eNoAnswer);
         clearCall();
         try {

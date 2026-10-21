@@ -114,6 +114,11 @@ inline constexpr std::array<std::int64_t, 5> kChatTimerChoices{kChatTimerOff, kS
 
 bool isChatTimerChoice(std::int64_t seconds);
 
+// An invitation is answered within this of its sentAt, or not at all (docs-main api/Calls.md).
+inline constexpr std::int64_t kCallAnswerWindowMs = 60000;
+// When an invitation stops ringing; none for one that came too late to ring at all.
+std::optional<std::int64_t> callAnswerDeadline(std::int64_t sentAtMs, std::int64_t arrivedAtMs);
+
 struct IncomingMessage {
     std::string contentType;
     std::string fromFingerprint;
@@ -843,7 +848,7 @@ private:
         bool initiator = false;
         bool muted = false;
         std::int64_t startedAtMs = 0;
-        std::int64_t invitedAtMs = 0;
+        std::int64_t answerByMs = 0;
         std::int64_t deliveredAtMs = 0;
         CallStage stage = CallStage::eNone;
         std::int64_t peerRingingAtMs = 0;
