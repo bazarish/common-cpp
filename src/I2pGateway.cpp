@@ -180,7 +180,7 @@ private:
 class GatewayEndpoint : public EndpointBackend {
 public:
     GatewayEndpoint(std::shared_ptr<Link> link, std::uint32_t id, std::string host, bool raw,
-        bool published, std::string label, std::string owner);
+        bool published, std::string label, std::string owner, std::string target);
     ~GatewayEndpoint() override;
 
     bool ready() const override { return ready_.load(); }
@@ -259,6 +259,7 @@ private:
     bool published_;
     std::string label_;
     std::string owner_;
+    std::string target_;
     std::atomic<bool> ready_{false};
     std::atomic<bool> stopped_{false};
     std::atomic<int> in_{0};
@@ -526,7 +527,8 @@ void GatewayStream::close()
 }
 
 GatewayEndpoint::GatewayEndpoint(std::shared_ptr<Link> link, const std::uint32_t id,
-    std::string host, const bool raw, const bool published, std::string label, std::string owner)
+    std::string host, const bool raw, const bool published, std::string label, std::string owner,
+    std::string target)
     : link_(std::move(link))
     , id_(id)
     , host_(std::move(host))
@@ -534,6 +536,7 @@ GatewayEndpoint::GatewayEndpoint(std::shared_ptr<Link> link, const std::uint32_t
     , published_(published)
     , label_(std::move(label))
     , owner_(std::move(owner))
+    , target_(std::move(target))
 {
 }
 
@@ -545,11 +548,15 @@ GatewayEndpoint::~GatewayEndpoint()
 void GatewayEndpoint::statusChanged(
     const bool isReady, const int in, const int out, const int leases, const bool localRoute)
 {
-    ready_.store(isReady);
+    const bool wasReady = ready_.exchange(isReady);
     in_.store(in);
     out_.store(out);
     leases_.store(leases);
     localRoute_.store(localRoute);
+    if (isReady && !wasReady && !localRoute && !target_.empty()) {
+        bazarish::log::info("i2p: the way to {} goes into I2P: the gateway does not route it",
+            bazarish::log::redact(target_));
+    }
 }
 
 void GatewayEndpoint::datagramArrived(std::vector<std::uint8_t> payload)
@@ -1249,7 +1256,7 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         throw std::runtime_error("bazarish::i2p: the gateway named no address");
     }
     const auto endpoint = std::make_shared<GatewayEndpoint>(
-        link_, id, host, raw, config.published, config.label, config.owner);
+        link_, id, host, raw, config.published, config.label, config.owner, config.target);
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->endpoints[id] = endpoint;
