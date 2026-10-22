@@ -993,6 +993,7 @@ void GatewayRouter::coverLoop()
     auto churnAt = nextChurn();
     auto openAt = std::chrono::steady_clock::now();
     std::chrono::milliseconds backoff = kFirstRetry;
+    std::uint64_t carrySeen = carryReturns();
 
     while (live_.load()) {
         std::this_thread::sleep_for(kCoverTick);
@@ -1001,6 +1002,12 @@ void GatewayRouter::coverLoop()
         }
         const auto now = std::chrono::steady_clock::now();
         reattachOrphans();
+        // A wait earned on the old network is over once the device moves to another.
+        if (const std::uint64_t carry = carryReturns(); carry != carrySeen) {
+            carrySeen = carry;
+            openAt = now;
+            backoff = kFirstRetry;
+        }
 
         if (!hasControl()) {
             if (now < openAt) {

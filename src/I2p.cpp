@@ -172,6 +172,11 @@ std::uint64_t carryReturns()
     return g_carryReturns.load();
 }
 
+void networkChanged()
+{
+    backend::noteCarryReturned();
+}
+
 void backend::noteCarryReturned()
 {
     ++g_carryReturns;
