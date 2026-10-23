@@ -31,6 +31,7 @@
 #include <deque>
 #include <mutex>
 #include <regex>
+#include <stdexcept>
 #include <thread>
 
 namespace bazarish::http {
@@ -44,6 +45,23 @@ using asio::ip::tcp;
 
 constexpr std::size_t kEscapeDigits = 2;
 constexpr int kHexBase = 16;
+
+// RFC 9110 8.6: a reply that carries no body must not claim a length of 0, which Beast's
+// prepare_payload writes; a 304 would then overwrite the length of the copy the browser holds.
+void preparePayload(http::response<http::string_body>& out)
+{
+    const http::status status = out.result();
+    if (http::to_status_class(status) != http::status_class::informational
+        && status != http::status::no_content && status != http::status::not_modified) {
+        out.prepare_payload();
+        return;
+    }
+    if (!out.body().empty()) {
+        throw std::invalid_argument("a reply that carries no body was given one");
+    }
+    out.content_length(boost::none);
+    out.chunked(false);
+}
 
 std::string lowered(std::string text)
 {
@@ -398,7 +416,7 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                         }
                         out.body() = refusal->body;
                         out.keep_alive(false);
-                        out.prepare_payload();
+                        preparePayload(out);
                         boost::system::error_code refusalError;
                         co_await http::async_write(stream, out,
                             asio::redirect_error(asio::use_awaitable, refusalError));
@@ -484,7 +502,7 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                     }
                     out.body() = immediate->body;
                     out.keep_alive(parsed.keep_alive());
-                    out.prepare_payload();
+                    preparePayload(out);
                     boost::system::error_code writeError;
                     beast::get_lowest_layer(stream).expires_after(options.readTimeout);
                     co_await http::async_write(
@@ -499,7 +517,7 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
             out.set(http::field::content_type, "application/json");
             out.body() = R"({"error":{"code":"DELIVERY_REJECTED","message":"unknown route"}})";
             out.keep_alive(parsed.keep_alive());
-            out.prepare_payload();
+            preparePayload(out);
             boost::system::error_code writeError;
             co_await http::async_write(
                 stream, out, asio::redirect_error(asio::use_awaitable, writeError));

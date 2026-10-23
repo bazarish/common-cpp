@@ -102,12 +102,45 @@ int main()
         answer.body = named && answered && counted ? "welcome" : "no";
         return answer;
     });
+    server.get("/fresh", [](const http::Request& request) {
+        http::Response answer;
+        answer.headers["ETag"] = "\"v1\"";
+        if (request.header("if-none-match") == "\"v1\"") {
+            answer.status = 304;
+            return answer;
+        }
+        answer.contentType = "text/plain";
+        answer.body = "fresh body";
+        return answer;
+    });
     server.get("/slow", [](const http::Request&) {
         std::this_thread::sleep_for(std::chrono::seconds(kTimeoutSeconds));
         return http::Response{};
     });
     const int port = server.start();
     CHECK(port > 0);
+
+    {
+        // One kept-alive connection: a 304 names no length and leaves nothing for the next reply.
+        boost::asio::io_context io;
+        boost::asio::ip::tcp::socket peer(io);
+        peer.connect({boost::asio::ip::make_address("127.0.0.1"), static_cast<unsigned short>(port)});
+        const std::string conditional
+            = "GET /fresh HTTP/1.1\r\nHost: 127.0.0.1\r\nIf-None-Match: \"v1\"\r\n\r\n";
+        boost::asio::write(peer, boost::asio::buffer(conditional));
+        const std::string notModified = readHead(peer);
+        CHECK(notModified.rfind("HTTP/1.1 304", 0) == 0);
+        CHECK(notModified.find("ETag: \"v1\"") != std::string::npos);
+        CHECK(notModified.find("Content-Length") == std::string::npos);
+        const std::string plain = "GET /fresh HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        boost::asio::write(peer, boost::asio::buffer(plain));
+        const std::string fresh = readHead(peer);
+        CHECK(fresh.rfind("HTTP/1.1 200", 0) == 0);
+        CHECK(fresh.find("Content-Length: 10") != std::string::npos);
+        std::string body(std::string("fresh body").size(), '\0');
+        boost::asio::read(peer, boost::asio::buffer(body));
+        CHECK(body == "fresh body");
+    }
 
     http::ClientOptions options;
     options.connectTimeout = std::chrono::seconds(kTimeoutSeconds);
