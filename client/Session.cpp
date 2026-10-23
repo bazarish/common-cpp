@@ -498,6 +498,11 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
         }
     }
 
+    BotMenuMarks botMenus;
+    if (db->has("bot-menus")) {
+        botMenus = BotMenuMarks::fromJson(nlohmann::json::parse(db->text("bot-menus")));
+    }
+
     Session::RoutingFanout fanout;
     if (db->has("routing-fanout")) {
         const nlohmann::json queued = nlohmann::json::parse(db->text("routing-fanout"));
@@ -510,6 +515,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     Session session(accountFile, std::move(client), std::move(sealing), std::move(contacts));
     session.db_ = std::move(db);
     session.blocked_ = std::move(blocked);
+    session.botMenus_ = std::move(botMenus);
     session.fanout_ = std::move(fanout);
     session.pendingPassRevokes_ = std::move(pendingRevokes);
     session.acceptCalls_ = meta.value("acceptCalls", true);
@@ -1364,6 +1370,9 @@ void Session::removeContact(const std::string& peerFingerprint)
     db_->erase("avatar-" + peerFingerprint);
     forgetSentFilesFor(peerFingerprint);
     persistContacts();
+    if (botMenus_.forget(peerFingerprint)) {
+        db_->putText("bot-menus", botMenus_.toJson().dump());
+    }
 }
 
 I2pDestStatus Session::i2pDestStatus()
@@ -2182,6 +2191,17 @@ void Session::sendCallback(
     sendContent(peerFingerprint, std::move(inner));
 }
 
+void Session::sendMenu(
+    const std::string& peerFingerprint, const BotMenu& menu, const DeliveryWatch& watch)
+{
+    requireBotMenu(menu);
+    nlohmann::json inner = envelope(kTypeBotMenu, toHex(randomBytes(8)), {
+        {"menuId", menu.id},
+        {"items", botMenuItemsJson(menu.items)},
+    });
+    sendContent(peerFingerprint, std::move(inner), watch);
+}
+
 bool Session::sendEdit(const std::string& peerFingerprint, const std::string& refMessageId,
     const std::string& text, const InlineKeyboard& keyboard,
     const DeliveryWatch& watch)
@@ -2734,6 +2754,10 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     if (groupBlockSource_) {
         inner["group"] = groupBlockToJson(groupBlockSource_(peerFingerprint));
     }
+    if (const std::optional<std::int64_t> menuId = botMenus_.idFor(peerFingerprint);
+        menuId && carriesMenuId(inner.value("type", std::string()))) {
+        inner["menuId"] = *menuId;
+    }
     const nlohmann::json echoPayload
         = echoesToOwnDevices(inner.value("type", std::string())) ? inner : nlohmann::json();
     const auto found = contacts_.find(peerFingerprint);
@@ -3076,6 +3100,15 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 message.contentType = type;
                 message.callbackData = body.value("data", std::string());
                 message.refId = body.value("ref", std::string());
+            } else if (type == kTypeBotMenu && !message.sentByUs) {
+                const BotMenu menu = botMenuFromJson(body);
+                if (!botMenus_.admit(message.fromFingerprint, menu.id, message.sentAt)) {
+                    releaseItem(entry.id);
+                    continue;
+                }
+                db_->putText("bot-menus", botMenus_.toJson().dump());
+                message.contentType = type;
+                message.menuItemsJson = botMenuItemsJson(menu.items).dump();
             } else if (type == "edit") {
                 message.contentType = type;
                 message.refId = body.value("ref", std::string());
@@ -3317,6 +3350,9 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
 
             if (body.contains("keyboard")) {
                 message.keyboardJson = body.at("keyboard").dump();
+            }
+            if (body.contains("menuId")) {
+                message.menuId = botMenuIdFromJson(body.at("menuId"));
             }
             if (body.contains("replyTo")) {
                 message.replyTo = body.value("replyTo", std::string());

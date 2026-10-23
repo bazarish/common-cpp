@@ -55,6 +55,7 @@ add_library(bazarish_common STATIC
     src/AliasMaintenance.cpp
     src/I2pHttp.cpp
     src/Reactions.cpp
+    src/PlainText.cpp
     src/Log.cpp
     src/ReseedSu3.cpp
     src/HttpClient.cpp
@@ -189,6 +190,7 @@ if(BAZARISH_WITH_CLIENT)
         client/ApiClient.cpp
         client/AudioCodec.cpp
         client/Authorship.cpp
+        client/BotMenu.cpp
         client/LoginSigner.cpp
         client/AudioIo.cpp
         client/CallMedia.cpp
@@ -233,6 +235,7 @@ if(NOT WIN32)
     bazarish_client_add_test(TestDevicePairing)
 endif()
     bazarish_client_add_test(TestAuthorship)
+    bazarish_client_add_test(TestBotMenu)
     bazarish_client_add_test(TestApiClient)
     bazarish_client_add_test(TestCallMedia)
     bazarish_client_add_test(TestCallWindow)

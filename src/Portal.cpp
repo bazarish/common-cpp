@@ -5,12 +5,12 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/I2pAddress.hpp>
 #include <bazarish/Links.hpp>
+#include <bazarish/PlainText.hpp>
 
 #include <nlohmann/json.hpp>
 #include <openssl/asn1.h>
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <stdexcept>
 #include <string_view>
@@ -18,29 +18,6 @@
 namespace bazarish::service {
 
 namespace {
-
-struct CodePointRange {
-    unsigned long first;
-    unsigned long last;
-};
-
-// SignInWithKey.md, "The consumer": C0, DEL, C1, the line and paragraph separators, bidi controls.
-constexpr std::array<CodePointRange, 6> kForbiddenCodePoints = {{
-    {0x0000, 0x001F},
-    {0x007F, 0x009F},
-    {0x061C, 0x061C},
-    {0x200E, 0x200F},
-    {0x2028, 0x202E},
-    {0x2066, 0x2069},
-}};
-
-bool isForbidden(const unsigned long codePoint)
-{
-    return std::any_of(kForbiddenCodePoints.begin(), kForbiddenCodePoints.end(),
-        [codePoint](const CodePointRange& range) {
-            return codePoint >= range.first && codePoint <= range.last;
-        });
-}
 
 void requireField(const std::string& value, const std::size_t limit, const std::string& what)
 {
@@ -58,7 +35,7 @@ void requireField(const std::string& value, const std::size_t limit, const std::
         if (length <= 0) {
             throw std::runtime_error("the consumer's " + what + " is not UTF-8");
         }
-        if (isForbidden(codePoint)) {
+        if (isForbiddenCodePoint(codePoint)) {
             throw std::runtime_error("the consumer's " + what + " carries control characters");
         }
         cursor += length;

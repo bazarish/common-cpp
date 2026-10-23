@@ -6,6 +6,7 @@
 #include "AudioIo.hpp"
 #include "CallMedia.hpp"
 #include "Authorship.hpp"
+#include "BotMenu.hpp"
 #include "Client.hpp"
 #include "FileTransfer.hpp"
 #include "OutboundLeases.hpp"
@@ -138,6 +139,8 @@ struct IncomingMessage {
     std::string callId;
 
     std::string keyboardJson;
+    std::optional<std::int64_t> menuId;
+    std::string menuItemsJson;
     std::string commandName;
     std::string commandArgs;
     std::string callbackData;
@@ -471,6 +474,9 @@ public:
 
     void sendCallback(const std::string& peerFingerprint, const std::string& data,
         const std::string& refMessageId = {});
+
+    void sendMenu(
+        const std::string& peerFingerprint, const BotMenu& menu, const DeliveryWatch& watch = {});
 
     bool sendEdit(const std::string& peerFingerprint, const std::string& refMessageId,
         const std::string& text, const InlineKeyboard& keyboard = {},
@@ -904,6 +910,7 @@ private:
     Bytes deliverySecret_;
     std::map<std::string, Contact> contacts_;
     std::set<std::string> blocked_;
+    BotMenuMarks botMenus_;
     // Pass handles (base64) our server has not confirmed dropping.
     std::set<std::string> pendingPassRevokes_;
     std::vector<std::string> contactsAskedBy_;
