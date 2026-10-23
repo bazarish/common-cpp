@@ -4,6 +4,7 @@
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Portal.hpp>
 
+#include <atomic>
 #include <optional>
 #include <string>
 
@@ -21,7 +22,8 @@ public:
     std::optional<int> send(const std::string& challenge) const;
 
     // The challenge a link points at, checked to return where it came from; empty if unreached.
-    std::optional<std::string> fetch(const std::string& link) const;
+    std::optional<std::string> fetch(
+        const std::string& link, const std::atomic<bool>& cancelled) const;
 
 private:
     Identity identity_;

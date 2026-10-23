@@ -7,6 +7,7 @@
 #include <bazarish/I2p.hpp>
 #include <bazarish/Portal.hpp>
 
+#include <atomic>
 #include <functional>
 #include <optional>
 #include <string>
@@ -38,10 +39,11 @@ std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
     const service::LoginCallback& callback, const std::string& challenge, const std::string& blob,
     bazarish::i2p::Privacy privacy, const std::string& owner);
 
-// The challenge a link points at, as the site sent it; empty when the site could not be reached.
+// The challenge a link points at, as the site sent it; empty when the site could not be reached
+// or the asker gave up, which stops it before the next step.
 std::optional<std::string> getLoginChallengeOverI2p(bazarish::i2p::Router& router,
     const service::LoginCallback& address, bazarish::i2p::Privacy privacy,
-    const std::string& owner);
+    const std::string& owner, const std::atomic<bool>& cancelled);
 
 FetchTransport resolverHeldDest(bazarish::i2p::Router& router,
     bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax,

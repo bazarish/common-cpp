@@ -62,7 +62,8 @@ std::optional<int> LoginSigner::send(const std::string& challenge) const
     return postLoginOverI2p(router, *callback, challenge, blob, tunnelPrivacy(), owner_);
 }
 
-std::optional<std::string> LoginSigner::fetch(const std::string& link) const
+std::optional<std::string> LoginSigner::fetch(
+    const std::string& link, const std::atomic<bool>& cancelled) const
 {
     const std::optional<service::LoginCallback> address = service::readLoginChallengeLink(link);
     if (!address) {
@@ -71,7 +72,7 @@ std::optional<std::string> LoginSigner::fetch(const std::string& link) const
     bazarish::i2p::Router& router = readyRouter();
     log::info("fetching a login challenge from {}", log::redact(address->host));
     const std::optional<std::string> challenge
-        = getLoginChallengeOverI2p(router, *address, tunnelPrivacy(), owner_);
+        = getLoginChallengeOverI2p(router, *address, tunnelPrivacy(), owner_, cancelled);
     if (challenge) {
         service::requireChallengeReturnsTo(*challenge, address->host);
     }

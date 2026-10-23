@@ -216,13 +216,16 @@ std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
 
 std::optional<std::string> getLoginChallengeOverI2p(bazarish::i2p::Router& router,
     const service::LoginCallback& address, const bazarish::i2p::Privacy privacy,
-    const std::string& owner)
+    const std::string& owner, const std::atomic<bool>& cancelled)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
         = takeThrowawayDest(router, privacy, owner, address.host, kSignInLabel);
+    if (cancelled.load()) {
+        return std::nullopt;
+    }
     sayStage(FetchStage::eReaching);
     const auto stream = endpoint->connect(address.host, std::chrono::seconds(kDialSeconds));
-    if (!stream) {
+    if (!stream || cancelled.load()) {
         return std::nullopt;
     }
     stream->setReadTimeout(std::chrono::seconds(kReplySeconds));
