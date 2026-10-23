@@ -80,6 +80,33 @@ std::string placeHost(const std::string& place)
     return rest.substr(0, rest.find('/'));
 }
 
+LoginCallback parseI2pPlace(const std::string& address, const std::string& what)
+{
+    if (address.size() > kLoginCallbackMax) {
+        throw std::runtime_error("the " + what + " is too long");
+    }
+    if (address.rfind(kLoginCallbackScheme, 0) != 0) {
+        throw std::runtime_error("the " + what + " is not an http address");
+    }
+    const std::string rest = address.substr(std::string(kLoginCallbackScheme).size());
+    const std::size_t slash = rest.find('/');
+    if (slash == std::string::npos) {
+        throw std::runtime_error("the " + what + " has no path");
+    }
+    LoginCallback parsed{rest.substr(0, slash), rest.substr(slash)};
+    if (!isB32I2pHost(parsed.host)) {
+        throw std::runtime_error("the " + what + " is not a .b32.i2p address");
+    }
+    for (const char c : parsed.path) {
+        const bool allowed = std::isalnum(static_cast<unsigned char>(c))
+            || std::string_view(kCallbackPathMarks).find(c) != std::string_view::npos;
+        if (!allowed) {
+            throw std::runtime_error("the " + what + "'s path carries characters it may not");
+        }
+    }
+    return parsed;
+}
+
 }  // namespace
 
 std::string encodeLoginChallenge(const std::string& envelope)
@@ -108,28 +135,7 @@ std::string decodeLoginChallenge(const std::string& challenge)
 
 LoginCallback parseLoginCallback(const std::string& callback, const LoginConsumer& consumer)
 {
-    if (callback.size() > kLoginCallbackMax) {
-        throw std::runtime_error("the callback is too long");
-    }
-    if (callback.rfind(kLoginCallbackScheme, 0) != 0) {
-        throw std::runtime_error("the callback is not an http address");
-    }
-    const std::string rest = callback.substr(std::string(kLoginCallbackScheme).size());
-    const std::size_t slash = rest.find('/');
-    if (slash == std::string::npos) {
-        throw std::runtime_error("the callback has no path");
-    }
-    LoginCallback parsed{rest.substr(0, slash), rest.substr(slash)};
-    if (!isB32I2pHost(parsed.host)) {
-        throw std::runtime_error("the callback is not a .b32.i2p address");
-    }
-    for (const char c : parsed.path) {
-        const bool allowed = std::isalnum(static_cast<unsigned char>(c))
-            || std::string_view(kCallbackPathMarks).find(c) != std::string_view::npos;
-        if (!allowed) {
-            throw std::runtime_error("the callback's path carries characters it may not");
-        }
-    }
+    const LoginCallback parsed = parseI2pPlace(callback, "callback");
     const bool listed = std::any_of(consumer.place.begin(), consumer.place.end(),
         [&parsed](const std::string& place) { return placeHost(place) == parsed.host; });
     if (!listed) {
@@ -199,6 +205,23 @@ std::optional<LoginCallback> readLoginCallback(const std::string& challenge)
         throw std::runtime_error("this login challenge's callback is not text");
     }
     return parseLoginCallback(envelope.at("callback").get<std::string>(), consumer);
+}
+
+std::optional<LoginCallback> readLoginChallengeLink(const std::string& link)
+{
+    const std::string prefix = std::string(kSignUri) + kLoginLinkField;
+    if (link.rfind(prefix, 0) != 0) {
+        return std::nullopt;
+    }
+    return parseI2pPlace(kLoginCallbackScheme + link.substr(prefix.size()), "link");
+}
+
+void requireChallengeReturnsTo(const std::string& challenge, const std::string& host)
+{
+    const std::optional<LoginCallback> callback = readLoginCallback(challenge);
+    if (!callback || callback->host != host) {
+        throw std::runtime_error("the challenge does not send its signature back to " + host);
+    }
 }
 
 std::int64_t loginChallengeExpiresAt(const std::string& challenge)

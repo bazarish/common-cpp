@@ -117,6 +117,32 @@ void testCallbacks(const Session& session)
     CHECK_THROWS(service::loginChallengeExpiresAt(encodedChallenge(undated)));
 }
 
+void testChallengeLinks()
+{
+    const std::string at = std::string(kSignUri) + service::kLoginLinkField;
+    CHECK(!service::readLoginChallengeLink(encodedChallenge(envelopeWith(siteConsumer())))
+            .has_value());
+    const std::optional<service::LoginCallback> link
+        = service::readLoginChallengeLink(at + kSiteHost + "/login/c/5f3c");
+    CHECK(link.has_value() && link->host == kSiteHost && link->path == "/login/c/5f3c");
+    for (const std::string& refused : {
+             at + "site.example/login/c/5f3c",
+             at + kSiteHost,
+             at + kSiteHost + ":8080/c",
+             at + "http://" + kSiteHost + "/c",
+             at + kSiteHost + "/a b",
+             at + kSiteHost + "/" + std::string(service::kLoginCallbackMax, 'c'),
+         }) {
+        CHECK_THROWS(service::readLoginChallengeLink(refused));
+    }
+
+    service::requireChallengeReturnsTo(withCallback("http://" + kSiteHost + "/in"), kSiteHost);
+    CHECK_THROWS(service::requireChallengeReturnsTo(
+        withCallback("http://" + kBlindedHost + "/in"), kSiteHost));
+    CHECK_THROWS(service::requireChallengeReturnsTo(
+        encodedChallenge(envelopeWith(siteConsumer())), kSiteHost));
+}
+
 }  // namespace
 
 int main()
@@ -181,6 +207,7 @@ int main()
         CHECK_THROWS(session.signLogin(encodedChallenge(future)));
 
         testCallbacks(session);
+        testChallengeLinks();
     }
 
     fs::remove_all(dir);

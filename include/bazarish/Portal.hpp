@@ -56,6 +56,17 @@ LoginCallback parseLoginCallback(const std::string& callback, const LoginConsume
 
 std::optional<LoginCallback> readLoginCallback(const std::string& challenge);
 
+// SignInWithKey.md, "A link to a challenge": bazarish://sign?at=<.b32.i2p host><path>.
+inline constexpr char kLoginLinkField[] = "at=";
+// SignInWithKey.md: the most a client reads of a challenge it fetched by link.
+inline constexpr std::size_t kLoginChallengeMax = 4096;
+
+// Where a link says its challenge waits; empty when the text is not such a link.
+std::optional<LoginCallback> readLoginChallengeLink(const std::string& link);
+
+// A challenge fetched by link has to send its signature back to the host it came from.
+void requireChallengeReturnsTo(const std::string& challenge, const std::string& host);
+
 // Seconds since the epoch, by the clock of the site that minted it.
 std::int64_t loginChallengeExpiresAt(const std::string& challenge);
 

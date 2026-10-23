@@ -214,6 +214,28 @@ std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
     return readI2pHttpHead(*stream).status;
 }
 
+std::optional<std::string> getLoginChallengeOverI2p(bazarish::i2p::Router& router,
+    const service::LoginCallback& address, const bazarish::i2p::Privacy privacy,
+    const std::string& owner)
+{
+    const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
+        = takeThrowawayDest(router, privacy, owner, address.host, kSignInLabel);
+    sayStage(FetchStage::eReaching);
+    const auto stream = endpoint->connect(address.host, std::chrono::seconds(kDialSeconds));
+    if (!stream) {
+        return std::nullopt;
+    }
+    stream->setReadTimeout(std::chrono::seconds(kReplySeconds));
+    const std::string head = buildI2pHttpRequest("GET", address.host, address.path, {}, 0);
+    stream->writeAll(head.data(), head.size());
+    sayStage(FetchStage::eWaiting);
+    const I2pHttpResponse response = readI2pHttpResponse(*stream, service::kLoginChallengeMax);
+    if (response.status != kI2pHttpOk) {
+        throw std::runtime_error("the site answered HTTP " + std::to_string(response.status));
+    }
+    return response.body;
+}
+
 FetchTransport resolverHeldDest(
     bazarish::i2p::Router& router, const bazarish::i2p::Privacy privacy, const std::string& owner)
 {
