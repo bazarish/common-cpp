@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <functional>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 
@@ -27,6 +29,8 @@ constexpr std::size_t kOfflineExpiresBytes = 4;
 
 std::atomic<bool> g_i2pLogging{false};
 std::atomic<std::uint64_t> g_carryReturns{0};
+std::mutex g_carryListenerMutex;
+std::function<void()> g_carryListener;
 
 }  // namespace
 
@@ -177,9 +181,23 @@ void networkChanged()
     backend::noteCarryReturned();
 }
 
+void onCarryReturned(std::function<void()> listener)
+{
+    const std::lock_guard<std::mutex> lock(g_carryListenerMutex);
+    g_carryListener = std::move(listener);
+}
+
 void backend::noteCarryReturned()
 {
     ++g_carryReturns;
+    std::function<void()> listener;
+    {
+        const std::lock_guard<std::mutex> lock(g_carryListenerMutex);
+        listener = g_carryListener;
+    }
+    if (listener) {
+        listener();
+    }
 }
 
 struct Stream::Impl {

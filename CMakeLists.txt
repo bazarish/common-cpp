@@ -116,6 +116,7 @@ endfunction()
 
 bazarish_add_test(TestAuth)
 bazarish_add_test(TestBytes)
+bazarish_add_test(TestCarryReturn)
 bazarish_add_test(TestCrypto)
 bazarish_add_test(TestTls)
 bazarish_add_test(TestCms)

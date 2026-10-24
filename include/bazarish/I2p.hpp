@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -228,6 +229,8 @@ bool i2pLogging();
 // lost, or the device moved to another network.
 std::uint64_t carryReturns();
 void networkChanged();
+// Told on whichever thread grows carryReturns(); an empty function stops the telling.
+void onCarryReturned(std::function<void()> listener);
 
 class Router {
 public:
