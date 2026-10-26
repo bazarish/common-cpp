@@ -79,7 +79,7 @@ int main()
 
         ServerEndpoint endpoint;
         endpoint.serverFingerprint = "serverfp";
-        endpoint.facades = {Facade{false, "127.0.0.1", 18000, {}}};
+        endpoint.facades = {Facade{"127.0.0.1", 18000}};
         sa.connectServer(endpoint);
         CHECK(sa.isConnected());
         CHECK(sa.endpoint().facades.at(0).port == 18000);

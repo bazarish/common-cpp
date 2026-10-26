@@ -28,14 +28,12 @@ namespace bazarish::client {
 using UploadProgressFn = std::function<void(std::uint64_t sent, std::uint64_t total)>;
 
 struct Facade {
-    bool tls = false;
     std::string host;
     int port = 0;
-    std::string basePath;
 };
 
-Facade parseFacadeUrl(const std::string& url);
-std::string facadeToUrl(const Facade& facade);
+Facade parseFacadeAddress(const std::string& address);
+std::string facadeAddress(const Facade& facade);
 
 struct ServerEndpoint {
     std::string serverFingerprint;
@@ -81,7 +79,7 @@ public:
 
     const std::string& clientId() const;
     const ServerEndpoint& endpoint() const;
-    std::string activeFacadeUrl() const;
+    std::string activeFacadeAddress() const;
     void setDestinationOwner(std::string owner);
     void releaseI2pLink();
 

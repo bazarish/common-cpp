@@ -12,7 +12,8 @@ struct ServerDescriptor {
     std::vector<std::string> reseeds;
 };
 
-bool isI2pFacadeUrl(const std::string& url);
+bool isI2pFacadeAddress(const std::string& address);
+bool isI2pUrl(const std::string& url);
 
 void setAllowFacadeWithoutI2pForDevPurposes(bool allow);
 bool allowFacadeWithoutI2pForDevPurposes();

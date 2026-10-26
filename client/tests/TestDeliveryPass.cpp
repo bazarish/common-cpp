@@ -375,7 +375,7 @@ int main()
 
     ServerEndpoint endpoint;
     endpoint.serverFingerprint = stubServerIdentity.fingerprint();
-    endpoint.facades = {Facade{false, "127.0.0.1", port, {}}};
+    endpoint.facades = {Facade{"127.0.0.1", port}};
 
     const Identity resolverRoot = Identity::generate();
     const Identity resolverDelegated = Identity::generate();

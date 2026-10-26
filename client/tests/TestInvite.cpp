@@ -61,7 +61,7 @@ int main()
 
     ServerEndpoint endpoint;
     endpoint.serverFingerprint = serverFp;
-    endpoint.facades = {Facade{false, "127.0.0.1", 9, {}}};
+    endpoint.facades = {Facade{"127.0.0.1", 9}};
 
     const fs::path fileA = uniqueAccountFile("a");
     const std::string passphrase = "at-rest secret";

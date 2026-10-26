@@ -13,8 +13,8 @@ int main()
 {
     const std::string fp = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq";
 
-    const std::string i2pA = "http://kkhioqbaxoc5zj6itqgc6pokwtphydax6utj7l6vm5ihklun56lq.b32.i2p/s/9f3c";
-    const std::string i2pB = "http://a6i4yj2ovsvrc45gcfdlpqantyjemwdjsuzaqslsvj4le7jphgzq.b32.i2p";
+    const std::string i2pA = "kkhioqbaxoc5zj6itqgc6pokwtphydax6utj7l6vm5ihklun56lq.b32.i2p";
+    const std::string i2pB = "a6i4yj2ovsvrc45gcfdlpqantyjemwdjsuzaqslsvj4le7jphgzq.b32.i2p";
 
     const ServerDescriptor original{fp, {i2pA, i2pB},
         {"https://relay.example.org:8443/s/9f3c", "https://seed.example.net/"}};
@@ -34,6 +34,8 @@ int main()
 
     CHECK_THROWS(parseServerDescriptor(
         "bazarish://server?v=1&fp=" + fp + "&facade=https://relay.example.org"));
+    CHECK_THROWS(parseServerDescriptor("bazarish://server?v=1&fp=" + fp + "&facade=http://" + i2pA));
+    CHECK_THROWS(parseServerDescriptor("bazarish://server?v=1&fp=" + fp + "&facade=" + i2pA + "/s/9f3c"));
     CHECK_THROWS(parseServerDescriptor("bazarish://server?v=1&fp=" + fp + "&reseed=" + i2pA));
     CHECK_THROWS(parseServerDescriptor(
         "bazarish://server?v=1&fp=" + fp + "&reseed=http://192.168.0.66:8419"));

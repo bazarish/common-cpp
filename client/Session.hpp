@@ -211,8 +211,8 @@ public:
     void connectServer(const ServerEndpoint& endpoint);
     bool isConnected() const;
     const ServerEndpoint& endpoint() const;
-    std::string activeFacadeUrl() const;
-    std::vector<std::string> facadeUrls() const;
+    std::string activeFacadeAddress() const;
+    std::vector<std::string> facadeAddresses() const;
 
     void changePassphrase(const std::string& passphrase);
 

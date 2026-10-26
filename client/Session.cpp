@@ -427,18 +427,18 @@ const ServerEndpoint& Session::endpoint() const
     return client_->endpoint();
 }
 
-std::string Session::activeFacadeUrl() const
+std::string Session::activeFacadeAddress() const
 {
-    return client_->activeFacadeUrl();
+    return client_->activeFacadeAddress();
 }
 
-std::vector<std::string> Session::facadeUrls() const
+std::vector<std::string> Session::facadeAddresses() const
 {
-    std::vector<std::string> urls;
+    std::vector<std::string> addresses;
     for (const Facade& facade : client_->endpoint().facades) {
-        urls.push_back(facadeToUrl(facade));
+        addresses.push_back(facadeAddress(facade));
     }
-    return urls;
+    return addresses;
 }
 
 Session Session::open(const fs::path& accountFile, const std::string& passphrase)
@@ -448,8 +448,8 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     ServerEndpoint endpoint;
     const nlohmann::json& endpointJson = meta.at("endpoint");
     endpoint.serverFingerprint = endpointJson.at("serverFingerprint").get<std::string>();
-    for (const nlohmann::json& url : endpointJson.at("facades")) {
-        endpoint.facades.push_back(parseFacadeUrl(url.get<std::string>()));
+    for (const nlohmann::json& address : endpointJson.at("facades")) {
+        endpoint.facades.push_back(parseFacadeAddress(address.get<std::string>()));
     }
     if (endpointJson.contains("reseeds")) {
         for (const nlohmann::json& url : endpointJson.at("reseeds")) {
@@ -677,7 +677,7 @@ void Session::persistMeta() const
     const ServerEndpoint& endpoint = client_->endpoint();
     nlohmann::json facades = nlohmann::json::array();
     for (const Facade& facade : endpoint.facades) {
-        facades.push_back(facadeToUrl(facade));
+        facades.push_back(facadeAddress(facade));
     }
     nlohmann::json reseeds = nlohmann::json::array();
     for (const std::string& reseed : endpoint.reseeds) {

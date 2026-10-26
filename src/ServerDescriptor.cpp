@@ -42,16 +42,30 @@ bool allowFacadeWithoutI2pForDevPurposes()
     return g_allowFacadeWithoutI2p.load();
 }
 
-bool isI2pFacadeUrl(const std::string& url)
+namespace {
+
+bool isI2pHost(const std::string& host)
 {
     static const std::string kSuffix = ".b32.i2p";
+    return host.size() >= kSuffix.size()
+        && host.compare(host.size() - kSuffix.size(), kSuffix.size(), kSuffix) == 0;
+}
+
+}  // namespace
+
+bool isI2pUrl(const std::string& url)
+{
     const std::size_t schemeEnd = url.find("://");
     const std::size_t hostStart = schemeEnd == std::string::npos ? 0 : schemeEnd + 3;
     const std::size_t hostEnd = url.find_first_of(":/", hostStart);
-    const std::string host = url.substr(
-        hostStart, hostEnd == std::string::npos ? std::string::npos : hostEnd - hostStart);
-    return host.size() >= kSuffix.size()
-        && host.compare(host.size() - kSuffix.size(), kSuffix.size(), kSuffix) == 0;
+    return isI2pHost(url.substr(
+        hostStart, hostEnd == std::string::npos ? std::string::npos : hostEnd - hostStart));
+}
+
+bool isI2pFacadeAddress(const std::string& address)
+{
+    return address.find('/') == std::string::npos
+        && isI2pHost(address.substr(0, address.find(':')));
 }
 
 std::string encodeServerDescriptor(const ServerDescriptor& descriptor)
@@ -96,7 +110,11 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
             haveFingerprint = true;
         } else if (key == "facade") {
             if (!value.empty()) {
-                if (!isI2pFacadeUrl(value) && !allowFacadeWithoutI2pForDevPurposes()) {
+                if (value.find('/') != std::string::npos) {
+                    throw std::invalid_argument(
+                        "a facade is an address, with no scheme and no path");
+                }
+                if (!isI2pFacadeAddress(value) && !allowFacadeWithoutI2pForDevPurposes()) {
                     throw std::invalid_argument(
                         "a facade must be an I2P address: the client talks to its server over"
                         " nothing else (" + value + ")");
@@ -108,7 +126,7 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
                 if (!i2p::isReseedUrl(value)) {
                     throw std::invalid_argument("a reseed is an https URL (" + value + ")");
                 }
-                if (isI2pFacadeUrl(value) && !allowFacadeWithoutI2pForDevPurposes()) {
+                if (isI2pUrl(value) && !allowFacadeWithoutI2pForDevPurposes()) {
                     throw std::invalid_argument(
                         "a reseed must not be an I2P address: it is what a client without a"
                         " router asks first (" + value + ")");

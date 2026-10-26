@@ -86,7 +86,7 @@ int main()
 
     ServerEndpoint endpoint;
     endpoint.serverFingerprint = serverIdentity.fingerprint();
-    endpoint.facades = {Facade{false, "127.0.0.1", port, {}}};
+    endpoint.facades = {Facade{"127.0.0.1", port}};
 
     {
         ApiClient api(alice, "abc123", endpoint);

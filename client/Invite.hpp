@@ -8,7 +8,7 @@ namespace bazarish::client {
 
 struct ServerLink {
     std::string serverFingerprint;
-    std::vector<std::string> facadeUrls;
+    std::vector<std::string> facades;
     std::vector<std::string> reseedUrls;
 };
 

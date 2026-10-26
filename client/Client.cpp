@@ -82,9 +82,9 @@ const ServerEndpoint& Client::endpoint() const
     return api_.endpoint();
 }
 
-std::string Client::activeFacadeUrl() const
+std::string Client::activeFacadeAddress() const
 {
-    return api_.activeFacadeUrl();
+    return api_.activeFacadeAddress();
 }
 
 void Client::setDestinationOwner(std::string owner)

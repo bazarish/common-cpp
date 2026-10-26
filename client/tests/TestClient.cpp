@@ -204,7 +204,7 @@ int main()
 
     ServerEndpoint endpoint;
     endpoint.serverFingerprint = stubServerIdentity.fingerprint();
-    endpoint.facades = {Facade{false, "127.0.0.1", port, {}}};
+    endpoint.facades = {Facade{"127.0.0.1", port}};
 
     Client client(Identity::fromPrivatePem(alice.privatePem()), "client01", endpoint);
 

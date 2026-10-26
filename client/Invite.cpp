@@ -8,7 +8,7 @@ namespace bazarish::client {
 std::string encodeServerLink(const ServerLink& link)
 {
     return encodeServerDescriptor(
-        {link.serverFingerprint, link.facadeUrls, link.reseedUrls});
+        {link.serverFingerprint, link.facades, link.reseedUrls});
 }
 
 ServerLink decodeServerLink(const std::string& uri)
@@ -16,7 +16,7 @@ ServerLink decodeServerLink(const std::string& uri)
     const ServerDescriptor descriptor = parseServerDescriptor(uri);
     ServerLink link;
     link.serverFingerprint = descriptor.fingerprint;
-    link.facadeUrls = descriptor.facades;
+    link.facades = descriptor.facades;
     link.reseedUrls = descriptor.reseeds;
     return link;
 }

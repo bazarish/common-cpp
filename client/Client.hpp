@@ -93,7 +93,7 @@ public:
     const Identity& identity() const;
     const std::string& clientId() const;
     const ServerEndpoint& endpoint() const;
-    std::string activeFacadeUrl() const;
+    std::string activeFacadeAddress() const;
 
     void setDestinationOwner(std::string owner);
     void releaseI2pLink();

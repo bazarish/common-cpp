@@ -34,10 +34,19 @@ std::int64_t nowSeconds()
     return static_cast<std::int64_t>(std::time(nullptr));
 }
 
-bazarish::http::ClientOptions facadeOptions(const Facade& facade, const int readTimeoutSeconds)
+constexpr int kMaxPort = 65535;
+constexpr int kPlainHttpPort = 80;
+constexpr std::size_t kShownHostChars = 12;
+
+// Enough of an address to tell facades apart in a log, not enough to dial one.
+std::string shortHost(const std::string& host)
+{
+    return host.substr(0, kShownHostChars);
+}
+
+bazarish::http::ClientOptions facadeOptions(const int readTimeoutSeconds)
 {
     bazarish::http::ClientOptions options;
-    options.tls = facade.tls;
     options.verifyPeer = false;
     options.connectTimeout = std::chrono::seconds(ApiClient::kConnectTimeoutSeconds);
     options.readTimeout = std::chrono::seconds(readTimeoutSeconds);
@@ -74,65 +83,36 @@ constexpr std::size_t kSessionIdChars = 32;
 
 }  // namespace
 
-Facade parseFacadeUrl(const std::string& url)
+Facade parseFacadeAddress(const std::string& address)
 {
+    if (address.empty()) {
+        throw std::runtime_error("empty facade address");
+    }
+    if (address.find('/') != std::string::npos) {
+        throw std::runtime_error("a facade is an address, with no scheme and no path");
+    }
     Facade facade;
-    std::string rest = url;
-
-    const std::string::size_type schemeEnd = rest.find("://");
-    if (schemeEnd != std::string::npos) {
-        const std::string scheme = rest.substr(0, schemeEnd);
-        if (scheme == "https") {
-            facade.tls = true;
-        } else if (scheme != "http") {
-            throw std::runtime_error("unsupported facade scheme: " + scheme);
-        }
-        rest = rest.substr(schemeEnd + 3);
-    }
-    if (rest.empty()) {
-        throw std::runtime_error("empty facade URL");
-    }
-
-    const std::string::size_type slash = rest.find('/');
-    const std::string authority = slash == std::string::npos ? rest : rest.substr(0, slash);
-    facade.basePath = slash == std::string::npos ? std::string() : rest.substr(slash);
-    while (facade.basePath.size() > 1 && facade.basePath.back() == '/') {
-        facade.basePath.pop_back();
-    }
-    if (facade.basePath == "/") {
-        facade.basePath.clear();
-    }
-
-    const std::string::size_type colon = authority.find(':');
+    const std::string::size_type colon = address.find(':');
+    facade.host = address.substr(0, colon);
     if (colon != std::string::npos) {
-        facade.host = authority.substr(0, colon);
         try {
-            facade.port = std::stoi(authority.substr(colon + 1));
+            facade.port = std::stoi(address.substr(colon + 1));
         } catch (const std::exception&) {
-            throw std::runtime_error("invalid facade port in: " + url);
+            throw std::runtime_error("invalid facade port");
         }
-        if (facade.port <= 0 || facade.port > 65535) {
-            throw std::runtime_error("invalid facade port in: " + url);
+        if (facade.port <= 0 || facade.port > kMaxPort) {
+            throw std::runtime_error("invalid facade port");
         }
-    } else {
-        facade.host = authority;
-        facade.port = facade.tls ? 443 : 80;
     }
     if (facade.host.empty()) {
-        throw std::runtime_error("empty facade host in: " + url);
+        throw std::runtime_error("empty facade host");
     }
     return facade;
 }
 
-std::string facadeToUrl(const Facade& facade)
+std::string facadeAddress(const Facade& facade)
 {
-    std::string url = (facade.tls ? "https://" : "http://") + facade.host;
-    const int defaultPort = facade.tls ? 443 : 80;
-    if (facade.port != 0 && facade.port != defaultPort) {
-        url += ":" + std::to_string(facade.port);
-    }
-    url += facade.basePath;
-    return url;
+    return facade.port == 0 ? facade.host : facade.host + ":" + std::to_string(facade.port);
 }
 
 nlohmann::json ApiResponse::json() const
@@ -296,13 +276,13 @@ void ApiClient::releaseI2pLink()
     i2pOut_.reset();
 }
 
-std::string ApiClient::activeFacadeUrl() const
+std::string ApiClient::activeFacadeAddress() const
 {
     if (endpoint_.facades.empty()) {
         return {};
     }
     const std::size_t index = activeFacade_ < endpoint_.facades.size() ? activeFacade_ : 0;
-    return facadeToUrl(endpoint_.facades[index]);
+    return facadeAddress(endpoint_.facades[index]);
 }
 
 std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const std::string& method,
@@ -391,11 +371,11 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
             }
             if (timedOut) {
                 bazarish::log::warn("i2p facade {} did not answer within {}s: {}",
-                    facade.host.substr(0, 12), readTimeoutSeconds, error.what());
+                    shortHost(facade.host), readTimeoutSeconds, error.what());
                 return std::nullopt;
             }
             bazarish::log::warn("i2p facade {} answered unframed: {}",
-                facade.host.substr(0, 12), error.what());
+                shortHost(facade.host), error.what());
             throw ApiError(std::nullopt, 0, error.what());
         }
     }
@@ -584,7 +564,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
         }
         bazarish::http::ClientRequest out;
         out.method = method;
-        out.target = facade.basePath + path;
+        out.target = path;
         if (!query.empty()) {
             out.target += "?" + query;
         }
@@ -594,7 +574,8 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
             out.contentType = contentType;
         }
         return bazarish::http::request(
-            facade.host, facade.port, out, facadeOptions(facade, readTimeoutSeconds));
+            facade.host, facade.port != 0 ? facade.port : kPlainHttpPort, out,
+            facadeOptions(readTimeoutSeconds));
     };
 
     const std::vector<Facade>& facades = endpoint_.facades;
@@ -605,14 +586,14 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
 
         if (facadeIsI2p(facade)) {
             if (!i2pEnabled()) {
-                lastError = "i2p is turned off (clearnet only): " + facade.host;
+                lastError = "i2p is turned off (clearnet only): " + shortHost(facade.host);
                 continue;
             }
             if (i2pDataDir_.empty()) {
-                lastError = "i2p facade without an I2P transport: " + facade.host;
+                lastError = "i2p facade without an I2P transport: " + shortHost(facade.host);
                 continue;
             }
-            std::string fullPath = facade.basePath + path;
+            std::string fullPath = path;
             if (!query.empty()) {
                 fullPath += "?" + query;
             }
@@ -623,7 +604,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
                     },
                     readTimeoutSeconds);
             if (!response) {
-                lastError = "i2p facade unreachable: " + facade.host;
+                lastError = "i2p facade unreachable: " + shortHost(facade.host);
                 continue;
             }
             activeFacade_ = index;
@@ -634,7 +615,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
         }
 
         if (!bazarish::allowFacadeWithoutI2pForDevPurposes() && !facadeIsOwnLoopback(facade)) {
-            lastError = "this client speaks to its server over I2P only: " + facade.host;
+            lastError = "this client speaks to its server over I2P only: " + shortHost(facade.host);
             continue;
         }
         const bazarish::http::ClientResponse result = clearnetAttempt(facade);
