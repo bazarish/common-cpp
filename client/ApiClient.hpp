@@ -80,6 +80,7 @@ public:
     const std::string& clientId() const;
     const ServerEndpoint& endpoint() const;
     std::string activeFacadeAddress() const;
+    std::string gatewayRefusal() const;
     void setDestinationOwner(std::string owner);
     void releaseI2pLink();
 
@@ -119,6 +120,7 @@ private:
     Bytes tunnelKey_;
     std::int64_t sessionUntil_ = 0;
     std::uint64_t sessionSeq_ = 0;
+    std::string gatewayRefusal_;
     std::int64_t sessionBlockedUntil_ = 0;
     std::uint64_t blockedAtCarry_ = 0;
     int sessionRefusals_ = 0;

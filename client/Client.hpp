@@ -94,6 +94,7 @@ public:
     const std::string& clientId() const;
     const ServerEndpoint& endpoint() const;
     std::string activeFacadeAddress() const;
+    std::string gatewayRefusal() const;
 
     void setDestinationOwner(std::string owner);
     void releaseI2pLink();

@@ -9,11 +9,17 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace bazarish::i2p {
+
+class GatewayRefusal : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 enum class Privacy { eMinimal, eMiddle, eMax };
 

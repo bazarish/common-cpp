@@ -87,6 +87,11 @@ std::string Client::activeFacadeAddress() const
     return api_.activeFacadeAddress();
 }
 
+std::string Client::gatewayRefusal() const
+{
+    return api_.gatewayRefusal();
+}
+
 void Client::setDestinationOwner(std::string owner)
 {
     api_.setDestinationOwner(std::move(owner));

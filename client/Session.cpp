@@ -432,6 +432,11 @@ std::string Session::activeFacadeAddress() const
     return client_->activeFacadeAddress();
 }
 
+std::string Session::gatewayRefusal() const
+{
+    return client_->gatewayRefusal();
+}
+
 std::vector<std::string> Session::facadeAddresses() const
 {
     std::vector<std::string> addresses;

@@ -248,6 +248,12 @@ bool ApiClient::ensureSessionLocked()
         lastTunnelError_ = error.what();
         bazarish::log::info("no tunnel: {}", error.what());
         return false;
+    } catch (const bazarish::i2p::GatewayRefusal& error) {
+        // No facade was asked, so there is nothing to stand off from: the next request asks again.
+        sessionId_.clear();
+        lastTunnelError_ = error.what();
+        bazarish::log::warn("no tunnel: {}", error.what());
+        return false;
     } catch (const std::exception& error) {
         sessionId_.clear();
         // An answer that does not open is a broken carry, not a refusal: try again as after silence.
@@ -276,6 +282,12 @@ void ApiClient::releaseI2pLink()
     i2pOut_.reset();
 }
 
+std::string ApiClient::gatewayRefusal() const
+{
+    const std::lock_guard<std::mutex> lock(netMutex_);
+    return gatewayRefusal_;
+}
+
 std::string ApiClient::activeFacadeAddress() const
 {
     if (endpoint_.facades.empty()) {
@@ -295,10 +307,16 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     if (bootstrapI2pRouter(i2pDataDir_) == I2pBootstrap::eEmpty) {
         return std::nullopt;
     }
+    gatewayRefusal_.clear();
     const auto buildLink = [&]() {
         reportConnectProgress(40, "Building your I2P tunnels");
         i2pStream_.reset();
-        i2pOut_ = facadeLinkFor(destinationOwner_, tunnelPrivacy(), facade.host);
+        try {
+            i2pOut_ = facadeLinkFor(destinationOwner_, tunnelPrivacy(), facade.host);
+        } catch (const bazarish::i2p::GatewayRefusal& refusal) {
+            gatewayRefusal_ = refusal.what();
+            throw;
+        }
         i2pOutHost_ = facade.host;
         return static_cast<bool>(i2pOut_);
     };

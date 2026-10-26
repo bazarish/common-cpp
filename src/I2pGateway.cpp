@@ -1249,7 +1249,10 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         throw std::runtime_error("bazarish::i2p: the gateway did not answer in time");
     }
     if (answer->type != FrameType::eOk) {
-        throw std::runtime_error("bazarish::i2p: the gateway refused a destination");
+        const nlohmann::json said = answer->type == FrameType::eError
+            ? gateway::bodyJson(*answer) : nlohmann::json::object();
+        throw GatewayRefusal("bazarish::i2p: the gateway refused a destination: "
+            + said.value("code", std::string()) + ": " + said.value("message", std::string()));
     }
     const std::string host = gateway::bodyJson(*answer).value("host", std::string());
     if (host.empty()) {

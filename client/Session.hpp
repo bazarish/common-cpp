@@ -212,6 +212,7 @@ public:
     bool isConnected() const;
     const ServerEndpoint& endpoint() const;
     std::string activeFacadeAddress() const;
+    std::string gatewayRefusal() const;
     std::vector<std::string> facadeAddresses() const;
 
     void changePassphrase(const std::string& passphrase);
