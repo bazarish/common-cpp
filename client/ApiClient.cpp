@@ -315,17 +315,19 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     if (bootstrapI2pRouter(i2pDataDir_) == I2pBootstrap::eEmpty) {
         return std::nullopt;
     }
+    const auto buildLink = [&]() {
+        reportConnectProgress(40, "Building your I2P tunnels");
+        i2pStream_.reset();
+        i2pOut_ = facadeLinkFor(destinationOwner_, tunnelPrivacy(), facade.host);
+        i2pOutHost_ = facade.host;
+        return static_cast<bool>(i2pOut_);
+    };
     if (i2pOut_ && (i2pOut_->lost() || i2pOutHost_ != facade.host)) {
         i2pStream_.reset();
         i2pOut_.reset();
     }
-    if (!i2pOut_) {
-        reportConnectProgress(40, "Building your I2P tunnels");
-        i2pOut_ = facadeLinkFor(destinationOwner_, tunnelPrivacy(), facade.host);
-        i2pOutHost_ = facade.host;
-        if (!i2pOut_) {
-            return std::nullopt;
-        }
+    if (!i2pOut_ && !buildLink()) {
+        return std::nullopt;
     }
     if (!i2pOut_->waitReady(std::chrono::seconds(kOutboundReadySeconds))) {
         reportConnectProgress(40, "I2P tunnels are still building");
@@ -340,6 +342,15 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
         if (!reused) {
             reportConnectProgress(55, "Looking up the server's I2P address");
             i2pStream_ = i2pOut_->connect(facade.host, std::chrono::seconds(kFacadeDialSeconds));
+            // A gateway that replaced its session under the dial lost the link; no facade refused.
+            if (!i2pStream_ && i2pOut_->lost()) {
+                if (!buildLink()
+                    || !i2pOut_->waitReady(std::chrono::seconds(kOutboundReadySeconds))) {
+                    return std::nullopt;
+                }
+                i2pStream_
+                    = i2pOut_->connect(facade.host, std::chrono::seconds(kFacadeDialSeconds));
+            }
             if (!i2pStream_) {
                 return std::nullopt;
             }
