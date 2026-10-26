@@ -448,8 +448,15 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     ServerEndpoint endpoint;
     const nlohmann::json& endpointJson = meta.at("endpoint");
     endpoint.serverFingerprint = endpointJson.at("serverFingerprint").get<std::string>();
-    for (const nlohmann::json& address : endpointJson.at("facades")) {
-        endpoint.facades.push_back(parseFacadeAddress(address.get<std::string>()));
+    try {
+        for (const nlohmann::json& address : endpointJson.at("facades")) {
+            endpoint.facades.push_back(parseFacadeAddress(address.get<std::string>()));
+        }
+    } catch (const std::exception& error) {
+        endpoint.facades.clear();
+        bazarish::log::warn(
+            "the saved server address is not usable, the account opens without it: {}",
+            error.what());
     }
     if (endpointJson.contains("reseeds")) {
         for (const nlohmann::json& url : endpointJson.at("reseeds")) {

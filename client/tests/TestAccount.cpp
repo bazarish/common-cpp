@@ -16,6 +16,8 @@
 #include <stdexcept>
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 using namespace bazarish;
 using namespace bazarish::client;
 
@@ -104,6 +106,22 @@ int main()
         CHECK(reopened.endpoint().serverFingerprint == "serverfp");
         CHECK(!reopened.sendReceipts());
         CHECK(!reopened.acceptCalls());
+
+        {
+            AccountDb db(a.file, "secret");
+            nlohmann::json meta = nlohmann::json::parse(db.text("meta"));
+            meta["endpoint"]["facades"] = {"http://abc.b32.i2p/s/9f3c"};
+            db.putText("meta", meta.dump());
+        }
+        {
+            Session unusable = manager.open(a.id, "secret");
+            CHECK(!unusable.isConnected());
+            CHECK(unusable.endpoint().serverFingerprint == "serverfp");
+            CHECK(!unusable.sendReceipts());
+            unusable.connectServer(endpoint);
+            CHECK(unusable.isConnected());
+        }
+        CHECK(manager.open(a.id, "secret").endpoint().facades.at(0).port == 18000);
 
         const auto onlyTheDatabase = [](const fs::path& file) {
             CHECK(fs::is_regular_file(file));
