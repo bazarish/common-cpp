@@ -76,10 +76,22 @@ std::uint64_t sequenceOf(const Bytes& nonce)
 
 Bytes headerFor(const std::uint8_t type, const Bytes& id)
 {
-    Bytes header;
-    header.push_back(type);
-    header.insert(header.end(), id.begin(), id.end());
+    if (id.size() != kPresenceSubscriptionIdBytes) {
+        throw std::invalid_argument("a presence subscription id is 8 bytes");
+    }
+    Bytes header(kHeaderBytes);
+    header[0] = type;
+    std::copy(id.begin(), id.end(), header.begin() + kTypeBytes);
     return header;
+}
+
+std::uint64_t subscriptionOf(const Bytes& id)
+{
+    std::uint64_t subscription = 0;
+    for (const unsigned char byte : id) {
+        subscription = (subscription << kBitsPerByte) | byte;
+    }
+    return subscription;
 }
 
 Bytes watchSigningInput(const nlohmann::json& unsignedWatch)
@@ -273,7 +285,7 @@ struct Presence::Impl {
     Role role = Role::eNone;
     std::optional<Outgoing> own;
     std::map<std::string, Outgoing> peers;
-    std::map<Bytes, Incoming> incoming;
+    std::map<std::uint64_t, Incoming> incoming;
     Clock::time_point lastOnline{};
     Clock::time_point lastSelfCheck{};
     Clock::time_point lastTypingRenew{};
@@ -496,14 +508,14 @@ struct Presence::Impl {
         sub.sibling = from == account.fingerprint
             && content.value("device", std::string()) != account.device;
         sub.expires = now + timings.subscriptionLife;
-        Incoming& stored = incoming[id] = std::move(sub);
+        Incoming& stored = incoming[subscriptionOf(id)] = std::move(sub);
         tell(stored, now);
     }
 
     void onRenew(const Bytes& frame, const Clock::time_point now)
     {
         const Bytes id(frame.begin() + kTypeBytes, frame.begin() + kHeaderBytes);
-        const auto found = incoming.find(id);
+        const auto found = incoming.find(subscriptionOf(id));
         if (found == incoming.end()) {
             return;
         }

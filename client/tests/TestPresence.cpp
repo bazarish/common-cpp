@@ -64,7 +64,7 @@ public:
     void knowReader(const Key& key)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        publicOf_[key.rawPrivate()] = key.rawPublic();
+        publicOf_[toHex(key.rawPrivate())] = key.rawPublic();
     }
 
     std::shared_ptr<Box> open(const PresenceLinkConfig& config)
@@ -75,7 +75,7 @@ public:
                                             : "watcher" + std::to_string(++opened_) + ".b32.i2p";
         box->readers = config.readers;
         if (!config.readerKey.empty()) {
-            box->readerPublic = publicOf_.at(config.readerKey);
+            box->readerPublic = publicOf_.at(toHex(config.readerKey));
         }
         box->generation = ++opened_;
         live_.push_back(box);
@@ -135,7 +135,7 @@ public:
 
 private:
     std::mutex mutex_;
-    std::map<Bytes, Bytes> publicOf_;
+    std::map<std::string, Bytes> publicOf_;
     std::vector<std::shared_ptr<Box>> live_;
     std::uint64_t opened_ = 0;
 };
