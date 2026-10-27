@@ -30,6 +30,9 @@ using gateway::Frame;
 using gateway::FrameType;
 
 constexpr std::chrono::seconds kCallTimeout{60};
+// A presence address reaches a gateway as a delegation: to the end of today, and on renewal of the next day.
+constexpr int kFirstDelegationDays = 1;
+constexpr int kRenewedDelegationDays = 2;
 constexpr std::chrono::milliseconds kCoverTick{200};
 constexpr std::size_t kControlSocketsKept = 2;
 constexpr std::chrono::milliseconds kQuietBeforeChurn{1000};
@@ -180,7 +183,8 @@ private:
 class GatewayEndpoint : public EndpointBackend {
 public:
     GatewayEndpoint(std::shared_ptr<Link> link, std::uint32_t id, std::string host, bool raw,
-        bool published, std::string label, std::string owner, std::string target);
+        bool published, std::string label, std::string owner, std::string target,
+        std::optional<Keys> master);
     ~GatewayEndpoint() override;
 
     bool ready() const override { return ready_.load(); }
@@ -223,6 +227,7 @@ public:
 
     void stop() override;
     void lost();
+    void renewDelegation();
 
     std::uint32_t id() const { return id_; }
     bool raw() const { return raw_; }
@@ -260,6 +265,7 @@ private:
     std::string label_;
     std::string owner_;
     std::string target_;
+    const std::optional<Keys> master_;
     std::atomic<bool> ready_{false};
     std::atomic<bool> stopped_{false};
     std::atomic<int> in_{0};
@@ -528,7 +534,7 @@ void GatewayStream::close()
 
 GatewayEndpoint::GatewayEndpoint(std::shared_ptr<Link> link, const std::uint32_t id,
     std::string host, const bool raw, const bool published, std::string label, std::string owner,
-    std::string target)
+    std::string target, std::optional<Keys> master)
     : link_(std::move(link))
     , id_(id)
     , host_(std::move(host))
@@ -537,7 +543,17 @@ GatewayEndpoint::GatewayEndpoint(std::shared_ptr<Link> link, const std::uint32_t
     , label_(std::move(label))
     , owner_(std::move(owner))
     , target_(std::move(target))
+    , master_(std::move(master))
 {
+}
+
+void GatewayEndpoint::renewDelegation()
+{
+    if (!master_.has_value() || stopped_.load()) {
+        return;
+    }
+    link_->send(gateway::encodeJson(FrameType::eEndpointDelegate, id_,
+        {{"keys", master_->issueTransient(kRenewedDelegationDays).privateBase64()}}));
 }
 
 GatewayEndpoint::~GatewayEndpoint()
@@ -1243,7 +1259,7 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         ask["target"] = config.target;
     }
     if (config.keys.has_value()) {
-        ask["keys"] = config.keys->privateBase64();
+        ask["keys"] = config.keys->issueTransient(kFirstDelegationDays).privateBase64();
         nlohmann::json readers = nlohmann::json::array();
         for (const Bytes& reader : config.leaseSetReaders) {
             readers.push_back(leaseSetKeyBase64(reader));
@@ -1269,8 +1285,8 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
     if (host.empty()) {
         throw std::runtime_error("bazarish::i2p: the gateway named no address");
     }
-    const auto endpoint = std::make_shared<GatewayEndpoint>(
-        link_, id, host, raw, config.published, config.label, config.owner, config.target);
+    const auto endpoint = std::make_shared<GatewayEndpoint>(link_, id, host, raw,
+        config.published, config.label, config.owner, config.target, config.keys);
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->endpoints[id] = endpoint;
@@ -1380,6 +1396,12 @@ void GatewayRouter::dispatch(const Frame& frame)
         case FrameType::eEndpointLost: {
             if (endpoint != nullptr) {
                 endpoint->lost();
+            }
+            return;
+        }
+        case FrameType::eEndpointRenew: {
+            if (endpoint != nullptr) {
+                endpoint->renewDelegation();
             }
             return;
         }

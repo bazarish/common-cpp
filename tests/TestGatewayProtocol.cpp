@@ -15,7 +15,7 @@ namespace {
 const std::vector<FrameType> kAllTypes = {FrameType::eHello, FrameType::eReady, FrameType::eOk,
     FrameType::eError, FrameType::eResume, FrameType::eAttach, FrameType::eEndpointCreate,
     FrameType::eEndpointStop, FrameType::eEndpointStatus, FrameType::eEndpointLost,
-    FrameType::eStreamOpen,
+    FrameType::eEndpointRenew, FrameType::eEndpointDelegate, FrameType::eStreamOpen,
     FrameType::eStreamOpened, FrameType::eStreamInbound, FrameType::eStreamData,
     FrameType::eStreamCredit, FrameType::eStreamClose, FrameType::eStreamReset,
     FrameType::eRawSend, FrameType::eRawRecv};
@@ -45,7 +45,7 @@ int main()
         CHECK(back.value() == type);
     }
     CHECK(!frameTypeFromByte(0x00).has_value());
-    CHECK(!frameTypeFromByte(0x14).has_value());
+    CHECK(!frameTypeFromByte(0x16).has_value());
     CHECK(!frameTypeFromByte(0x40).has_value());
     CHECK(!frameTypeFromByte(0xFF).has_value());
 

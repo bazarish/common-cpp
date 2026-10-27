@@ -56,6 +56,7 @@ public:
         std::vector<Bytes> readers;
         Bytes readerPublic;
         std::uint64_t generation = 0;
+        std::atomic<bool> lost{false};
         std::mutex mutex;
         std::condition_variable arrived;
         std::deque<Bytes> queue;
@@ -94,7 +95,8 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             for (const std::shared_ptr<Box>& box : live_) {
-                if (box->host == host && (!target || box->generation > target->generation)) {
+                if (box->host == host && !box->lost.load()
+                    && (!target || box->generation > target->generation)) {
                     target = box;
                 }
             }
@@ -112,6 +114,28 @@ public:
             target->queue.push_back(datagram);
         }
         target->arrived.notify_all();
+    }
+
+    void lose(const std::string& host)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const std::shared_ptr<Box>& box : live_) {
+            if (box->host == host) {
+                box->lost.store(true);
+            }
+        }
+    }
+
+    std::uint64_t newestGeneration(const std::string& host)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::uint64_t newest = 0;
+        for (const std::shared_ptr<Box>& box : live_) {
+            if (box->host == host && !box->lost.load()) {
+                newest = std::max(newest, box->generation);
+            }
+        }
+        return newest;
     }
 
     std::size_t readersOf(const std::string& host)
@@ -156,6 +180,11 @@ public:
     std::string host() const override
     {
         return box_->host;
+    }
+
+    bool lost() const override
+    {
+        return box_->lost.load();
     }
 
     void send(const std::string& host, const Bytes& datagram) override
@@ -287,6 +316,16 @@ int main()
     CHECK(bobSees.of(alice.identity.fingerprint()) == kOffline);
 
     alice1.setFocused(true);
+    CHECK(bobSees.waitFor(alice.identity.fingerprint(), kOnline));
+    CHECK(net.holdersOf(alice.dest) == 1);
+
+    const std::uint64_t beforeLoss = net.newestGeneration(alice.dest);
+    net.lose(alice.dest);
+    const auto raisedBy = std::chrono::steady_clock::now() + kSettle;
+    while (net.newestGeneration(alice.dest) <= beforeLoss && std::chrono::steady_clock::now() < raisedBy) {
+        std::this_thread::sleep_for(kPoll);
+    }
+    CHECK(net.newestGeneration(alice.dest) > beforeLoss);
     CHECK(bobSees.waitFor(alice.identity.fingerprint(), kOnline));
     CHECK(net.holdersOf(alice.dest) == 1);
 

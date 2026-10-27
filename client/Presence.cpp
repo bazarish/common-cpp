@@ -155,6 +155,11 @@ public:
         endpoint_->sendRawDatagram(host, datagram.data(), datagram.size());
     }
 
+    bool lost() const override
+    {
+        return endpoint_->lost();
+    }
+
     std::optional<Bytes> receive(const milliseconds wait) override
     {
         std::vector<std::uint8_t> got = endpoint_->receiveRawDatagram(wait);
@@ -319,7 +324,7 @@ struct Presence::Impl {
         runner->link = net(config);
         Runner* const raw = runner.get();
         runner->reader = std::thread([this, raw, &inbox]() {
-            while (!raw->stopping.load()) {
+            while (!raw->stopping.load() && !raw->link->lost()) {
                 std::optional<Bytes> got = raw->link->receive(kReceiveSlice);
                 if (!got) {
                     continue;
@@ -778,6 +783,15 @@ struct Presence::Impl {
                     readersChanged = now;
                 }
                 readersStale = false;
+            }
+            if (watcher && watcher->link->lost()) {
+                closeRunner(watcher);
+                peers.clear();
+            }
+            if (holder && holder->link->lost()) {
+                dropHolder();
+                role = Role::eNone;
+                own.reset();
             }
             openWatcher();
             for (const Bytes& frame : holderFrames) {

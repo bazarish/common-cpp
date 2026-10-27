@@ -34,6 +34,8 @@ public:
     virtual std::string host() const = 0;
     virtual void send(const std::string& host, const Bytes& datagram) = 0;
     virtual std::optional<Bytes> receive(std::chrono::milliseconds wait) = 0;
+    // The transport took the address down (a gateway's lapsed delegation); it is raised again.
+    virtual bool lost() const = 0;
 };
 
 using PresenceNet = std::function<std::unique_ptr<PresenceLink>(const PresenceLinkConfig&)>;
