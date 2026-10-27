@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -98,6 +99,7 @@ private:
     void workerLoop();
     void watchdogLoop();
     void reportDropped(const std::deque<Task>& tasks);
+    std::optional<std::string> unprepared(const Task& task);
     Outcome attempt(const Task& task, std::chrono::steady_clock::time_point deadline,
         bool& outReachable, bool& outSent);
     void watch(const std::shared_ptr<DeliveryStream>& stream,

@@ -156,9 +156,9 @@ OutboundCourier::Outcome OutboundCourier::deliverNow(const Task& task)
     if (task.onPhase) {
         task.onPhase(kPhasePreparing);
     }
-    if (!prepare_(task.toDest, task.peerName)) {
+    if (const std::optional<std::string> failure = unprepared(task)) {
         Outcome local;
-        local.errorMessage = "this device has no I2P address to send from yet";
+        local.errorMessage = *failure;
         return local;
     }
     const std::chrono::steady_clock::time_point deadline
@@ -194,7 +194,7 @@ OutboundCourier::Outcome OutboundCourier::deliverNow(const Task& task)
         // An address keeps the lease set it looked up, which may name a restarted peer's dead tunnels.
         if (sent && retire_) {
             retire_(task.toDest);
-            if (!prepare_(task.toDest, task.peerName)) {
+            if (unprepared(task)) {
                 break;
             }
         }
@@ -207,6 +207,21 @@ OutboundCourier::Outcome OutboundCourier::deliverNow(const Task& task)
         + std::string(" (") + std::to_string(made) + " of "
         + std::to_string(schedule_.attempts) + " tries)";
     return outcome;
+}
+
+std::optional<std::string> OutboundCourier::unprepared(const Task& task)
+{
+    try {
+        if (prepare_(task.toDest, task.peerName)) {
+            return std::nullopt;
+        }
+        return std::string("this device has no I2P address to send from yet");
+    } catch (const std::exception& error) {
+        bazarish::log::warn("no address to send to {} from: {}",
+            bazarish::log::redact(task.toDest), error.what());
+        return std::string("this device could not make an I2P address to send from: ")
+            + error.what();
+    }
 }
 
 OutboundCourier::Outcome OutboundCourier::attempt(const Task& task,

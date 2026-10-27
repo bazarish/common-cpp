@@ -308,6 +308,80 @@ int main()
     }
 
     {
+        int dials = 0;
+        OutboundCourier courier(
+            [](const std::string&, const std::string&) -> bool {
+                throw std::runtime_error("the gateway did not answer in time");
+            },
+            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                ++dials;
+                return nullptr;
+            },
+            quickSchedule());
+        const OutboundCourier::Outcome outcome = courier.deliverNow(taskTo(dest, "d-thrown"));
+        CHECK(!outcome.stored);
+        CHECK(dials == 0);
+        CHECK(outcome.errorMessage.find("did not answer in time") != std::string::npos);
+    }
+
+    {
+        int prepared = 0;
+        DeliverySchedule schedule = quickSchedule();
+        schedule.reply = std::chrono::seconds{1};
+        OutboundCourier courier(
+            [&prepared](const std::string&, const std::string&) -> bool {
+                if (++prepared > 1) {
+                    throw std::runtime_error("the gateway did not answer in time");
+                }
+                return true;
+            },
+            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                return std::make_shared<SilentStream>();
+            },
+            schedule, [](const std::string&) {});
+        const OutboundCourier::Outcome outcome = courier.deliverNow(taskTo(dest, "d-rethrown"));
+        CHECK(!outcome.stored);
+        CHECK(prepared == 2);
+        CHECK(outcome.errorCode == "RECIPIENT_SERVER_UNREACHABLE");
+    }
+
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::vector<std::string> outcomes;
+        OutboundCourier courier(
+            [](const std::string& toDest, const std::string&) -> bool {
+                if (toDest == "lost.b32.i2p") {
+                    throw std::runtime_error("the gateway did not answer in time");
+                }
+                return true;
+            },
+            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                return std::make_shared<ScriptedStream>(
+                    signedDeliveredReply(signingKey, "d-after"), true);
+            },
+            quickSchedule(), {}, 1);
+        const auto collect = [&](const OutboundCourier::Outcome& outcome) {
+            const std::lock_guard<std::mutex> lock(mutex);
+            outcomes.push_back(outcome.stored ? "stored" : outcome.errorMessage);
+            cv.notify_all();
+        };
+        OutboundCourier::Task lost = taskTo("lost.b32.i2p", "d-lost");
+        lost.onOutcome = collect;
+        OutboundCourier::Task after = taskTo(dest, "d-after");
+        after.onOutcome = collect;
+        courier.submit(lost);
+        courier.submit(after);
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            cv.wait(lock, [&outcomes]() { return outcomes.size() == 2; });
+        }
+        courier.stop();
+        CHECK(outcomes.at(0).find("did not answer in time") != std::string::npos);
+        CHECK(outcomes.at(1) == "stored");
+    }
+
+    {
         std::mutex mutex;
         std::condition_variable cv;
         int inFlightSame = 0;
