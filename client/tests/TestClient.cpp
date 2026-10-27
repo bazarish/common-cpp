@@ -123,8 +123,14 @@ int main()
             CHECK(query.fingerprint == bob.fingerprint());
             const Key bobSealing = Key::generateSealing();
             outcome.ok = true;
-            outcome.sealed = ContactCard::issue(bob, static_cast<std::int64_t>(std::time(nullptr)),
-                bobDest, bobSealing.publicDer(), serverSealing.publicDer());
+            ContactCard card;
+            card.issuedAt = static_cast<std::int64_t>(std::time(nullptr));
+            card.dest = bobDest;
+            card.sealingPublicKeyDer = bobSealing.publicDer();
+            card.servingSealingKeyDer = serverSealing.publicDer();
+            card.presenceKeyDer = Key::generateX25519().publicDer();
+            card.presenceDest = bobDest;
+            outcome.sealed = card.issue(bob);
             return outcome;
         }
 
@@ -212,7 +218,11 @@ int main()
         const Key aliceSealing = Key::generateSealing();
         const DestinationInfo serving = client.myDestination();
         CHECK(serving.dest == aliceDest);
-        const PublishResult result = client.publishCard(aliceSealing.publicDer(), serving);
+        ContactCard content;
+        content.sealingPublicKeyDer = aliceSealing.publicDer();
+        content.presenceKeyDer = Key::generateX25519().publicDer();
+        content.presenceDest = aliceDest;
+        const PublishResult result = client.publishCard(content, serving);
         CHECK(result.quotaBytes == 10u * 1024 * 1024);
         CHECK(result.dest == aliceDest);
         CHECK(result.servingSealingKeyDer == serverSealing.publicDer());

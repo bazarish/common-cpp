@@ -33,6 +33,8 @@ public:
     static Key generateSigning();
     static Key generateSigningPq();
     static Key generateSealing();
+    // A bare X25519 key, for what an I2P router needs as a raw key rather than a sealing pair.
+    static Key generateX25519();
 
     static Key fromPrivatePem(const std::string& pem, const std::string& passphrase = {});
     static Key fromPublicDer(const Bytes& spkiDer);
@@ -45,6 +47,8 @@ public:
     bool isA(const char* algorithmName) const;
     bool hasKem() const;
     const Key& kem() const;
+    Bytes rawPublic() const;
+    Bytes rawPrivate() const;
 
     EVP_PKEY* raw() const;
 

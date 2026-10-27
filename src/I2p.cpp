@@ -17,6 +17,24 @@
 
 namespace bazarish::i2p {
 
+namespace backend {
+
+namespace {
+
+constexpr std::size_t kLeaseSetKeyBytes = 32;
+
+}  // namespace
+
+std::string leaseSetKeyBase64(const Bytes& raw)
+{
+    if (raw.size() != kLeaseSetKeyBytes) {
+        throw std::invalid_argument("a lease-set reader key is 32 raw bytes");
+    }
+    return standardToI2pBase64(toBase64(raw));
+}
+
+}  // namespace backend
+
 namespace {
 
 constexpr auto kEndpointReadyPoll = std::chrono::milliseconds(200);

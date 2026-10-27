@@ -72,7 +72,7 @@ int main()
 
     AccountManager first(root / "accounts");
     AccountManager joined(second / "accounts");
-    const AccountInfo made = first.create("Pair Smoke");
+    const AccountInfo made = first.create("Pair Smoke", AccountKind::eUser);
     say("account " + made.id + " fingerprint " + made.fingerprint);
 
     Session session = first.open(made.id);

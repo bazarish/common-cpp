@@ -2,6 +2,7 @@
 #include "bazarish/Certificates.hpp"
 
 #include "bazarish/Hybrid.hpp"
+#include "bazarish/I2pAddress.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -30,6 +31,26 @@ void requireSigner(const VerifiedJson& verified, const std::string& expectedFing
     }
 }
 
+void requirePresenceFieldsMatch(const bazarish::ContactCard& card)
+{
+    const bool carriesKey = !card.presenceKeyDer.empty();
+    const bool carriesDest = !card.presenceDest.empty();
+    if (card.kind != bazarish::AccountKind::eUser) {
+        if (carriesKey || carriesDest) {
+            throw std::runtime_error("only a user card carries presence");
+        }
+        return;
+    }
+    if (!carriesKey || !carriesDest) {
+        throw std::runtime_error("a user card must carry its presence key and address");
+    }
+    const bazarish::Key key = bazarish::Key::fromPublicDer(card.presenceKeyDer);
+    if (key.hasKem() || !key.isA(bazarish::kClassicalSealingAlgorithm)) {
+        throw std::runtime_error("a presence key is a bare X25519 key");
+    }
+    bazarish::validateB32I2pHost(card.presenceDest);
+}
+
 }  // namespace
 
 namespace {
@@ -43,14 +64,14 @@ const char* const kDelegationCertificateType = "delegation-certificate";
 
 namespace bazarish {
 
-Bytes ContactCard::issue(const Identity& userIdentity, const std::int64_t issuedAt,
-    const std::string& dest, const Bytes& sealingPublicKeyDer,
-    const Bytes& servingSealingKeyDer)
+Bytes ContactCard::issue(const Identity& userIdentity) const
 {
+    requirePresenceFieldsMatch(*this);
     nlohmann::json body = {
         {"v", kCertificateFormatVersion},
         {"t", kContactCardType},
         {"issuedAt", issuedAt},
+        {"kind", std::string(accountKindName(kind))},
     };
     if (!dest.empty()) {
         body["dest"] = dest;
@@ -60,6 +81,10 @@ Bytes ContactCard::issue(const Identity& userIdentity, const std::int64_t issued
     }
     if (!servingSealingKeyDer.empty()) {
         body["servingKey"] = toBase64(servingSealingKeyDer);
+    }
+    if (!presenceKeyDer.empty()) {
+        body["presenceKey"] = toBase64(presenceKeyDer);
+        body["presenceDest"] = presenceDest;
     }
     return hybrid::signJson(body, userIdentity);
 }
@@ -72,6 +97,17 @@ ContactCard ContactCard::verify(const Bytes& der)
         throw std::runtime_error("a contact card must say when it was signed");
     }
     card.issuedAt = verified.body.at("issuedAt").get<std::int64_t>();
+    if (!verified.body.contains("kind")) {
+        throw std::runtime_error("a contact card must say what kind of account it is");
+    }
+    card.kind = accountKindFromName(verified.body.at("kind").get<std::string>());
+    if (verified.body.contains("presenceKey")) {
+        card.presenceKeyDer = fromBase64(verified.body.at("presenceKey").get<std::string>());
+    }
+    if (verified.body.contains("presenceDest")) {
+        card.presenceDest = verified.body.at("presenceDest").get<std::string>();
+    }
+    requirePresenceFieldsMatch(card);
     if (verified.body.contains("dest")) {
         card.dest = verified.body.at("dest").get<std::string>();
     }
@@ -106,6 +142,14 @@ Key ContactCard::servingSealingKey() const
         throw std::runtime_error("contact card carries no serving sealing key");
     }
     return Key::fromPublicDer(servingSealingKeyDer);
+}
+
+Key ContactCard::presenceKey() const
+{
+    if (presenceKeyDer.empty()) {
+        throw std::runtime_error("contact card carries no presence key");
+    }
+    return Key::fromPublicDer(presenceKeyDer);
 }
 
 Bytes AliasCertificate::issue(

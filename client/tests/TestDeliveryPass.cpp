@@ -392,8 +392,8 @@ int main()
     int aliceSent = 0;
 
     {
-        Session alice = Session::create(aDir, endpoint, std::string{});
-        Session bob = Session::create(bDir, endpoint, std::string{});
+        Session alice = Session::create(aDir, AccountKind::eUser, endpoint, std::string{});
+        Session bob = Session::create(bDir, AccountKind::eUser, endpoint, std::string{});
         const ResolverCoordinate resolver{resolverRoot.fingerprint(), kTestResolverDest};
         alice.setResolverCoordinate(resolver);
         bob.setResolverCoordinate(resolver);
@@ -1171,7 +1171,7 @@ int main()
         {
             const fs::path cDir = fs::temp_directory_path() / "bz-pass-c";
             fs::remove(cDir);
-            Session carol = Session::create(cDir, endpoint, std::string{});
+            Session carol = Session::create(cDir, AccountKind::eUser, endpoint, std::string{});
             {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.destFor[carol.fingerprint()]
@@ -1199,7 +1199,7 @@ int main()
         {
             const fs::path dDir = fs::temp_directory_path() / "bz-pass-d";
             fs::remove(dDir);
-            Session dana = Session::create(dDir, endpoint, std::string{});
+            Session dana = Session::create(dDir, AccountKind::eUser, endpoint, std::string{});
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.destFor[dana.fingerprint()]
@@ -1268,7 +1268,7 @@ int main()
         {
             const fs::path eDir = fs::temp_directory_path() / "bz-pass-e";
             fs::remove(eDir);
-            Session erin = Session::create(eDir, endpoint, std::string{});
+            Session erin = Session::create(eDir, AccountKind::eUser, endpoint, std::string{});
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.destFor[erin.fingerprint()]

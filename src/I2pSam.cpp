@@ -45,6 +45,12 @@ sam::SessionConfig sessionConfigFor(const EndpointConfig& config, const sam::Sty
     session.privacy = config.privacy;
     session.tunnelQuantity = config.tunnelQuantity;
     session.published = config.published;
+    for (const Bytes& reader : config.leaseSetReaders) {
+        session.leaseSetReaders.push_back(backend::leaseSetKeyBase64(reader));
+    }
+    if (!config.leaseSetReaderKey.empty()) {
+        session.leaseSetReaderKey = backend::leaseSetKeyBase64(config.leaseSetReaderKey);
+    }
     return session;
 }
 

@@ -1232,7 +1232,7 @@ void Link::forget(const std::uint32_t id)
 
 std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointConfig& config)
 {
-    if (config.keys.has_value()) {
+    if (config.keys.has_value() && config.leaseSetReaders.empty()) {
         notWithAGateway("a destination built from a key of your own");
     }
     const std::uint32_t id = link_->nextId();
@@ -1241,6 +1241,17 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         {"published", config.published}, {"realtime", config.realtime}};
     if (!config.target.empty()) {
         ask["target"] = config.target;
+    }
+    if (config.keys.has_value()) {
+        ask["keys"] = config.keys->privateBase64();
+        nlohmann::json readers = nlohmann::json::array();
+        for (const Bytes& reader : config.leaseSetReaders) {
+            readers.push_back(leaseSetKeyBase64(reader));
+        }
+        ask["readers"] = readers;
+    }
+    if (!config.leaseSetReaderKey.empty()) {
+        ask["readerKey"] = leaseSetKeyBase64(config.leaseSetReaderKey);
     }
     const std::optional<Frame> answer
         = link_->call(gateway::encodeJson(FrameType::eEndpointCreate, id, ask), id,

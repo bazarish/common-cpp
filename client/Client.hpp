@@ -99,8 +99,8 @@ public:
     void setDestinationOwner(std::string owner);
     void releaseI2pLink();
 
-    PublishResult publishCard(const Bytes& sealingPrekeyDer = {},
-        const DestinationInfo& serving = {}, std::int64_t notBefore = 0);
+    PublishResult publishCard(const ContactCard& content, const DestinationInfo& serving = {},
+        std::int64_t notBefore = 0);
 
     void closeAccount();
     PortalInfo fetchPortalInfo();

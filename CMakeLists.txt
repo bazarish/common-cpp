@@ -30,6 +30,7 @@ option(BAZARISH_WITH_CLIENT "Build the client core library" ON)
 add_library(bazarish_common STATIC
     src/Auth.cpp
     src/Bytes.cpp
+    src/AccountKind.cpp
     src/Crypto.cpp
     src/Cms.cpp
     src/Hybrid.cpp
@@ -205,6 +206,7 @@ if(BAZARISH_WITH_CLIENT)
         client/Invite.cpp
         client/OutboundCourier.cpp
         client/OutboundLeases.cpp
+        client/Presence.cpp
         client/Qr.cpp
         client/Session.cpp
         client/SocksProxy.cpp
@@ -241,6 +243,7 @@ endif()
     bazarish_client_add_test(TestCallMedia)
     bazarish_client_add_test(TestCallWindow)
     bazarish_client_add_test(TestClient)
+    bazarish_client_add_test(TestPresence)
 
     # Live end-to-end against a running resolver over real I2P: the coordinate a
     # build ships with, the frame on the real transport, and the chain checked

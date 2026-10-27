@@ -13,6 +13,7 @@ namespace {
 
 constexpr std::int64_t kNow = 1780000000;
 constexpr std::int64_t kThreeDays = 3 * 24 * 3600;
+constexpr std::size_t kB33LabelLength = 56;
 
 }  // namespace
 
@@ -22,20 +23,34 @@ int main()
     const Identity serverRoot = Identity::generate();
     const Key sealing = Key::generateSealing();
 
-    const Bytes bareDer = ContactCard::issue(user, kNow);
-    const ContactCard bare = ContactCard::verify(bareDer);
+    const Key presence = Key::generateX25519();
+    const std::string presenceDest = std::string(kB33LabelLength, 'a') + ".b32.i2p";
+    const auto userCard = [&]() {
+        ContactCard card;
+        card.issuedAt = kNow;
+        card.presenceKeyDer = presence.publicDer();
+        card.presenceDest = presenceDest;
+        return card;
+    };
+
+    const ContactCard bare = ContactCard::verify(userCard().issue(user));
     CHECK(bare.fingerprint() == user.fingerprint());
+    CHECK(bare.kind == AccountKind::eUser);
     CHECK(bare.dest.empty());
     CHECK(bare.sealingPublicKeyDer.empty());
     CHECK(bare.servingSealingKeyDer.empty());
+    CHECK(bare.presenceKey().publicDer() == presence.publicDer());
+    CHECK(bare.presenceDest == presenceDest);
     CHECK_THROWS(bare.sealingKey());
     CHECK_THROWS(bare.servingSealingKey());
 
     const Key servingSealing = Key::generateSealing();
     const std::string dest = "exampledestination.b32.i2p";
-    const Bytes contactDer = ContactCard::issue(
-        user, kNow, dest, sealing.publicDer(), servingSealing.publicDer());
-    const ContactCard contact = ContactCard::verify(contactDer);
+    ContactCard full = userCard();
+    full.dest = dest;
+    full.sealingPublicKeyDer = sealing.publicDer();
+    full.servingSealingKeyDer = servingSealing.publicDer();
+    const ContactCard contact = ContactCard::verify(full.issue(user));
     CHECK(contact.fingerprint() == user.fingerprint());
     CHECK(contact.issuedAt == kNow);
     CHECK(contact.dest == dest);
@@ -45,10 +60,55 @@ int main()
     CHECK(contact.servingSealingKey().publicDer() == servingSealing.publicDer());
 
     {
+        ContactCard bot;
+        bot.kind = AccountKind::eBot;
+        bot.issuedAt = kNow;
+        const ContactCard read = ContactCard::verify(bot.issue(user));
+        CHECK(read.kind == AccountKind::eBot);
+        CHECK(read.presenceKeyDer.empty());
+        CHECK(read.presenceDest.empty());
+        CHECK_THROWS(read.presenceKey());
+
+        ContactCard chat = bot;
+        chat.kind = AccountKind::eChat;
+        CHECK(ContactCard::verify(chat.issue(user)).kind == AccountKind::eChat);
+
+        ContactCard botWithPresence = userCard();
+        botWithPresence.kind = AccountKind::eBot;
+        CHECK_THROWS(botWithPresence.issue(user));
+
+        ContactCard userWithoutPresence;
+        userWithoutPresence.issuedAt = kNow;
+        CHECK_THROWS(userWithoutPresence.issue(user));
+
+        ContactCard userWithSealingPair = userCard();
+        userWithSealingPair.presenceKeyDer = sealing.publicDer();
+        CHECK_THROWS(userWithSealingPair.issue(user));
+
+        ContactCard userWithBadAddress = userCard();
+        userWithBadAddress.presenceDest = "not an address";
+        CHECK_THROWS(userWithBadAddress.issue(user));
+    }
+
+    {
+        const nlohmann::json kindless = {{"v", kCertificateFormatVersion}, {"t", "contact-card"},
+            {"issuedAt", kNow}};
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(kindless, user)));
+        const nlohmann::json unknownKind = {{"v", kCertificateFormatVersion},
+            {"t", "contact-card"}, {"issuedAt", kNow}, {"kind", "robot"}};
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(unknownKind, user)));
+        const nlohmann::json userWithoutPresence = {{"v", kCertificateFormatVersion},
+            {"t", "contact-card"}, {"issuedAt", kNow}, {"kind", "user"}};
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(userWithoutPresence, user)));
+        const nlohmann::json botWithPresence = {{"v", kCertificateFormatVersion},
+            {"t", "contact-card"}, {"issuedAt", kNow}, {"kind", "bot"},
+            {"presenceKey", toBase64(presence.publicDer())}, {"presenceDest", presenceDest}};
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(botWithPresence, user)));
+    }
+
+    {
         const Identity impostor = Identity::generate();
-        const nlohmann::json body = {{"v", kCertificateFormatVersion}, {"t", "contact-card"},
-            {"issuedAt", kNow}, {"user", user.fingerprint()}};
-        const ContactCard theirs = ContactCard::verify(hybrid::signJson(body, impostor));
+        const ContactCard theirs = ContactCard::verify(userCard().issue(impostor));
         CHECK(theirs.fingerprint() == impostor.fingerprint());
         CHECK(theirs.fingerprint() != user.fingerprint());
     }
@@ -63,17 +123,18 @@ int main()
 
     {
         const nlohmann::json undated
-            = {{"v", kCertificateFormatVersion}, {"t", "contact-card"}};
+            = {{"v", kCertificateFormatVersion}, {"t", "contact-card"}, {"kind", "bot"}};
         CHECK_THROWS(ContactCard::verify(hybrid::signJson(undated, user)));
     }
 
     {
-        const Bytes olderDer = ContactCard::issue(user, kNow, "old.b32.i2p",
-            sealing.publicDer(), servingSealing.publicDer());
-        const Bytes newerDer = ContactCard::issue(user, kNow + 1, "new.b32.i2p",
-            sealing.publicDer(), servingSealing.publicDer());
-        CHECK(ContactCard::verify(olderDer).issuedAt
-            < ContactCard::verify(newerDer).issuedAt);
+        ContactCard older = full;
+        older.dest = "old.b32.i2p";
+        ContactCard newer = full;
+        newer.issuedAt = kNow + 1;
+        newer.dest = "new.b32.i2p";
+        CHECK(ContactCard::verify(older.issue(user)).issuedAt
+            < ContactCard::verify(newer.issue(user)).issuedAt);
     }
 
     const Bytes aliasDer = AliasCertificate::issue(user, "alice", kNow);

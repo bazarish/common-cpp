@@ -106,7 +106,28 @@ constexpr std::int64_t kMediaSilenceTimeoutMs = 20000;
 constexpr std::size_t kEndedCallsRemembered = 32;
 
 constexpr int kMessageFormatVersion = 1;
-constexpr int kBundleFormatVersion = 1;
+constexpr int kBundleFormatVersion = 2;
+
+constexpr char kPresenceKeyRow[] = "presence.pem";
+constexpr char kPresenceDestRow[] = "presence-dest";
+
+void applyPresence(Contact& contact, const AccountKind kind, const std::string& presenceKeyB64,
+    const std::string& presenceDest)
+{
+    contact.kind = kind;
+    if (kind != AccountKind::eUser) {
+        contact.presenceKeyB64.clear();
+        contact.presenceDest.clear();
+        return;
+    }
+    const Key key = Key::fromPublicDer(fromBase64(presenceKeyB64));
+    if (key.hasKem() || !key.isA(kClassicalSealingAlgorithm)) {
+        throw std::runtime_error("a presence key is a bare X25519 key");
+    }
+    validateB32I2pHost(presenceDest);
+    contact.presenceKeyB64 = presenceKeyB64;
+    contact.presenceDest = presenceDest;
+}
 
 std::int64_t nowSeconds()
 {
@@ -120,8 +141,23 @@ std::int64_t nowMillis()
         .count();
 }
 
+nlohmann::json readBundle(const Bytes& plain)
+{
+    const nlohmann::json bundle = nlohmann::json::parse(plain.begin(), plain.end());
+    const int version = bundle.at("v").get<int>();
+    if (version > kBundleFormatVersion) {
+        throw std::runtime_error("this backup was written by a newer version of Bazarish");
+    }
+    if (version < kBundleFormatVersion) {
+        throw std::runtime_error("this backup was written by an older version of Bazarish");
+    }
+    return bundle;
+}
+
 void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap)
 {
+    applyPresence(contact, accountKindFromName(bootstrap.at("kind").get<std::string>()),
+        bootstrap.value("presenceKey", std::string()), bootstrap.value("presenceDest", std::string()));
     if (bootstrap.contains("sealing")) {
         contact.sealingPublicB64 = bootstrap.at("sealing").get<std::string>();
     }
@@ -353,8 +389,8 @@ Session::~Session()
 Session::Session(Session&&) noexcept = default;
 Session& Session::operator=(Session&&) noexcept = default;
 
-Session Session::create(
-    const fs::path& accountFile, const std::string& passphrase, const std::string& name)
+Session Session::create(const fs::path& accountFile, const AccountKind kind,
+    const std::string& passphrase, const std::string& name)
 {
     auto db = std::make_unique<AccountDb>(accountFile, passphrase);
 
@@ -363,6 +399,15 @@ Session Session::create(
 
     Key sealing = Key::generateSealing();
     db->putText("sealing.pem", sealing.privatePem());
+
+    std::optional<Key> presenceKey;
+    Bytes presenceDestKeys;
+    if (kind == AccountKind::eUser) {
+        presenceKey = Key::generateX25519();
+        db->putText(kPresenceKeyRow, presenceKey->privatePem());
+        presenceDestKeys = generateI2pMaster().privateKeys;
+        db->put(kPresenceDestRow, presenceDestKeys);
+    }
 
     const std::string clientId = toHex(randomBytes(8));
     const bool encrypted = !passphrase.empty();
@@ -384,6 +429,7 @@ Session Session::create(
                 {"facades", nlohmann::json::array()},
             }},
         {"encrypted", encrypted},
+        {"kind", std::string(accountKindName(kind))},
     };
     db->putText("meta", meta.dump(2));
 
@@ -396,14 +442,20 @@ Session Session::create(
     session.name_ = name;
     session.deliveryIdSeed_ = deliveryIdSeed;
     session.deliverySecret_ = fromHex(deliverySecret);
+    session.kind_ = kind;
+    session.presenceKey_ = std::move(presenceKey);
+    session.presenceDestKeys_ = std::move(presenceDestKeys);
+    if (kind == AccountKind::eUser) {
+        session.presenceDest_ = i2pRoutingHost(session.presenceDestKeys_);
+    }
     session.client_->setDestinationOwner(session.destinationOwner());
     return session;
 }
 
-Session Session::create(const fs::path& accountFile, const ServerEndpoint& endpoint,
-    const std::string& passphrase)
+Session Session::create(const fs::path& accountFile, const AccountKind kind,
+    const ServerEndpoint& endpoint, const std::string& passphrase)
 {
-    Session session = create(accountFile, passphrase);
+    Session session = create(accountFile, kind, passphrase);
     session.connectServer(endpoint);
     return session;
 }
@@ -480,6 +532,9 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
         const nlohmann::json stored = nlohmann::json::parse(db->text("contacts"));
         for (const auto& [fingerprint, entry] : stored.items()) {
             Contact contact;
+            contact.kind = accountKindFromName(entry.at("kind").get<std::string>());
+            contact.presenceKeyB64 = entry.at("presenceKeyB64").get<std::string>();
+            contact.presenceDest = entry.at("presenceDest").get<std::string>();
             contact.sealingPublicB64 = entry.at("sealingPublicB64").get<std::string>();
             contact.dest = entry.at("dest").get<std::string>();
             contact.servingSealingB64 = entry.at("servingSealingB64").get<std::string>();
@@ -532,6 +587,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     session.pendingPassRevokes_ = std::move(pendingRevokes);
     session.acceptCalls_ = meta.value("acceptCalls", true);
     session.sendReceipts_ = meta.value("sendReceipts", true);
+    session.showPresence_ = meta.value("showPresence", true);
     session.contactsAskedBy_
         = meta.value("contactsAskedBy", std::vector<std::string>());
     session.cardB64_ = meta.value("card", std::string{});
@@ -549,6 +605,19 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     session.delegationDays_ = meta.value("delegationDays", kDefaultDelegationDays);
     session.deliveryIdSeed_ = meta.at("deliveryIdSeed").get<std::string>();
     session.deliverySecret_ = fromHex(meta.at("deliverySecret").get<std::string>());
+    if (!meta.contains("kind")) {
+        throw std::runtime_error("this account was created before account kinds and cannot be opened");
+    }
+    session.kind_ = accountKindFromName(meta.at("kind").get<std::string>());
+    if (session.kind_ == AccountKind::eUser) {
+        const std::string presencePem = session.db_->text(kPresenceKeyRow);
+        session.presenceDestKeys_ = session.db_->get(kPresenceDestRow).value_or(Bytes{});
+        if (presencePem.empty() || session.presenceDestKeys_.empty()) {
+            throw std::runtime_error("this account has no presence keys and cannot be opened");
+        }
+        session.presenceKey_ = Key::fromPrivatePem(presencePem);
+        session.presenceDest_ = i2pRoutingHost(session.presenceDestKeys_);
+    }
     if (!session.cardB64_.empty()) {
         const ContactCard card = ContactCard::verify(fromBase64(session.cardB64_));
         session.myDest_ = card.dest;
@@ -663,9 +732,95 @@ bool Session::contactAcceptInFlight(const std::string& peerFingerprint) const
     return found != contacts_.end() && found->second.acceptInFlight;
 }
 
+AccountKind Session::contactKind(const std::string& peerFingerprint) const
+{
+    const auto found = contacts_.find(peerFingerprint);
+    if (found == contacts_.end()) {
+        throw std::runtime_error("no such contact: " + peerFingerprint);
+    }
+    return found->second.kind;
+}
+
 std::string Session::sealingPublicB64() const
 {
     return toBase64(sealingKey_.publicDer());
+}
+
+const Key& Session::presenceKey() const
+{
+    if (!presenceKey_.has_value()) {
+        throw std::logic_error("only a user account has a presence key");
+    }
+    return *presenceKey_;
+}
+
+ContactCard Session::cardContent() const
+{
+    ContactCard card;
+    card.kind = kind_;
+    card.sealingPublicKeyDer = sealingKey_.publicDer();
+    if (kind_ == AccountKind::eUser) {
+        card.presenceKeyDer = presenceKey().publicDer();
+        card.presenceDest = presenceDest_;
+    }
+    return card;
+}
+
+nlohmann::json Session::bootstrapBlock(const std::string& pass) const
+{
+    nlohmann::json block = {
+        {"kind", std::string(accountKindName(kind_))},
+        {"sealing", sealingPublicB64()},
+        {"dest", myDest_},
+        {"servingKey", myServingKeyB64_},
+        {"pass", pass},
+    };
+    if (kind_ == AccountKind::eUser) {
+        block["presenceKey"] = toBase64(presenceKey().publicDer());
+        block["presenceDest"] = presenceDest_;
+    }
+    return block;
+}
+
+std::optional<AccountKind> Session::storedKind(
+    const fs::path& accountFile, const std::string& passphrase)
+{
+    const AccountDb db(accountFile, passphrase);
+    const nlohmann::json meta = nlohmann::json::parse(db.text("meta"));
+    if (!meta.contains("kind")) {
+        return std::nullopt;
+    }
+    return accountKindFromName(meta.at("kind").get<std::string>());
+}
+
+void Session::assignHostedKind(const fs::path& accountFile, const AccountKind kind)
+{
+    if (kind == AccountKind::eUser) {
+        throw std::logic_error("a user account gets its kind when it is created");
+    }
+    AccountDb db(accountFile, std::string{});
+    nlohmann::json meta = nlohmann::json::parse(db.text("meta"));
+    if (meta.contains("kind")) {
+        if (accountKindFromName(meta.at("kind").get<std::string>()) != kind) {
+            throw std::runtime_error("this account was created as another kind of account");
+        }
+        return;
+    }
+    meta["kind"] = std::string(accountKindName(kind));
+    meta.erase("card");
+    db.putText("meta", meta.dump(2));
+    if (!db.has("contacts")) {
+        return;
+    }
+    nlohmann::json contacts = nlohmann::json::parse(db.text("contacts"));
+    for (auto& [contactFp, entry] : contacts.items()) {
+        if (!entry.contains("kind")) {
+            entry["kind"] = std::string(accountKindName(AccountKind::eUser));
+            entry["presenceKeyB64"] = std::string();
+            entry["presenceDest"] = std::string();
+        }
+    }
+    db.putText("contacts", contacts.dump());
 }
 
 bool Session::hasContact(const std::string& peerFingerprint) const
@@ -713,12 +868,14 @@ void Session::persistMeta() const
         {"avatarMime", avatarMime_},
         {"acceptCalls", acceptCalls_},
         {"sendReceipts", sendReceipts_},
+        {"showPresence", showPresence_},
         {"contactsAskedBy", contactsAskedBy_},
         {"aliasNames", aliasNamesToJson()},
         {"aliasCheckAfter", aliasCheckAfter_},
         {"aliasStatusAt", aliasStatusAt_},
         {"aliasDepositCovers", aliasDepositCovers_},
         {"aliasPushedDest", aliasPushedDest_},
+        {"kind", std::string(accountKindName(kind_))},
     };
     db_->putText("meta", meta.dump(2));
 }
@@ -739,6 +896,9 @@ nlohmann::json Session::contactsToJson() const
     nlohmann::json stored = nlohmann::json::object();
     for (const auto& [fingerprint, contact] : contacts_) {
         stored[fingerprint] = {
+            {"kind", std::string(accountKindName(contact.kind))},
+            {"presenceKeyB64", contact.presenceKeyB64},
+            {"presenceDest", contact.presenceDest},
             {"sealingPublicB64", contact.sealingPublicB64},
             {"dest", contact.dest},
             {"servingSealingB64", contact.servingSealingB64},
@@ -772,14 +932,14 @@ void Session::registerAccount()
     const DestinationInfo serving = servedOrOwnDestination();
     PublishResult result;
     try {
-        result = client_->publishCard(sealingKey_.publicDer(), serving, currentCardIssuedAt());
+        result = client_->publishCard(cardContent(), serving, currentCardIssuedAt());
     } catch (const ApiError& error) {
         if (error.code != ErrorCode::eDeliveryRejected) {
             throw;
         }
         reportConnectProgress(60, "Registering with this server");
         client_->registerHere();
-        result = client_->publishCard(sealingKey_.publicDer(), serving, currentCardIssuedAt());
+        result = client_->publishCard(cardContent(), serving, currentCardIssuedAt());
     }
     reportConnectProgress(70, "Registered; registering this device");
     storeCard(result);
@@ -806,13 +966,13 @@ void Session::registerSelfHosted()
 {
     PublishResult result;
     try {
-        result = client_->publishCard(sealingKey_.publicDer(), {}, currentCardIssuedAt());
+        result = client_->publishCard(cardContent(), {}, currentCardIssuedAt());
     } catch (const ApiError& error) {
         if (error.code != ErrorCode::eDeliveryRejected) {
             throw;
         }
         client_->registerHere();
-        result = client_->publishCard(sealingKey_.publicDer(), {}, currentCardIssuedAt());
+        result = client_->publishCard(cardContent(), {}, currentCardIssuedAt());
     }
     storeCard(result);
     client_->registerThisClient();
@@ -830,7 +990,7 @@ void Session::publishRouting()
     reportConnectProgress(88, "Delegating your destination to the server");
     const DestinationInfo serving = client_->sendI2pTransient(i2pTransientBase64(), expires);
     reportConnectProgress(92, "Publishing your contact card");
-    storeCard(client_->publishCard(sealingKey_.publicDer(), serving, currentCardIssuedAt()));
+    storeCard(client_->publishCard(cardContent(), serving, currentCardIssuedAt()));
     reportConnectProgress(96, "Syncing your address to your other devices");
     try {
         syncI2pMasterToSelf();
@@ -1968,6 +2128,7 @@ void Session::recordRequestedContact(const std::string& peerFingerprint,
     validateB32I2pHost(info.card.dest);
 
     Contact& contact = contacts_[peerFingerprint];
+    applyPresence(contact, info.card.kind, toBase64(info.card.presenceKeyDer), info.card.presenceDest);
     contact.dest = info.card.dest;
     contact.sealingPublicB64 = toBase64(peerPrekey.publicDer());
     contact.servingSealingB64 = toBase64(peerServingKey.publicDer());
@@ -1997,13 +2158,7 @@ void Session::sendContactRequest(const std::string& peerFingerprint,
     const nlohmann::json payload = envelope("contact.request", requestId, {
         {"text", text},
         {"dn", name_},
-        {"bootstrap",
-            {
-                {"sealing", sealingPublicB64()},
-                {"dest", myDest_},
-                {"servingKey", myServingKeyB64_},
-                {"pass", replyPass},
-            }},
+        {"bootstrap", bootstrapBlock(replyPass)},
     });
     nlohmann::json request = payload;
     signAuthorship(request, client_->identity(), /*withKeys=*/true);
@@ -2350,7 +2505,7 @@ void Session::replaceOwnAddress()
     persistI2pBlob("i2p-master", i2pMaster_);
     const std::int64_t expires = renewI2pTransient(static_cast<int>(delegationDays_));
     const DestinationInfo serving = client_->sendI2pTransient(i2pTransientBase64(), expires);
-    storeCard(client_->publishCard(sealingKey_.publicDer(), serving, currentCardIssuedAt()));
+    storeCard(client_->publishCard(cardContent(), serving, currentCardIssuedAt()));
     try {
         syncI2pMasterToSelf();
     } catch (const std::exception& error) {
@@ -2787,12 +2942,7 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     DeliveryWatch watchWithLog = watch;
 
     if (establishOnFirstReply && !contact.issuedToThem && !contact.acceptInFlight) {
-        inner["bootstrap"] = {
-            {"sealing", sealingPublicB64()},
-            {"dest", myDest_},
-            {"servingKey", myServingKeyB64_},
-            {"pass", registerPassFor(peerFingerprint)},
-        };
+        inner["bootstrap"] = bootstrapBlock(registerPassFor(peerFingerprint));
         bootstrapIssued = true;
     }
 
@@ -3293,10 +3443,16 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                     message.contentType = type;
                     const bool accept = body.value("acceptCalls", acceptCalls_);
                     const bool receipts = body.value("sendReceipts", sendReceipts_);
-                    if (accept != acceptCalls_ || receipts != sendReceipts_) {
+                    const bool presence = body.value("showPresence", showPresence_);
+                    if (accept != acceptCalls_ || receipts != sendReceipts_
+                        || presence != showPresence_) {
                         acceptCalls_ = accept;
                         sendReceipts_ = receipts;
+                        showPresence_ = presence;
                         persistMeta();
+                        if (presence_) {
+                            presence_->setShown(showPresence_);
+                        }
                     }
                 }
             } else if (type == "device.saved-clear") {
@@ -3635,6 +3791,9 @@ nlohmann::json Session::contactBookEntry(
 {
     nlohmann::json entry = {
         {"peer", peerFingerprint},
+        {"kind", std::string(accountKindName(contact.kind))},
+        {"presenceKey", contact.presenceKeyB64},
+        {"presenceDest", contact.presenceDest},
         {"pass", contact.sendPass},
         {"sealing", contact.sealingPublicB64},
         {"dest", contact.dest},
@@ -3713,6 +3872,9 @@ void Session::applyContactBook(const nlohmann::json& entries)
         fill(contact.identityClassicalB64, entry.value("identityClassical", std::string()));
         fill(contact.identityPqB64, entry.value("identityPq", std::string()));
         if (isNew) {
+            applyPresence(contact, accountKindFromName(entry.at("kind").get<std::string>()),
+                entry.at("presenceKey").get<std::string>(),
+                entry.at("presenceDest").get<std::string>());
             contact.notifications = entry.value("notifications", true);
             contact.allowCalls = entry.value("allowCalls", true);
             contact.issuedToThem = entry.value("issuedToThem", false);
@@ -3906,6 +4068,83 @@ void Session::setSendReceipts(const bool on)
     syncAccountPrefsToSelf();
 }
 
+void Session::setShowPresence(const bool on)
+{
+    if (showPresence_ == on) {
+        return;
+    }
+    showPresence_ = on;
+    persistMeta();
+    syncAccountPrefsToSelf();
+    if (presence_) {
+        presence_->setShown(showPresence_);
+    }
+}
+
+void Session::startPresence(PresenceSink sink)
+{
+    if (kind_ != AccountKind::eUser || presence_) {
+        return;
+    }
+    const Identity& identity = client_->identity();
+    PresenceAccount account;
+    account.fingerprint = fingerprint();
+    account.device = client_->clientId();
+    account.identityPem = identity.privatePem();
+    account.sealingPem = sealingKey_.privatePem();
+    account.identity = IdentityKeys{identity.classical().publicDer(), identity.pq().publicDer()};
+    account.presenceKeyDer = presenceKey().publicDer();
+    account.readerKey = presenceKey().rawPrivate();
+    account.destKeys = presenceDestKeys_;
+    account.dest = presenceDest_;
+    presence_ = std::make_unique<Presence>(std::move(account),
+        i2pPresenceNet(i2pDirFor(accountPath_), destinationOwner()), std::move(sink));
+    presence_->setShown(showPresence_);
+    setPresenceOrder(presenceOrder_);
+}
+
+void Session::setPresenceFocused(const bool focused)
+{
+    if (presence_) {
+        presence_->setFocused(focused);
+    }
+}
+
+void Session::setPresenceOrder(const std::vector<std::string>& chatOrder)
+{
+    presenceOrder_ = chatOrder;
+    if (!presence_) {
+        return;
+    }
+    std::vector<PresenceContact> ordered;
+    for (const std::string& peerFingerprint : chatOrder) {
+        const auto found = contacts_.find(peerFingerprint);
+        if (found == contacts_.end() || isBlocked(peerFingerprint)
+            || found->second.kind != AccountKind::eUser || found->second.presenceKeyB64.empty()) {
+            continue;
+        }
+        const Contact& contact = found->second;
+        ordered.push_back(PresenceContact{peerFingerprint, fromBase64(contact.sealingPublicB64),
+            IdentityKeys{fromBase64(contact.identityClassicalB64), fromBase64(contact.identityPqB64)},
+            fromBase64(contact.presenceKeyB64), contact.presenceDest});
+    }
+    presence_->setContacts(std::move(ordered));
+}
+
+void Session::presenceWatch(std::vector<std::string> peerFingerprints)
+{
+    if (presence_) {
+        presence_->watch(std::move(peerFingerprints));
+    }
+}
+
+void Session::presenceTyped(const std::string& peerFingerprint)
+{
+    if (presence_) {
+        presence_->typed(peerFingerprint);
+    }
+}
+
 void Session::syncAccountPrefsToSelf()
 {
     try {
@@ -3913,6 +4152,7 @@ void Session::syncAccountPrefsToSelf()
             {"type", "device.account-prefs"},
             {"acceptCalls", acceptCalls_},
             {"sendReceipts", sendReceipts_},
+            {"showPresence", showPresence_},
         });
     } catch (const std::exception& error) {
         bazarish::log::warn("account-prefs self-sync failed: {}", error.what());
@@ -4195,8 +4435,7 @@ void Session::refreshOwnCard()
     if (cardB64_.empty()) {
         throw std::runtime_error("not registered: nothing to refresh");
     }
-    storeCard(client_->publishCard(
-        sealingKey_.publicDer(), servedOrOwnDestination(), currentCardIssuedAt()));
+    storeCard(client_->publishCard(cardContent(), servedOrOwnDestination(), currentCardIssuedAt()));
 }
 
 DestinationInfo Session::servedOrOwnDestination()
@@ -4704,7 +4943,7 @@ Bytes Session::exportAccountBytes(const std::string& password)
             avatars[contactFp] = toBase64(contact.avatar);
         }
     }
-    const nlohmann::json bundle = {
+    nlohmann::json bundle = {
         {"v", kBundleFormatVersion},
         {"identityPem", client_->identity().privatePem()},
         {"sealingPem", sealingKey_.privatePem()},
@@ -4715,6 +4954,10 @@ Bytes Session::exportAccountBytes(const std::string& password)
         {"contactAvatars", avatars},
         {"blocked", nlohmann::json(blocked_)},
     };
+    if (kind_ == AccountKind::eUser) {
+        bundle["presencePem"] = presenceKey().privatePem();
+        bundle["presenceDest"] = toBase64(presenceDestKeys_);
+    }
     const std::string text = bundle.dump();
     return cms::sealWithPassword(Bytes(text.begin(), text.end()), password);
 }
@@ -4725,20 +4968,29 @@ void Session::exportAccount(const fs::path& outFile, const std::string& password
     writeFileText(outFile, std::string(sealed.begin(), sealed.end()));
 }
 
+AccountKind Session::bundleKind(const Bytes& sealed, const std::string& password)
+{
+    const Bytes plain = cms::unsealWithPassword(sealed, password);
+    const nlohmann::json bundle = readBundle(plain);
+    return accountKindFromName(bundle.at("meta").at("kind").get<std::string>());
+}
+
 void Session::importAccountBytes(const Bytes& sealed, const fs::path& accountFile,
     const std::string& password, const std::string& atRestPassphrase)
 {
     const Bytes plain = cms::unsealWithPassword(sealed, password);
-    const nlohmann::json bundle = nlohmann::json::parse(plain.begin(), plain.end());
-
-    if (bundle.at("v").get<int>() > kBundleFormatVersion) {
-        throw std::runtime_error("this backup was written by a newer version of Bazarish");
-    }
+    const nlohmann::json bundle = readBundle(plain);
+    const AccountKind kind = accountKindFromName(bundle.at("meta").at("kind").get<std::string>());
     AccountDb db(accountFile, atRestPassphrase);
     const Identity identity = Identity::fromPrivatePem(bundle.at("identityPem").get<std::string>());
     const Key sealing = Key::fromPrivatePem(bundle.at("sealingPem").get<std::string>());
     db.putText("identity.pem", identity.privatePem());
     db.putText("sealing.pem", sealing.privatePem());
+    if (kind == AccountKind::eUser) {
+        db.putText(kPresenceKeyRow,
+            Key::fromPrivatePem(bundle.at("presencePem").get<std::string>()).privatePem());
+        db.put(kPresenceDestRow, fromBase64(bundle.at("presenceDest").get<std::string>()));
+    }
 
     nlohmann::json meta = bundle.at("meta");
     meta["encrypted"] = !atRestPassphrase.empty();

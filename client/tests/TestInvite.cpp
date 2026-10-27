@@ -65,7 +65,7 @@ int main()
 
     const fs::path fileA = uniqueAccountFile("a");
     const std::string passphrase = "at-rest secret";
-    const std::string fingerprintA = Session::create(fileA, endpoint, passphrase).fingerprint();
+    const std::string fingerprintA = Session::create(fileA, AccountKind::eUser, endpoint, passphrase).fingerprint();
 
     CHECK_THROWS(Session::open(fileA));
     CHECK_THROWS(Session::open(fileA, "wrong"));

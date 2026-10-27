@@ -34,6 +34,8 @@ constexpr int kEd25519SignatureType = 7;
 
 // The NETDB_STORE_TYPE value for i2cp.leaseSetType.
 constexpr int kEncryptedLeaseSetType = 5;
+// I2P proposal 123: lease-set client authorisation by X25519.
+constexpr int kLeaseSetAuthTypeDh = 1;
 
 constexpr std::size_t kMaxReplyLineBytes = 8192;
 
@@ -524,6 +526,16 @@ std::string sessionCreateLine(const std::string& id, const SessionConfig& config
          << " i2cp.leaseSetType=" << kEncryptedLeaseSetType;
     if (!config.published) {
         line << " i2cp.dontPublishLeaseSet=true";
+    }
+    if (!config.leaseSetReaders.empty()) {
+        line << " i2cp.leaseSetAuthType=" << kLeaseSetAuthTypeDh;
+        for (std::size_t index = 0; index < config.leaseSetReaders.size(); ++index) {
+            line << " i2cp.leaseSetClient.dh.r" << index << "=r" << index << ":"
+                 << config.leaseSetReaders[index];
+        }
+    }
+    if (!config.leaseSetReaderKey.empty()) {
+        line << " i2cp.leaseSetPrivKey=" << config.leaseSetReaderKey;
     }
     line << " " << privacyOptions(config.privacy) << " "
          << tunnelQuantityOptions(config.tunnelQuantity);

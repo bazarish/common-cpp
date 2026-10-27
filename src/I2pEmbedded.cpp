@@ -1315,6 +1315,19 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
         std::to_string(i2pd::data::NETDB_STORE_TYPE_ENCRYPTED_LEASESET2));
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_ENCRYPTION_TYPE, "4");
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_PERSIST_KEYS, "false");
+    if (!config.leaseSetReaders.empty()) {
+        params.Insert(i2pd::client::I2CP_PARAM_LEASESET_AUTH_TYPE,
+            std::to_string(i2pd::data::ENCRYPTED_LEASESET_AUTH_TYPE_DH));
+        for (std::size_t index = 0; index < config.leaseSetReaders.size(); ++index) {
+            const std::string name = "r" + std::to_string(index);
+            params.Insert(std::string(i2pd::client::I2CP_PARAM_LEASESET_CLIENT_DH) + "." + name,
+                name + ":" + backend::leaseSetKeyBase64(config.leaseSetReaders[index]));
+        }
+    }
+    if (!config.leaseSetReaderKey.empty()) {
+        params.Insert(i2pd::client::I2CP_PARAM_LEASESET_PRIV_KEY,
+            backend::leaseSetKeyBase64(config.leaseSetReaderKey));
+    }
     int length = 0;
     int variance = 0;
     privacyToTunnel(config.privacy, length, variance);

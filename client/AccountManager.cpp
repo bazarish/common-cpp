@@ -171,7 +171,8 @@ std::vector<AccountInfo> AccountManager::list() const
     return accounts;
 }
 
-AccountInfo AccountManager::create(const std::string& name, const std::string& passphrase)
+AccountInfo AccountManager::create(
+    const std::string& name, const AccountKind kind, const std::string& passphrase)
 {
     if (name.find_first_not_of(" \t\r\n") == std::string::npos) {
         throw std::runtime_error("an account needs a name");
@@ -184,7 +185,7 @@ AccountInfo AccountManager::create(const std::string& name, const std::string& p
     while (exists(id)) {
         id = newAccountId();
     }
-    Session::create(fileFor(id), passphrase, name);
+    Session::create(fileFor(id), kind, passphrase, name);
     return readInfo(id, fileFor(id), passphrase);
 }
 

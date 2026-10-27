@@ -468,6 +468,8 @@ void testRawDatagrams()
     CHECK(contains(create, "HOST=127.0.0.1"));
     CHECK(contains(create, "PORT="));
     CHECK(!contains(create, "dontPublishLeaseSet"));
+    CHECK(!contains(create, "leaseSetAuthType"));
+    CHECK(!contains(create, "leaseSetPrivKey"));
 
     const std::string payload = "audio frame";
     session.sendDatagram(kB33, payload.data(), payload.size());
@@ -479,6 +481,22 @@ void testRawDatagrams()
     const std::vector<std::uint8_t> received
         = session.receiveDatagram(nullptr, std::chrono::milliseconds(5000));
     CHECK(std::string(received.begin(), received.end()) == payload);
+}
+
+void testLeaseSetReaders()
+{
+    FakeRouter router;
+    sam::SessionConfig config = streamConfig();
+    config.style = sam::Style::eRaw;
+    config.leaseSetReaders = {"readerA=", "readerB="};
+    config.leaseSetReaderKey = "ownKey=";
+    sam::Session session(router.address(), config, kReady);
+
+    const std::string create = router.waitForCommand("SESSION CREATE");
+    CHECK(contains(create, " i2cp.leaseSetAuthType=1 "));
+    CHECK(contains(create, " i2cp.leaseSetClient.dh.r0=r0:readerA= "));
+    CHECK(contains(create, " i2cp.leaseSetClient.dh.r1=r1:readerB= "));
+    CHECK(contains(create, " i2cp.leaseSetPrivKey=ownKey= "));
 }
 
 void testRepliableDatagrams()
@@ -588,6 +606,7 @@ int main()
     testRefusalCarriesItsCode();
     testForwardedAccept();
     testRawDatagrams();
+    testLeaseSetReaders();
     testRepliableDatagrams();
     testSessionComesBackAfterTheRouterDoes();
     testRefusesWhatIsNotLoopback();

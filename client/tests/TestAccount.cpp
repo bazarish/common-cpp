@@ -30,25 +30,25 @@ int main()
     AccountManager manager(root);
     CHECK(manager.list().empty());
 
-    const AccountInfo a = manager.create("Acetone", "secret");
+    const AccountInfo a = manager.create("Acetone", AccountKind::eUser, "secret");
     CHECK(a.id != "Acetone");
     CHECK(!a.id.empty());
     CHECK(a.name == "Acetone");
     CHECK(a.encrypted);
     CHECK(a.fingerprint.size() == kFingerprintTextLength);
 
-    const AccountInfo b = manager.create("Work Alias");
+    const AccountInfo b = manager.create("Work Alias", AccountKind::eUser);
     CHECK(b.id != a.id);
     CHECK(b.name == "Work Alias");
     CHECK(!b.encrypted);
 
-    const AccountInfo twin = manager.create("Work Alias");
+    const AccountInfo twin = manager.create("Work Alias", AccountKind::eUser);
     CHECK(twin.id != b.id);
     CHECK(twin.name == "Work Alias");
 
-    const AccountInfo cyrillic = manager.create("клирнет");
+    const AccountInfo cyrillic = manager.create("клирнет", AccountKind::eUser);
     CHECK(cyrillic.name == "клирнет");
-    const AccountInfo slashed = manager.create("home/work: notes");
+    const AccountInfo slashed = manager.create("home/work: notes", AccountKind::eUser);
     CHECK(slashed.name == "home/work: notes");
 
     CHECK(manager.list().size() == 5);
@@ -242,6 +242,56 @@ int main()
         }
         CHECK(fs::exists(named));
         CHECK(AccountDb(named, "secret").text("probe") == "value");
+    }
+
+    {
+        const fs::path kinds = root / "kinds";
+        fs::create_directories(kinds);
+
+        Session user = Session::create(kinds / "user.db", AccountKind::eUser);
+        CHECK(user.kind() == AccountKind::eUser);
+        CHECK(user.presenceKey().rawPrivate().size() == 32);
+        CHECK(!user.presenceDest().empty());
+        const std::string userPresence = user.presenceDest();
+        const Bytes userBundle = user.exportAccountBytes("pw");
+        CHECK(Session::bundleKind(userBundle, "pw") == AccountKind::eUser);
+        Session::importAccountBytes(userBundle, kinds / "user-copy.db", "pw");
+        const Session userCopy = Session::open(kinds / "user-copy.db");
+        CHECK(userCopy.kind() == AccountKind::eUser);
+        CHECK(userCopy.presenceDest() == userPresence);
+        CHECK(userCopy.presenceKey().rawPrivate() == user.presenceKey().rawPrivate());
+
+        Session bot = Session::create(kinds / "bot.db", AccountKind::eBot);
+        CHECK(bot.kind() == AccountKind::eBot);
+        CHECK(bot.presenceDest().empty());
+        CHECK_THROWS(bot.presenceKey());
+        const Bytes botBundle = bot.exportAccountBytes("pw");
+        CHECK(Session::bundleKind(botBundle, "pw") == AccountKind::eBot);
+        Session::importAccountBytes(botBundle, kinds / "bot-copy.db", "pw");
+        CHECK(Session::open(kinds / "bot-copy.db").kind() == AccountKind::eBot);
+
+        const auto dropKind = [](const fs::path& file) {
+            AccountDb db(file, std::string{});
+            nlohmann::json meta = nlohmann::json::parse(db.text("meta"));
+            meta.erase("kind");
+            db.putText("meta", meta.dump());
+        };
+        dropKind(kinds / "user-copy.db");
+        CHECK_THROWS(Session::open(kinds / "user-copy.db"));
+        CHECK_THROWS(Session::assignHostedKind(kinds / "user-copy.db", AccountKind::eUser));
+
+        dropKind(kinds / "bot-copy.db");
+        CHECK_THROWS(Session::open(kinds / "bot-copy.db"));
+        Session::assignHostedKind(kinds / "bot-copy.db", AccountKind::eBot);
+        CHECK(Session::open(kinds / "bot-copy.db").kind() == AccountKind::eBot);
+        Session::assignHostedKind(kinds / "bot-copy.db", AccountKind::eBot);
+        CHECK_THROWS(Session::assignHostedKind(kinds / "bot-copy.db", AccountKind::eChat));
+
+        {
+            AccountDb db(kinds / "user.db", std::string{});
+            db.erase("presence-dest");
+        }
+        CHECK_THROWS(Session::open(kinds / "user.db"));
     }
 
     fs::remove_all(root);

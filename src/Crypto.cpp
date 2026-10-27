@@ -112,6 +112,11 @@ Key Key::generateSealing()
     return Key(generateNamed(kClassicalSealingAlgorithm), generateNamed(kPqKemAlgorithm), true);
 }
 
+Key Key::generateX25519()
+{
+    return Key(generateNamed(kClassicalSealingAlgorithm), true);
+}
+
 Key Key::fromPrivatePem(const std::string& pem, const std::string& passphrase)
 {
     const BioPtr bio(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
@@ -218,6 +223,35 @@ const Key& Key::kem() const
         throw std::logic_error("key carries no ML-KEM half");
     }
     return *kem_;
+}
+
+Bytes Key::rawPublic() const
+{
+    std::size_t size = 0;
+    if (EVP_PKEY_get_raw_public_key(key_.get(), nullptr, &size) != 1) {
+        throw std::runtime_error("key has no raw public form");
+    }
+    Bytes raw(size);
+    if (EVP_PKEY_get_raw_public_key(key_.get(), raw.data(), &size) != 1) {
+        throw std::runtime_error("EVP_PKEY_get_raw_public_key failed");
+    }
+    return raw;
+}
+
+Bytes Key::rawPrivate() const
+{
+    if (!hasPrivate_) {
+        throw std::logic_error("key has no private part");
+    }
+    std::size_t size = 0;
+    if (EVP_PKEY_get_raw_private_key(key_.get(), nullptr, &size) != 1) {
+        throw std::runtime_error("key has no raw private form");
+    }
+    Bytes raw(size);
+    if (EVP_PKEY_get_raw_private_key(key_.get(), raw.data(), &size) != 1) {
+        throw std::runtime_error("EVP_PKEY_get_raw_private_key failed");
+    }
+    return raw;
 }
 
 std::string Key::fingerprint() const

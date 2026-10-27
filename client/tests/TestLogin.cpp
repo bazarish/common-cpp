@@ -151,7 +151,7 @@ int main()
     const fs::path dir = fs::temp_directory_path() / ("bazarish-login-" + toHex(randomBytes(8)));
 
     {
-        const Session session = Session::create(dir, "pw", "alice");
+        const Session session = Session::create(dir, AccountKind::eUser, "pw", "alice");
         const std::string fingerprint = session.fingerprint();
         service::LoginChallenge portal("portal-secret", portalConsumer());
         const std::string challenge = portal.issue(now());

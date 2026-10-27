@@ -95,6 +95,8 @@ std::vector<Bytes> embeddedSampleRouterInfos(std::size_t count);
 std::size_t embeddedSeedRouterInfos(
     const std::filesystem::path& dataDir, const std::vector<Bytes>& routers);
 Bytes generateKeysBlob();
+// A raw 32-byte X25519 key in the I2P base64 an I2CP lease-set option expects.
+std::string leaseSetKeyBase64(const Bytes& raw);
 Bytes issueTransientBlob(const Bytes& master, int days);
 int b33OfflineKeyDays(const Bytes& blob);
 

@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include "bazarish/AccountKind.hpp"
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
 
@@ -18,24 +19,26 @@ inline constexpr int kCertificateFormatVersion = 1;
 inline constexpr std::int64_t kClockSkewSeconds = 300;
 
 struct ContactCard {
+    AccountKind kind = AccountKind::eUser;
     std::string dest;
     Bytes sealingPublicKeyDer;
     std::int64_t issuedAt = 0;
     Bytes servingSealingKeyDer;
+    // Only a user card carries these two; a bot or chat card carries neither.
+    Bytes presenceKeyDer;
+    std::string presenceDest;
     // The identity keys that signed this card (SPKI DER).
     Bytes identityClassicalDer;
     Bytes identityPqDer;
 
     std::string fingerprint() const;
 
-    static Bytes issue(const Identity& userIdentity, std::int64_t issuedAt,
-        const std::string& dest = {}, const Bytes& sealingPublicKeyDer = {},
-        const Bytes& servingSealingKeyDer = {});
-    // Verifies both signatures and that the signer is body.user.
+    Bytes issue(const Identity& userIdentity) const;
     static ContactCard verify(const Bytes& der);
 
     Key sealingKey() const;
     Key servingSealingKey() const;
+    Key presenceKey() const;
 };
 
 struct AliasCertificate {

@@ -94,7 +94,7 @@ void testSessionLoadsDat()
     const I2pMasterKey existing = generateI2pMaster();
 
     {
-        Session session = Session::create(dir, "pw", "carol");
+        Session session = Session::create(dir, AccountKind::eUser, "pw", "carol");
         CHECK(!session.hasI2pDestination());
         const std::string address = session.loadI2pDestination(existing.privateKeys);
         CHECK(address == existing.host);
@@ -122,7 +122,7 @@ void testSessionPersistsAndDelegates()
 
     std::string address;
     {
-        Session session = Session::create(dir, "pw", "alice");
+        Session session = Session::create(dir, AccountKind::eUser, "pw", "alice");
         CHECK(!session.hasI2pDestination());
         address = session.ensureI2pDestination();
         CHECK(address.size() == kB33HostLen);

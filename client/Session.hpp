@@ -10,7 +10,9 @@
 #include "Client.hpp"
 #include "FileTransfer.hpp"
 #include "OutboundLeases.hpp"
+#include "Presence.hpp"
 
+#include <bazarish/AccountKind.hpp>
 #include <bazarish/AliasMaintenance.hpp>
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Crypto.hpp>
@@ -56,6 +58,9 @@ inline constexpr char kContactNamePrefix[] = "(Contact) ";
 std::string safeContactName(const std::string& proposed);
 
 struct Contact {
+    AccountKind kind = AccountKind::eUser;
+    std::string presenceKeyB64;
+    std::string presenceDest;
     std::string sealingPublicB64;
     std::string dest;
     std::string servingSealingB64;
@@ -202,11 +207,16 @@ using TransferEventFn = std::function<void(const TransferEvent&)>;
 
 class Session {
 public:
-    static Session create(const std::filesystem::path& accountFile,
+    static Session create(const std::filesystem::path& accountFile, AccountKind kind,
         const std::string& passphrase = {}, const std::string& name = {});
-    static Session create(const std::filesystem::path& accountFile, const ServerEndpoint& endpoint,
-        const std::string& passphrase);
+    static Session create(const std::filesystem::path& accountFile, AccountKind kind,
+        const ServerEndpoint& endpoint, const std::string& passphrase);
     static Session open(const std::filesystem::path& accountFile, const std::string& passphrase = {});
+    // Empty for an account made before accounts had a kind.
+    static std::optional<AccountKind> storedKind(
+        const std::filesystem::path& accountFile, const std::string& passphrase);
+    // Gives an unencrypted bot or chat account its kind, so it opens; a different kind throws.
+    static void assignHostedKind(const std::filesystem::path& accountFile, AccountKind kind);
 
     void connectServer(const ServerEndpoint& endpoint);
     bool isConnected() const;
@@ -247,6 +257,7 @@ public:
 
     Bytes exportAccountBytes(const std::string& password);
     void exportAccount(const std::filesystem::path& outFile, const std::string& password);
+    static AccountKind bundleKind(const Bytes& bundle, const std::string& password);
     static void importAccountBytes(const Bytes& bundle,
         const std::filesystem::path& accountFile, const std::string& password,
         const std::string& atRestPassphrase = {});
@@ -255,6 +266,10 @@ public:
         const std::string& atRestPassphrase = {});
 
     std::string fingerprint() const;
+    AccountKind kind() const { return kind_; }
+    const std::string& presenceDest() const { return presenceDest_; }
+    const Key& presenceKey() const;
+    const Bytes& presenceDestKeys() const { return presenceDestKeys_; }
     std::string sealingPublicB64() const;
     const std::string& displayName() const;
     void setDisplayName(const std::string& name);
@@ -286,6 +301,7 @@ public:
 
     bool contactNotifications(const std::string& peerFingerprint) const;
     bool contactCalls(const std::string& peerFingerprint) const;
+    AccountKind contactKind(const std::string& peerFingerprint) const;
     void setContactNotifications(const std::string& peerFingerprint, bool on);
     void setContactCalls(const std::string& peerFingerprint, bool allowed);
 
@@ -294,6 +310,14 @@ public:
 
     bool sendReceipts() const { return sendReceipts_; }
     void setSendReceipts(bool on);
+
+    bool showPresence() const { return showPresence_; }
+    void setShowPresence(bool on);
+    void startPresence(PresenceSink sink);
+    void setPresenceFocused(bool focused);
+    void setPresenceOrder(const std::vector<std::string>& chatOrder);
+    void presenceWatch(std::vector<std::string> peerFingerprints);
+    void presenceTyped(const std::string& peerFingerprint);
 
     void registerAccount();
 
@@ -695,6 +719,8 @@ private:
         std::map<std::string, Contact> contacts);
 
     void storeCard(const PublishResult& result);
+    ContactCard cardContent() const;
+    nlohmann::json bootstrapBlock(const std::string& pass) const;
     std::int64_t currentCardIssuedAt() const;
     std::string ownRoutingHost() const;
     DestinationInfo servedOrOwnDestination();
@@ -923,10 +949,17 @@ private:
     Bytes avatar_;
     std::string avatarMime_;
     std::string cardB64_;
+    AccountKind kind_ = AccountKind::eUser;
+    std::optional<Key> presenceKey_;
+    Bytes presenceDestKeys_;
+    std::string presenceDest_;
     ApprovalState approval_;
     bool encrypted_ = false;
     bool acceptCalls_ = true;
     bool sendReceipts_ = true;
+    bool showPresence_ = true;
+    std::unique_ptr<Presence> presence_;
+    std::vector<std::string> presenceOrder_;
     std::string passphrase_;
     struct EchoQueue {
         std::mutex mutex;

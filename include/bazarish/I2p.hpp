@@ -4,6 +4,7 @@
 #include <bazarish/Bytes.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -31,6 +32,7 @@ inline constexpr int kDefaultTunnelQuantity = 3;
 inline constexpr int kMaxTunnelQuantity = 16;
 // A call sends on the fastest of these tunnels crossed with the peer's.
 inline constexpr int kCallTunnelQuantity = 6;
+inline constexpr std::size_t kMaxLeaseSetReaders = 100;
 
 enum class Role { eClient, eServer };
 
@@ -111,6 +113,10 @@ struct EndpointConfig {
     bool bulk = false;
     // The one host an unpublished stream destination will dial; empty when it dials several.
     std::string target = {};
+    // Raw X25519 public keys of who may read this lease set; empty leaves it readable by anyone.
+    std::vector<Bytes> leaseSetReaders = {};
+    // Raw X25519 private key for reading lease sets that list it as a reader.
+    Bytes leaseSetReaderKey = {};
 };
 
 class Endpoint {
