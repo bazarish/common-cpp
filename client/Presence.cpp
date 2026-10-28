@@ -465,7 +465,8 @@ struct Presence::Impl {
         try {
             content = nlohmann::json::from_cbor(
                 hybrid::unseal(Bytes(frame.begin() + kHeaderBytes, frame.end()), sealingKey));
-        } catch (const std::exception&) {
+        } catch (const std::exception& error) {
+            bazarish::log::debug("presence: a watch that does not open was dropped: {}", error.what());
             return;
         }
         if (content.value("t", std::string()) != kWatchTag
