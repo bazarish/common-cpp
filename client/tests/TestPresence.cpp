@@ -42,6 +42,9 @@ constexpr milliseconds kLongSilence{20000};
 constexpr milliseconds kStaleRetry{600};
 constexpr milliseconds kShortTail{300};
 constexpr milliseconds kAwayBeforeReturn{1000};
+constexpr std::size_t kWatchersPerFocus = 2;
+constexpr milliseconds kSlowPublish{3000};
+constexpr milliseconds kBeforeOwnAddress{1500};
 
 PresenceTimings fastTimings()
 {
@@ -58,6 +61,11 @@ PresenceTimings fastTimings()
 
 class FakeNet {
 public:
+    explicit FakeNet(const milliseconds holderPublishDelay = kPublishDelay)
+        : holderPublishDelay_(holderPublishDelay)
+    {
+    }
+
     struct Box {
         std::string host;
         std::vector<Bytes> readers;
@@ -88,7 +96,7 @@ public:
         }
         box->generation = ++opened_;
         box->publishedAt = std::chrono::steady_clock::now()
-            + (config.keys.has_value() ? kPublishDelay : milliseconds::zero());
+            + (config.keys.has_value() ? holderPublishDelay_ : milliseconds::zero());
         live_.push_back(box);
         published_.push_back(box);
         return box;
@@ -176,6 +184,14 @@ public:
         return newest ? newest->readers.size() : 0;
     }
 
+    bool published(const std::string& host)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto now = std::chrono::steady_clock::now();
+        return std::any_of(published_.begin(), published_.end(),
+            [&](const std::shared_ptr<Box>& box) { return box->host == host && box->publishedAt <= now; });
+    }
+
     std::size_t watchersOf(const Key& presence)
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -193,6 +209,7 @@ public:
     }
 
 private:
+    const milliseconds holderPublishDelay_;
     std::mutex mutex_;
     std::map<std::string, Bytes> publicOf_;
     std::vector<std::shared_ptr<Box>> live_;
@@ -580,9 +597,34 @@ int main()
         hal1.setContacts({gwen.contact()});
         hal1.setFocused(true);
         hal1.watch({gwen.fp()});
+        CHECK(waitUntil([&]() { return net.watchersOf(hal.presence) == kWatchersPerFocus; }));
         std::this_thread::sleep_for(kQuietWatch);
         CHECK(halSees.of(gwen.fp()) == kOffline);
-        CHECK(net.watchersOf(hal.presence) == 1);
+        CHECK(net.watchersOf(hal.presence) == kWatchersPerFocus);
+    }
+
+    {
+        FakeNet slowNet(kSlowPublish);
+        const Person liz;
+        const Person mia;
+        slowNet.knowReader(liz.presence);
+        slowNet.knowReader(mia.presence);
+        Observer miaSees;
+        Presence mia1(mia.account(), netFor(slowNet), miaSees.sink(), fastTimings());
+        mia1.setContacts({liz.contact()});
+        mia1.setFocused(true);
+        const auto miaUpBy = std::chrono::steady_clock::now() + kSlowPublish + kSettle;
+        while (!slowNet.published(mia.dest) && std::chrono::steady_clock::now() < miaUpBy) {
+            std::this_thread::sleep_for(kPoll);
+        }
+        CHECK(slowNet.published(mia.dest));
+        Observer lizSees;
+        Presence liz1(liz.account(), netFor(slowNet), lizSees.sink(), fastTimings());
+        liz1.setContacts({mia.contact()});
+        liz1.setFocused(true);
+        liz1.watch({mia.fp()});
+        CHECK(lizSees.waitFor(mia.fp(), kOnline, kBeforeOwnAddress));
+        CHECK(!slowNet.published(liz.dest));
     }
 
     std::fprintf(stderr, "TestPresence passed\n");

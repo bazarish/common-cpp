@@ -189,8 +189,8 @@ struct Outgoing {
     std::uint64_t sent = 0;
     std::uint64_t heard = 0;
     bool answered = false;
-    // The contact's own watch arrived while this one stood unanswered: its address is up now.
-    bool woken = false;
+    // The contact's own watch came while this one stood unanswered: its address is up now.
+    Clock::time_point wokenAt{};
     Clock::time_point firstSent{};
     Clock::time_point lastSent{};
     Clock::time_point lastHeard{};
@@ -308,6 +308,7 @@ struct Presence::Impl {
     std::map<std::string, Clock::time_point> carriedUntil;
     std::map<std::string, Clock::time_point> heardFrom;
     std::string_view freshWatcherWhy;
+    bool announced = false;
     std::map<std::uint64_t, Incoming> incoming;
     Clock::time_point lastOnline{};
     std::thread worker;
@@ -504,8 +505,7 @@ struct Presence::Impl {
         tell(stored, now, false);
         heardFrom[from] = now;
         if (const auto ours = peers.find(from); ours != peers.end() && !ours->second.answered) {
-            ours->second.lastSent = Clock::time_point{};
-            ours->second.woken = true;
+            wokenBy(ours->second, now);
         }
     }
 
@@ -554,6 +554,14 @@ struct Presence::Impl {
             told.emplace_back(outgoing->peer, state);
         }
         outgoing->state = state;
+    }
+
+    void wokenBy(Outgoing& outgoing, const Clock::time_point now)
+    {
+        outgoing.lastSent = Clock::time_point{};
+        if (outgoing.wokenAt == Clock::time_point{}) {
+            outgoing.wokenAt = now;
+        }
     }
 
     void tellAll(const Clock::time_point now, const bool moved)
@@ -630,13 +638,13 @@ struct Presence::Impl {
     {
         closeRunner(watcher);
         for (const auto& [peerFp, watching] : peers) {
-            if (!watching.answered || !watching.state.online) {
+            if (!watching.state.online) {
                 continue;
             }
             if (watching.state != kCarried) {
                 told.emplace_back(peerFp, kCarried);
             }
-            carriedUntil[peerFp] = now + timings.subscriptionLife;
+            carriedUntil.try_emplace(peerFp, now + timings.subscriptionLife);
         }
         peers.clear();
         freshWatcherWhy = {};
@@ -674,8 +682,15 @@ struct Presence::Impl {
         if (!watching || !watcher) {
             return;
         }
-        // A contact woken by our watch looks our address up at once: it must be published by then.
-        const bool watchesWait = !wantedReaders.empty() && !(holder && holder->link->ready());
+        // Watches go before our address is up, so a contact on our gateway is met at once; a watcher
+        // that looked contacts up before then may hold their previous addresses, as they may ours.
+        const bool holderUp = holder && holder->link->ready();
+        if (holderUp && !announced) {
+            announced = true;
+            watchAfresh("our presence address is up");
+            return;
+        }
+        announced = holderUp;
         for (const std::string& peerFp : watched) {
             const PresenceContact* contact = contactFor(peerFp, false);
             if (contact == nullptr) {
@@ -685,28 +700,30 @@ struct Presence::Impl {
             if (found == peers.end()) {
                 found = peers.emplace(peerFp, outgoingTo(*contact)).first;
             }
-            tickPeer(found->second, now, watchesWait);
+            tickPeer(found->second, now);
         }
     }
 
-    void tickPeer(Outgoing& outgoing, const Clock::time_point now, const bool watchesWait)
+    void tickPeer(Outgoing& outgoing, const Clock::time_point now)
     {
         if (!outgoing.answered) {
-            // A destination keeps a lease set it found until it expires; only a new one looks again.
             const bool sent = outgoing.firstSent != Clock::time_point{};
             const Clock::duration unanswered = sent ? now - outgoing.firstSent : Clock::duration{};
             const auto heard = heardFrom.find(outgoing.peer);
             const bool mayBeStale
                 = heard != heardFrom.end() && now - heard->second < timings.leaseSetLife;
-            if (outgoing.woken && unanswered >= timings.watchRetry) {
-                watchAfresh("a contact woke it");
+            // A destination keeps a lease set it found until it expires; only a new one looks again.
+            const bool wokenLong = outgoing.wokenAt != Clock::time_point{}
+                && now - outgoing.wokenAt >= timings.watchRetry;
+            if (wokenLong) {
+                watchAfresh("a contact that woke it stays unanswered");
                 return;
             }
             if (mayBeStale && unanswered >= timings.subscriptionLife) {
                 watchAfresh("a contact seen lately stays unanswered");
                 return;
             }
-            if (!watchesWait && now - outgoing.lastSent >= timings.watchRetry) {
+            if (now - outgoing.lastSent >= timings.watchRetry) {
                 sendWatch(outgoing, now);
             }
             return;

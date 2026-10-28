@@ -45,6 +45,12 @@ int main()
     CHECK_THROWS(sign(publicOnly, message));
     CHECK_THROWS(publicOnly.privatePem());
 
+    const Key reader = Key::generateX25519();
+    const Key rebuilt = Key::fromRawX25519Private(reader.rawPrivate());
+    CHECK(rebuilt.rawPublic() == reader.rawPublic());
+    CHECK(rebuilt.rawPrivate() == reader.rawPrivate());
+    CHECK_THROWS(Key::fromRawX25519Private(Bytes(reader.rawPrivate().size() - 1)));
+
     const Key sealing = Key::generateSealing();
     CHECK(sealing.hasPrivate());
     CHECK(sealing.fingerprint() != fingerprint);

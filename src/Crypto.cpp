@@ -117,6 +117,16 @@ Key Key::generateX25519()
     return Key(generateNamed(kClassicalSealingAlgorithm), true);
 }
 
+Key Key::fromRawX25519Private(const Bytes& rawPrivate)
+{
+    EVP_PKEY* const key = EVP_PKEY_new_raw_private_key(
+        EVP_PKEY_X25519, nullptr, rawPrivate.data(), rawPrivate.size());
+    if (key == nullptr) {
+        throw std::runtime_error("EVP_PKEY_new_raw_private_key failed");
+    }
+    return Key(KeyPtr(key), true);
+}
+
 Key Key::fromPrivatePem(const std::string& pem, const std::string& passphrase)
 {
     const BioPtr bio(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
