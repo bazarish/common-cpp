@@ -376,7 +376,6 @@ struct Presence::Impl {
         return nullptr;
     }
 
-    // Which contacts read is what counts: a new order of the chat list must not re-create the address.
     std::vector<Bytes> readersWanted() const
     {
         std::vector<Bytes> readers;
@@ -384,8 +383,14 @@ struct Presence::Impl {
              ++index) {
             readers.push_back(Key::fromPublicDer(contacts[index].presenceKeyDer).rawPublic());
         }
-        std::sort(readers.begin(), readers.end());
         return readers;
+    }
+
+    // Which contacts read is what counts: a new order of the chat list must not re-create the address.
+    static bool sameReaders(const std::vector<Bytes>& left, const std::vector<Bytes>& right)
+    {
+        return left.size() == right.size()
+            && std::is_permutation(left.begin(), left.end(), right.begin());
     }
 
     void send(Runner& runner, const std::string& host, const Bytes& datagram)
@@ -601,7 +606,8 @@ struct Presence::Impl {
                 dropHolder(shown ? "the online tail ran out" : "the status is hidden");
                 return;
             }
-            if (wantedReaders != holderReaders && now - readersChanged >= timings.readersSettle) {
+            if (!sameReaders(wantedReaders, holderReaders)
+                && now - readersChanged >= timings.readersSettle) {
                 tellAll(now, true);
                 dropHolder("the readers changed");
             }
@@ -753,7 +759,8 @@ struct Presence::Impl {
             const Clock::time_point now = Clock::now();
             std::erase_if(typingUntil, [now](const auto& entry) { return entry.second <= now; });
             if (readersStale) {
-                if (std::vector<Bytes> readers = readersWanted(); readers != wantedReaders) {
+                std::vector<Bytes> readers = readersWanted();
+                if (!sameReaders(readers, wantedReaders)) {
                     wantedReaders = std::move(readers);
                     readersChanged = now;
                 }
