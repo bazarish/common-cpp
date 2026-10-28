@@ -433,8 +433,9 @@ struct Presence::Impl {
 
     PresenceState stateFor(const Incoming& sub, const Clock::time_point now) const
     {
+        // A live holder says online; offline is only its last word, so no renew races the tail.
         PresenceState state;
-        state.online = shown && now - lastOnline < timings.onlineTail;
+        state.online = shown;
         const auto typing = typingUntil.find(sub.peer);
         state.typing = state.online && typing != typingUntil.end() && typing->second > now;
         return state;
@@ -442,7 +443,7 @@ struct Presence::Impl {
 
     void tell(Incoming& sub, const Clock::time_point now, const bool moved)
     {
-        const PresenceState state = stateFor(sub, now);
+        const PresenceState state = moved ? PresenceState{} : stateFor(sub, now);
         nlohmann::json payload = {{"online", state.online}, {"typing", state.typing}};
         if (moved) {
             payload["moved"] = true;
