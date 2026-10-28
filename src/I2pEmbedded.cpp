@@ -899,8 +899,13 @@ void EmbeddedEndpoint::sendRawOnLane(const std::shared_ptr<i2pd::client::ClientD
     const auto known = targets->resolved.find(host);
     if (known != targets->resolved.end())
     {
-        deliverRaw(*dest, datagram, *targets, host, known->second, payload);
-        return;
+        // libi2pd renews a remote lease set by identity, which an encrypted one is never stored under.
+        if (dest->FindLeaseSet(known->second))
+        {
+            deliverRaw(*dest, datagram, *targets, host, known->second, payload);
+            return;
+        }
+        targets->resolved.erase(known);
     }
     // libi2pd answers a lookup from a destination without tunnels at once, with nothing.
     if (!dest->IsReady() || targets->lookups.count(host) != 0)
