@@ -748,6 +748,7 @@ private:
     nlohmann::json contactBookEntry(
         const std::string& peerFingerprint, const Contact& contact) const;
     void sendContactBookTo(const std::string& toDevice);
+    void shareContactWithDevices(const std::string& peerFingerprint);
     void applyContactBook(const nlohmann::json& entries);
 
     IdentityKeys knownKeysFor(const std::string& peerFingerprint) const;

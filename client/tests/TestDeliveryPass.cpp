@@ -1213,7 +1213,7 @@ int main()
                 const std::lock_guard<std::mutex> lock(m.mu);
                 return m.mailbox[alice.fingerprint()].size();
             };
-            const std::size_t beforeRequests = heldForAlice();
+            const std::size_t beforeAdding = heldForAlice();
             alice.addByInvite(dana.inviteUri(), "let me in");
             bool askedTwice = true;
             try {
@@ -1222,6 +1222,8 @@ int main()
                 askedTwice = false;
             }
             CHECK(!askedTwice);
+            const std::size_t beforeRequests = heldForAlice();
+            CHECK(beforeRequests == beforeAdding + 1);
             CHECK(alice.hasContact(dana.fingerprint()));
             for (int round = 0; round < 3; ++round) {
                 dana.sync();
@@ -1351,6 +1353,40 @@ int main()
                 }
             }
             CHECK(sawBob);
+
+            {
+                const fs::path fDir = fs::temp_directory_path() / "bz-pass-f";
+                fs::remove(fDir);
+                Session finn = Session::create(fDir, AccountKind::eUser, endpoint, std::string{});
+                {
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    m.destFor[finn.fingerprint()]
+                        = "hlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+                }
+                finn.registerAccount();
+                finn.setFetchTransport(directDial);
+                finn.setOutboundCourier(courierFor());
+
+                alice.addByInvite(finn.inviteUri(), "added on one device");
+                alice.renameContact(finn.fingerprint(), "Finn of the phone");
+                for (int round = 0; round < 3 && !second.hasContact(finn.fingerprint()); ++round) {
+                    second.sync();
+                }
+                CHECK(second.hasContact(finn.fingerprint()));
+                for (int round = 0; round < 3; ++round) {
+                    finn.sync();
+                }
+                finn.acceptContactRequest(alice.fingerprint());
+                finn.sendMessage(alice.fingerprint(), "seen on the other device too");
+                bool sawFinn = false;
+                for (int round = 0; round < 3 && !sawFinn; ++round) {
+                    for (const IncomingMessage& item : second.sync()) {
+                        sawFinn = sawFinn || item.text == "seen on the other device too";
+                    }
+                }
+                CHECK(sawFinn);
+                CHECK(second.contactDisplayName(finn.fingerprint()) == "Finn of the phone");
+            }
 
             {
                 const Bytes huge(200 * 1024, 0x41);

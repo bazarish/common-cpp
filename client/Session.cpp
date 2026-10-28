@@ -2139,6 +2139,24 @@ void Session::recordRequestedContact(const std::string& peerFingerprint,
         forgetChosenName(peerFingerprint);
     }
     persistContacts();
+    shareContactWithDevices(peerFingerprint);
+}
+
+void Session::shareContactWithDevices(const std::string& peerFingerprint)
+{
+    nlohmann::json entry = contactBookEntry(peerFingerprint, contacts_.at(peerFingerprint));
+    if (encodedBody(entry).size() > kContactBookChunkBytes) {
+        entry.erase("avatar");
+    }
+    try {
+        submitSignedToSelf(envelope("device.contact", toHex(randomBytes(16)), {
+            {"device", client_->clientId()},
+            {"contact", entry},
+        }), "device.contact");
+    } catch (const std::exception& error) {
+        bazarish::log::warn("a new contact did not reach this account's other devices: {}",
+            error.what());
+    }
 }
 
 void Session::sendContactRequest(const std::string& peerFingerprint,
@@ -3314,6 +3332,12 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 message.contentType = type;
                 if (body.value("device", std::string()) != client_->clientId()) {
                     sendContactBookTo(body.value("device", std::string()));
+                }
+            } else if (type == "device.contact") {
+                message.contentType = type;
+                if (body.value("device", std::string()) != client_->clientId()
+                    && body.contains("contact")) {
+                    applyContactBook(nlohmann::json::array({body.at("contact")}));
                 }
             } else if (type == "device.contacts") {
                 message.contentType = type;
