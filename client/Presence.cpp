@@ -13,10 +13,8 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
-#include <limits>
 #include <map>
 #include <mutex>
-#include <set>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -46,6 +44,7 @@ constexpr char kWatchSignatureField[] = "sig";
 constexpr std::int64_t kWatchSkewSeconds = 120;
 constexpr milliseconds kReceiveSlice{250};
 constexpr int kPresenceTunnelQuantity = 2;
+constexpr PresenceState kCarried{true, false};
 
 std::int64_t unixNow()
 {
@@ -160,6 +159,11 @@ public:
         return endpoint_->lost();
     }
 
+    bool ready() const override
+    {
+        return endpoint_->ready();
+    }
+
     std::optional<Bytes> receive(const milliseconds wait) override
     {
         std::vector<std::uint8_t> got = endpoint_->receiveRawDatagram(wait);
@@ -182,12 +186,12 @@ struct Outgoing {
     std::uint64_t sent = 0;
     std::uint64_t heard = 0;
     bool answered = false;
+    // The contact's own watch arrived while this one stood unanswered: its address is up now.
+    bool woken = false;
+    Clock::time_point firstSent{};
     Clock::time_point lastSent{};
     Clock::time_point lastHeard{};
-    Clock::time_point started{};
-    Clock::duration patience{};
     PresenceState state;
-    std::string holderDevice;
 };
 
 struct Incoming {
@@ -198,13 +202,8 @@ struct Incoming {
     std::uint64_t sent = 0;
     std::uint64_t heard = 0;
     Clock::time_point expires{};
-    bool sibling = false;
-    bool focused = false;
-    std::map<std::string, Clock::time_point> typingUntil;
     std::optional<PresenceState> told;
 };
-
-enum class Role { eNone, eProbing, eSibling, eHolder };
 
 }  // namespace
 
@@ -213,7 +212,6 @@ Bytes presenceWatchFrame(const PresenceWatch& watch, const Key& signer, const Ke
     nlohmann::json content = {
         {"t", kWatchTag},
         {"from", watch.from},
-        {"device", watch.device},
         {"reply", watch.reply},
         {"sub", toHex(watch.id)},
         {"key", toBase64(watch.key)},
@@ -226,22 +224,36 @@ Bytes presenceWatchFrame(const PresenceWatch& watch, const Key& signer, const Ke
     return frame;
 }
 
+i2p::EndpointConfig presenceEndpointShape()
+{
+    i2p::EndpointConfig endpoint;
+    endpoint.privacy = tunnelPrivacy();
+    endpoint.tunnelQuantity = kPresenceTunnelQuantity;
+    endpoint.published = true;
+    endpoint.label = "Presence";
+    endpoint.traffic = i2p::Traffic::eRaw;
+    return endpoint;
+}
+
 PresenceNet i2pPresenceNet(std::filesystem::path routerDir, std::string owner)
 {
     return [routerDir = std::move(routerDir), owner = std::move(owner)](
                const PresenceLinkConfig& config) -> std::unique_ptr<PresenceLink> {
-        i2p::EndpointConfig endpoint;
+        i2p::Router& router = sharedI2pRouter(routerDir);
+        const bool watching = !config.keys.has_value() && !config.readerKey.empty();
+        if (watching) {
+            if (std::shared_ptr<i2p::Endpoint> warm = acquireWarmWatcher()) {
+                warm->setLeaseSetReaderKey(config.readerKey);
+                router.retagEndpoint(*warm, presenceEndpointShape().label, owner);
+                return std::make_unique<I2pPresenceLink>(std::move(warm));
+            }
+        }
+        i2p::EndpointConfig endpoint = presenceEndpointShape();
         endpoint.keys = config.keys;
-        endpoint.privacy = tunnelPrivacy();
-        endpoint.tunnelQuantity = kPresenceTunnelQuantity;
-        endpoint.published = true;
-        endpoint.label = "Presence";
         endpoint.owner = owner;
-        endpoint.traffic = i2p::Traffic::eRaw;
         endpoint.leaseSetReaders = config.readers;
         endpoint.leaseSetReaderKey = config.readerKey;
-        return std::make_unique<I2pPresenceLink>(
-            sharedI2pRouter(routerDir).createEndpoint(endpoint));
+        return std::make_unique<I2pPresenceLink>(router.createEndpoint(endpoint));
     };
 }
 
@@ -287,13 +299,14 @@ struct Presence::Impl {
     std::vector<Bytes> wantedReaders;
     bool readersStale = true;
     Clock::time_point readersChanged{};
-    Role role = Role::eNone;
-    std::optional<Outgoing> own;
+    Clock::time_point raiseAfter{};
     std::map<std::string, Outgoing> peers;
+    // Online seen before a fresh watch stands until the contact answers or until this deadline.
+    std::map<std::string, Clock::time_point> carriedUntil;
+    std::map<std::string, Clock::time_point> heardFrom;
+    bool freshWatcher = false;
     std::map<std::uint64_t, Incoming> incoming;
     Clock::time_point lastOnline{};
-    Clock::time_point lastSelfCheck{};
-    Clock::time_point lastTypingRenew{};
     std::thread worker;
 
     Impl(PresenceAccount accountIn, PresenceNet netIn, PresenceSink sinkIn,
@@ -362,7 +375,7 @@ struct Presence::Impl {
 
     std::vector<Bytes> readersWanted() const
     {
-        std::vector<Bytes> readers{Key::fromPublicDer(account.presenceKeyDer).rawPublic()};
+        std::vector<Bytes> readers;
         for (std::size_t index = 0; index < contacts.size() && index < kMaxPresenceReaders;
              ++index) {
             readers.push_back(Key::fromPublicDer(contacts[index].presenceKeyDer).rawPublic());
@@ -379,88 +392,55 @@ struct Presence::Impl {
         }
     }
 
-    Outgoing outgoingTo(const std::string& peerFp, const std::string& host,
-        const Bytes& sealingKeyDer, const Clock::time_point now)
+    Outgoing outgoingTo(const PresenceContact& contact) const
     {
         Outgoing outgoing;
-        outgoing.peer = peerFp;
-        outgoing.host = host;
-        outgoing.sealingKeyDer = sealingKeyDer;
+        outgoing.peer = contact.fingerprint;
+        outgoing.host = contact.presenceDest;
+        outgoing.sealingKeyDer = contact.sealingKeyDer;
         outgoing.id = randomBytes(kPresenceSubscriptionIdBytes);
         outgoing.key = randomBytes(kSubscriptionKeyBytes);
-        outgoing.started = now;
-        const Bytes spread = randomBytes(1);
-        outgoing.patience = timings.probeDeadline
-            + timings.probeDeadline * spread[0] / (2 * std::numeric_limits<std::uint8_t>::max());
+        if (carriedUntil.contains(contact.fingerprint)) {
+            outgoing.state = kCarried;
+        }
         return outgoing;
     }
 
     void sendWatch(Outgoing& outgoing, const Clock::time_point now)
     {
-        const PresenceWatch watch{outgoing.id, outgoing.key, account.fingerprint, account.device,
-            watcher->link->host(), unixNow()};
+        const PresenceWatch watch{
+            outgoing.id, outgoing.key, account.fingerprint, watcher->link->host(), unixNow()};
         send(*watcher, outgoing.host,
             presenceWatchFrame(watch, identity.classical(), Key::fromPublicDer(outgoing.sealingKeyDer)));
+        if (outgoing.firstSent == Clock::time_point{}) {
+            outgoing.firstSent = now;
+        }
         outgoing.lastSent = now;
     }
 
-    void sendRenew(Outgoing& outgoing, const nlohmann::json& payload, const Clock::time_point now)
+    void sendRenew(Outgoing& outgoing, const Clock::time_point now)
     {
         send(*watcher, outgoing.host,
-            sealedFrame(kRenewType, outgoing.id, outgoing.key, kToHolder, ++outgoing.sent, payload));
+            sealedFrame(kRenewType, outgoing.id, outgoing.key, kToHolder, ++outgoing.sent,
+                nlohmann::json::object()));
         outgoing.lastSent = now;
-    }
-
-    nlohmann::json typingList(const Clock::time_point now) const
-    {
-        nlohmann::json list = nlohmann::json::array();
-        for (const auto& [peerFp, until] : typingUntil) {
-            if (until > now) {
-                list.push_back(peerFp);
-            }
-        }
-        return list;
-    }
-
-    bool rawOnline(const Clock::time_point now) const
-    {
-        if (focused && shown) {
-            return true;
-        }
-        for (const auto& [id, sub] : incoming) {
-            if (sub.sibling && sub.focused && sub.expires > now) {
-                return true;
-            }
-        }
-        return false;
     }
 
     PresenceState stateFor(const Incoming& sub, const Clock::time_point now) const
     {
         PresenceState state;
-        state.online = now - lastOnline < timings.onlineTail;
-        if (sub.sibling) {
-            return state;
-        }
-        const auto own = typingUntil.find(sub.peer);
-        state.typing = own != typingUntil.end() && own->second > now;
-        for (const auto& [id, other] : incoming) {
-            if (!other.sibling || other.expires <= now) {
-                continue;
-            }
-            const auto theirs = other.typingUntil.find(sub.peer);
-            state.typing = state.typing || (theirs != other.typingUntil.end() && theirs->second > now);
-        }
-        state.typing = state.typing && state.online;
+        state.online = shown && now - lastOnline < timings.onlineTail;
+        const auto typing = typingUntil.find(sub.peer);
+        state.typing = state.online && typing != typingUntil.end() && typing->second > now;
         return state;
     }
 
-    void tell(Incoming& sub, const Clock::time_point now)
+    void tell(Incoming& sub, const Clock::time_point now, const bool moved)
     {
         const PresenceState state = stateFor(sub, now);
         nlohmann::json payload = {{"online", state.online}, {"typing", state.typing}};
-        if (sub.peer == account.fingerprint) {
-            payload["device"] = account.device;
+        if (moved) {
+            payload["moved"] = true;
         }
         send(*holder, sub.reply,
             sealedFrame(kStateType, sub.id, sub.key, kFromHolder, ++sub.sent, payload));
@@ -482,12 +462,8 @@ struct Presence::Impl {
             return;
         }
         const std::string from = content.value("from", std::string());
-        IdentityKeys known;
-        if (from == account.fingerprint) {
-            known = account.identity;
-        } else if (const PresenceContact* contact = contactFor(from, true); contact != nullptr) {
-            known = contact->identity;
-        } else {
+        const PresenceContact* const contact = contactFor(from, true);
+        if (contact == nullptr) {
             return;
         }
         if (!content.contains(kWatchSignatureField) || !content.at(kWatchSignatureField).is_binary()) {
@@ -495,7 +471,8 @@ struct Presence::Impl {
         }
         const Bytes signature = content.at(kWatchSignatureField).get_binary();
         content.erase(kWatchSignatureField);
-        if (!verify(Key::fromPublicDer(known.classicalDer), watchSigningInput(content), signature)) {
+        if (!verify(Key::fromPublicDer(contact->identity.classicalDer), watchSigningInput(content),
+                signature)) {
             return;
         }
         const std::int64_t sentAt = content.value("sentAt", std::int64_t{0});
@@ -510,11 +487,14 @@ struct Presence::Impl {
         if (sub.key.size() != kSubscriptionKeyBytes) {
             return;
         }
-        sub.sibling = from == account.fingerprint
-            && content.value("device", std::string()) != account.device;
         sub.expires = now + timings.subscriptionLife;
         Incoming& stored = incoming[subscriptionOf(id)] = std::move(sub);
-        tell(stored, now);
+        tell(stored, now, false);
+        heardFrom[from] = now;
+        if (const auto ours = peers.find(from); ours != peers.end() && !ours->second.answered) {
+            ours->second.lastSent = Clock::time_point{};
+            ours->second.woken = true;
+        }
     }
 
     void onRenew(const Bytes& frame, const Clock::time_point now)
@@ -525,26 +505,19 @@ struct Presence::Impl {
             return;
         }
         Incoming& sub = found->second;
-        const std::optional<nlohmann::json> payload = openedFrame(frame, sub.key, kToHolder, sub.heard);
-        if (!payload) {
+        if (!openedFrame(frame, sub.key, kToHolder, sub.heard)) {
             return;
         }
         sub.expires = now + timings.subscriptionLife;
-        if (sub.sibling) {
-            sub.focused = payload->value("focused", false);
-            for (const nlohmann::json& typing : payload->value("typing", nlohmann::json::array())) {
-                sub.typingUntil[typing.get<std::string>()] = now + timings.typingPulse;
-            }
-        }
-        tell(sub, now);
+        tell(sub, now, false);
     }
 
     void onState(const Bytes& frame, const Clock::time_point now)
     {
         const Bytes id(frame.begin() + kTypeBytes, frame.begin() + kHeaderBytes);
-        Outgoing* outgoing = own && own->id == id ? &*own : nullptr;
+        Outgoing* outgoing = nullptr;
         for (auto& [peerFp, watching] : peers) {
-            if (outgoing == nullptr && watching.id == id) {
+            if (watching.id == id) {
                 outgoing = &watching;
             }
         }
@@ -556,36 +529,26 @@ struct Presence::Impl {
         if (!payload) {
             return;
         }
+        heardFrom[outgoing->peer] = now;
+        if (payload->value("moved", false)) {
+            freshWatcher = true;
+            return;
+        }
         outgoing->answered = true;
         outgoing->lastHeard = now;
-        outgoing->holderDevice = payload->value("device", std::string());
+        carriedUntil.erase(outgoing->peer);
         const PresenceState state{payload->value("online", false), payload->value("typing", false)};
-        const bool fromOwnAddress = own && outgoing == &*own;
-        if (!fromOwnAddress && state != outgoing->state) {
+        if (state != outgoing->state) {
             told.emplace_back(outgoing->peer, state);
         }
         outgoing->state = state;
     }
 
-    void becomeHolder(const Clock::time_point now)
+    void tellAll(const Clock::time_point now, const bool moved)
     {
-        closeRunner(holder);
-        PresenceLinkConfig config;
-        config.keys = i2p::Keys::fromBlob(account.destKeys);
-        config.readers = readersWanted();
-        try {
-            holder = openRunner(config, inputs.holderInbox);
-        } catch (const std::exception& error) {
-            bazarish::log::info("presence: the presence address did not come up: {}", error.what());
-            role = Role::eNone;
-            own.reset();
-            return;
+        for (auto& [id, sub] : incoming) {
+            tell(sub, now, moved);
         }
-        holderReaders = config.readers;
-        wantedReaders = config.readers;
-        role = Role::eHolder;
-        own.reset();
-        lastSelfCheck = now;
     }
 
     void dropHolder()
@@ -595,96 +558,83 @@ struct Presence::Impl {
         holderReaders.clear();
     }
 
-    void tickOwn(const Clock::time_point now)
+    void raise(const Clock::time_point now)
     {
-        if (!shown) {
-            dropHolder();
-            own.reset();
-            role = Role::eNone;
+        PresenceLinkConfig config;
+        config.keys = i2p::Keys::fromBlob(account.destKeys);
+        config.readers = wantedReaders;
+        try {
+            holder = openRunner(config, inputs.holderInbox);
+        } catch (const std::exception& error) {
+            bazarish::log::info("presence: the presence address did not come up: {}", error.what());
+            raiseAfter = now + timings.watchRetry;
             return;
         }
-        if (rawOnline(now)) {
+        holderReaders = wantedReaders;
+    }
+
+    void tickHolder(const Clock::time_point now)
+    {
+        const bool online = focused && shown;
+        if (online) {
             lastOnline = now;
         }
-        if (role == Role::eHolder) {
+        if (holder) {
             std::erase_if(incoming, [now](const auto& entry) { return entry.second.expires <= now; });
-            if (now - lastOnline >= timings.onlineTail) {
-                for (auto& [id, sub] : incoming) {
-                    tell(sub, now);
-                }
+            if (!shown || now - lastOnline >= timings.onlineTail) {
+                tellAll(now, shown);
                 dropHolder();
-                role = Role::eNone;
                 return;
-            }
-            for (auto& [id, sub] : incoming) {
-                if (sub.told != stateFor(sub, now)) {
-                    tell(sub, now);
-                }
             }
             if (wantedReaders != holderReaders && now - readersChanged >= timings.readersSettle) {
-                becomeHolder(now);
-                return;
-            }
-            if (focused && watcher && now - lastSelfCheck >= timings.selfCheckEvery) {
-                own = outgoingTo(account.fingerprint, account.dest, sealingKey.publicDer(), now);
-                sendWatch(*own, now);
-                lastSelfCheck = now;
-            }
-            if (own && own->answered && !own->holderDevice.empty()
-                && own->holderDevice != account.device) {
+                tellAll(now, true);
                 dropHolder();
-                role = Role::eSibling;
-                own->lastHeard = now;
+            }
+        }
+        if (!holder) {
+            if (online && !wantedReaders.empty() && now >= raiseAfter) {
+                raise(now);
             }
             return;
         }
-        if (!focused) {
-            if (role == Role::eSibling && own && watcher) {
-                sendRenew(*own, {{"focused", false}, {"typing", nlohmann::json::array()}}, now);
-            }
-            own.reset();
-            role = Role::eNone;
-            return;
-        }
-        if (!watcher) {
-            return;
-        }
-        if (role == Role::eNone) {
-            own = outgoingTo(account.fingerprint, account.dest, sealingKey.publicDer(), now);
-            sendWatch(*own, now);
-            role = Role::eProbing;
-            return;
-        }
-        if (role == Role::eProbing) {
-            if (own->answered) {
-                role = Role::eSibling;
-                return;
-            }
-            if (now - own->started >= own->patience) {
-                becomeHolder(now);
-                return;
-            }
-            if (now - own->lastSent >= timings.watchRetry) {
-                sendWatch(*own, now);
-            }
-            return;
-        }
-        if (now - own->lastHeard >= timings.holderSilence) {
-            becomeHolder(now);
-            return;
-        }
-        const nlohmann::json typing = typingList(now);
-        const bool typingNow = !typing.empty() && now - lastTypingRenew >= timings.typingResend;
-        if (typingNow || now - own->lastSent >= timings.siblingKeepalive) {
-            sendRenew(*own, {{"focused", true}, {"typing", typing}}, now);
-            if (typingNow) {
-                lastTypingRenew = now;
+        for (auto& [id, sub] : incoming) {
+            if (sub.told != stateFor(sub, now)) {
+                tell(sub, now, false);
             }
         }
     }
 
+    void startFresh(const Clock::time_point now)
+    {
+        closeRunner(watcher);
+        for (const auto& [peerFp, watching] : peers) {
+            if (!watching.answered || !watching.state.online) {
+                continue;
+            }
+            if (watching.state != kCarried) {
+                told.emplace_back(peerFp, kCarried);
+            }
+            carriedUntil[peerFp] = now + timings.subscriptionLife;
+        }
+        peers.clear();
+        freshWatcher = false;
+    }
+
     void tickPeers(const Clock::time_point now)
     {
+        for (auto at = carriedUntil.begin(); at != carriedUntil.end();) {
+            const bool stands = focused && now < at->second
+                && std::find(watched.begin(), watched.end(), at->first) != watched.end();
+            if (stands) {
+                ++at;
+                continue;
+            }
+            if (const auto found = peers.find(at->first); found != peers.end()) {
+                found->second.state = PresenceState{};
+            }
+            told.emplace_back(at->first, PresenceState{});
+            at = carriedUntil.erase(at);
+        }
         for (auto at = peers.begin(); at != peers.end();) {
             const bool still = focused && contactFor(at->first, false) != nullptr
                 && std::find(watched.begin(), watched.end(), at->first) != watched.end();
@@ -692,49 +642,55 @@ struct Presence::Impl {
                 ++at;
                 continue;
             }
-            told.emplace_back(at->first, PresenceState{});
+            if (at->second.state != PresenceState{}) {
+                told.emplace_back(at->first, PresenceState{});
+            }
             at = peers.erase(at);
         }
         if (!focused || !watcher) {
             return;
         }
+        // A contact woken by our watch looks our address up at once: it must be published by then.
+        const bool raising = shown && !wantedReaders.empty();
+        const bool watchesWait = raising && !(holder && holder->link->ready());
         for (const std::string& peerFp : watched) {
             const PresenceContact* contact = contactFor(peerFp, false);
             if (contact == nullptr) {
                 continue;
             }
-            const auto found = peers.find(peerFp);
+            auto found = peers.find(peerFp);
             if (found == peers.end()) {
-                Outgoing& started = peers[peerFp]
-                    = outgoingTo(peerFp, contact->presenceDest, contact->sealingKeyDer, now);
-                sendWatch(started, now);
-                continue;
+                found = peers.emplace(peerFp, outgoingTo(*contact)).first;
             }
-            tickPeer(found->second, *contact, now);
+            tickPeer(found->second, now, watchesWait);
         }
     }
 
-    void tickPeer(Outgoing& outgoing, const PresenceContact& contact, const Clock::time_point now)
+    void tickPeer(Outgoing& outgoing, const Clock::time_point now, const bool watchesWait)
     {
         if (!outgoing.answered) {
-            const milliseconds retry = now - outgoing.started < timings.probeDeadline
-                ? timings.watchRetry
-                : timings.renewEvery;
-            if (now - outgoing.lastSent >= retry) {
+            // A destination keeps a lease set it found until it expires; only a new one looks again.
+            const bool sent = outgoing.firstSent != Clock::time_point{};
+            const Clock::duration unanswered = sent ? now - outgoing.firstSent : Clock::duration{};
+            const auto heard = heardFrom.find(outgoing.peer);
+            const bool mayBeStale
+                = heard != heardFrom.end() && now - heard->second < timings.leaseSetLife;
+            if ((outgoing.woken && unanswered >= timings.watchRetry)
+                || (mayBeStale && unanswered >= timings.subscriptionLife)) {
+                freshWatcher = true;
+                return;
+            }
+            if (!watchesWait && now - outgoing.lastSent >= timings.watchRetry) {
                 sendWatch(outgoing, now);
             }
             return;
         }
         if (now - outgoing.lastHeard >= timings.subscriptionLife) {
-            if (outgoing.state != PresenceState{}) {
-                told.emplace_back(outgoing.peer, PresenceState{});
-            }
-            outgoing = outgoingTo(contact.fingerprint, contact.presenceDest, contact.sealingKeyDer, now);
-            sendWatch(outgoing, now);
+            freshWatcher = true;
             return;
         }
         if (now - outgoing.lastSent >= timings.renewEvery) {
-            sendRenew(outgoing, nlohmann::json::object(), now);
+            sendRenew(outgoing, now);
         }
     }
 
@@ -784,18 +740,11 @@ struct Presence::Impl {
                 }
                 readersStale = false;
             }
-            if (watcher && watcher->link->lost()) {
-                closeRunner(watcher);
-                peers.clear();
-            }
             if (holder && holder->link->lost()) {
                 dropHolder();
-                role = Role::eNone;
-                own.reset();
             }
-            openWatcher();
             for (const Bytes& frame : holderFrames) {
-                if (role != Role::eHolder || frame.size() <= kHeaderBytes) {
+                if (!holder || frame.size() <= kHeaderBytes) {
                     continue;
                 }
                 if (frame[0] == kWatchType) {
@@ -809,7 +758,11 @@ struct Presence::Impl {
                     onState(frame, now);
                 }
             }
-            tickOwn(now);
+            if (freshWatcher || (watcher && watcher->link->lost())) {
+                startFresh(now);
+            }
+            openWatcher();
+            tickHolder(now);
             tickPeers(now);
             if (!focused) {
                 closeRunner(watcher);

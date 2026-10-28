@@ -21,6 +21,8 @@ bazarish::i2p::Router& sharedI2pRouter(const std::filesystem::path& dataDir);
 bazarish::i2p::Router* sharedI2pRouterIfRunning();
 
 std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest();
+// A published datagram destination for presence watching; it gets its reader key when taken.
+std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmWatcher();
 
 std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
     const std::string& owner, bazarish::i2p::Privacy privacy, const std::string& facadeHost);

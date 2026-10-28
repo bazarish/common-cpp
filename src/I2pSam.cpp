@@ -114,6 +114,11 @@ public:
         notWithAnExternalRouter("swapping an offline transient");
     }
 
+    void setLeaseSetReaderKey(const Bytes&) override
+    {
+        notWithAnExternalRouter("a lease-set reader key after the session is made");
+    }
+
     void stop() override
     {
         stopped_.store(true);

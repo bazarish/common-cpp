@@ -3,6 +3,7 @@
 
 #include <bazarish/Log.hpp>
 
+#include "Presence.hpp"
 #include "WarmDestPool.hpp"
 
 #include <chrono>
@@ -20,6 +21,7 @@ namespace bazarish::client {
 namespace {
 constexpr std::size_t kWarmPoolSize = 2;
 constexpr int kWarmPoolTunnelQuantity = 3;
+constexpr std::size_t kWarmWatcherPoolSize = 1;
 
 std::atomic<bool> g_warmDestsWanted{true};
 
@@ -48,6 +50,40 @@ std::unique_ptr<WarmDestPool>& warmPoolSlot()
     return pool;
 }
 
+std::unique_ptr<WarmDestPool>& warmWatcherPoolSlot()
+{
+    static std::unique_ptr<WarmDestPool> pool;
+    return pool;
+}
+
+bazarish::i2p::EndpointConfig warmStreamShape()
+{
+    bazarish::i2p::EndpointConfig config;
+    config.privacy = tunnelPrivacy();
+    config.tunnelQuantity = kWarmPoolTunnelQuantity;
+    config.published = false;
+    config.label = "Warm reserve";
+    return config;
+}
+
+bazarish::i2p::EndpointConfig warmWatcherShape()
+{
+    bazarish::i2p::EndpointConfig config = presenceEndpointShape();
+    config.label = "Warm watcher";
+    return config;
+}
+
+std::vector<WarmDestPool*> warmPools()
+{
+    std::vector<WarmDestPool*> pools;
+    for (std::unique_ptr<WarmDestPool>* slot : {&warmPoolSlot(), &warmWatcherPoolSlot()}) {
+        if (*slot) {
+            pools.push_back(slot->get());
+        }
+    }
+    return pools;
+}
+
 std::mutex& facadeLinksMutex()
 {
     static std::mutex mutex;
@@ -69,18 +105,23 @@ void ensureWarmPool(bazarish::i2p::Router& router)
     }
     std::unique_ptr<WarmDestPool>& pool = warmPoolSlot();
     if (!pool) {
-        pool = std::make_unique<WarmDestPool>(
-            router, kWarmPoolSize, kWarmPoolTunnelQuantity);
+        pool = std::make_unique<WarmDestPool>(router, kWarmPoolSize, warmStreamShape);
         pool->start();
+    }
+    std::unique_ptr<WarmDestPool>& watchers = warmWatcherPoolSlot();
+    if (!watchers && router.capabilities().lateReaderKey) {
+        watchers = std::make_unique<WarmDestPool>(router, kWarmWatcherPoolSize, warmWatcherShape);
+        watchers->start();
     }
 }
 
 void stopWarmPool()
 {
-    std::unique_ptr<WarmDestPool>& pool = warmPoolSlot();
-    if (pool) {
-        pool->stop();
-        pool.reset();
+    for (std::unique_ptr<WarmDestPool>* slot : {&warmPoolSlot(), &warmWatcherPoolSlot()}) {
+        if (*slot) {
+            (*slot)->stop();
+            slot->reset();
+        }
     }
 }
 
@@ -355,6 +396,13 @@ std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest()
     return pool != nullptr ? pool->acquire() : nullptr;
 }
 
+std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmWatcher()
+{
+    const std::lock_guard<std::mutex> lock(routerMutex());
+    WarmDestPool* const pool = warmWatcherPoolSlot().get();
+    return pool != nullptr ? pool->acquire() : nullptr;
+}
+
 void setI2pSocksProxy(std::string host, const int port)
 {
     {
@@ -541,8 +589,10 @@ void setWarmDestsWanted(const bool wanted)
 {
     g_warmDestsWanted.store(wanted);
     const std::lock_guard<std::mutex> lock(routerMutex());
-    if (WarmDestPool* const pool = warmPoolSlot().get(); pool != nullptr) {
-        pool->setWanted(wanted);
+    if (const std::vector<WarmDestPool*> pools = warmPools(); !pools.empty()) {
+        for (WarmDestPool* const pool : pools) {
+            pool->setWanted(wanted);
+        }
         return;
     }
     bazarish::i2p::Router* const router = routerSlot().get();
@@ -554,7 +604,7 @@ void setWarmDestsWanted(const bool wanted)
 void flushWarmDests()
 {
     const std::lock_guard<std::mutex> lock(routerMutex());
-    if (WarmDestPool* const pool = warmPoolSlot().get(); pool != nullptr) {
+    for (WarmDestPool* const pool : warmPools()) {
         pool->flush();
     }
 }

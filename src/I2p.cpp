@@ -19,12 +19,6 @@ namespace bazarish::i2p {
 
 namespace backend {
 
-namespace {
-
-constexpr std::size_t kLeaseSetKeyBytes = 32;
-
-}  // namespace
-
 std::string leaseSetKeyBase64(const Bytes& raw)
 {
     if (raw.size() != kLeaseSetKeyBytes) {
@@ -318,6 +312,11 @@ void Endpoint::stop()
 void Endpoint::refreshOfflineSignature(const Keys& newTransient)
 {
     impl_->transport->refreshOfflineSignature(newTransient);
+}
+
+void Endpoint::setLeaseSetReaderKey(const Bytes& rawPrivate)
+{
+    impl_->transport->setLeaseSetReaderKey(rawPrivate);
 }
 
 std::unique_ptr<Stream> Endpoint::connect(

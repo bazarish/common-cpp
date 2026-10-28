@@ -1,0 +1,28 @@
+--- a/libi2pd/Destination.cpp
++++ b/libi2pd/Destination.cpp
+@@ -826,6 +826,15 @@
+ 		return true;
+ 	}
+ 
++	void LeaseSetDestination::SetLeaseSetPrivKey (const uint8_t * key)
++	{
++		auto secret = std::make_shared<i2p::data::Tag<32> > (key);
++		boost::asio::post (m_Service, [s = shared_from_this (), secret]()
++		{
++			s->m_LeaseSetPrivKey.reset (new i2p::data::Tag<32> (*secret));
++		});
++	}
++
+ 	void LeaseSetDestination::CancelDestinationRequest (const i2p::data::IdentHash& dest, bool notify)
+ 	{
+ 		auto s = shared_from_this ();
+--- a/libi2pd/Destination.h
++++ b/libi2pd/Destination.h
+@@ -166,6 +166,7 @@
+ 			bool RequestDestinationWithEncryptedLeaseSet (std::shared_ptr<const i2p::data::BlindedPublicKey> dest, RequestComplete requestComplete = nullptr);
+ 			void CancelDestinationRequest (const i2p::data::IdentHash& dest, bool notify = true);
+ 			void CancelDestinationRequestWithEncryptedLeaseSet (std::shared_ptr<const i2p::data::BlindedPublicKey> dest, bool notify = true);
++			void SetLeaseSetPrivKey (const uint8_t * key); // i2cp.leaseSetPrivKey for a destination already running
+ 
+ 			// implements GarlicDestination
+ 			std::shared_ptr<const i2p::data::LocalLeaseSet> GetLeaseSet () override;

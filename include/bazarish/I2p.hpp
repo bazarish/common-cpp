@@ -135,6 +135,8 @@ public:
     Bytes privateBlob() const;
 
     void refreshOfflineSignature(const Keys& newTransient);
+    // EndpointConfig::leaseSetReaderKey for a destination already made, such as a warm one.
+    void setLeaseSetReaderKey(const Bytes& rawPrivate);
 
     // Open a stream to a ".b32.i2p" host (b32 or b33) or a base64 destination.
     std::unique_ptr<Stream> connect(const std::string& host, std::chrono::seconds timeout);
@@ -179,6 +181,8 @@ struct Capabilities {
     bool offlineKeys = false;
     bool reseed = false;
     bool warmPool = false;
+    // Endpoint::setLeaseSetReaderKey works, so a warm destination can watch for an account.
+    bool lateReaderKey = false;
 };
 
 inline constexpr int kDefaultSamControlPort = 7656;

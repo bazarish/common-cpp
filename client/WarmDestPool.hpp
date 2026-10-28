@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -16,7 +17,9 @@ namespace bazarish::client {
 
 class WarmDestPool {
 public:
-    WarmDestPool(bazarish::i2p::Router& router, std::size_t size, int tunnelQuantity);
+    // The shape is asked for each destination built, so a privacy change reaches the next one.
+    using Shape = std::function<bazarish::i2p::EndpointConfig()>;
+    WarmDestPool(bazarish::i2p::Router& router, std::size_t size, Shape shape);
     ~WarmDestPool();
 
     void start();
@@ -39,7 +42,7 @@ private:
     bool refillWanted_ = false;
     bool wanted_ = true;
     const std::size_t size_;
-    const int tunnelQuantity_;
+    const Shape shape_;
     const std::chrono::seconds buildTimeout_{120};
 
     mutable std::mutex mutex_;

@@ -18,8 +18,7 @@
 
 namespace bazarish::client {
 
-// The account's own key takes one place in the lease set's reader list.
-inline constexpr std::size_t kMaxPresenceReaders = i2p::kMaxLeaseSetReaders - 1;
+inline constexpr std::size_t kMaxPresenceReaders = i2p::kMaxLeaseSetReaders;
 inline constexpr std::size_t kPresenceSubscriptionIdBytes = 8;
 
 struct PresenceLinkConfig {
@@ -36,6 +35,7 @@ public:
     virtual std::optional<Bytes> receive(std::chrono::milliseconds wait) = 0;
     // The transport took the address down (a gateway's lapsed delegation); it is raised again.
     virtual bool lost() const = 0;
+    virtual bool ready() const = 0;
 };
 
 using PresenceNet = std::function<std::unique_ptr<PresenceLink>(const PresenceLinkConfig&)>;
@@ -44,7 +44,6 @@ struct PresenceWatch {
     Bytes id;
     Bytes key;
     std::string from;
-    std::string device;
     std::string reply;
     std::int64_t sentAt = 0;
 };
@@ -52,6 +51,7 @@ struct PresenceWatch {
 // Sealed by the hybrid seal to the watched account; signed by the Ed25519 half of the identity alone.
 Bytes presenceWatchFrame(const PresenceWatch& watch, const Key& signer, const Key& recipientSealing);
 
+bazarish::i2p::EndpointConfig presenceEndpointShape();
 PresenceNet i2pPresenceNet(std::filesystem::path routerDir, std::string owner);
 
 struct PresenceContact {
@@ -64,14 +64,10 @@ struct PresenceContact {
 
 struct PresenceAccount {
     std::string fingerprint;
-    std::string device;
     std::string identityPem;
     std::string sealingPem;
-    IdentityKeys identity;
-    Bytes presenceKeyDer;
     Bytes readerKey;
     Bytes destKeys;
-    std::string dest;
 };
 
 struct PresenceState {
@@ -84,17 +80,14 @@ struct PresenceState {
 using PresenceSink = std::function<void(const std::string& peer, const PresenceState& state)>;
 
 struct PresenceTimings {
-    std::chrono::milliseconds watchRetry{3000};
+    std::chrono::milliseconds watchRetry{5000};
     std::chrono::milliseconds renewEvery{15000};
     std::chrono::milliseconds subscriptionLife{30000};
-    std::chrono::milliseconds siblingKeepalive{5000};
-    std::chrono::milliseconds holderSilence{30000};
-    std::chrono::milliseconds probeDeadline{20000};
     std::chrono::milliseconds onlineTail{60000};
     std::chrono::milliseconds typingPulse{5000};
-    std::chrono::milliseconds typingResend{2000};
     std::chrono::milliseconds readersSettle{10000};
-    std::chrono::milliseconds selfCheckEvery{60000};
+    // How long a gone holder's lease set can still be found: i2pd's TUNNEL_EXPIRATION_TIMEOUT.
+    std::chrono::milliseconds leaseSetLife{660000};
     std::chrono::milliseconds tick{250};
 };
 

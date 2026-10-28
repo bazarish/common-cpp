@@ -202,6 +202,10 @@ public:
     {
         notWithAGateway("swapping an offline transient");
     }
+    void setLeaseSetReaderKey(const Bytes&) override
+    {
+        notWithAGateway("a lease-set reader key after the destination is made");
+    }
 
     std::unique_ptr<StreamBackend> connect(
         const std::string& host, std::chrono::seconds timeout) override;

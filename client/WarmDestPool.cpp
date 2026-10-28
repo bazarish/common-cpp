@@ -10,10 +10,10 @@
 
 namespace bazarish::client {
 
-WarmDestPool::WarmDestPool(bazarish::i2p::Router& router, std::size_t size, int tunnelQuantity)
+WarmDestPool::WarmDestPool(bazarish::i2p::Router& router, std::size_t size, Shape shape)
     : router_(router)
     , size_(size)
-    , tunnelQuantity_(tunnelQuantity)
+    , shape_(std::move(shape))
 {
 }
 
@@ -107,12 +107,7 @@ void WarmDestPool::warmerLoop()
 
         for (std::size_t i = 0; i < toCreate && running_.load(); ++i) {
             try {
-                bazarish::i2p::EndpointConfig config;
-                config.privacy = tunnelPrivacy();
-                config.tunnelQuantity = tunnelQuantity_;
-                config.published = false;
-                config.label = "Warm reserve";
-                auto endpoint = router_.createEndpoint(config);
+                auto endpoint = router_.createEndpoint(shape_());
                 if (endpoint) {
                     building.push_back(
                         {std::move(endpoint), std::chrono::steady_clock::now(), generation});
@@ -131,7 +126,8 @@ void WarmDestPool::warmerLoop()
                     ready_.push_back(std::move(it->endpoint));
                     warm = ready_.size();
                 }
-                bazarish::log::info("warm-pool: dest ready ({} warm, target {})", warm, size_);
+                bazarish::log::info("warm-pool: {} ready ({} warm, target {})",
+                    shape_().label, warm, size_);
                 it = building.erase(it);
             } else if (now - it->startedAt > buildTimeout_) {
                 bazarish::log::warn("warm-pool: abandoning a dest that never warmed");

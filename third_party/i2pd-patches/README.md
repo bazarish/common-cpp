@@ -55,3 +55,10 @@ file here.
   call starts. A call uses it to send each probe on the path being measured and
   its audio on the fastest one. Drop this patch if/when the accessors are merged
   upstream.
+- `0004-libi2pd-late-leaseset-privkey.patch` - adds
+  `LeaseSetDestination::SetLeaseSetPrivKey`, the `i2cp.leaseSetPrivKey` secret for a
+  destination that is already running, adopted on the destination's own thread.
+  The parameter is read only when a destination is made, so a destination built
+  ahead of time cannot otherwise read the encrypted lease sets that list an
+  account it is later given to; presence watches from such a warm destination.
+  Drop this patch if/when a setter is merged upstream.

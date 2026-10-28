@@ -594,6 +594,7 @@ public:
     std::string routingHost() const override;
     Bytes privateBlob() const override;
     void refreshOfflineSignature(const Keys& newTransient) override;
+    void setLeaseSetReaderKey(const Bytes& rawPrivate) override;
     std::unique_ptr<backend::StreamBackend> connect(
         const std::string& host, std::chrono::seconds timeout) override;
     std::unique_ptr<backend::StreamBackend> accept(
@@ -635,6 +636,7 @@ public:
     struct RawTargets {
         std::map<std::string, i2pd::data::IdentHash> resolved;
         std::set<std::string> lookups;
+        std::map<std::string, std::vector<std::uint8_t>> waiting;
         std::map<std::string, std::chrono::steady_clock::time_point> missedAt;
         bool steered = false;
         std::map<std::string, RawRoute> routes;
@@ -645,8 +647,9 @@ public:
 
 private:
     static void sendRawOnLane(const std::shared_ptr<i2pd::client::ClientDestination>& dest,
-        i2pd::datagram::DatagramDestination& datagram, const std::shared_ptr<RawTargets>& targets,
-        const std::string& host, const std::vector<std::uint8_t>& payload);
+        const std::shared_ptr<i2pd::datagram::DatagramDestination>& datagram,
+        const std::shared_ptr<RawTargets>& targets, const std::string& host,
+        const std::vector<std::uint8_t>& payload);
     static void deliverRaw(i2pd::client::ClientDestination& dest,
         i2pd::datagram::DatagramDestination& datagram, RawTargets& targets,
         const std::string& host, const i2pd::data::IdentHash& ident,
@@ -698,6 +701,14 @@ void EmbeddedEndpoint::stop()
     acceptCv.notify_all();
     dgCv.notify_all();
     rawCv.notify_all();
+}
+
+void EmbeddedEndpoint::setLeaseSetReaderKey(const Bytes& rawPrivate)
+{
+    if (rawPrivate.size() != backend::kLeaseSetKeyBytes) {
+        throw std::invalid_argument("a lease-set reader key is 32 raw bytes");
+    }
+    dest->SetLeaseSetPrivKey(rawPrivate.data());
 }
 
 void EmbeddedEndpoint::refreshOfflineSignature(const Keys& newTransient)
@@ -872,20 +883,21 @@ void EmbeddedEndpoint::sendRawDatagram(const std::string& host, const void* data
         [destination = dest, sender = datagram, targets = rawTargets, host,
             copy = std::vector<std::uint8_t>(payload, payload + size)]()
         {
-            sendRawOnLane(destination, *sender, targets, host, copy);
+            sendRawOnLane(destination, sender, targets, host, copy);
         });
 }
 
 void EmbeddedEndpoint::sendRawOnLane(const std::shared_ptr<i2pd::client::ClientDestination>& dest,
-    i2pd::datagram::DatagramDestination& datagram, const std::shared_ptr<RawTargets>& targets,
-    const std::string& host, const std::vector<std::uint8_t>& payload)
+    const std::shared_ptr<i2pd::datagram::DatagramDestination>& datagram,
+    const std::shared_ptr<RawTargets>& targets, const std::string& host,
+    const std::vector<std::uint8_t>& payload)
 {
     if (!isB32I2pHost(host))
     {
         auto identity = std::make_shared<i2pd::data::IdentityEx>();
         if (identity->FromBase64(host) > 0)
         {
-            deliverRaw(*dest, datagram, *targets, host, identity->GetIdentHash(), payload);
+            deliverRaw(*dest, *datagram, *targets, host, identity->GetIdentHash(), payload);
         }
         return;
     }
@@ -893,7 +905,7 @@ void EmbeddedEndpoint::sendRawOnLane(const std::shared_ptr<i2pd::client::ClientD
     std::uint8_t rawHash[64];
     if (i2pd::data::Base32ToByteStream(label, rawHash, sizeof rawHash) == 32)
     {
-        deliverRaw(*dest, datagram, *targets, host, i2pd::data::IdentHash(rawHash), payload);
+        deliverRaw(*dest, *datagram, *targets, host, i2pd::data::IdentHash(rawHash), payload);
         return;
     }
     const auto known = targets->resolved.find(host);
@@ -902,13 +914,18 @@ void EmbeddedEndpoint::sendRawOnLane(const std::shared_ptr<i2pd::client::ClientD
         // libi2pd renews a remote lease set by identity, which an encrypted one is never stored under.
         if (dest->FindLeaseSet(known->second))
         {
-            deliverRaw(*dest, datagram, *targets, host, known->second, payload);
+            deliverRaw(*dest, *datagram, *targets, host, known->second, payload);
             return;
         }
         targets->resolved.erase(known);
     }
+    if (targets->lookups.count(host) != 0)
+    {
+        targets->waiting[host] = payload;
+        return;
+    }
     // libi2pd answers a lookup from a destination without tunnels at once, with nothing.
-    if (!dest->IsReady() || targets->lookups.count(host) != 0)
+    if (!dest->IsReady())
     {
         return;
     }
@@ -919,15 +936,20 @@ void EmbeddedEndpoint::sendRawOnLane(const std::shared_ptr<i2pd::client::ClientD
         return;
     }
     targets->lookups.insert(host);
+    targets->waiting[host] = payload;
     if (first)
     {
         bazarish::log::info("i2p: looking up {} to send it datagrams", host);
     }
     auto blinded = std::make_shared<i2pd::data::BlindedPublicKey>(std::string_view(label));
     dest->RequestDestinationWithEncryptedLeaseSet(blinded,
-        [targets, host, first](std::shared_ptr<i2pd::data::LeaseSet> ls)
+        [weakDest = std::weak_ptr(dest), weakDatagram = std::weak_ptr(datagram), targets, host,
+            first](std::shared_ptr<i2pd::data::LeaseSet> ls)
         {
             targets->lookups.erase(host);
+            const auto held = targets->waiting.find(host);
+            const std::vector<std::uint8_t> waiting = std::move(held->second);
+            targets->waiting.erase(held);
             if (!ls)
             {
                 targets->missedAt[host] = std::chrono::steady_clock::now();
@@ -941,6 +963,12 @@ void EmbeddedEndpoint::sendRawOnLane(const std::shared_ptr<i2pd::client::ClientD
             targets->resolved[host] = ls->GetIdentHash();
             targets->missedAt.erase(host);
             bazarish::log::info("i2p: {} answered; datagrams to it can go", host);
+            const std::shared_ptr<i2pd::client::ClientDestination> destination = weakDest.lock();
+            const std::shared_ptr<i2pd::datagram::DatagramDestination> sender = weakDatagram.lock();
+            if (destination && sender)
+            {
+                deliverRaw(*destination, *sender, *targets, host, ls->GetIdentHash(), waiting);
+            }
         });
 }
 
@@ -1415,6 +1443,7 @@ Capabilities EmbeddedRouter::capabilities() const
     what.destinationCounters = true;
     what.netDbSample = true;
     what.proxy = true;
+    what.lateReaderKey = true;
     what.offlineKeys = true;
     what.reseed = true;
     return what;

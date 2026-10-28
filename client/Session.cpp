@@ -4113,14 +4113,10 @@ void Session::startPresence(PresenceSink sink)
     const Identity& identity = client_->identity();
     PresenceAccount account;
     account.fingerprint = fingerprint();
-    account.device = client_->clientId();
     account.identityPem = identity.privatePem();
     account.sealingPem = sealingKey_.privatePem();
-    account.identity = IdentityKeys{identity.classical().publicDer(), identity.pq().publicDer()};
-    account.presenceKeyDer = presenceKey().publicDer();
     account.readerKey = presenceKey().rawPrivate();
     account.destKeys = presenceDestKeys_;
-    account.dest = presenceDest_;
     presence_ = std::make_unique<Presence>(std::move(account),
         i2pPresenceNet(i2pDirFor(accountPath_), destinationOwner()), std::move(sink));
     presence_->setShown(showPresence_);

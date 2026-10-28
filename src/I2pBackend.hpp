@@ -35,6 +35,7 @@ public:
     virtual std::string routingHost() const = 0;
     virtual Bytes privateBlob() const = 0;
     virtual void refreshOfflineSignature(const Keys& newTransient) = 0;
+    virtual void setLeaseSetReaderKey(const Bytes& rawPrivate) = 0;
 
     virtual std::unique_ptr<StreamBackend> connect(
         const std::string& host, std::chrono::seconds timeout)
@@ -96,6 +97,7 @@ std::size_t embeddedSeedRouterInfos(
     const std::filesystem::path& dataDir, const std::vector<Bytes>& routers);
 Bytes generateKeysBlob();
 // A raw 32-byte X25519 key in the I2P base64 an I2CP lease-set option expects.
+inline constexpr std::size_t kLeaseSetKeyBytes = 32;
 std::string leaseSetKeyBase64(const Bytes& raw);
 Bytes issueTransientBlob(const Bytes& master, int days);
 int b33OfflineKeyDays(const Bytes& blob);
