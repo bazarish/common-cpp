@@ -449,11 +449,17 @@ int main()
         CHECK(bobSees.waitFor(alice.fp(), kOffline));
     }
 
-    alice1.setShown(false);
     alice1.setFocused(true);
+    CHECK(aliceSees.waitFor(bob.fp(), kOnline));
+    alice1.setShown(false);
+    CHECK(aliceSees.waitFor(bob.fp(), kOffline));
+    CHECK(bobSees.waitFor(alice.fp(), kOffline));
+    CHECK(waitUntil([&]() { return net.holdersOf(alice.dest) == 0; }));
+    const std::size_t watchersHidden = net.watchersOf(alice.presence);
     std::this_thread::sleep_for(kKnockWait);
+    CHECK(net.watchersOf(alice.presence) == watchersHidden);
+    CHECK(aliceSees.of(bob.fp()) == kOffline);
     CHECK(bobSees.of(alice.fp()) == kOffline);
-    CHECK(net.holdersOf(alice.dest) == 0);
     alice1.setFocused(false);
     alice1.setShown(true);
 
@@ -539,6 +545,10 @@ int main()
             CHECK(knock(dave.identity.classical()));
             CHECK(!knock(bob.identity.classical()));
         }
+        const std::uint64_t beforeReorder = net.newestGeneration(alice.dest);
+        alice1.setContacts({dave.contact(), bob.contact()});
+        std::this_thread::sleep_for(kKnockWait);
+        CHECK(net.newestGeneration(alice.dest) == beforeReorder);
         dave1.watch({bob.fp()});
         CHECK(daveSees.waitFor(alice.fp(), kOffline));
         std::this_thread::sleep_for(kKnockWait);

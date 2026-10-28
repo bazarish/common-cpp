@@ -16,6 +16,7 @@
 #include <map>
 #include <mutex>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -44,6 +45,8 @@ constexpr char kWatchSignatureField[] = "sig";
 constexpr std::int64_t kWatchSkewSeconds = 120;
 constexpr milliseconds kReceiveSlice{250};
 constexpr int kPresenceTunnelQuantity = 2;
+constexpr char kPresenceAddressLabel[] = "Presence address";
+constexpr char kPresenceWatcherLabel[] = "Presence watcher";
 constexpr PresenceState kCarried{true, false};
 
 std::int64_t unixNow()
@@ -230,7 +233,6 @@ i2p::EndpointConfig presenceEndpointShape()
     endpoint.privacy = tunnelPrivacy();
     endpoint.tunnelQuantity = kPresenceTunnelQuantity;
     endpoint.published = true;
-    endpoint.label = "Presence";
     endpoint.traffic = i2p::Traffic::eRaw;
     return endpoint;
 }
@@ -244,11 +246,12 @@ PresenceNet i2pPresenceNet(std::filesystem::path routerDir, std::string owner)
         if (watching) {
             if (std::shared_ptr<i2p::Endpoint> warm = acquireWarmWatcher()) {
                 warm->setLeaseSetReaderKey(config.readerKey);
-                router.retagEndpoint(*warm, presenceEndpointShape().label, owner);
+                router.retagEndpoint(*warm, kPresenceWatcherLabel, owner);
                 return std::make_unique<I2pPresenceLink>(std::move(warm));
             }
         }
         i2p::EndpointConfig endpoint = presenceEndpointShape();
+        endpoint.label = watching ? kPresenceWatcherLabel : kPresenceAddressLabel;
         endpoint.keys = config.keys;
         endpoint.owner = owner;
         endpoint.leaseSetReaders = config.readers;
@@ -304,7 +307,7 @@ struct Presence::Impl {
     // Online seen before a fresh watch stands until the contact answers or until this deadline.
     std::map<std::string, Clock::time_point> carriedUntil;
     std::map<std::string, Clock::time_point> heardFrom;
-    bool freshWatcher = false;
+    std::string_view freshWatcherWhy;
     std::map<std::uint64_t, Incoming> incoming;
     Clock::time_point lastOnline{};
     std::thread worker;
@@ -373,6 +376,7 @@ struct Presence::Impl {
         return nullptr;
     }
 
+    // Which contacts read is what counts: a new order of the chat list must not re-create the address.
     std::vector<Bytes> readersWanted() const
     {
         std::vector<Bytes> readers;
@@ -380,6 +384,7 @@ struct Presence::Impl {
              ++index) {
             readers.push_back(Key::fromPublicDer(contacts[index].presenceKeyDer).rawPublic());
         }
+        std::sort(readers.begin(), readers.end());
         return readers;
     }
 
@@ -531,7 +536,7 @@ struct Presence::Impl {
         }
         heardFrom[outgoing->peer] = now;
         if (payload->value("moved", false)) {
-            freshWatcher = true;
+            watchAfresh("a contact's address moved");
             return;
         }
         outgoing->answered = true;
@@ -551,8 +556,16 @@ struct Presence::Impl {
         }
     }
 
-    void dropHolder()
+    void watchAfresh(const std::string_view why)
     {
+        if (freshWatcherWhy.empty()) {
+            freshWatcherWhy = why;
+        }
+    }
+
+    void dropHolder(const std::string_view why)
+    {
+        bazarish::log::info("presence: the presence address is down: {}", why);
         closeRunner(holder);
         incoming.clear();
         holderReaders.clear();
@@ -571,6 +584,7 @@ struct Presence::Impl {
             return;
         }
         holderReaders = wantedReaders;
+        bazarish::log::info("presence: the presence address is up for {} readers", holderReaders.size());
     }
 
     void tickHolder(const Clock::time_point now)
@@ -583,12 +597,12 @@ struct Presence::Impl {
             std::erase_if(incoming, [now](const auto& entry) { return entry.second.expires <= now; });
             if (!shown || now - lastOnline >= timings.onlineTail) {
                 tellAll(now, shown);
-                dropHolder();
+                dropHolder(shown ? "the online tail ran out" : "the status is hidden");
                 return;
             }
             if (wantedReaders != holderReaders && now - readersChanged >= timings.readersSettle) {
                 tellAll(now, true);
-                dropHolder();
+                dropHolder("the readers changed");
             }
         }
         if (!holder) {
@@ -617,13 +631,15 @@ struct Presence::Impl {
             carriedUntil[peerFp] = now + timings.subscriptionLife;
         }
         peers.clear();
-        freshWatcher = false;
+        freshWatcherWhy = {};
     }
 
     void tickPeers(const Clock::time_point now)
     {
+        // A watch names its sender, so a device that hides its own status watches no one.
+        const bool watching = focused && shown;
         for (auto at = carriedUntil.begin(); at != carriedUntil.end();) {
-            const bool stands = focused && now < at->second
+            const bool stands = watching && now < at->second
                 && std::find(watched.begin(), watched.end(), at->first) != watched.end();
             if (stands) {
                 ++at;
@@ -636,7 +652,7 @@ struct Presence::Impl {
             at = carriedUntil.erase(at);
         }
         for (auto at = peers.begin(); at != peers.end();) {
-            const bool still = focused && contactFor(at->first, false) != nullptr
+            const bool still = watching && contactFor(at->first, false) != nullptr
                 && std::find(watched.begin(), watched.end(), at->first) != watched.end();
             if (still) {
                 ++at;
@@ -647,12 +663,11 @@ struct Presence::Impl {
             }
             at = peers.erase(at);
         }
-        if (!focused || !watcher) {
+        if (!watching || !watcher) {
             return;
         }
         // A contact woken by our watch looks our address up at once: it must be published by then.
-        const bool raising = shown && !wantedReaders.empty();
-        const bool watchesWait = raising && !(holder && holder->link->ready());
+        const bool watchesWait = !wantedReaders.empty() && !(holder && holder->link->ready());
         for (const std::string& peerFp : watched) {
             const PresenceContact* contact = contactFor(peerFp, false);
             if (contact == nullptr) {
@@ -675,9 +690,12 @@ struct Presence::Impl {
             const auto heard = heardFrom.find(outgoing.peer);
             const bool mayBeStale
                 = heard != heardFrom.end() && now - heard->second < timings.leaseSetLife;
-            if ((outgoing.woken && unanswered >= timings.watchRetry)
-                || (mayBeStale && unanswered >= timings.subscriptionLife)) {
-                freshWatcher = true;
+            if (outgoing.woken && unanswered >= timings.watchRetry) {
+                watchAfresh("a contact woke it");
+                return;
+            }
+            if (mayBeStale && unanswered >= timings.subscriptionLife) {
+                watchAfresh("a contact seen lately stays unanswered");
                 return;
             }
             if (!watchesWait && now - outgoing.lastSent >= timings.watchRetry) {
@@ -686,7 +704,7 @@ struct Presence::Impl {
             return;
         }
         if (now - outgoing.lastHeard >= timings.subscriptionLife) {
-            freshWatcher = true;
+            watchAfresh("a contact went silent");
             return;
         }
         if (now - outgoing.lastSent >= timings.renewEvery) {
@@ -696,7 +714,7 @@ struct Presence::Impl {
 
     void openWatcher()
     {
-        if (!focused || watcher) {
+        if (!focused || !shown || watcher) {
             return;
         }
         PresenceLinkConfig config;
@@ -741,7 +759,7 @@ struct Presence::Impl {
                 readersStale = false;
             }
             if (holder && holder->link->lost()) {
-                dropHolder();
+                dropHolder("the transport took it down");
             }
             for (const Bytes& frame : holderFrames) {
                 if (!holder || frame.size() <= kHeaderBytes) {
@@ -758,13 +776,17 @@ struct Presence::Impl {
                     onState(frame, now);
                 }
             }
-            if (freshWatcher || (watcher && watcher->link->lost())) {
+            if (watcher && watcher->link->lost()) {
+                watchAfresh("the watching address was lost");
+            }
+            if (!freshWatcherWhy.empty()) {
+                bazarish::log::info("presence: watching from a new address: {}", freshWatcherWhy);
                 startFresh(now);
             }
             openWatcher();
             tickHolder(now);
             tickPeers(now);
-            if (!focused) {
+            if (!focused || !shown) {
                 closeRunner(watcher);
             }
             for (const auto& [peerFp, state] : told) {
