@@ -6,6 +6,7 @@
 #include <bazarish/Hybrid.hpp>
 #include <bazarish/Hmac.hpp>
 #include <bazarish/I2pAddress.hpp>
+#include <bazarish/Limits.hpp>
 #include <bazarish/Resolve.hpp>
 
 #include <nlohmann/json.hpp>
@@ -25,6 +26,16 @@ std::int64_t nowSeconds()
 }  // namespace
 
 namespace {
+
+std::vector<PendingEntry> pendingEntries(const nlohmann::json& listed)
+{
+    std::vector<PendingEntry> entries;
+    for (const nlohmann::json& entry : listed) {
+        entries.push_back({entry.at("id").get<std::string>(),
+            entry.at("class").get<std::string>(), entry.at("bytes").get<std::uint64_t>()});
+    }
+    return entries;
+}
 
 Bytes cardQueryBytes(const CardFetchQuery& query)
 {
@@ -295,12 +306,7 @@ std::vector<PendingEntry> Client::waitForPending(const int waitSeconds)
     constexpr int kReadSlackSeconds = 20;
     const ApiResponse response = api_.getWaiting(
         kEventsPath, "wait=" + std::to_string(waitSeconds), waitSeconds + kReadSlackSeconds);
-    const nlohmann::json body = response.json();
-    std::vector<PendingEntry> entries;
-    for (const nlohmann::json& entry : body.at("pending")) {
-        entries.push_back(
-            {entry.at("id").get<std::string>(), entry.at("class").get<std::string>()});
-    }
+    const std::vector<PendingEntry> entries = pendingEntries(response.json().at("pending"));
     if (!entries.empty()) {
         log_->record({0, false, "poll: " + std::to_string(entries.size()) + " waiting", "200", {}});
     }
@@ -309,15 +315,21 @@ std::vector<PendingEntry> Client::waitForPending(const int waitSeconds)
 
 std::vector<PendingEntry> Client::listPending()
 {
-    const ApiResponse response = api_.get("/v1/messaging/pending");
-    const nlohmann::json body = response.json();
+    return pendingEntries(api_.get("/v1/messaging/pending").json().at("pending"));
+}
 
-    std::vector<PendingEntry> entries;
-    for (const nlohmann::json& entry : body.at("pending")) {
-        entries.push_back(
-            {entry.at("id").get<std::string>(), entry.at("class").get<std::string>()});
+std::size_t fetchBatchEnd(const std::vector<PendingEntry>& entries, const std::size_t begin)
+{
+    std::size_t end = begin;
+    std::uint64_t carried = 0;
+    while (end < entries.size()) {
+        carried += entries[end].bytes;
+        if (end > begin && carried > kMaxFetchBytes) {
+            break;
+        }
+        ++end;
     }
-    return entries;
+    return end;
 }
 
 std::string deliveryIdFor(
@@ -328,15 +340,26 @@ std::string deliveryIdFor(
         .substr(0, kDeliveryIdHexChars);
 }
 
-Bytes Client::fetchBlob(const std::string& blobId)
+std::vector<FetchedItem> Client::fetch(const std::vector<std::string>& ids)
 {
-    const ApiResponse response = api_.get("/v1/messaging/pending/" + blobId);
-    return response.body;
+    const nlohmann::json answer
+        = nlohmann::json::from_cbor(api_.postJson("/v1/messaging/fetch", {{"ids", ids}}).body);
+    std::vector<FetchedItem> items;
+    for (const nlohmann::json& item : answer.at("items")) {
+        const nlohmann::json::binary_t& blob = item.at("blob").get_binary();
+        items.push_back({item.at("id").get<std::string>(), Bytes(blob.begin(), blob.end())});
+    }
+    return items;
 }
 
-void Client::ack(const std::string& blobId)
+void Client::ack(const std::vector<std::string>& ids)
 {
-    api_.postJson("/v1/messaging/ack", {{"blobId", blobId}});
+    for (std::size_t from = 0; from < ids.size(); from += kMaxAckIdsPerRequest) {
+        const std::size_t to = std::min(ids.size(), from + kMaxAckIdsPerRequest);
+        api_.postJson("/v1/messaging/ack",
+            {{"ids", std::vector<std::string>(ids.begin() + static_cast<std::ptrdiff_t>(from),
+                         ids.begin() + static_cast<std::ptrdiff_t>(to))}});
+    }
 }
 
 void Client::submitSelf(

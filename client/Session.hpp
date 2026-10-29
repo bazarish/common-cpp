@@ -685,13 +685,12 @@ public:
     void setSwitchedOff(bool off) { switchedOff_ = off; }
     bool switchedOff() const { return switchedOff_; }
     void requireSwitchedOn() const;
-    bool morePending() const { return morePending_; }
     void flushPendingEchoes();
     std::size_t awaitingAcks() const { return awaitingAck_.size(); }
 
     void ackPending(const std::string& pendingId);
     void forgetPending(const std::string& pendingId);
-    void releasePending(const std::string& pendingId);
+    void releasePending(const std::vector<std::string>& pendingIds);
 
     void onServerAnswered(std::function<void()> tell);
 
@@ -705,12 +704,14 @@ public:
         const std::string& deliveryId, const Bytes& sealed, const std::string& kind);
 
     struct MailboxItem {
-        std::string pendingId;
+        PendingEntry entry;
         Bytes blob;
     };
+    // One request for the batch; an item the server no longer holds is left out.
     static std::vector<MailboxItem> fetchMailbox(
-        Client& client, const std::vector<PendingEntry>& waiting, std::size_t maxItems);
-    void holdFetched(std::vector<MailboxItem> items);
+        Client& client, const std::vector<PendingEntry>& batch);
+    // Items in mailbox order; with none it does only what follows every pass.
+    std::vector<IncomingMessage> takeIn(std::vector<MailboxItem> items, bool autoAckSurfaced);
 
     bool hasContact(const std::string& peerFingerprint) const;
     std::vector<std::string> contactFingerprints() const;
@@ -941,13 +942,14 @@ private:
     std::shared_ptr<PairingRegistry> pairing_ = std::make_shared<PairingRegistry>();
     Key sealingKey_;
     std::string deliveryIdSeed_;
-    bool morePending_ = false;
     std::deque<std::string> endedCalls_;
     std::set<std::string> awaitingAck_;
     std::function<void()> serverAnswered_;
     AckSink ackSink_;
     SelfSendSink selfSendSink_;
-    std::map<std::string, Bytes> fetched_;
+    // Taken in without an ack sink; acked together at the end of the pass.
+    std::vector<std::string> owedAcks_;
+    void flushOwedAcks();
     void releaseItem(const std::string& pendingId);
     Bytes deliverySecret_;
     std::map<std::string, Contact> contacts_;

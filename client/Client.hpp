@@ -61,7 +61,16 @@ struct ContactInfo {
 struct PendingEntry {
     std::string id;
     std::string deliveryClass;
+    std::uint64_t bytes = 0;
 };
+
+struct FetchedItem {
+    std::string id;
+    Bytes blob;
+};
+
+// One past the last of the entries from begin that one fetch carries; always takes begin.
+std::size_t fetchBatchEnd(const std::vector<PendingEntry>& entries, std::size_t begin);
 
 struct PortalInfo {
     std::string message;
@@ -133,8 +142,9 @@ public:
     std::size_t revokePasses(const std::vector<Bytes>& handles);
     std::vector<PendingEntry> listPending();
     std::vector<PendingEntry> waitForPending(int waitSeconds);
-    Bytes fetchBlob(const std::string& blobId);
-    void ack(const std::string& blobId);
+    // Items no longer held are left out of the answer.
+    std::vector<FetchedItem> fetch(const std::vector<std::string>& ids);
+    void ack(const std::vector<std::string>& ids);
     void submitSelf(const std::string& deliveryId, const Bytes& payload,
         const std::string& kind = {});
 

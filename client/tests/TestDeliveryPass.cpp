@@ -97,6 +97,8 @@ struct Mock {
         Bytes payload;
     };
     std::map<std::string, std::vector<Item>> mailbox;
+    std::map<std::string, std::size_t> fetches;
+    std::map<std::string, std::size_t> acks;
     std::map<std::string, std::set<std::string>> registered;
     std::map<std::string, std::set<std::string>> seenIds;
     std::size_t largestContactRequest = 0;
@@ -357,36 +359,46 @@ int main()
             std::lock_guard<std::mutex> lock(m.mu);
             nlohmann::json pending = nlohmann::json::array();
             for (const Mock::Item& item : m.mailbox[caller]) {
-                pending.push_back({{"id", item.id}, {"class", item.cls}});
+                pending.push_back(
+                    {{"id", item.id}, {"class", item.cls}, {"bytes", item.payload.size()}});
             }
             respondJson(response, {{"pending", pending}});
         }));
 
-    server.get(R"(/v1/messaging/pending/(.+))",
+    server.post("/v1/messaging/fetch",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
-            const std::string id = request.captures.at(0);
+            const nlohmann::json ids = nlohmann::json::parse(request.body).at("ids");
             std::lock_guard<std::mutex> lock(m.mu);
-            for (const Mock::Item& item : m.mailbox[caller]) {
-                if (item.id == id) {
-                    response.contentType = "application/octet-stream";
-                    response.body = std::string(item.payload.begin(), item.payload.end());
-                    return;
+            nlohmann::json items = nlohmann::json::array();
+            for (const nlohmann::json& id : ids) {
+                for (const Mock::Item& item : m.mailbox[caller]) {
+                    if (item.id == id.get<std::string>()) {
+                        items.push_back({{"id", item.id},
+                            {"blob", nlohmann::json::binary(std::vector<std::uint8_t>(
+                                         item.payload.begin(), item.payload.end()))}});
+                    }
                 }
             }
-            response.status = 404;
+            ++m.fetches[caller];
+            const std::vector<std::uint8_t> answer = nlohmann::json::to_cbor({{"items", items}});
+            response.contentType = "application/cbor";
+            response.body = std::string(answer.begin(), answer.end());
         }));
 
     server.post("/v1/messaging/ack",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
-            const std::string blobId
-                = nlohmann::json::parse(request.body).at("blobId").get<std::string>();
+            const nlohmann::json ids = nlohmann::json::parse(request.body).at("ids");
             std::lock_guard<std::mutex> lock(m.mu);
             std::vector<Mock::Item>& box = m.mailbox[caller];
-            box.erase(std::remove_if(box.begin(), box.end(),
-                          [&](const Mock::Item& item) { return item.id == blobId; }),
-                box.end());
+            for (const nlohmann::json& id : ids) {
+                const std::string acked = id.get<std::string>();
+                box.erase(std::remove_if(box.begin(), box.end(),
+                              [&](const Mock::Item& item) { return item.id == acked; }),
+                    box.end());
+            }
+            ++m.acks[caller];
             respondJson(response, {{"ok", true}});
         }));
 
@@ -902,6 +914,34 @@ int main()
             CHECK(alice.avatar().empty());
             bob.sync();
             CHECK(bob.contactAvatar(alice.fingerprint()).empty());
+        }
+
+        {
+            constexpr std::size_t kBacklog = 12;
+            const std::string kBacklogText = "backlog ";
+            for (std::size_t i = 0; i < kBacklog; ++i) {
+                bob.sendMessage(alice.fingerprint(), kBacklogText + std::to_string(i));
+            }
+            CHECK(waitFor([&]() {
+                std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[alice.fingerprint()].size() >= kBacklog;
+            }));
+            std::size_t fetchesBefore = 0;
+            std::size_t acksBefore = 0;
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                fetchesBefore = m.fetches[alice.fingerprint()];
+                acksBefore = m.acks[alice.fingerprint()];
+            }
+            std::size_t taken = 0;
+            for (const IncomingMessage& item : alice.sync()) {
+                taken += item.text.rfind(kBacklogText, 0) == 0 ? 1 : 0;
+            }
+            CHECK(taken == kBacklog);
+            std::lock_guard<std::mutex> lock(m.mu);
+            CHECK(m.fetches[alice.fingerprint()] == fetchesBefore + 1);
+            CHECK(m.acks[alice.fingerprint()] == acksBefore + 1);
+            CHECK(m.mailbox[alice.fingerprint()].empty());
         }
 
         {

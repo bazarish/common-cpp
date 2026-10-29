@@ -183,21 +183,31 @@ int main()
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
             respondJson(response,
-                {{"pending", nlohmann::json::array({{{"id", "blob1"}, {"class", "content"}},
-                                {{"id", "blob2"}, {"class", "contact"}}})}});
+                {{"pending",
+                    nlohmann::json::array({{{"id", "blob1"}, {"class", "content"}, {"bytes", 9}},
+                        {{"id", "blob2"}, {"class", "contact"}, {"bytes", 4}}})}});
         }));
 
-    server.get("/v1/messaging/pending/blob1",
+    server.post("/v1/messaging/fetch",
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
-            response.contentType = "application/octet-stream";
-            response.body = std::string("\x01\x02\x03opaque", 9);
+            CHECK(nlohmann::json::parse(request.body).at("ids")
+                == nlohmann::json::array({"blob1", "gone"}));
+            const std::string opaque("\x01\x02\x03opaque", 9);
+            nlohmann::json items = nlohmann::json::array();
+            items.push_back({{"id", "blob1"},
+                {"blob",
+                    nlohmann::json::binary(std::vector<std::uint8_t>(opaque.begin(), opaque.end()))}});
+            const std::vector<std::uint8_t> answer = nlohmann::json::to_cbor({{"items", items}});
+            response.contentType = "application/cbor";
+            response.body = std::string(answer.begin(), answer.end());
         }));
 
     server.post("/v1/messaging/ack",
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
-            CHECK(nlohmann::json::parse(request.body).at("blobId") == "blob1");
+            CHECK(nlohmann::json::parse(request.body).at("ids")
+                == nlohmann::json::array({"blob1", "blob2"}));
             respondJson(response, {{"ok", true}});
         }));
 
@@ -287,12 +297,15 @@ int main()
         CHECK(pending[0].id == "blob1");
         CHECK(pending[0].deliveryClass == "content");
         CHECK(pending[1].deliveryClass == "contact");
+        CHECK(pending[0].bytes == 9);
 
-        const Bytes blob = client.fetchBlob("blob1");
-        CHECK(blob.size() == 9);
-        CHECK(blob[0] == 0x01);
+        const std::vector<FetchedItem> fetched = client.fetch({"blob1", "gone"});
+        CHECK(fetched.size() == 1);
+        CHECK(fetched[0].id == "blob1");
+        CHECK(fetched[0].blob.size() == 9);
+        CHECK(fetched[0].blob[0] == 0x01);
 
-        client.ack("blob1");
+        client.ack({"blob1", "blob2"});
     }
 
     {

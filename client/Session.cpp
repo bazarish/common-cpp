@@ -37,7 +37,9 @@
 #include <chrono>
 #include <ctime>
 #include <fstream>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <thread>
@@ -1196,9 +1198,18 @@ void Session::disableI2pDest()
 bool Session::adoptI2pMasterFromOwnMailbox(const std::string& wantedHost)
 {
     try {
-        for (const PendingEntry& entry : client_->listPending()) {
-            const Bytes blob = client_->fetchBlob(entry.id);
-            const nlohmann::json body = decodedBody(hybrid::unseal(blob, sealingKey_));
+        const std::vector<PendingEntry> waiting = client_->listPending();
+        std::vector<MailboxItem> held;
+        for (std::size_t begin = 0; begin < waiting.size();) {
+            const std::size_t end = fetchBatchEnd(waiting, begin);
+            std::vector<MailboxItem> batch = fetchMailbox(*client_,
+                std::vector<PendingEntry>(waiting.begin() + static_cast<std::ptrdiff_t>(begin),
+                    waiting.begin() + static_cast<std::ptrdiff_t>(end)));
+            std::move(batch.begin(), batch.end(), std::back_inserter(held));
+            begin = end;
+        }
+        for (const MailboxItem& item : held) {
+            const nlohmann::json body = decodedBody(hybrid::unseal(item.blob, sealingKey_));
             if (body.value("type", std::string()) != "device.i2p-master"
                 || body.value("from", std::string()) != fingerprint()) {
                 continue;
@@ -3154,9 +3165,7 @@ void Session::persistSentFiles() const
 std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size_t maxItems)
 {
     flushPendingEchoes();
-    std::vector<IncomingMessage> result;
-    std::set<std::string> establishedPeers;
-    std::set<std::string> reaskedPeers;
+    flushOwedAcks();
     std::vector<PendingEntry> waiting;
     {
         const log::Slow timed("asking what the mailbox holds", kSlowStretch);
@@ -3165,29 +3174,49 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
     if (serverAnswered_) {
         serverAnswered_();
     }
-    const log::Slow timedItems(
-        "taking in the " + std::to_string(waiting.size()) + " item(s) the mailbox held",
-        kSlowStretch);
-    morePending_ = false;
-    std::size_t handled = 0;
+    std::vector<PendingEntry> taking;
     for (const PendingEntry& entry : waiting) {
         if (awaitingAck_.find(entry.id) != awaitingAck_.end()) {
             continue;
         }
-        if (maxItems > 0 && handled >= maxItems) {
-            morePending_ = true;
+        if (maxItems > 0 && taking.size() >= maxItems) {
             break;
         }
-        ++handled;
+        taking.push_back(entry);
+    }
+    if (taking.empty()) {
+        return takeIn({}, autoAckSurfaced);
+    }
+    std::vector<IncomingMessage> result;
+    for (std::size_t begin = 0; begin < taking.size();) {
+        const std::size_t end = fetchBatchEnd(taking, begin);
+        std::vector<IncomingMessage> taken = takeIn(
+            fetchMailbox(*client_,
+                std::vector<PendingEntry>(taking.begin() + static_cast<std::ptrdiff_t>(begin),
+                    taking.begin() + static_cast<std::ptrdiff_t>(end))),
+            autoAckSurfaced);
+        std::move(taken.begin(), taken.end(), std::back_inserter(result));
+        begin = end;
+    }
+    return result;
+}
+
+std::vector<IncomingMessage> Session::takeIn(
+    std::vector<MailboxItem> items, const bool autoAckSurfaced)
+{
+    std::vector<IncomingMessage> result;
+    std::set<std::string> establishedPeers;
+    std::set<std::string> reaskedPeers;
+    const log::Slow timedItems(
+        "taking in " + std::to_string(items.size()) + " mailbox item(s)", kSlowStretch);
+    for (MailboxItem& item : items) {
+        const PendingEntry& entry = item.entry;
+        if (awaitingAck_.find(entry.id) != awaitingAck_.end()) {
+            continue;
+        }
         const log::Slow timedItem("taking in " + entry.id, kSlowStretch);
         try {
-            Bytes blob;
-            if (const auto held = fetched_.find(entry.id); held != fetched_.end()) {
-                blob = std::move(held->second);
-                fetched_.erase(held);
-            } else {
-                blob = client_->fetchBlob(entry.id);
-            }
+            const Bytes blob = std::move(item.blob);
             const Bytes plain = hybrid::unseal(blob, sealingKey_);
             nlohmann::json body = decodedBody(plain);
 
@@ -3704,13 +3733,14 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
             bazarish::log::warn("sync: could not ask for the address book: {}", error.what());
         }
     }
+    flushOwedAcks();
     return result;
 }
 
 void Session::ackPending(const std::string& pendingId)
 {
     forgetPending(pendingId);
-    releasePending(pendingId);
+    releasePending({pendingId});
 }
 
 void Session::onServerAnswered(std::function<void()> tell)
@@ -3728,37 +3758,45 @@ void Session::releaseItem(const std::string& pendingId)
     if (pendingId.empty()) {
         return;
     }
+    awaitingAck_.insert(pendingId);
     if (!ackSink_) {
-        client_->ack(pendingId);
+        owedAcks_.push_back(pendingId);
         return;
     }
-    awaitingAck_.insert(pendingId);
     ackSink_(pendingId);
 }
 
-std::vector<Session::MailboxItem> Session::fetchMailbox(
-    Client& client, const std::vector<PendingEntry>& waiting, const std::size_t maxItems)
+void Session::flushOwedAcks()
 {
+    if (owedAcks_.empty()) {
+        return;
+    }
+    client_->ack(owedAcks_);
+    for (const std::string& pendingId : owedAcks_) {
+        awaitingAck_.erase(pendingId);
+    }
+    owedAcks_.clear();
+}
+
+std::vector<Session::MailboxItem> Session::fetchMailbox(
+    Client& client, const std::vector<PendingEntry>& batch)
+{
+    std::vector<std::string> ids;
+    ids.reserve(batch.size());
+    for (const PendingEntry& entry : batch) {
+        ids.push_back(entry.id);
+    }
+    std::map<std::string, Bytes> served;
+    for (FetchedItem& item : client.fetch(ids)) {
+        served.emplace(std::move(item.id), std::move(item.blob));
+    }
     std::vector<MailboxItem> items;
-    for (const PendingEntry& entry : waiting) {
-        if (maxItems > 0 && items.size() >= maxItems) {
-            break;
-        }
-        try {
-            items.push_back({entry.id, client.fetchBlob(entry.id)});
-        } catch (const std::exception& error) {
-            bazarish::log::info("mailbox item not fetched ahead: {}", error.what());
+    for (const PendingEntry& entry : batch) {
+        if (const auto found = served.find(entry.id); found != served.end()) {
+            items.push_back({entry, std::move(found->second)});
         }
     }
     return items;
-}
-
-void Session::holdFetched(std::vector<MailboxItem> items)
-{
-    fetched_.clear();
-    for (MailboxItem& item : items) {
-        fetched_.emplace(std::move(item.pendingId), std::move(item.blob));
-    }
 }
 
 void Session::forgetPending(const std::string& pendingId)
@@ -3769,12 +3807,12 @@ void Session::forgetPending(const std::string& pendingId)
     awaitingAck_.erase(pendingId);
 }
 
-void Session::releasePending(const std::string& pendingId)
+void Session::releasePending(const std::vector<std::string>& pendingIds)
 {
-    if (pendingId.empty()) {
+    if (pendingIds.empty()) {
         return;
     }
-    client_->ack(pendingId);
+    client_->ack(pendingIds);
 }
 
 bool Session::canWriteTo(const std::string& peerFingerprint) const
