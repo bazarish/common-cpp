@@ -16,4 +16,6 @@ void writeFileAtomic(const std::filesystem::path& path, const Bytes& bytes);
 
 void writePrivateFile(const std::filesystem::path& path, const std::string& text);
 
+void syncDirectory(const std::filesystem::path& directory);
+
 }  // namespace bazarish

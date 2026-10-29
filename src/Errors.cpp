@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 11> kErrorNames = {{
+constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 14> kErrorNames = {{
     {bazarish::ErrorCode::eStorageFull, "STORAGE_FULL"},
     {bazarish::ErrorCode::eRecipientServerUnreachable, "RECIPIENT_SERVER_UNREACHABLE"},
     {bazarish::ErrorCode::eDeliveryRejected, "DELIVERY_REJECTED"},
@@ -19,9 +19,12 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 11> kErro
     {bazarish::ErrorCode::eClientUnregistered, "CLIENT_UNREGISTERED"},
     {bazarish::ErrorCode::eSessionInvalid, "SESSION_INVALID"},
     {bazarish::ErrorCode::eAccountPendingApproval, "ACCOUNT_PENDING_APPROVAL"},
+    {bazarish::ErrorCode::eAccountUnknown, "ACCOUNT_UNKNOWN"},
+    {bazarish::ErrorCode::eUpstreamUnavailable, "UPSTREAM_UNAVAILABLE"},
+    {bazarish::ErrorCode::eRequestFailed, "REQUEST_FAILED"},
 }};
 
-constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 11> kErrorTexts = {{
+constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 14> kErrorTexts = {{
     {bazarish::ErrorCode::eStorageFull, "The server has run out of storage."},
     {bazarish::ErrorCode::eRecipientServerUnreachable, "Their server did not answer."},
     {bazarish::ErrorCode::eDeliveryRejected, "Their server refused to take this."},
@@ -38,6 +41,9 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 11> kErro
         "The session with the server has lapsed; it will be opened again."},
     {bazarish::ErrorCode::eAccountPendingApproval,
         "This account is waiting for the server's operator to let it in."},
+    {bazarish::ErrorCode::eAccountUnknown, "This server holds no account for this key."},
+    {bazarish::ErrorCode::eUpstreamUnavailable, "The server behind it did not answer."},
+    {bazarish::ErrorCode::eRequestFailed, "The server could not carry out the request."},
 }};
 
 }  // namespace
@@ -74,17 +80,9 @@ std::optional<ErrorCode> errorCodeFromString(const std::string_view text)
     return std::nullopt;
 }
 
-nlohmann::json makeErrorEnvelope(
-    const ErrorCode code, const std::string& message, const nlohmann::json& details)
+nlohmann::json makeErrorEnvelope(const ErrorCode code, const std::string& message)
 {
-    nlohmann::json error = {
-        {"code", toString(code)},
-        {"message", message},
-    };
-    if (!details.is_null()) {
-        error["details"] = details;
-    }
-    return nlohmann::json{{"error", std::move(error)}};
+    return nlohmann::json{{"error", {{"code", toString(code)}, {"message", message}}}};
 }
 
 std::optional<ParsedError> parseErrorEnvelope(const nlohmann::json& document)
@@ -105,9 +103,6 @@ std::optional<ParsedError> parseErrorEnvelope(const nlohmann::json& document)
     parsed.code = code.value();
     if (error.contains("message") && error.at("message").is_string()) {
         parsed.message = error.at("message").get<std::string>();
-    }
-    if (error.contains("details")) {
-        parsed.details = error.at("details");
     }
     return parsed;
 }

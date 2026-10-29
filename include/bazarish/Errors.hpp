@@ -21,6 +21,9 @@ enum class ErrorCode {
     eClientUnregistered,
     eSessionInvalid,
     eAccountPendingApproval,
+    eAccountUnknown,
+    eUpstreamUnavailable,
+    eRequestFailed,
 };
 
 std::string_view toString(ErrorCode code);
@@ -28,13 +31,11 @@ std::optional<ErrorCode> errorCodeFromString(std::string_view text);
 
 std::string_view readable(ErrorCode code);
 
-nlohmann::json makeErrorEnvelope(
-    ErrorCode code, const std::string& message, const nlohmann::json& details = nullptr);
+nlohmann::json makeErrorEnvelope(ErrorCode code, const std::string& message);
 
 struct ParsedError {
     ErrorCode code;
     std::string message;
-    nlohmann::json details;
 };
 
 std::optional<ParsedError> parseErrorEnvelope(const nlohmann::json& document);

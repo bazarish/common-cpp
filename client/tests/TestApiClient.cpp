@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <memory>
 #include <stdexcept>
 
 using namespace bazarish;
@@ -154,6 +155,61 @@ int main()
         CHECK(threw);
     }
 
+    {
+        http::Server backend(localOptions());
+        teststub::Tunnel backendStub(backend, serverIdentity, serverSealing);
+        backend.get("/v1/messaging/storage-usage", [](const http::Request&) {
+            http::Response response;
+            response.body = nlohmann::json{{"used", 0}}.dump();
+            return response;
+        });
+        CHECK(backend.start() > 0);
+        const auto relayTo = [&backend](http::Server& facade, std::atomic<int>& carried) {
+            const auto relay = [&backend, &carried](const http::Request& request,
+                                   http::Responder respond) -> std::optional<http::Response> {
+                ++carried;
+                backend.dispatch(request, std::move(respond));
+                return std::nullopt;
+            };
+            facade.routeAsync("POST", std::string(tunnel::kTunnelPath), relay);
+            facade.routeAsync("GET", std::string(tunnel::kServerCardPath), relay);
+        };
+        std::atomic<int> firstCarried{0};
+        std::atomic<int> secondCarried{0};
+        std::atomic<int> backCarried{0};
+        auto first = std::make_unique<http::Server>(localOptions());
+        relayTo(*first, firstCarried);
+        const int firstPort = first->start();
+        http::Server second(localOptions());
+        relayTo(second, secondCarried);
+        const int secondPort = second.start();
+
+        ServerEndpoint both = endpoint;
+        both.facades = {Facade{"127.0.0.1", firstPort}, Facade{"127.0.0.1", secondPort}};
+        ApiClient api(alice, "abc123", both);
+        CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+        CHECK(firstCarried.load() > 0);
+        CHECK(secondCarried.load() == 0);
+
+        first->stop();
+        first.reset();
+        CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+        const int carriedBySecond = secondCarried.load();
+        CHECK(carriedBySecond > 0);
+
+        http::Server::Options samePort = localOptions();
+        samePort.port = firstPort;
+        http::Server back(samePort);
+        relayTo(back, backCarried);
+        CHECK(back.start() == firstPort);
+        CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+        CHECK(secondCarried.load() == carriedBySecond + 1);
+        CHECK(backCarried.load() == 0);
+        back.stop();
+        second.stop();
+        backend.stop();
+    }
+
     server.stop();
 
     {
@@ -186,7 +242,7 @@ int main()
             ++hellos;
             http::Response response;
             response.status = 502;
-            response.body = R"({"error":{"code":"FACADE_UPSTREAM","message":"backend unreachable"}})";
+            response.body = R"({"error":{"code":"UPSTREAM_UNAVAILABLE","message":"backend unreachable"}})";
             return response;
         });
         ServerEndpoint behind = endpoint;

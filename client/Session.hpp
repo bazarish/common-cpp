@@ -133,6 +133,7 @@ struct IncomingMessage {
     bool sentByUs = false;
     bool establishedContact = false;
     std::string rawType;
+    Bytes rawBody;
     std::string e2eId;
     bool forwarded = false;
     std::string pendingId;
@@ -597,6 +598,7 @@ public:
         const std::string& announcedSha256, FileTarget target);
 
     void cancelTransfer(const std::string& e2eId);
+    void expireFileRequests(std::int64_t nowMs);
 
     void setTransferHandler(TransferEventFn handler);
 
@@ -921,6 +923,7 @@ private:
         std::shared_ptr<std::atomic<bool>> cancel;
         std::string peer;
         std::string ask;
+        std::int64_t answerByMs = 0;
         bool fetching = false;
     };
     struct ServingTransfer {

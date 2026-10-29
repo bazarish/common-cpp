@@ -29,6 +29,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -265,7 +266,7 @@ int main()
                           response.status = 409;
                           respondJson(response,
                               {{"error",
-                                  {{"code", "DELIVERY_REJECTED"},
+                                  {{"code", "REQUEST_FAILED"},
                                       {"message",
                                           "this card is not newer than the one already "
                                           "published"}}}});
@@ -736,6 +737,43 @@ int main()
             CHECK(marks["bz-pass-forwarded.txt"]);
             CHECK(!marks["own.jpg"]);
             fs::remove(forwardedFile);
+        }
+
+        {
+            constexpr std::int64_t kPastTheAnswerWindowMs = 6 * 60 * 1000;
+            std::mutex seenMutex;
+            std::vector<TransferEvent> seen;
+            bob.setTransferHandler([&](const TransferEvent& event) {
+                const std::lock_guard<std::mutex> lock(seenMutex);
+                seen.push_back(event);
+            });
+            const auto failures = [&]() {
+                const std::lock_guard<std::mutex> lock(seenMutex);
+                return std::count_if(seen.begin(), seen.end(), [](const TransferEvent& event) {
+                    return event.state == TransferState::eFailed;
+                });
+            };
+            const std::size_t before = [&]() {
+                std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[alice.fingerprint()].size();
+            }();
+            const std::int64_t askedAtMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                                               .count();
+            bob.requestFile(alice.fingerprint(), "never-announced", toHex(sha256(Bytes{'u'})),
+                fileTargetAt(fs::temp_directory_path() / "bz-pass-unanswered.bin"));
+            bob.expireFileRequests(askedAtMs);
+            CHECK(failures() == 0);
+            bob.expireFileRequests(askedAtMs + kPastTheAnswerWindowMs);
+            CHECK(failures() == 1);
+            bob.expireFileRequests(askedAtMs + kPastTheAnswerWindowMs);
+            CHECK(failures() == 1);
+            CHECK(waitFor([&]() {
+                std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[alice.fingerprint()].size() >= before + 2;
+            }));
+            bob.setTransferHandler({});
+            alice.sync();
         }
 
         {

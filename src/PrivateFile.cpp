@@ -1,6 +1,16 @@
 // Bazarish project (c) 2026
 #include "bazarish/PrivateFile.hpp"
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+#include <cerrno>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
@@ -11,6 +21,51 @@ namespace bazarish {
 namespace fs = std::filesystem;
 
 namespace {
+
+[[noreturn]] void failedToSync(const fs::path& path, const int error)
+{
+    throw std::runtime_error("cannot flush " + path.string() + " to disk: " + std::strerror(error));
+}
+
+#ifndef _WIN32
+void flushOpened(const fs::path& path, const int flags)
+{
+    const int fd = ::open(path.c_str(), flags | O_CLOEXEC);
+    if (fd < 0) {
+        failedToSync(path, errno);
+    }
+    const int synced = ::fsync(fd);
+    const int syncError = errno;
+    const int closed = ::close(fd);
+    if (synced != 0) {
+        failedToSync(path, syncError);
+    }
+    if (closed != 0) {
+        failedToSync(path, errno);
+    }
+}
+#endif
+
+void syncFile(const fs::path& path)
+{
+#ifdef _WIN32
+    const int fd = ::_wopen(path.c_str(), _O_WRONLY | _O_BINARY);
+    if (fd < 0) {
+        failedToSync(path, errno);
+    }
+    const int synced = ::_commit(fd);
+    const int syncError = errno;
+    const int closed = ::_close(fd);
+    if (synced != 0) {
+        failedToSync(path, syncError);
+    }
+    if (closed != 0) {
+        failedToSync(path, errno);
+    }
+#else
+    flushOpened(path, O_RDONLY);
+#endif
+}
 
 fs::path writtenTemporary(const fs::path& path, const std::string_view bytes)
 {
@@ -26,6 +81,7 @@ fs::path writtenTemporary(const fs::path& path, const std::string_view bytes)
     if (!out) {
         throw std::runtime_error("failed to write " + temporary.string());
     }
+    syncFile(temporary);
     return temporary;
 }
 
@@ -37,9 +93,21 @@ void putInPlace(const fs::path& temporary, const fs::path& path)
         fs::remove(temporary, ec);
         throw std::runtime_error("cannot put " + path.string() + " in place: " + ec.message());
     }
+    const fs::path parent = path.parent_path();
+    syncDirectory(parent.empty() ? fs::path(".") : parent);
 }
 
 }  // namespace
+
+void syncDirectory(const fs::path& directory)
+{
+#ifdef _WIN32
+    // Windows has no directory fsync; NTFS journals the rename itself.
+    static_cast<void>(directory);
+#else
+    flushOpened(directory, O_RDONLY | O_DIRECTORY);
+#endif
+}
 
 std::string readFileText(const fs::path& path)
 {

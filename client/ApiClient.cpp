@@ -135,8 +135,8 @@ ApiClient::ApiClient(const Identity& identity, std::string clientId, ServerEndpo
     , endpoint_(std::move(endpoint))
     , i2pDataDir_(std::move(i2pDataDir))
 {
-    if (!endpoint_.facades.empty()) {
-        activeFacade_ = facadeOrder().front();
+    if (const std::vector<std::size_t> order = facadeOrder(); !order.empty()) {
+        activeFacade_ = order.front();
     }
 }
 
@@ -166,6 +166,10 @@ std::vector<std::size_t> ApiClient::facadeOrder() const
             || facadeIsOwnLoopback(endpoint_.facades[i])) {
             order.push_back(i);
         }
+    }
+    const auto lastAnswered = std::find(order.begin(), order.end(), activeFacade_);
+    if (lastAnswered != order.end()) {
+        std::rotate(order.begin(), lastAnswered, order.end());
     }
     return order;
 }

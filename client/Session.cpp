@@ -947,7 +947,7 @@ void Session::registerAccount()
     try {
         result = client_->publishCard(cardContent(), serving, currentCardIssuedAt());
     } catch (const ApiError& error) {
-        if (error.code != ErrorCode::eDeliveryRejected) {
+        if (error.code != ErrorCode::eAccountUnknown) {
             throw;
         }
         reportConnectProgress(60, "Registering with this server");
@@ -987,7 +987,7 @@ void Session::registerSelfHosted()
     try {
         result = client_->publishCard(cardContent(), {}, currentCardIssuedAt());
     } catch (const ApiError& error) {
-        if (error.code != ErrorCode::eDeliveryRejected) {
+        if (error.code != ErrorCode::eAccountUnknown) {
             throw;
         }
         client_->registerHere();
@@ -2738,18 +2738,48 @@ void Session::requestFile(const std::string& peerFingerprint, const std::string&
 {
 
     const std::string ask = toHex(randomBytes(kTransferAskBytes));
-    {
-        const std::lock_guard<std::mutex> lock(transfers_->mutex);
-        transfers_->pending[e2eId] = PendingTransfer{std::move(target), announcedSha256,
-            std::make_shared<std::atomic<bool>>(false), peerFingerprint, ask};
-    }
-    emitTransfer(e2eId, TransferState::eRequested, 0, 0, {}, TransferStage::eAsking,
-        peerFingerprint);
     nlohmann::json inner = envelope("file.request", toHex(randomBytes(8)), {
         {"fileId", e2eId},
         {"ask", ask},
     });
+    const std::int64_t answerByMs
+        = inner.at("sentAt").get<std::int64_t>() + kFileRequestFreshnessMs;
+    {
+        const std::lock_guard<std::mutex> lock(transfers_->mutex);
+        transfers_->pending[e2eId] = PendingTransfer{std::move(target), announcedSha256,
+            std::make_shared<std::atomic<bool>>(false), peerFingerprint, ask, answerByMs};
+    }
+    emitTransfer(e2eId, TransferState::eRequested, 0, 0, {}, TransferStage::eAsking,
+        peerFingerprint);
     sendContent(peerFingerprint, std::move(inner));
+}
+
+void Session::expireFileRequests(const std::int64_t nowMs)
+{
+    std::vector<std::pair<std::string, PendingTransfer>> lapsed;
+    {
+        const std::lock_guard<std::mutex> lock(transfers_->mutex);
+        for (auto it = transfers_->pending.begin(); it != transfers_->pending.end();) {
+            if (it->second.fetching || nowMs <= it->second.answerByMs) {
+                ++it;
+                continue;
+            }
+            lapsed.emplace_back(it->first, std::move(it->second));
+            it = transfers_->pending.erase(it);
+        }
+    }
+    for (const auto& [fileId, request] : lapsed) {
+        emitTransfer(fileId, TransferState::eFailed, 0, 0, "the sender did not answer",
+            TransferStage::eNone, request.peer);
+        try {
+            sendContent(request.peer,
+                envelope("file.cancel", toHex(randomBytes(8)),
+                    {{"fileId", fileId}, {"ask", request.ask}}));
+        } catch (const std::exception& error) {
+            bazarish::log::warn("could not withdraw the file request to {}: {}",
+                bazarish::log::redact(request.peer), error.what());
+        }
+    }
 }
 
 void Session::dropServe(
@@ -3681,6 +3711,7 @@ std::vector<IncomingMessage> Session::takeIn(
             } else {
                 message.contentType = "unsupported";
                 message.rawType = type;
+                message.rawBody = nlohmann::json::to_cbor(body);
             }
 
             if (body.contains("keyboard")) {

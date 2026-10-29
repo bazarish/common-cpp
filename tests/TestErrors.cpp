@@ -19,6 +19,9 @@ int main()
         ErrorCode::eClientUnregistered,
         ErrorCode::eSessionInvalid,
         ErrorCode::eAccountPendingApproval,
+        ErrorCode::eAccountUnknown,
+        ErrorCode::eUpstreamUnavailable,
+        ErrorCode::eRequestFailed,
     };
     for (const ErrorCode code : codes) {
         const std::optional<ErrorCode> back = errorCodeFromString(toString(code));
@@ -37,21 +40,13 @@ int main()
     }
     CHECK(readable(ErrorCode::eAliasUnknown).find("Nobody answers") == 0);
 
-    const nlohmann::json details = {{"limit", 10485760}, {"size", 12582912}};
     const nlohmann::json envelope
-        = makeErrorEnvelope(ErrorCode::eMessageTooLarge, "blob too large", details);
+        = makeErrorEnvelope(ErrorCode::eMessageTooLarge, "blob too large");
     const std::optional<ParsedError> parsed = parseErrorEnvelope(envelope);
     CHECK(parsed.has_value());
     CHECK(parsed->code == ErrorCode::eMessageTooLarge);
     CHECK(parsed->message == "blob too large");
-    CHECK(parsed->details == details);
-
-    const nlohmann::json bare
-        = makeErrorEnvelope(ErrorCode::eClientUnregistered, "register this device first");
-    CHECK(!bare.at("error").contains("details"));
-    const std::optional<ParsedError> bareParsed = parseErrorEnvelope(bare);
-    CHECK(bareParsed.has_value());
-    CHECK(bareParsed->code == ErrorCode::eClientUnregistered);
+    CHECK(envelope.at("error").size() == 2);
 
     CHECK(!parseErrorEnvelope(nlohmann::json{{"ok", true}}).has_value());
     CHECK(!parseErrorEnvelope(nlohmann::json::array()).has_value());

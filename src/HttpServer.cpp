@@ -384,7 +384,7 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                             bazarish::log::warn(
                                 "upgrade check for {} threw: {}", request.path, error.what());
                             refusal = Response{500, "application/json", {},
-                                R"({"error":{"code":"DELIVERY_REJECTED","message":"internal error"}})"};
+                                makeErrorEnvelope(ErrorCode::eRequestFailed, "internal error").dump()};
                         }
                     }
                     if (refusal.has_value()) {
@@ -464,7 +464,7 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                     } catch (const std::exception& error) {
                         bazarish::log::warn("handler for {} threw: {}", request.path, error.what());
                         immediate = Response{500, "application/json",
-                            {}, R"({"error":{"code":"DELIVERY_REJECTED","message":"internal error"}})"};
+                            {}, makeErrorEnvelope(ErrorCode::eRequestFailed, "internal error").dump()};
                     }
                     if (!immediate.has_value()) {
                         while (!answered->load()) {
@@ -630,7 +630,7 @@ std::optional<Response> operatorRefusal(const Request& request, const std::int64
     } catch (const std::exception& error) {
         log::debug("an operator call was refused: {}", error.what());
         return Response{403, "application/json", {},
-            makeErrorEnvelope(ErrorCode::eDeliveryRejected, error.what()).dump()};
+            makeErrorEnvelope(ErrorCode::eRequestFailed, error.what()).dump()};
     }
 }
 
@@ -654,7 +654,7 @@ void Server::dispatch(const Request& request, Responder respond)
     if (route == nullptr) {
         Response missing;
         missing.status = 404;
-        missing.body = R"({"error":{"message":"no such route"}})";
+        missing.body = makeErrorEnvelope(ErrorCode::eRequestFailed, "no such route").dump();
         respond(std::move(missing));
         return;
     }
@@ -666,7 +666,7 @@ void Server::dispatch(const Request& request, Responder respond)
     } catch (const std::exception& error) {
         log::warn("handler for {} threw: {}", request.path, error.what());
         answered = Response{500, "application/json", {},
-            R"({"error":{"code":"DELIVERY_REJECTED","message":"internal error"}})"};
+            makeErrorEnvelope(ErrorCode::eRequestFailed, "internal error").dump()};
     }
     if (answered.has_value()) {
         respond(std::move(*answered));
