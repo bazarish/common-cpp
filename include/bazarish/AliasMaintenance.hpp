@@ -22,6 +22,7 @@ inline constexpr const char* kAliasUpdateOp = "alias.update";
 inline constexpr const char* kAliasRenewOp = "alias.renew";
 inline constexpr const char* kAliasAutoRenewOp = "alias.autorenew";
 inline constexpr const char* kAliasBindingOp = "alias.binding";
+inline constexpr const char* kAliasWordOp = "alias.word";
 inline constexpr const char* kAliasTransferAcceptOp = "alias.transfer.accept";
 
 struct AliasMaintenanceRequest {
@@ -31,6 +32,7 @@ struct AliasMaintenanceRequest {
     bool flag = false;
     Bytes aliasCertDer;
     std::int64_t issuedAt = 0;
+    std::string word{};
 };
 
 struct AliasStatusEntry {
@@ -40,6 +42,7 @@ struct AliasStatusEntry {
     bool bindingWanted = false;
     bool bound = false;
     bool inApp = false;
+    std::string word{};
 };
 
 struct AliasStatus {

@@ -49,6 +49,15 @@ int main()
     CHECK(back.alias == update.alias);
     CHECK(back.issuedAt == update.issuedAt);
     CHECK(back.aliasCertDer == update.aliasCertDer);
+    CHECK(back.word.empty());
+    CHECK(!toJson(update).contains("word"));
+
+    AliasMaintenanceRequest wording;
+    wording.op = kAliasWordOp;
+    wording.alias = "alice";
+    wording.word = "secret";
+    wording.issuedAt = now;
+    CHECK(aliasMaintenanceRequestFromJson(toJson(wording)).word == "secret");
 
     const Bytes signed_ = signAliasMaintenanceRequest(update, alice);
     const VerifiedAliasRequest verified = verifyAliasMaintenanceRequest(signed_, now);
@@ -82,6 +91,13 @@ int main()
     status.owner = alice.fingerprint();
     status.names.push_back(AliasStatusEntry{"alice", now + week, true});
     status.names.push_back(AliasStatusEntry{"al", now + 2 * week, false});
+    status.names.back().word = "secret";
+    {
+        const AliasStatus wire = aliasStatusFromJson(toJson(status));
+        CHECK(wire.names.front().word.empty());
+        CHECK(wire.names.back().word == "secret");
+        CHECK(!toJson(status).at("names").front().contains("word"));
+    }
     status.issuedAt = now;
     status.notAfter = now + 3600;
 

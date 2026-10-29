@@ -90,10 +90,18 @@ CardFetchResponse cardFetchResponseFromJson(const nlohmann::json& body)
 
 nlohmann::json toJson(const ResolveQuery& query)
 {
-    return {
+    nlohmann::json body = {
         {"v", 1},
         {"alias", query.alias},
     };
+    if (!query.word.empty()) {
+        body["word"] = query.word;
+    }
+    if (!query.stamp.empty()) {
+        body["stamp"] = query.stamp;
+        body["nonce"] = query.nonce;
+    }
+    return body;
 }
 
 ResolveQuery resolveQueryFromJson(const nlohmann::json& body)
@@ -101,6 +109,9 @@ ResolveQuery resolveQueryFromJson(const nlohmann::json& body)
     requireVersion(body, "resolve query");
     ResolveQuery query;
     query.alias = body.at("alias").get<std::string>();
+    query.word = body.value("word", std::string());
+    query.stamp = body.value("stamp", std::string());
+    query.nonce = body.value("nonce", std::uint64_t{0});
     return query;
 }
 

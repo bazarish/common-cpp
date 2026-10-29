@@ -11,6 +11,7 @@
 #include <bazarish/Pass.hpp>
 #include <bazarish/Errors.hpp>
 #include <bazarish/Resolve.hpp>
+#include <bazarish/ResolvePuzzle.hpp>
 
 #include <bazarish/HttpServer.hpp>
 
@@ -30,6 +31,10 @@ using namespace bazarish;
 using namespace bazarish::client;
 
 namespace {
+
+constexpr std::uint32_t kBusyBits = 2;
+constexpr std::size_t kBusyStampBytes = 16;
+constexpr unsigned char kBusyStampFill = 0x5a;
 
 std::int64_t nowSeconds()
 {
@@ -136,6 +141,19 @@ int main()
         CHECK(op == "resolve");
         CHECK(toDest == resolverDest);
         const ResolveQuery query = resolveQueryFromJson(nlohmann::json::parse(sealed));
+        if (query.alias == "guarded" && query.word != "secret") {
+            outcome.errorCode = "ALIAS_UNKNOWN";
+            return outcome;
+        }
+        if (query.alias == "busy" && (query.stamp.empty()
+                || !puzzleSolved(fromHex(query.stamp), query.nonce, kBusyBits))) {
+            const Bytes stamp(kBusyStampBytes, kBusyStampFill);
+            const std::string challenge
+                = nlohmann::json{{"stamp", toHex(stamp)}, {"bits", kBusyBits}}.dump();
+            outcome.errorCode = kProofRequiredCode;
+            outcome.refusal = Bytes(challenge.begin(), challenge.end());
+            return outcome;
+        }
         if (query.alias == "ghost") {
             outcome.errorCode = "ALIAS_UNKNOWN";
             return outcome;
@@ -269,20 +287,35 @@ int main()
         return false;
     };
     {
-        const Descriptor descriptor = client.resolveAlias("bob", resolver, now, directDial);
+        const Descriptor descriptor = client.resolveAlias({"bob"}, resolver, now, directDial);
         CHECK(descriptor.fingerprint == bob.fingerprint());
         CHECK(descriptor.dest == bobDest);
 
-        CHECK(unknown([&]() { (void)client.resolveAlias("ghost", resolver, now, directDial); }));
-        CHECK(rejects([&]() { (void)client.resolveAlias("down", resolver, now, directDial); }));
-        CHECK(!unknown([&]() { (void)client.resolveAlias("down", resolver, now, directDial); }));
+        CHECK(unknown(
+            [&]() { (void)client.resolveAlias({"guarded"}, resolver, now, directDial); }));
+        CHECK(unknown(
+            [&]() { (void)client.resolveAlias({"guarded", "wrong"}, resolver, now, directDial); }));
+        CHECK(client.resolveAlias(parseAliasQuery("!Guarded-Secret"), resolver, now, directDial)
+                  .fingerprint
+            == bob.fingerprint());
+
+        bool solved = false;
+        CHECK(client
+                  .resolveAlias({"busy"}, resolver, now, directDial, [&solved]() { solved = true; })
+                  .fingerprint
+            == bob.fingerprint());
+        CHECK(solved);
+
+        CHECK(unknown([&]() { (void)client.resolveAlias({"ghost"}, resolver, now, directDial); }));
+        CHECK(rejects([&]() { (void)client.resolveAlias({"down"}, resolver, now, directDial); }));
+        CHECK(!unknown([&]() { (void)client.resolveAlias({"down"}, resolver, now, directDial); }));
 
         const ResolverCoordinate wrongRoot{Identity::generate().fingerprint(), resolverDest};
-        CHECK(rejects([&]() { (void)client.resolveAlias("bob", wrongRoot, now, directDial); }));
-        CHECK(!unknown([&]() { (void)client.resolveAlias("bob", wrongRoot, now, directDial); }));
+        CHECK(rejects([&]() { (void)client.resolveAlias({"bob"}, wrongRoot, now, directDial); }));
+        CHECK(!unknown([&]() { (void)client.resolveAlias({"bob"}, wrongRoot, now, directDial); }));
 
-        CHECK(rejects([&]() { (void)client.resolveAlias("swap", resolver, now, directDial); }));
-        CHECK(!unknown([&]() { (void)client.resolveAlias("swap", resolver, now, directDial); }));
+        CHECK(rejects([&]() { (void)client.resolveAlias({"swap"}, resolver, now, directDial); }));
+        CHECK(!unknown([&]() { (void)client.resolveAlias({"swap"}, resolver, now, directDial); }));
     }
 
     {

@@ -4,6 +4,7 @@
 #include "ApiClient.hpp"
 #include "ResolverConfig.hpp"
 
+#include <bazarish/Address.hpp>
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Crypto.hpp>
@@ -81,6 +82,8 @@ struct FetchOutcome {
     bool ok = false;
     Bytes sealed;
     std::string errorCode;
+    // What a refusal said beyond its code; a resolver's puzzle rides here.
+    Bytes refusal;
 };
 
 using FetchTransport
@@ -126,8 +129,10 @@ public:
     I2pDestStatus i2pStatus();
     StorageUsage storageUsage();
     ContactInfo fetchCard(const Descriptor& descriptor, const FetchTransport& transport);
-    static Descriptor resolveAlias(const std::string& alias, const ResolverCoordinate& resolver,
-        std::int64_t now, const FetchTransport& transport);
+    // solving is told when the resolver asks for work first, before the work starts.
+    static Descriptor resolveAlias(const AliasQuery& alias, const ResolverCoordinate& resolver,
+        std::int64_t now, const FetchTransport& transport,
+        const std::function<void()>& solving = {});
     DestinationInfo myDestination();
 
     void registerThisClient();

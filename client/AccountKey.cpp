@@ -1,9 +1,9 @@
 // Bazarish project (c) 2026
 #include "AccountKey.hpp"
 
+#include <bazarish/Argon2.hpp>
+
 #include <openssl/evp.h>
-#include <openssl/kdf.h>
-#include <openssl/params.h>
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 
@@ -85,37 +85,10 @@ void fill(unsigned char* const out, const std::size_t size)
 
 Bytes wrappingKey(const std::string& passphrase, const Sidecar& sidecar)
 {
-    EVP_KDF* const kdf = EVP_KDF_fetch(nullptr, "ARGON2ID", nullptr);
-    if (kdf == nullptr) {
-        throw std::runtime_error("account key: this OpenSSL has no Argon2id");
-    }
-    EVP_KDF_CTX* const ctx = EVP_KDF_CTX_new(kdf);
-    EVP_KDF_free(kdf);
-    if (ctx == nullptr) {
-        throw std::runtime_error("account key: could not start the derivation");
-    }
     const std::string secret = secretOf(passphrase);
-    std::uint32_t memory = sidecar.memoryKiB;
-    std::uint32_t passes = sidecar.passes;
-    std::uint32_t lanes = kLanes;
-    const OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_octet_string(
-            "pass", const_cast<char*>(secret.data()), secret.size()),
-        OSSL_PARAM_construct_octet_string(
-            "salt", const_cast<unsigned char*>(sidecar.salt.data()), sidecar.salt.size()),
-        OSSL_PARAM_construct_uint("memcost", &memory),
-        OSSL_PARAM_construct_uint("iter", &passes),
-        OSSL_PARAM_construct_uint("lanes", &lanes),
-        OSSL_PARAM_construct_uint("threads", &lanes),
-        OSSL_PARAM_construct_end(),
-    };
-    Bytes derived(kKeyBytes);
-    const int ok = EVP_KDF_derive(ctx, derived.data(), derived.size(), params);
-    EVP_KDF_CTX_free(ctx);
-    if (ok <= 0) {
-        throw std::runtime_error("account key: the derivation failed");
-    }
-    return derived;
+    return argon2id(Bytes(secret.begin(), secret.end()),
+        Bytes(sidecar.salt.begin(), sidecar.salt.end()), {sidecar.memoryKiB, sidecar.passes, kLanes},
+        kKeyBytes);
 }
 
 void seal(const Bytes& wrapping, Sidecar& sidecar, const Bytes& key)

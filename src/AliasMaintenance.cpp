@@ -31,7 +31,7 @@ namespace bazarish {
 
 nlohmann::json toJson(const AliasMaintenanceRequest& request)
 {
-    return {
+    nlohmann::json body = {
         {"v", kAliasMaintenanceVersion},
         {"t", kAliasRequestType},
         {"op", request.op},
@@ -41,6 +41,10 @@ nlohmann::json toJson(const AliasMaintenanceRequest& request)
         {"aliasCert", toBase64(request.aliasCertDer)},
         {"issuedAt", request.issuedAt},
     };
+    if (!request.word.empty()) {
+        body["word"] = request.word;
+    }
+    return body;
 }
 
 AliasMaintenanceRequest aliasMaintenanceRequestFromJson(const nlohmann::json& body)
@@ -53,6 +57,7 @@ AliasMaintenanceRequest aliasMaintenanceRequestFromJson(const nlohmann::json& bo
     request.flag = body.value("flag", false);
     request.aliasCertDer = fromBase64(body.value("aliasCert", std::string()));
     request.issuedAt = body.at("issuedAt").get<std::int64_t>();
+    request.word = body.value("word", std::string());
     return request;
 }
 
@@ -60,9 +65,13 @@ nlohmann::json toJson(const AliasStatus& status)
 {
     nlohmann::json names = nlohmann::json::array();
     for (const AliasStatusEntry& entry : status.names) {
-        names.push_back({{"alias", entry.alias}, {"notAfter", entry.notAfter},
+        nlohmann::json name = {{"alias", entry.alias}, {"notAfter", entry.notAfter},
             {"autoRenew", entry.autoRenew}, {"bindingWanted", entry.bindingWanted},
-            {"bound", entry.bound}, {"inApp", entry.inApp}});
+            {"bound", entry.bound}, {"inApp", entry.inApp}};
+        if (!entry.word.empty()) {
+            name["word"] = entry.word;
+        }
+        names.push_back(std::move(name));
     }
     return {
         {"v", kAliasMaintenanceVersion},
@@ -88,6 +97,7 @@ AliasStatus aliasStatusFromJson(const nlohmann::json& body)
         one.bindingWanted = entry.value("bindingWanted", false);
         one.bound = entry.value("bound", false);
         one.inApp = entry.value("inApp", false);
+        one.word = entry.value("word", std::string());
         status.names.push_back(std::move(one));
     }
     status.depositCoversRenewals = body.value("depositCoversRenewals", true);

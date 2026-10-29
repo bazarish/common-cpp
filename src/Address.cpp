@@ -75,6 +75,43 @@ std::string normalizeAlias(const std::string& typed)
     return normalized;
 }
 
+std::string normalizeAliasWord(const std::string& typed)
+{
+    if (typed.size() > kAliasWordMaxLength) {
+        throw std::runtime_error(
+            "an alias word is at most " + std::to_string(kAliasWordMaxLength) + " characters");
+    }
+    std::string normalized;
+    normalized.reserve(typed.size());
+    for (const char c : typed) {
+        const char lower = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+        if (!isAliasChar(lower)) {
+            throw std::runtime_error("an alias word may contain only a-z and 0-9");
+        }
+        normalized.push_back(lower);
+    }
+    return normalized;
+}
+
+AliasQuery parseAliasQuery(const std::string& typed)
+{
+    const std::size_t sigil = (!typed.empty() && typed.front() == kAliasSigil) ? 1 : 0;
+    const std::size_t separator = typed.find(kAliasWordSeparator, sigil);
+    if (separator == std::string::npos) {
+        return {normalizeAlias(typed.substr(sigil)), {}};
+    }
+    const std::string word = normalizeAliasWord(typed.substr(separator + 1));
+    if (word.empty()) {
+        throw std::runtime_error("nothing follows the dash of an alias word");
+    }
+    return {normalizeAlias(typed.substr(sigil, separator - sigil)), word};
+}
+
+std::string aliasQueryText(const AliasQuery& query)
+{
+    return query.word.empty() ? query.name : query.name + kAliasWordSeparator + query.word;
+}
+
 std::optional<Address> parseAddress(const std::string& text)
 {
     const std::size_t at = text.find('@');

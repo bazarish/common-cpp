@@ -70,7 +70,7 @@ int main(const int argc, const char** argv)
 
     try {
         const Descriptor descriptor
-            = Client::resolveAlias(alias, resolver, nowSeconds(), transport);
+            = Client::resolveAlias(parseAliasQuery(alias), resolver, nowSeconds(), transport);
         std::printf("[alias] RESOLVE ok: %s -> %s at %s\n", alias.c_str(),
             descriptor.fingerprint.c_str(), descriptor.dest.c_str());
     } catch (const std::exception& error) {

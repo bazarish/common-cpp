@@ -3,10 +3,12 @@
 
 #include "I2pRouter.hpp"
 
+#include <bazarish/Address.hpp>
 #include <bazarish/FederationFrame.hpp>
 #include <bazarish/I2pHttp.hpp>
 #include <bazarish/Limits.hpp>
 #include <bazarish/Log.hpp>
+#include <bazarish/Resolve.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -77,9 +79,12 @@ FetchOutcome askResolver(bazarish::i2p::Stream& stream, const std::string& host,
     std::string path = "/v1/op/" + op;
     std::string payload(body.begin(), body.end());
     if (op == kResolveOp) {
-        const nlohmann::json query = nlohmann::json::parse(payload);
+        const ResolveQuery query = resolveQueryFromJson(nlohmann::json::parse(payload));
         method = "GET";
-        path = "/v1/alias/" + query.at("alias").get<std::string>();
+        path = "/v1/alias/" + aliasQueryText({query.alias, query.word});
+        if (!query.stamp.empty()) {
+            path += "?stamp=" + query.stamp + "&nonce=" + std::to_string(query.nonce);
+        }
         payload.clear();
     }
     const std::map<std::string, std::string> headers
@@ -99,6 +104,7 @@ FetchOutcome askResolver(bazarish::i2p::Stream& stream, const std::string& host,
         outcome.sealed.assign(answer.body.begin(), answer.body.end());
         return outcome;
     }
+    outcome.refusal.assign(answer.body.begin(), answer.body.end());
     try {
         outcome.errorCode
             = nlohmann::json::parse(answer.body).value("errorCode", std::string());

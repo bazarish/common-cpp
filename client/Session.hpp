@@ -468,7 +468,7 @@ public:
     static std::unique_ptr<Client> makeEventClient(const ContactFetchContext& context);
     static std::vector<PendingEntry> waitForMail(Client& waiter, int waitSeconds);
 
-    enum class CardStep { eLookingUpAlias, eFetchingCard };
+    enum class CardStep { eLookingUpAlias, eSolvingPuzzle, eFetchingCard };
     static ContactCardResolved resolveContactCard(const ContactFetchContext& context,
         const ContactCardRequest& request, const std::function<void(CardStep)>& onStep);
     std::string commitContactAdd(const ContactCardResolved& resolved, const DeliveryWatch& watch);
@@ -532,11 +532,14 @@ public:
         bool bindingWanted = false;
         bool bound = false;
         bool inApp = false;
+        std::string word;
     };
 
     std::vector<AliasHolding> aliasNames() const { return aliasNames_; }
 
     void setAliasBinding(const std::string& alias, bool on);
+    // An empty word takes it off; a set one becomes part of the name's every lookup.
+    void setAliasWord(const std::string& alias, const std::string& word);
 
     bool refreshAliasStatus(const FetchTransport& over = {});
 

@@ -37,6 +37,19 @@ int main()
     CHECK_THROWS(normalizeAlias("alice.bob"));
     CHECK_THROWS(normalizeAlias("ali!ce"));
 
+    CHECK((parseAliasQuery("!Alice") == AliasQuery{"alice", ""}));
+    CHECK((parseAliasQuery("alice-Secret42") == AliasQuery{"alice", "secret42"}));
+    CHECK((parseAliasQuery("!a-b") == AliasQuery{"a", "b"}));
+    CHECK(aliasQueryText({"alice", "secret42"}) == "alice-secret42");
+    CHECK(aliasQueryText({"alice", ""}) == "alice");
+    CHECK_THROWS(parseAliasQuery("alice-"));
+    CHECK_THROWS(parseAliasQuery("-secret"));
+    CHECK_THROWS(parseAliasQuery("alice-se-cret"));
+    CHECK_THROWS(parseAliasQuery("alice-sec.ret"));
+    CHECK_THROWS(parseAliasQuery("alice-" + std::string(kAliasWordMaxLength + 1, 'w')));
+    CHECK(normalizeAliasWord("").empty());
+    CHECK(normalizeAliasWord("WoRd") == "word");
+
     const std::optional<Address> full = parseAddress(fingerprint + "@" + serverFingerprint);
     CHECK(full.has_value());
     CHECK(full->kind == Address::Kind::eFingerprint);

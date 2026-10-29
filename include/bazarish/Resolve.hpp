@@ -27,6 +27,10 @@ CardFetchResponse cardFetchResponseFromJson(const nlohmann::json& body);
 
 struct ResolveQuery {
     std::string alias;
+    std::string word{};
+    // A solved puzzle when the resolver asked for one: its stamp in hex and the nonce.
+    std::string stamp{};
+    std::uint64_t nonce = 0;
 };
 
 struct ResolveResponse {

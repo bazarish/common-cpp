@@ -44,6 +44,7 @@ add_library(bazarish_common STATIC
     src/Errors.cpp
     src/FederationFrame.cpp
     src/Address.cpp
+    src/Argon2.cpp
     src/I2pAddress.cpp
     src/Sam.cpp
     src/I2p.cpp
@@ -53,6 +54,7 @@ add_library(bazarish_common STATIC
     src/ServerDescriptor.cpp
     src/PairLink.cpp
     src/Resolve.cpp
+    src/ResolvePuzzle.cpp
     src/AliasMaintenance.cpp
     src/I2pHttp.cpp
     src/Reactions.cpp
@@ -129,6 +131,7 @@ bazarish_add_test(TestPass)
 bazarish_add_test(TestPadding)
 bazarish_add_test(TestErrors)
 bazarish_add_test(TestAddress)
+bazarish_add_test(TestResolvePuzzle)
 bazarish_add_test(TestI2pAddress)
 bazarish_add_test(TestI2pDelegation)
 bazarish_add_test(TestI2pKeyBlob)

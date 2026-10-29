@@ -7,12 +7,14 @@
 #include <bazarish/Hmac.hpp>
 #include <bazarish/I2pAddress.hpp>
 #include <bazarish/Limits.hpp>
+#include <bazarish/ResolvePuzzle.hpp>
 #include <bazarish/Resolve.hpp>
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <ctime>
+#include <thread>
 
 namespace bazarish::client {
 
@@ -26,6 +28,13 @@ std::int64_t nowSeconds()
 }  // namespace
 
 namespace {
+
+constexpr unsigned kMaxPuzzleThreads = 4;
+
+unsigned puzzleThreads()
+{
+    return std::clamp(std::thread::hardware_concurrency(), 1u, kMaxPuzzleThreads);
+}
 
 std::vector<PendingEntry> pendingEntries(const nlohmann::json& listed)
 {
@@ -215,17 +224,32 @@ ContactInfo Client::fetchCard(const Descriptor& descriptor, const FetchTransport
     return info;
 }
 
-Descriptor Client::resolveAlias(const std::string& alias, const ResolverCoordinate& resolver,
-    const std::int64_t now, const FetchTransport& transport)
+Descriptor Client::resolveAlias(const AliasQuery& alias, const ResolverCoordinate& resolver,
+    const std::int64_t now, const FetchTransport& transport, const std::function<void()>& solving)
 {
-    const std::string queryJson = toJson(ResolveQuery{alias}).dump();
-    const FetchOutcome outcome
-        = transport(resolver.dest, "resolve", Bytes(queryJson.begin(), queryJson.end()));
+    ResolveQuery query{alias.name, alias.word, {}, 0};
+    const auto ask = [&resolver, &transport](const ResolveQuery& asked) {
+        const std::string queryJson = toJson(asked).dump();
+        return transport(resolver.dest, "resolve", Bytes(queryJson.begin(), queryJson.end()));
+    };
+    FetchOutcome outcome = ask(query);
+    if (!outcome.ok && outcome.errorCode == kProofRequiredCode) {
+        const nlohmann::json challenge = nlohmann::json::parse(outcome.refusal);
+        const std::uint32_t bits = challenge.at("bits").get<std::uint32_t>();
+        query.stamp = challenge.at("stamp").get<std::string>();
+        log::info(
+            "the alias registry asks for {} bits of work before naming {}", bits, alias.name);
+        if (solving) {
+            solving();
+        }
+        query.nonce = solvePuzzle(fromHex(query.stamp), bits, puzzleThreads());
+        outcome = ask(query);
+    }
     if (!outcome.ok) {
         const std::string code
             = outcome.errorCode.empty() ? std::string(toString(ErrorCode::eAliasUnknown))
                                         : outcome.errorCode;
-        log::info("alias {} did not resolve: {}", alias, code);
+        log::info("alias {} did not resolve: {}", alias.name, code);
         const std::optional<ErrorCode> known = errorCodeFromString(code);
         if (known == ErrorCode::eAliasUnknown) {
             throw AliasUnknown(std::string(readable(*known)));
@@ -238,7 +262,7 @@ Descriptor Client::resolveAlias(const std::string& alias, const ResolverCoordina
 
     const ResolveRecord record = verifyResolveRecord(fetched.recordDer, fetched.delegationDer,
         fetched.aliasCertDer, resolver.rootFingerprint, now);
-    if (record.alias != alias) {
+    if (record.alias != alias.name) {
         throw std::runtime_error("resolver returned a record for a different alias");
     }
     return record.descriptor;

@@ -600,7 +600,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
             Session::AliasHolding{held.at("alias").get<std::string>(),
                 held.at("notAfter").get<std::int64_t>(), held.at("autoRenew").get<bool>(),
                 held.at("bindingWanted").get<bool>(), held.at("bound").get<bool>(),
-                held.at("inApp").get<bool>()});
+                held.at("inApp").get<bool>(), held.value("word", std::string())});
     }
     session.aliasCheckAfter_ = meta.value("aliasCheckAfter", std::int64_t{0});
     session.aliasStatusAt_ = meta.value("aliasStatusAt", std::int64_t{0});
@@ -893,9 +893,13 @@ nlohmann::json Session::aliasNamesToJson() const
 {
     nlohmann::json held = nlohmann::json::array();
     for (const AliasHolding& holding : aliasNames_) {
-        held.push_back({{"alias", holding.alias}, {"notAfter", holding.notAfter},
+        nlohmann::json name = {{"alias", holding.alias}, {"notAfter", holding.notAfter},
             {"autoRenew", holding.autoRenew}, {"bindingWanted", holding.bindingWanted},
-            {"bound", holding.bound}, {"inApp", holding.inApp}});
+            {"bound", holding.bound}, {"inApp", holding.inApp}};
+        if (!holding.word.empty()) {
+            name["word"] = holding.word;
+        }
+        held.push_back(std::move(name));
     }
     return held;
 }
@@ -2057,14 +2061,14 @@ Session::ContactCardResolved Session::resolveContactCard(const ContactFetchConte
         };
 
         if (request.byAlias) {
-            const std::string alias = normalizeAlias(request.uriOrAlias);
+            const AliasQuery alias = parseAliasQuery(request.uriOrAlias);
             onStep(CardStep::eLookingUpAlias);
-            const Descriptor descriptor
-                = fetchClient.resolveAlias(alias, context.resolver, nowSeconds(), toRegistry);
+            const Descriptor descriptor = fetchClient.resolveAlias(alias, context.resolver,
+                nowSeconds(), toRegistry, [&onStep]() { onStep(CardStep::eSolvingPuzzle); });
             onStep(CardStep::eFetchingCard);
             out.info = fetchClient.fetchCard(descriptor, transport);
             out.fingerprint = descriptor.fingerprint;
-            out.displayName = safeContactName(alias);
+            out.displayName = safeContactName(alias.name);
         } else {
             const Descriptor descriptor = parseDescriptor(request.uriOrAlias);
             onStep(CardStep::eFetchingCard);
@@ -2195,12 +2199,12 @@ std::string Session::addByAlias(const std::string& alias, const std::string& tex
     if (!resolverCoordinate_.configured()) {
         throw std::runtime_error("no alias resolver is configured in this build");
     }
-    const std::string normalized = normalizeAlias(alias);
+    const AliasQuery query = parseAliasQuery(alias);
     const Descriptor descriptor
-        = client_->resolveAlias(normalized, resolverCoordinate_, nowSeconds(), heldTransport());
+        = client_->resolveAlias(query, resolverCoordinate_, nowSeconds(), heldTransport());
     const ContactInfo info = client_->fetchCard(descriptor, fetchTransport());
     requestWithInfo(
-        toHex(randomBytes(kRequestIdBytes)), descriptor.fingerprint, text, info, alias);
+        toHex(randomBytes(kRequestIdBytes)), descriptor.fingerprint, text, info, query.name);
     return descriptor.fingerprint;
 }
 
@@ -4663,7 +4667,7 @@ void Session::adoptAliasStatus(const AliasStatus& status)
     aliasNames_.clear();
     for (const AliasStatusEntry& entry : status.names) {
         aliasNames_.push_back(AliasHolding{entry.alias, entry.notAfter, entry.autoRenew,
-            entry.bindingWanted, entry.bound, entry.inApp});
+            entry.bindingWanted, entry.bound, entry.inApp, entry.word});
     }
     aliasDepositCovers_ = status.depositCoversRenewals;
     aliasStatusAt_ = status.issuedAt;
@@ -4779,7 +4783,7 @@ bool Session::refreshAliasStatus(const FetchTransport& over)
         return false;
     }
     const AliasStatusAnswer answer = askAliasStatus(aliasErrandContext(), client_->identity(),
-        over ? over : fetchTransport(), nowSeconds());
+        over ? over : heldTransport(), nowSeconds());
     adoptAliasStatus(answer.status);
     try {
         relayAliasStatus(answer.recordDer, answer.delegationDer);
@@ -4821,6 +4825,32 @@ void Session::setAliasBinding(const std::string& alias, const bool on)
     }
 }
 
+void Session::setAliasWord(const std::string& alias, const std::string& word)
+{
+    if (!resolverCoordinate_.configured()) {
+        throw std::runtime_error("This build has no alias registry configured.");
+    }
+    const auto held = std::find_if(aliasNames_.begin(), aliasNames_.end(),
+        [&alias](const AliasHolding& holding) { return holding.alias == alias; });
+    if (held == aliasNames_.end()) {
+        throw std::runtime_error("this account does not hold that name");
+    }
+    AliasMaintenanceRequest asking;
+    asking.op = kAliasWordOp;
+    asking.alias = alias;
+    asking.word = normalizeAliasWord(word);
+    asking.issuedAt = nowSeconds();
+    const Bytes request = signAliasMaintenanceRequest(asking, client_->identity());
+    const FetchOutcome outcome = heldTransport()(resolverCoordinate_.dest, kAliasWordOp, request);
+    if (!outcome.ok) {
+        const std::optional<ErrorCode> known = errorCodeFromString(outcome.errorCode);
+        throw std::runtime_error(known ? std::string(readable(*known))
+                                       : "The alias registry did not answer.");
+    }
+    held->word = asking.word;
+    persistMeta();
+}
+
 bool Session::aliasUpdatePending() const
 {
     if (myDest_.empty()) {
@@ -4849,7 +4879,7 @@ bool Session::pushAliasDescriptor(const FetchTransport& over)
         return false;
     }
     if (!tellAliasesWhereWeAre(aliasErrandContext(), client_->identity(),
-            over ? over : fetchTransport(), aliasNames_, nowSeconds())) {
+            over ? over : heldTransport(), aliasNames_, nowSeconds())) {
         return false;
     }
     aliasPushedDest_ = myDest_;
@@ -4892,7 +4922,7 @@ Session::AliasErrandResult Session::runAliasErrand(const AliasErrandContext& con
         std::vector<AliasHolding> names;
         for (const AliasStatusEntry& entry : out.answer.status.names) {
             names.push_back(AliasHolding{entry.alias, entry.notAfter, entry.autoRenew,
-                entry.bindingWanted, entry.bound, entry.inApp});
+                entry.bindingWanted, entry.bound, entry.inApp, entry.word});
         }
         const bool canPublish = !context.dest.empty();
         const bool moved = context.pushedDest != context.dest;
