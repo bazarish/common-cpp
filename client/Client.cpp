@@ -148,19 +148,16 @@ void Client::registerHere()
 }
 
 DestinationInfo Client::sendI2pTransient(
-    const std::string& transientB64, const std::int64_t expiresUnix)
+    const std::string& transientB64, const std::int64_t expiresUnix, const AddressKeys& keys)
 {
-    const nlohmann::json body
-        = api_
-              .postJson("/v1/account/i2p-dest",
-                  {{"transient", transientB64}, {"expiresUnix", expiresUnix}})
-              .json();
+    nlohmann::json request = {{"transient", transientB64}, {"expiresUnix", expiresUnix}};
+    if (!transientB64.empty()) {
+        request["sealingKey"] = keys.sealingPem;
+        request["signingKey"] = keys.signingPem;
+    }
+    const nlohmann::json body = api_.postJson("/v1/account/i2p-dest", request).json();
     DestinationInfo info;
     info.dest = body.value("dest", std::string());
-    if (const std::string servingKey = body.value("servingKey", std::string());
-        !servingKey.empty()) {
-        info.servingSealingKeyDer = fromBase64(servingKey);
-    }
     return info;
 }
 
@@ -245,10 +242,6 @@ DestinationInfo Client::myDestination()
     info.state = body.value("state", std::string());
     if (!info.dest.empty()) {
         validateB32I2pHost(info.dest);
-    }
-    const std::string servingKey = body.value("servingKey", std::string());
-    if (!servingKey.empty()) {
-        info.servingSealingKeyDer = fromBase64(servingKey);
     }
     return info;
 }

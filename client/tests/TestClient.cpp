@@ -78,7 +78,7 @@ int main()
 
     const Identity serverIdentity = Identity::generate();
     const std::string serverFp = serverIdentity.fingerprint();
-    const Key serverSealing = Key::generateSealing();
+    const Key servingSealing = Key::generateSealing();
     const std::string aliceDest = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
     const std::string bobDest = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
 
@@ -103,15 +103,14 @@ int main()
             CHECK(card.fingerprint() == user);
             CHECK(!card.sealingPublicKeyDer.empty());
             CHECK(card.dest == aliceDest);
-            CHECK(card.servingSealingKeyDer == serverSealing.publicDer());
+            CHECK(card.servingSealingKeyDer == servingSealing.publicDer());
             respondJson(response, {{"quotaBytes", 10 * 1024 * 1024}});
         }));
 
     server.get("/v1/messaging/destination",
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
-            respondJson(response,
-                {{"dest", aliceDest}, {"servingKey", toBase64(serverSealing.publicDer())}});
+            respondJson(response, {{"dest", aliceDest}});
         }));
 
     const FetchTransport directDial = [&](const std::string& toDest, const std::string& op,
@@ -127,7 +126,7 @@ int main()
             card.issuedAt = static_cast<std::int64_t>(std::time(nullptr));
             card.dest = bobDest;
             card.sealingPublicKeyDer = bobSealing.publicDer();
-            card.servingSealingKeyDer = serverSealing.publicDer();
+            card.servingSealingKeyDer = servingSealing.publicDer();
             card.presenceKeyDer = Key::generateX25519().publicDer();
             card.presenceDest = bobDest;
             outcome.sealed = card.issue(bob);
@@ -216,8 +215,10 @@ int main()
 
     {
         const Key aliceSealing = Key::generateSealing();
-        const DestinationInfo serving = client.myDestination();
+        DestinationInfo serving = client.myDestination();
         CHECK(serving.dest == aliceDest);
+        CHECK(serving.servingSealingKeyDer.empty());
+        serving.servingSealingKeyDer = servingSealing.publicDer();
         ContactCard content;
         content.sealingPublicKeyDer = aliceSealing.publicDer();
         content.presenceKeyDer = Key::generateX25519().publicDer();
@@ -225,7 +226,7 @@ int main()
         const PublishResult result = client.publishCard(content, serving);
         CHECK(result.quotaBytes == 10u * 1024 * 1024);
         CHECK(result.dest == aliceDest);
-        CHECK(result.servingSealingKeyDer == serverSealing.publicDer());
+        CHECK(result.servingSealingKeyDer == servingSealing.publicDer());
         CHECK(!result.cardDer.empty());
     }
 
@@ -234,7 +235,7 @@ int main()
         const ContactInfo info = client.fetchCard(descriptor, directDial);
         CHECK(info.card.fingerprint() == bob.fingerprint());
         CHECK(info.card.dest == bobDest);
-        CHECK(info.card.servingSealingKey().publicDer() == serverSealing.publicDer());
+        CHECK(info.card.servingSealingKey().publicDer() == servingSealing.publicDer());
         CHECK(!info.card.sealingPublicKeyDer.empty());
     }
 
@@ -295,11 +296,11 @@ int main()
     }
 
     {
-        const Key recipientSealing = Key::fromPublicDer(serverSealing.publicDer());
+        const Key recipientSealing = Key::fromPublicDer(servingSealing.publicDer());
         const Bytes pass = Bytes(kDeliveryPassSize, 0x33);
         const Bytes sealed
             = sealDeliveryEnvelope("content", bob.fingerprint(), "msg-1", pass, recipientSealing);
-        const Bytes plain = hybrid::unseal(sealed, serverSealing);
+        const Bytes plain = hybrid::unseal(sealed, servingSealing);
         const nlohmann::json inner = nlohmann::json::parse(plain.begin(), plain.end());
         CHECK(inner.at("class") == "content");
         CHECK(inner.at("mailbox") == bob.fingerprint());

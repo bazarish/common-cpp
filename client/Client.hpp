@@ -26,6 +26,12 @@ struct DestinationInfo {
     std::string state;
 };
 
+// The keys an account issues with its address and hands to whichever server operates it.
+struct AddressKeys {
+    std::string sealingPem;
+    std::string signingPem;
+};
+
 struct I2pDestStatus {
     std::string approval;
     std::string registrationMessage;
@@ -105,7 +111,9 @@ public:
     void closeAccount();
     PortalInfo fetchPortalInfo();
     void registerHere();
-    DestinationInfo sendI2pTransient(const std::string& transientB64, std::int64_t expiresUnix);
+    // An empty transient takes the address offline; one that is not comes with the address's keys.
+    DestinationInfo sendI2pTransient(
+        const std::string& transientB64, std::int64_t expiresUnix, const AddressKeys& keys);
     I2pDestStatus i2pStatus();
     StorageUsage storageUsage();
     ContactInfo fetchCard(const Descriptor& descriptor, const FetchTransport& transport);

@@ -110,6 +110,8 @@ constexpr int kBundleFormatVersion = 2;
 
 constexpr char kPresenceKeyRow[] = "presence.pem";
 constexpr char kPresenceDestRow[] = "presence-dest";
+constexpr char kAddressSealingRow[] = "address-sealing.pem";
+constexpr char kAddressSigningRow[] = "address-signing.pem";
 
 void applyPresence(Contact& contact, const AccountKind kind, const std::string& presenceKeyB64,
     const std::string& presenceDest)
@@ -642,6 +644,11 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     if (!session.i2pMaster_.empty()) {
         session.i2pAddress_ = i2pRoutingHost(session.i2pMaster_);
     }
+    if (const std::string sealingPem = session.db_->text(kAddressSealingRow);
+        !sealingPem.empty()) {
+        session.addressSealing_ = Key::fromPrivatePem(sealingPem);
+        session.addressSigning_ = Key::fromPrivatePem(session.db_->text(kAddressSigningRow));
+    }
     session.i2pTransient_ = loadBlob("i2p-transient");
 
     session.avatarMime_ = meta.value("avatarMime", std::string{});
@@ -942,8 +949,9 @@ void Session::registerAccount()
         result = client_->publishCard(cardContent(), serving, currentCardIssuedAt());
     }
     reportConnectProgress(70, "Registered; registering this device");
-    storeCard(result);
+    const bool movedOnCard = storeCard(result);
     client_->registerThisClient();
+    registerEveryPass();
 
     reportConnectProgress(83, "Checking the address your server serves");
     if (!reconcileI2pAddress()) {
@@ -951,14 +959,19 @@ void Session::registerAccount()
         return;
     }
     reportConnectProgress(85, "Publishing your own destination");
+    bool movedOnRouting = false;
     try {
-        publishRouting();
+        movedOnRouting = delegateRouting();
     } catch (const ApiError& error) {
         if (error.code != ErrorCode::eAccountPendingApproval) {
             throw;
         }
         approval_.pending = true;
         bazarish::log::info("account awaiting operator approval: no routing published yet");
+        return;
+    }
+    if (movedOnCard || movedOnRouting) {
+        announceNewRouting();
     }
 }
 
@@ -980,6 +993,13 @@ void Session::registerSelfHosted()
 
 void Session::publishRouting()
 {
+    if (delegateRouting()) {
+        announceNewRouting();
+    }
+}
+
+bool Session::delegateRouting()
+{
     if (!hasI2pDestination()) {
         throw std::runtime_error("no user-owned I2P destination to publish");
     }
@@ -988,9 +1008,11 @@ void Session::publishRouting()
     }
     const std::int64_t expires = renewI2pTransient(delegationDays_);
     reportConnectProgress(88, "Delegating your destination to the server");
-    const DestinationInfo serving = client_->sendI2pTransient(i2pTransientBase64(), expires);
+    DestinationInfo serving
+        = client_->sendI2pTransient(i2pTransientBase64(), expires, addressKeys());
+    serving.servingSealingKeyDer = servingSealingDer();
     reportConnectProgress(92, "Publishing your contact card");
-    storeCard(client_->publishCard(cardContent(), serving, currentCardIssuedAt()));
+    const bool moved = storeCard(client_->publishCard(cardContent(), serving, currentCardIssuedAt()));
     reportConnectProgress(96, "Syncing your address to your other devices");
     try {
         syncI2pMasterToSelf();
@@ -998,15 +1020,75 @@ void Session::publishRouting()
         bazarish::log::info("master not synced to this account's other devices: {}", error.what());
     }
     approval_ = {};
+    return moved;
 }
 
-void Session::storeCard(const PublishResult& result)
+bool Session::storeCard(const PublishResult& result)
 {
+    const std::string servingKey
+        = result.servingSealingKeyDer.empty() ? std::string() : toBase64(result.servingSealingKeyDer);
+    const bool held = !myDest_.empty() && !myServingKeyB64_.empty();
+    const bool moved = held && (result.dest != myDest_ || servingKey != myServingKeyB64_);
     cardB64_ = toBase64(result.cardDer);
     myDest_ = result.dest;
-    myServingKeyB64_
-        = result.servingSealingKeyDer.empty() ? std::string() : toBase64(result.servingSealingKeyDer);
+    myServingKeyB64_ = servingKey;
     persistMeta();
+    return moved;
+}
+
+AddressKeys Session::addressKeys()
+{
+    ensureAddressKeys();
+    return {addressSealing_->privatePem(), addressSigning_->privatePem()};
+}
+
+void Session::issueAddressKeys()
+{
+    addressSealing_ = Key::generateSealing();
+    addressSigning_ = Key::generateSigning();
+    db_->putText(kAddressSealingRow, addressSealing_->privatePem());
+    db_->putText(kAddressSigningRow, addressSigning_->privatePem());
+}
+
+void Session::ensureAddressKeys()
+{
+    if (!addressSealing_.has_value() || !addressSigning_.has_value()) {
+        issueAddressKeys();
+    }
+}
+
+void Session::adoptAddressKeys(const std::string& sealingPem, const std::string& signingPem)
+{
+    Key sealing = Key::fromPrivatePem(sealingPem);
+    Key signing = Key::fromPrivatePem(signingPem);
+    if (!sealing.hasKem() || !signing.isA(kClassicalSigningAlgorithm)) {
+        throw std::runtime_error("another device sent address keys of the wrong kind");
+    }
+    addressSealing_ = std::move(sealing);
+    addressSigning_ = std::move(signing);
+    db_->putText(kAddressSealingRow, addressSealing_->privatePem());
+    db_->putText(kAddressSigningRow, addressSigning_->privatePem());
+}
+
+Bytes Session::servingSealingDer() const
+{
+    return addressSealing_->publicDer();
+}
+
+void Session::registerEveryPass()
+{
+    std::vector<Bytes> handles;
+    for (const auto& [peerFingerprint, contact] : contacts_) {
+        if (!isBlocked(peerFingerprint) && !isSavedChat(peerFingerprint)) {
+            handles.push_back(deliveryPassHandle(passIdFor(peerFingerprint)));
+        }
+    }
+    for (std::size_t from = 0; from < handles.size(); from += kMaxPassesPerRequest) {
+        const std::size_t to = std::min(handles.size(), from + kMaxPassesPerRequest);
+        client_->registerPasses(std::vector<Bytes>(
+            handles.begin() + static_cast<std::ptrdiff_t>(from),
+            handles.begin() + static_cast<std::ptrdiff_t>(to)));
+    }
 }
 
 std::int64_t Session::currentCardIssuedAt() const
@@ -1044,6 +1126,7 @@ std::string Session::ensureI2pDestination()
         i2pMaster_ = master.privateKeys;
         i2pAddress_ = master.host;
         persistI2pBlob("i2p-master", i2pMaster_);
+        issueAddressKeys();
     }
     return i2pAddress_;
 }
@@ -1087,12 +1170,15 @@ std::string Session::loadI2pDestination(const Bytes& privateKeysDat)
     i2pMaster_ = master.privateKeys;
     i2pAddress_ = master.host;
     persistI2pBlob("i2p-master", i2pMaster_);
+    issueAddressKeys();
     return i2pAddress_;
 }
 
-void Session::replaceI2pMaster(const Bytes& privateKeysDat)
+void Session::replaceI2pMaster(
+    const Bytes& privateKeysDat, const std::string& sealingPem, const std::string& signingPem)
 {
     const I2pMasterKey master = loadI2pMaster(privateKeysDat);
+    adoptAddressKeys(sealingPem, signingPem);
     i2pMaster_ = master.privateKeys;
     i2pAddress_ = master.host;
     persistI2pBlob("i2p-master", i2pMaster_);
@@ -1102,7 +1188,7 @@ void Session::replaceI2pMaster(const Bytes& privateKeysDat)
 
 void Session::disableI2pDest()
 {
-    client_->sendI2pTransient(std::string(), 0);
+    client_->sendI2pTransient(std::string(), 0, {});
     i2pTransient_.clear();
     db_->erase("i2p-transient");
 }
@@ -1124,7 +1210,8 @@ bool Session::adoptI2pMasterFromOwnMailbox(const std::string& wantedHost)
             if (!wantedHost.empty() && i2pRoutingHost(master) != wantedHost) {
                 continue;
             }
-            loadI2pDestination(master);
+            replaceI2pMaster(master, body.at("addressSealing").get<std::string>(),
+                body.at("addressSigning").get<std::string>());
             log::info("adopted this account's address from another of its devices");
             return true;
         }
@@ -1201,8 +1288,11 @@ void Session::syncI2pMasterToSelf()
     if (i2pMaster_.empty() || myDest_.empty() || myServingKeyB64_.empty()) {
         return;
     }
+    const AddressKeys keys = addressKeys();
     const nlohmann::json inner = envelope("device.i2p-master", toHex(randomBytes(16)), {
         {"i2pMaster", toBase64(i2pMaster_)},
+        {"addressSealing", keys.sealingPem},
+        {"addressSigning", keys.signingPem},
     });
     submitSignedToSelf(inner, "device.i2p-master");
 }
@@ -1577,8 +1667,7 @@ void Session::setDelegationDays(const std::int64_t days, const bool announce)
     delegationDays_ = days;
     persistMeta();
     if (hasI2pDestination() && !myDest_.empty()) {
-        const std::int64_t expires = renewI2pTransient(static_cast<int>(delegationDays_));
-        client_->sendI2pTransient(i2pTransientBase64(), expires);
+        redelegate();
     }
     if (announce) {
         syncDelegationTermToSelf();
@@ -1606,9 +1695,19 @@ bool Session::refreshI2pTransientIfDue(const std::int64_t now, const std::int64_
     if (status.transientExpires != 0 && status.transientExpires - now > leadSeconds) {
         return false;
     }
-    const std::int64_t expiresUnix = renewI2pTransient(static_cast<int>(delegationDays_));
-    client_->sendI2pTransient(i2pTransientBase64(), expiresUnix);
+    redelegate();
     return true;
+}
+
+void Session::redelegate()
+{
+    // The card names the keys a delegation carries: without keys yet, both are published anew.
+    if (!addressSealing_.has_value() || !addressSigning_.has_value()) {
+        publishRouting();
+        return;
+    }
+    const std::int64_t expiresUnix = renewI2pTransient(static_cast<int>(delegationDays_));
+    client_->sendI2pTransient(i2pTransientBase64(), expiresUnix, addressKeys());
 }
 
 void Session::noteWire(
@@ -2521,16 +2620,21 @@ void Session::replaceOwnAddress()
     i2pMaster_ = master.privateKeys;
     i2pAddress_ = master.host;
     persistI2pBlob("i2p-master", i2pMaster_);
+    issueAddressKeys();
     const std::int64_t expires = renewI2pTransient(static_cast<int>(delegationDays_));
-    const DestinationInfo serving = client_->sendI2pTransient(i2pTransientBase64(), expires);
-    storeCard(client_->publishCard(cardContent(), serving, currentCardIssuedAt()));
+    DestinationInfo serving
+        = client_->sendI2pTransient(i2pTransientBase64(), expires, addressKeys());
+    serving.servingSealingKeyDer = servingSealingDer();
+    const bool moved = storeCard(client_->publishCard(cardContent(), serving, currentCardIssuedAt()));
     try {
         syncI2pMasterToSelf();
     } catch (const std::exception& error) {
         log::info("this account's other devices were not handed the new address: {}",
             error.what());
     }
-    announceNewRouting();
+    if (moved) {
+        announceNewRouting();
+    }
 }
 
 void Session::announceNewRouting()
@@ -3381,12 +3485,18 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                     try {
                         const Bytes master
                             = fromBase64(body.at("i2pMaster").get<std::string>());
+                        const std::string sealingPem
+                            = body.at("addressSealing").get<std::string>();
+                        const std::string signingPem
+                            = body.at("addressSigning").get<std::string>();
                         if (i2pMaster_.empty()) {
-                            loadI2pDestination(master);
-                        } else if (master != i2pMaster_) {
+                            replaceI2pMaster(master, sealingPem, signingPem);
+                        } else if (master == i2pMaster_) {
+                            adoptAddressKeys(sealingPem, signingPem);
+                        } else {
                             const std::string offered = i2pRoutingHost(master);
                             if (client_->myDestination().dest == offered) {
-                                replaceI2pMaster(master);
+                                replaceI2pMaster(master, sealingPem, signingPem);
                                 log::info("this account's address is now {}", offered);
                             } else {
                                 log::info("ignoring an address another device sent: the "
@@ -4450,12 +4560,13 @@ bool Session::hasOwnRouting() const
     return !myDest_.empty() && !myServingKeyB64_.empty();
 }
 
-void Session::refreshOwnCard()
+bool Session::refreshOwnCard()
 {
     if (cardB64_.empty()) {
         throw std::runtime_error("not registered: nothing to refresh");
     }
-    storeCard(client_->publishCard(cardContent(), servedOrOwnDestination(), currentCardIssuedAt()));
+    return storeCard(
+        client_->publishCard(cardContent(), servedOrOwnDestination(), currentCardIssuedAt()));
 }
 
 DestinationInfo Session::servedOrOwnDestination()
@@ -4464,6 +4575,8 @@ DestinationInfo Session::servedOrOwnDestination()
     if (serving.dest.empty()) {
         serving.dest = ownRoutingHost();
     }
+    ensureAddressKeys();
+    serving.servingSealingKeyDer = servingSealingDer();
     return serving;
 }
 
@@ -4968,6 +5081,8 @@ Bytes Session::exportAccountBytes(const std::string& password)
         {"identityPem", client_->identity().privatePem()},
         {"sealingPem", sealingKey_.privatePem()},
         {"i2pMaster", toBase64(i2pMaster_)},
+        {"addressSealingPem", addressSealing_ ? addressSealing_->privatePem() : std::string()},
+        {"addressSigningPem", addressSigning_ ? addressSigning_->privatePem() : std::string()},
         {"meta", meta},
         {"contacts", contacts},
         {"avatar", toBase64(avatar_)},
@@ -5022,6 +5137,12 @@ void Session::importAccountBytes(const Bytes& sealed, const fs::path& accountFil
     if (const Bytes master = fromBase64(bundle.at("i2pMaster").get<std::string>());
         !master.empty()) {
         db.put("i2p-master", master);
+    }
+    if (const std::string sealingPem = bundle.at("addressSealingPem").get<std::string>();
+        !sealingPem.empty()) {
+        db.putText(kAddressSealingRow, Key::fromPrivatePem(sealingPem).privatePem());
+        db.putText(kAddressSigningRow,
+            Key::fromPrivatePem(bundle.at("addressSigningPem").get<std::string>()).privatePem());
     }
     if (const Bytes avatar = fromBase64(bundle.at("avatar").get<std::string>()); !avatar.empty()) {
         db.put("avatar.self", avatar);

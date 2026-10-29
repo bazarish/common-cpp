@@ -167,13 +167,18 @@ int main()
             CHECK(manager2.list().size() == 2);
             CHECK(!fs::exists(root2 / ".import-tmp.db"));
 
+            sa.ensureI2pDestination();
+            const AddressKeys addressKeys = sa.addressKeys();
             const Bytes sealed = sa.exportAccountBytes("bundle-pw");
             CHECK(!sealed.empty());
             Session::importAccountBytes(sealed, scratch / "imported-mem.db", "bundle-pw",
                 "atrest-pw");
             onlyTheDatabase(scratch / "imported-mem.db");
-            const Session importedMem = Session::open(scratch / "imported-mem.db", "atrest-pw");
+            Session importedMem = Session::open(scratch / "imported-mem.db", "atrest-pw");
             CHECK(importedMem.fingerprint() == a.fingerprint);
+            CHECK(importedMem.i2pAddress() == sa.i2pAddress());
+            CHECK(importedMem.addressKeys().sealingPem == addressKeys.sealingPem);
+            CHECK(importedMem.addressKeys().signingPem == addressKeys.signingPem);
             CHECK(importedMem.avatarMime() == "image/png");
             CHECK(importedMem.avatar() == face);
             CHECK_THROWS(

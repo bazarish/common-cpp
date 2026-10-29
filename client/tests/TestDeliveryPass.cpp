@@ -1,4 +1,5 @@
 // Bazarish project (c) 2026
+#include "I2pKeys.hpp"
 #include "Client.hpp"
 #include "OutboundCourier.hpp"
 #include "AccountDb.hpp"
@@ -86,7 +87,7 @@ constexpr const char* kTestResolverDest
 struct Mock {
     std::mutex mu;
     std::string serverFp;
-    Key serverSealing = Key::generateSealing();
+    std::map<std::string, std::string> sealingFor;
     std::map<std::string, std::string> destFor;
     std::map<std::string, std::string> certFor;  // fingerprint -> contact card (base64 DER)
     std::set<std::string> delegated;
@@ -148,6 +149,24 @@ public:
     void close() override {}
 
 private:
+    // Only the server operating the recipient's address holds the key that opens its envelopes.
+    Bytes openedHere(const Bytes& sealed) const
+    {
+        std::map<std::string, std::string> keys;
+        {
+            std::lock_guard<std::mutex> lock(mock_.mu);
+            keys = mock_.sealingFor;
+        }
+        for (const auto& [fingerprint, pem] : keys) {
+            try {
+                return hybrid::unseal(sealed, Key::fromPrivatePem(pem));
+            } catch (const std::exception&) {
+                continue;
+            }
+        }
+        throw std::runtime_error("no address served here opens this envelope");
+    }
+
     std::string serve()
     {
         const std::size_t lineEnd = written_.find('\n');
@@ -159,7 +178,7 @@ private:
         CHECK(payloadText.size() == length);
         const Bytes payload(payloadText.begin(), payloadText.end());
         const Bytes sealed = fromBase64(header.at("sealed").get<std::string>());
-        const nlohmann::json inner = nlohmann::json::parse(hybrid::unseal(sealed, mock_.serverSealing));
+        const nlohmann::json inner = nlohmann::json::parse(openedHere(sealed));
         const std::string cls = inner.at("class").get<std::string>();
         const std::string mailbox = inner.at("mailbox").get<std::string>();
         const std::string deliveryId = inner.at("deliveryId").get<std::string>();
@@ -225,9 +244,7 @@ int main()
             const std::string caller = requireCaller(request);
             std::lock_guard<std::mutex> lock(m.mu);
             const bool delegated = m.delegated.count(caller) > 0;
-            respondJson(response,
-                {{"dest", delegated ? m.destFor[caller] : std::string()},
-                    {"servingKey", toBase64(m.serverSealing.publicDer())}});
+            respondJson(response, {{"dest", delegated ? m.destFor[caller] : std::string()}});
         }));
 
     const auto handlePublishCard
@@ -262,12 +279,18 @@ int main()
     server.post("/v1/account/i2p-dest",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
-            CHECK(!nlohmann::json::parse(request.body).at("transient").get<std::string>().empty());
+            const nlohmann::json body = nlohmann::json::parse(request.body);
+            CHECK(!body.at("transient").get<std::string>().empty());
+            const std::string sealingPem = body.at("sealingKey").get<std::string>();
+            CHECK(Key::fromPrivatePem(sealingPem).hasKem());
+            CHECK(Key::fromPrivatePem(body.at("signingKey").get<std::string>()).isA("ED25519"));
+            const std::string address
+                = i2pRoutingHost(fromBase64(body.at("transient").get<std::string>()));
             std::lock_guard<std::mutex> lock(m.mu);
             m.delegated.insert(caller);
-            respondJson(response,
-                {{"dest", m.destFor[caller]},
-                    {"servingKey", toBase64(m.serverSealing.publicDer())}});
+            m.sealingFor[caller] = sealingPem;
+            m.destFor[caller] = address;
+            respondJson(response, {{"dest", address}});
         }));
 
     server.post("/v1/messaging/self",
@@ -808,6 +831,43 @@ int main()
         }
 
         {
+            ContactCard cardBeforeMove;
+            const AddressKeys keysBefore = alice.addressKeys();
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                cardBeforeMove = ContactCard::verify(fromBase64(m.certFor.at(alice.fingerprint())));
+                m.registered.erase(alice.fingerprint());
+                m.delegated.erase(alice.fingerprint());
+                m.sealingFor.erase(alice.fingerprint());
+                m.certFor.erase(alice.fingerprint());
+            }
+            alice.registerAccount();
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                CHECK(m.sealingFor.at(alice.fingerprint()) == keysBefore.sealingPem);
+                CHECK(m.registered.at(alice.fingerprint()).size() == 1);
+                const ContactCard moved
+                    = ContactCard::verify(fromBase64(m.certFor.at(alice.fingerprint())));
+                CHECK(moved.dest == cardBeforeMove.dest);
+                CHECK(moved.servingSealingKeyDer == cardBeforeMove.servingSealingKeyDer);
+                CHECK(moved.servingSealingKeyDer
+                    == Key::fromPrivatePem(keysBefore.sealingPem).publicDer());
+            }
+            CHECK(alice.routingFanout().contacts.empty());
+            bob.sendMessage(alice.fingerprint(), "on the new server");
+            bool arrived = false;
+            CHECK(waitFor([&]() {
+                for (const IncomingMessage& item : alice.sync()) {
+                    arrived = arrived || item.text == "on the new server";
+                }
+                return arrived;
+            }));
+            for (const IncomingMessage& item : bob.sync()) {
+                CHECK(item.contentType != "contact.routing");
+            }
+        }
+
+        {
             const std::string ref = toHex(randomBytes(8));
             alice.sendReaction(bob.fingerprint(), ref, "\xf0\x9f\x91\x8d");
             alice.sendReceipt(bob.fingerprint(), ref);
@@ -1345,6 +1405,32 @@ int main()
             CHECK(second.contactDisplayName(bob.fingerprint()) == "Bob of the book");
             CHECK(second.contactAvatar(bob.fingerprint()) == face);
             CHECK(second.canWriteTo(bob.fingerprint()));
+            alice.publishRouting();
+            CHECK(waitFor([&]() {
+                second.sync();
+                return second.hasI2pDestination();
+            }));
+            CHECK(second.i2pAddress() == alice.i2pAddress());
+            CHECK(second.addressKeys().sealingPem == alice.addressKeys().sealingPem);
+            CHECK(second.addressKeys().signingPem == alice.addressKeys().signingPem);
+            alice.issueAddressKeys();
+            alice.publishRouting();
+            CHECK(waitFor([&]() {
+                second.sync();
+                return second.addressKeys().sealingPem == alice.addressKeys().sealingPem;
+            }));
+            CHECK(second.addressKeys().signingPem == alice.addressKeys().signingPem);
+            CHECK(waitFor([&]() {
+                alice.flushPendingEchoes();
+                return alice.routingFanout().contacts.empty();
+            }));
+            bool bobHeardKeys = false;
+            CHECK(waitFor([&]() {
+                for (const IncomingMessage& item : bob.sync()) {
+                    bobHeardKeys = bobHeardKeys || item.contentType == "contact.routing";
+                }
+                return bobHeardKeys;
+            }));
             bob.sendMessage(alice.fingerprint(), "hello, second device");
             bool sawBob = false;
             for (int round = 0; round < 3 && !sawBob; ++round) {

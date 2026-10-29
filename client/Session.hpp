@@ -344,7 +344,11 @@ public:
     PortalInfo serverPortalInfo();
 
     std::string ensureI2pDestination();
+    // A master from outside the account gets address keys of its own.
     std::string loadI2pDestination(const Bytes& privateKeysDat);
+    // The keys the account issues with its address; whichever server operates it is handed them.
+    AddressKeys addressKeys();
+    void issueAddressKeys();
     bool hasI2pDestination() const;
     // The stable base32 address (without the ".b32.i2p" suffix), or empty.
     std::string i2pAddress() const;
@@ -387,7 +391,8 @@ public:
     std::string contactInviteUri(const std::string& peerFingerprint) const;
     bool hasOwnRouting() const;
     DestinationInfo serverDestination();
-    void refreshOwnCard();
+    // True when contacts hold another routing than the card just published.
+    bool refreshOwnCard();
     std::string destinationOwner() const;
 
     void acceptContactRequest(const std::string& peerFingerprint);
@@ -718,7 +723,15 @@ private:
     Session(std::filesystem::path accountFile, std::unique_ptr<Client> client, Key sealingKey,
         std::map<std::string, Contact> contacts);
 
-    void storeCard(const PublishResult& result);
+    // True when the routing contacts hold (address or serving key) is not the one just published.
+    bool storeCard(const PublishResult& result);
+    // Delegates the address with its keys and publishes the card; true when contacts must be told.
+    bool delegateRouting();
+    void redelegate();
+    void ensureAddressKeys();
+    void adoptAddressKeys(const std::string& sealingPem, const std::string& signingPem);
+    Bytes servingSealingDer() const;
+    void registerEveryPass();
     ContactCard cardContent() const;
     nlohmann::json bootstrapBlock(const std::string& pass) const;
     std::int64_t currentCardIssuedAt() const;
@@ -772,7 +785,8 @@ private:
     bool adoptI2pMasterFromOwnMailbox(const std::string& wantedHost = {});
     bool reconcileI2pAddress();
     void askDevicesForI2pMaster(const std::string& servedHost);
-    void replaceI2pMaster(const Bytes& privateKeysDat);
+    void replaceI2pMaster(
+        const Bytes& privateKeysDat, const std::string& sealingPem, const std::string& signingPem);
 
     void syncDelegationTermToSelf();
 
@@ -952,6 +966,8 @@ private:
     std::string cardB64_;
     AccountKind kind_ = AccountKind::eUser;
     std::optional<Key> presenceKey_;
+    std::optional<Key> addressSealing_;
+    std::optional<Key> addressSigning_;
     Bytes presenceDestKeys_;
     std::string presenceDest_;
     ApprovalState approval_;
