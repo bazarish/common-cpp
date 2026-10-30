@@ -31,6 +31,7 @@ kSourceSuffixes = (".cpp", ".hpp")
 # Tests are where an exception IS the expected result, so a catch that only
 # records "it threw" is the assertion, not a hidden error.
 kSkipDirs = ("third_party", "build", ".git", "tests")
+kTestFilePrefix = "Test"
 kMaxBlockLines = 60
 
 
@@ -78,7 +79,7 @@ def main(argv):
         for path in sorted(root.rglob("*")):
             if path.suffix not in kSourceSuffixes:
                 continue
-            if any(part in kSkipDirs for part in path.parts):
+            if any(part in kSkipDirs for part in path.parts) or path.name.startswith(kTestFilePrefix):
                 continue
             lines = path.read_text(errors="ignore").splitlines()
             for index, line in enumerate(lines):
