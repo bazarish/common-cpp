@@ -44,8 +44,12 @@ int main()
     const Identity serverIdentity = Identity::generate();
     const Key serverSealing = Key::generateSealing();
 
+    const Key nodeSealing = Key::generateSealing();
+
     http::Server server(localOptions());
-    teststub::Tunnel stub(server, serverIdentity, serverSealing);
+    teststub::Tunnel stub(server, serverIdentity, serverSealing, ServerCard::Service::eMessaging);
+    teststub::Tunnel nodeStub(
+        server, serverIdentity, nodeSealing, ServerCard::Service::eServiceNode);
 
     std::string sawMethod;
     std::string sawPath;
@@ -72,6 +76,13 @@ int main()
         http::Response response;
         response.status = 404;
         response.body = makeErrorEnvelope(ErrorCode::eClientUnregistered, "no account").dump();
+        return response;
+    });
+    std::string sawCaller;
+    server.get("/v1/account/i2p-status", [&](const http::Request& request) {
+        sawCaller = request.header(teststub::kCallerHeader);
+        http::Response response;
+        response.body = nlohmann::json{{"approval", "approved"}}.dump();
         return response;
     });
     server.get("/v1/messaging/destination", [](const http::Request&) {
@@ -112,6 +123,16 @@ int main()
 
         stub.refuseNextOpaquely();
         CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+        CHECK(stub.opened() == 3);
+
+        CHECK(nodeStub.opened() == 0);
+        CHECK(api.get("/v1/account/i2p-status").status == 200);
+        CHECK(nodeStub.opened() == 1);
+        CHECK(stub.opened() == 3);
+        CHECK(sawCaller == alice.fingerprint());
+        CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+        CHECK(api.get("/v1/account/i2p-status").status == 200);
+        CHECK(nodeStub.opened() == 1);
         CHECK(stub.opened() == 3);
     }
 
@@ -157,7 +178,8 @@ int main()
 
     {
         http::Server backend(localOptions());
-        teststub::Tunnel backendStub(backend, serverIdentity, serverSealing);
+        teststub::Tunnel backendStub(
+            backend, serverIdentity, serverSealing, ServerCard::Service::eMessaging);
         backend.get("/v1/messaging/storage-usage", [](const http::Request&) {
             http::Response response;
             response.body = nlohmann::json{{"used", 0}}.dump();
@@ -229,7 +251,7 @@ int main()
 
     {
         http::Server upstreamless(localOptions());
-        const Bytes card = ServerCard::issue(serverIdentity,
+        const Bytes card = ServerCard::issue(serverIdentity, ServerCard::Service::eMessaging,
             Key::fromPublicDer(serverSealing.publicDer()), static_cast<std::int64_t>(std::time(nullptr)));
         upstreamless.get(std::string(tunnel::kServerCardPath), [card](const http::Request&) {
             http::Response response;

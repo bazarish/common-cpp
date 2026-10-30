@@ -61,6 +61,25 @@ constexpr auto kKeptStreamIdleSeconds = std::chrono::seconds(60);
 constexpr std::size_t kSessionSecretBytes = 32;
 constexpr std::size_t kSessionIdChars = 32;
 
+constexpr const char* kServiceNodePrefix = "/v1/account/";
+
+const char* tunnelPathOf(const ServerCard::Service service)
+{
+    return service == ServerCard::Service::eServiceNode ? bazarish::tunnel::kNodeTunnelPath
+                                                        : bazarish::tunnel::kTunnelPath;
+}
+
+const char* cardPathOf(const ServerCard::Service service)
+{
+    return service == ServerCard::Service::eServiceNode ? bazarish::tunnel::kNodeCardPath
+                                                        : bazarish::tunnel::kServerCardPath;
+}
+
+const char* serviceName(const ServerCard::Service service)
+{
+    return service == ServerCard::Service::eServiceNode ? "service node" : "messaging server";
+}
+
 [[noreturn]] void raiseFromResponse(const int status, const Bytes& body)
 {
     const std::string text(body.begin(), body.end());
@@ -194,36 +213,40 @@ std::int64_t ApiClient::sessionBackoffSeconds(const int httpStatus)
                                                                     : kAfterRefusalSeconds;
 }
 
-void ApiClient::ensureServerKeyLocked()
+ApiClient::Tunnel& ApiClient::tunnelFor(const std::string& path)
 {
-    if (!serverSealingKeyDer_.empty()) {
+    return path.rfind(kServiceNodePrefix, 0) == 0 ? serviceNode_ : messaging_;
+}
+
+void ApiClient::ensureSealingKeyLocked(Tunnel& tunnel)
+{
+    if (!tunnel.sealingKeyDer.empty()) {
         return;
     }
-    const ApiResponse response = transmitLocked("GET",
-        std::string(bazarish::tunnel::kServerCardPath), {}, {}, {}, {},
-        kDefaultReadTimeoutSeconds);
-    const ServerCard card = ServerCard::verify(response.body);
+    const ApiResponse response = transmitLocked("GET", cardPathOf(tunnel.service), {}, {}, {},
+        {}, kDefaultReadTimeoutSeconds);
+    const ServerCard card = ServerCard::verify(response.body, tunnel.service);
     if (!endpoint_.serverFingerprint.empty() && card.server != endpoint_.serverFingerprint) {
         throw std::runtime_error("the server card names another server than the one we joined");
     }
-    serverSealingKeyDer_ = card.sealingPublicKeyDer;
+    tunnel.sealingKeyDer = card.sealingPublicKeyDer;
 }
 
-bool ApiClient::ensureSessionLocked()
+bool ApiClient::ensureSessionLocked(Tunnel& tunnel)
 {
     constexpr std::int64_t kRenewLeadSeconds = 300;
 
     const std::int64_t now = nowSeconds();
-    if (!sessionId_.empty() && now + kRenewLeadSeconds < sessionUntil_) {
+    if (!tunnel.sessionId.empty() && now + kRenewLeadSeconds < tunnel.sessionUntil) {
         return true;
     }
     // A wait belongs to the link that failed; one that has come back since is tried at once.
-    if (now < sessionBlockedUntil_ && blockedAtCarry_ == bazarish::i2p::carryReturns()) {
+    if (now < tunnel.blockedUntil && tunnel.blockedAtCarry == bazarish::i2p::carryReturns()) {
         return false;
     }
-    sessionId_.clear();
+    tunnel.sessionId.clear();
     try {
-        ensureServerKeyLocked();
+        ensureSealingKeyLocked(tunnel);
         bazarish::tunnel::Hello hello;
         hello.secret = randomBytes(kSessionSecretBytes);
         const Key replyKey = Key::generateSealing();
@@ -231,47 +254,47 @@ bool ApiClient::ensureSessionLocked()
         hello.signature = auth::signRequest(identity_, now, bazarish::tunnel::kHelloMethod,
             bazarish::tunnel::kHelloPath, hello.secret);
         const Bytes frame
-            = bazarish::tunnel::sealHello(hello, Key::fromPublicDer(serverSealingKeyDer_));
-        const ApiResponse response = transmitLocked("POST",
-            std::string(bazarish::tunnel::kTunnelPath), {}, frame, "application/octet-stream", {},
-            kDefaultReadTimeoutSeconds);
+            = bazarish::tunnel::sealHello(hello, Key::fromPublicDer(tunnel.sealingKeyDer));
+        const ApiResponse response = transmitLocked("POST", tunnelPathOf(tunnel.service), {},
+            frame, "application/octet-stream", {}, kDefaultReadTimeoutSeconds);
         const bazarish::tunnel::Welcome welcome
             = bazarish::tunnel::openWelcome(response.body, replyKey);
-        sessionSecret_ = hello.secret;
-        sessionId_ = toHex(sha256(hello.secret)).substr(0, kSessionIdChars);
-        sessionKey_ = auth::deriveSessionKey(hello.secret, sessionId_);
-        tunnelKey_ = bazarish::tunnel::deriveTunnelKey(hello.secret, sessionId_);
-        sessionUntil_ = welcome.expiresUnix;
-        sessionSeq_ = 0;
-        sessionRefusals_ = 0;
-        bazarish::log::info("tunnel open for {} s", sessionUntil_ - now);
+        tunnel.sessionSecret = hello.secret;
+        tunnel.sessionId = toHex(sha256(hello.secret)).substr(0, kSessionIdChars);
+        tunnel.sessionKey = auth::deriveSessionKey(hello.secret, tunnel.sessionId);
+        tunnel.tunnelKey = bazarish::tunnel::deriveTunnelKey(hello.secret, tunnel.sessionId);
+        tunnel.sessionUntil = welcome.expiresUnix;
+        tunnel.sessionSeq = 0;
+        tunnel.refusals = 0;
+        bazarish::log::info("tunnel to the {} open for {} s", serviceName(tunnel.service),
+            tunnel.sessionUntil - now);
         return true;
     } catch (const ApiError& error) {
-        sessionId_.clear();
-        standOffLocked(sessionBackoffSeconds(error.httpStatus));
-        lastTunnelError_ = error.what();
-        bazarish::log::info("no tunnel: {}", error.what());
+        tunnel.sessionId.clear();
+        standOffLocked(tunnel, sessionBackoffSeconds(error.httpStatus));
+        tunnel.lastError = error.what();
+        bazarish::log::info("no tunnel to the {}: {}", serviceName(tunnel.service), error.what());
         return false;
     } catch (const bazarish::i2p::GatewayRefusal& error) {
         // No facade was asked, so there is nothing to stand off from: the next request asks again.
-        sessionId_.clear();
-        lastTunnelError_ = error.what();
-        bazarish::log::warn("no tunnel: {}", error.what());
+        tunnel.sessionId.clear();
+        tunnel.lastError = error.what();
+        bazarish::log::warn("no tunnel to the {}: {}", serviceName(tunnel.service), error.what());
         return false;
     } catch (const std::exception& error) {
-        sessionId_.clear();
+        tunnel.sessionId.clear();
         // An answer that does not open is a broken carry, not a refusal: try again as after silence.
-        standOffLocked(sessionBackoffSeconds(0));
-        lastTunnelError_ = error.what();
-        bazarish::log::info("no tunnel: {}", error.what());
+        standOffLocked(tunnel, sessionBackoffSeconds(0));
+        tunnel.lastError = error.what();
+        bazarish::log::info("no tunnel to the {}: {}", serviceName(tunnel.service), error.what());
         return false;
     }
 }
 
-void ApiClient::standOffLocked(const std::int64_t seconds)
+void ApiClient::standOffLocked(Tunnel& tunnel, const std::int64_t seconds)
 {
-    sessionBlockedUntil_ = nowSeconds() + seconds;
-    blockedAtCarry_ = bazarish::i2p::carryReturns();
+    tunnel.blockedUntil = nowSeconds() + seconds;
+    tunnel.blockedAtCarry = bazarish::i2p::carryReturns();
 }
 
 void ApiClient::setDestinationOwner(std::string owner)
@@ -455,9 +478,10 @@ void ApiClient::noteWire(const std::string& method, const std::string& path,
     wireLog_->record(std::move(event));
 }
 
-ApiResponse ApiClient::tunnelledLocked(const std::string& method, const std::string& path,
-    const std::string& query, const Bytes& body, const std::string& contentType,
-    const std::map<std::string, std::string>& headers, const int readTimeoutSeconds)
+ApiResponse ApiClient::tunnelledLocked(Tunnel& tunnel, const std::string& method,
+    const std::string& path, const std::string& query, const Bytes& body,
+    const std::string& contentType, const std::map<std::string, std::string>& headers,
+    const int readTimeoutSeconds)
 {
     bazarish::tunnel::Request inner;
     inner.method = method;
@@ -466,16 +490,15 @@ ApiResponse ApiClient::tunnelledLocked(const std::string& method, const std::str
     inner.headers = headers;
     inner.body = body;
     inner.contentType = contentType;
-    const std::uint64_t seq = ++sessionSeq_;
-    const Bytes frame = bazarish::tunnel::carry(auth::sessionHandle(sessionSecret_, seq),
-        tunnelKey_, bazarish::tunnel::encodeRequest(inner));
-    const ApiResponse carried = transmitLocked("POST",
-        std::string(bazarish::tunnel::kTunnelPath), {}, frame, "application/octet-stream", {},
-        readTimeoutSeconds);
+    const std::uint64_t seq = ++tunnel.sessionSeq;
+    const Bytes frame = bazarish::tunnel::carry(auth::sessionHandle(tunnel.sessionSecret, seq),
+        tunnel.tunnelKey, bazarish::tunnel::encodeRequest(inner));
+    const ApiResponse carried = transmitLocked("POST", tunnelPathOf(tunnel.service), {}, frame,
+        "application/octet-stream", {}, readTimeoutSeconds);
     bazarish::tunnel::Response answered;
     try {
         answered = bazarish::tunnel::decodeResponse(
-            bazarish::tunnel::open(carried.body, tunnelKey_));
+            bazarish::tunnel::open(carried.body, tunnel.tunnelKey));
     } catch (const std::exception&) {
         throw ApiError(ErrorCode::eSessionInvalid, carried.status,
             "the tunnel did not answer under the key it was opened with");
@@ -493,17 +516,18 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     const int readTimeoutSeconds, const std::string& note)
 {
     const std::lock_guard<std::mutex> lock(netMutex_);
+    Tunnel& tunnel = tunnelFor(path);
     std::map<std::string, std::string> headers;
     if (authenticate) {
         auth::Headers authHeaders;
-        if (ensureSessionLocked()) {
-            const std::uint64_t seq = sessionSeq_ + 1;
-            authHeaders = auth::macRequest(auth::sessionHandle(sessionSecret_, seq), sessionKey_,
-                seq, nowSeconds(), method, path, body, clientId_);
+        if (ensureSessionLocked(tunnel)) {
+            const std::uint64_t seq = tunnel.sessionSeq + 1;
+            authHeaders = auth::macRequest(auth::sessionHandle(tunnel.sessionSecret, seq),
+                tunnel.sessionKey, seq, nowSeconds(), method, path, body, clientId_);
         } else {
-            const std::string reason = lastTunnelError_.empty()
+            const std::string reason = tunnel.lastError.empty()
                 ? std::string("no tunnel to the server")
-                : "no tunnel to the server: " + lastTunnelError_;
+                : "no tunnel to the server: " + tunnel.lastError;
             noteWire(method, path, note, "failed: " + reason, 0, 0);
             throw ApiError(std::nullopt, 0, reason);
         }
@@ -534,38 +558,39 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     };
     try {
         const ApiResponse response = tunnelledLocked(
-            method, path, query, body, contentType, headers, readTimeoutSeconds);
+            tunnel, method, path, query, body, contentType, headers, readTimeoutSeconds);
         accept(response);
         return response;
     } catch (const ApiError& error) {
-        if (error.code != ErrorCode::eSessionInvalid || sessionId_.empty()) {
+        if (error.code != ErrorCode::eSessionInvalid || tunnel.sessionId.empty()) {
             failed(error.what());
             throw;
         }
         constexpr int kRefusalsBeforeGivingUp = 3;
         bazarish::log::info("the tunnel was refused mid-request; opening another");
-        sessionId_.clear();
-        if (++sessionRefusals_ >= kRefusalsBeforeGivingUp) {
-            sessionRefusals_ = 0;
-            standOffLocked(sessionBackoffSeconds(1));
+        tunnel.sessionId.clear();
+        if (++tunnel.refusals >= kRefusalsBeforeGivingUp) {
+            tunnel.refusals = 0;
+            standOffLocked(tunnel, sessionBackoffSeconds(1));
             bazarish::log::warn("tunnels keep being refused; standing off for a while");
             failed(error.what());
             throw;
         }
-        if (!ensureSessionLocked()) {
+        if (!ensureSessionLocked(tunnel)) {
             failed("no tunnel");
             throw;
         }
-        const std::uint64_t seq = sessionSeq_ + 1;
-        const auth::Headers retryAuth = auth::macRequest(auth::sessionHandle(sessionSecret_, seq),
-            sessionKey_, seq, nowSeconds(), method, path, body, clientId_);
+        const std::uint64_t seq = tunnel.sessionSeq + 1;
+        const auth::Headers retryAuth
+            = auth::macRequest(auth::sessionHandle(tunnel.sessionSecret, seq), tunnel.sessionKey,
+                seq, nowSeconds(), method, path, body, clientId_);
         std::map<std::string, std::string> retryHeaders(retryAuth.begin(), retryAuth.end());
         retryHeaders.emplace("X-Bazarish-Client", clientId_);
         for (const auto& [key, value] : extraHeaders) {
             retryHeaders.emplace(key, value);
         }
         const ApiResponse response = tunnelledLocked(
-            method, path, query, body, contentType, retryHeaders, readTimeoutSeconds);
+            tunnel, method, path, query, body, contentType, retryHeaders, readTimeoutSeconds);
         accept(response);
         return response;
     }

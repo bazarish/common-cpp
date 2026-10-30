@@ -231,7 +231,11 @@ int main()
 
     const Identity stubServerIdentity = Identity::generate();
     const Key stubServerSealing = Key::generateSealing();
-    bazarish::teststub::Tunnel tunnelStub(server, stubServerIdentity, stubServerSealing);
+    const Key stubNodeSealing = Key::generateSealing();
+    bazarish::teststub::Tunnel tunnelStub(
+        server, stubServerIdentity, stubServerSealing, ServerCard::Service::eMessaging);
+    bazarish::teststub::Tunnel nodeTunnelStub(
+        server, stubServerIdentity, stubNodeSealing, ServerCard::Service::eServiceNode);
     const int port = server.start();
     CHECK(port > 0);
 

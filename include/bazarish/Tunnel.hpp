@@ -15,9 +15,10 @@ namespace bazarish::tunnel {
 inline constexpr int kFrameVersion = 1;
 
 inline constexpr const char* kTunnelPath = "/t";
-inline constexpr const char* kVouchedPrefix = "/v1/vouched/";
-
 inline constexpr const char* kServerCardPath = "/v1/server/card";
+
+inline constexpr const char* kNodeTunnelPath = "/n";
+inline constexpr const char* kNodeCardPath = "/v1/node/card";
 
 inline constexpr const char* kHelloMethod = "BZ-TUNNEL";
 inline constexpr const char* kHelloPath = "/hello";

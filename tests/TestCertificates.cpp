@@ -143,11 +143,18 @@ int main()
     CHECK(alias.user == user.fingerprint());
     CHECK(alias.issuedAt == kNow);
 
-    const Bytes cardDer = ServerCard::issue(serverRoot, sealing, kNow);
-    const ServerCard card = ServerCard::verify(cardDer);
+    const Bytes cardDer
+        = ServerCard::issue(serverRoot, ServerCard::Service::eMessaging, sealing, kNow);
+    const ServerCard card = ServerCard::verify(cardDer, ServerCard::Service::eMessaging);
     CHECK(card.server == serverRoot.fingerprint());
     CHECK(card.issuedAt == kNow);
     CHECK(card.sealingKey().fingerprint() == sealing.fingerprint());
+    CHECK_THROWS(ServerCard::verify(cardDer, ServerCard::Service::eServiceNode));
+    const Bytes nodeCardDer
+        = ServerCard::issue(serverRoot, ServerCard::Service::eServiceNode, sealing, kNow);
+    CHECK(ServerCard::verify(nodeCardDer, ServerCard::Service::eServiceNode).server
+        == serverRoot.fingerprint());
+    CHECK_THROWS(ServerCard::verify(nodeCardDer, ServerCard::Service::eMessaging));
 
     const Identity mallory = Identity::generate();
     const nlohmann::json forgedBody = {
@@ -172,7 +179,7 @@ int main()
         };
         const Bytes bothDer = hybrid::signJson(bothShapes, user);
         CHECK(AliasCertificate::verify(bothDer).alias == "alice");
-        CHECK_THROWS(ServerCard::verify(bothDer));
+        CHECK_THROWS(ServerCard::verify(bothDer, ServerCard::Service::eMessaging));
         CHECK_THROWS(ContactCard::verify(bothDer));
 
         const nlohmann::json untaggedAlias = {{"v", kCertificateFormatVersion},
@@ -181,7 +188,8 @@ int main()
         const nlohmann::json untaggedServer = {{"v", kCertificateFormatVersion},
             {"server", user.fingerprint()}, {"sealingKey", toBase64(sealing.publicDer())},
             {"issuedAt", kNow}};
-        CHECK_THROWS(ServerCard::verify(hybrid::signJson(untaggedServer, user)));
+        CHECK_THROWS(ServerCard::verify(
+            hybrid::signJson(untaggedServer, user), ServerCard::Service::eMessaging));
         const nlohmann::json untaggedDelegation = {{"v", kCertificateFormatVersion},
             {"root", user.fingerprint()},
             {"delegatedClassical", toBase64(sealing.publicDer())},

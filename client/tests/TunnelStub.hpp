@@ -22,19 +22,22 @@ inline constexpr const char* kCallerHeader = "x-bazarish-test-caller";
 
 class Tunnel {
 public:
-    Tunnel(bazarish::http::Server& server, const Identity& serverIdentity, const Key& sealing)
+    Tunnel(bazarish::http::Server& server, const Identity& serverIdentity, const Key& sealing,
+        const ServerCard::Service service)
         : sealing_(Key::fromPrivatePem(sealing.privatePem()))
     {
-        const Bytes card = ServerCard::issue(serverIdentity,
+        const bool node = service == ServerCard::Service::eServiceNode;
+        const Bytes card = ServerCard::issue(serverIdentity, service,
             Key::fromPublicDer(sealing.publicDer()), static_cast<std::int64_t>(std::time(nullptr)));
-        server.get(std::string(bazarish::tunnel::kServerCardPath),
+        server.get(node ? bazarish::tunnel::kNodeCardPath : bazarish::tunnel::kServerCardPath,
             [card](const bazarish::http::Request&) {
                 bazarish::http::Response response;
                 response.contentType = "application/octet-stream";
                 response.body = std::string(card.begin(), card.end());
                 return response;
             });
-        server.routeAsync("POST", std::string(bazarish::tunnel::kTunnelPath),
+        server.routeAsync("POST",
+            node ? bazarish::tunnel::kNodeTunnelPath : bazarish::tunnel::kTunnelPath,
             [this, &server](const bazarish::http::Request& request,
                 bazarish::http::Responder respond) -> std::optional<bazarish::http::Response> {
                 try {

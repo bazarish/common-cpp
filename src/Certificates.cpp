@@ -58,7 +58,14 @@ namespace {
 const char* const kContactCardType = "contact-card";
 const char* const kAliasCertificateType = "alias-certificate";
 const char* const kServerCardType = "server-card";
+const char* const kNodeCardType = "node-card";
 const char* const kDelegationCertificateType = "delegation-certificate";
+
+const char* cardType(const bazarish::ServerCard::Service service)
+{
+    return service == bazarish::ServerCard::Service::eServiceNode ? kNodeCardType
+                                                                  : kServerCardType;
+}
 
 }  // namespace
 
@@ -177,13 +184,12 @@ AliasCertificate AliasCertificate::verify(const Bytes& der)
     return cert;
 }
 
-Bytes ServerCard::issue(const Identity& serverRootIdentity,
-    const Key& sealingPublicKey,
-    const std::int64_t issuedAt)
+Bytes ServerCard::issue(const Identity& serverRootIdentity, const Service service,
+    const Key& sealingPublicKey, const std::int64_t issuedAt)
 {
     const nlohmann::json body = {
         {"v", kCertificateFormatVersion},
-        {"t", kServerCardType},
+        {"t", cardType(service)},
         {"server", serverRootIdentity.fingerprint()},
         {"sealingKey", toBase64(sealingPublicKey.publicDer())},
         {"issuedAt", issuedAt},
@@ -191,9 +197,9 @@ Bytes ServerCard::issue(const Identity& serverRootIdentity,
     return hybrid::signJson(body, serverRootIdentity);
 }
 
-ServerCard ServerCard::verify(const Bytes& der)
+ServerCard ServerCard::verify(const Bytes& der, const Service service)
 {
-    const VerifiedJson verified = verifyTagged(der, kServerCardType);
+    const VerifiedJson verified = verifyTagged(der, cardType(service));
     ServerCard card;
     card.v = verified.body.at("v").get<int>();
     card.server = verified.body.at("server").get<std::string>();

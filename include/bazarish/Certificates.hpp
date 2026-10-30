@@ -54,15 +54,18 @@ struct AliasCertificate {
 };
 
 struct ServerCard {
+    // A facade carries a tunnel to each, and each opens it under its own sealing key.
+    enum class Service { eMessaging, eServiceNode };
+
     int v = kCertificateFormatVersion;
     std::string server;
     Bytes sealingPublicKeyDer;
     std::int64_t issuedAt = 0;
 
-    static Bytes issue(const Identity& serverRootIdentity,
+    static Bytes issue(const Identity& serverRootIdentity, Service service,
         const Key& sealingPublicKey, std::int64_t issuedAt);
-    // Verifies both signatures and that the signer is body.server.
-    static ServerCard verify(const Bytes& der);
+    // Verifies both signatures, that the card is that service's and that the signer is body.server.
+    static ServerCard verify(const Bytes& der, Service service);
 
     Key sealingKey() const;
 };

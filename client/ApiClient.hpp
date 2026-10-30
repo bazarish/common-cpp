@@ -4,6 +4,7 @@
 #include "WireLog.hpp"
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/Certificates.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Errors.hpp>
 #include <bazarish/I2p.hpp>
@@ -113,24 +114,37 @@ private:
     const std::filesystem::path i2pDataDir_;
     std::string destinationOwner_;
 
-    Bytes serverSealingKeyDer_;
-    std::string sessionId_;
-    Bytes sessionSecret_;
-    Bytes sessionKey_;
-    Bytes tunnelKey_;
-    std::int64_t sessionUntil_ = 0;
-    std::uint64_t sessionSeq_ = 0;
+    struct Tunnel {
+        explicit Tunnel(const ServerCard::Service service)
+            : service(service)
+        {
+        }
+
+        const ServerCard::Service service;
+        Bytes sealingKeyDer;
+        std::string sessionId;
+        Bytes sessionSecret;
+        Bytes sessionKey;
+        Bytes tunnelKey;
+        std::int64_t sessionUntil = 0;
+        std::uint64_t sessionSeq = 0;
+        std::int64_t blockedUntil = 0;
+        std::uint64_t blockedAtCarry = 0;
+        int refusals = 0;
+        std::string lastError;
+    };
+    Tunnel& tunnelFor(const std::string& path);
+    bool ensureSessionLocked(Tunnel& tunnel);
+    void standOffLocked(Tunnel& tunnel, std::int64_t seconds);
+    void ensureSealingKeyLocked(Tunnel& tunnel);
+    ApiResponse tunnelledLocked(Tunnel& tunnel, const std::string& method,
+        const std::string& path, const std::string& query, const Bytes& body,
+        const std::string& contentType, const std::map<std::string, std::string>& headers,
+        int readTimeoutSeconds);
+
+    Tunnel messaging_{ServerCard::Service::eMessaging};
+    Tunnel serviceNode_{ServerCard::Service::eServiceNode};
     std::string gatewayRefusal_;
-    std::int64_t sessionBlockedUntil_ = 0;
-    std::uint64_t blockedAtCarry_ = 0;
-    int sessionRefusals_ = 0;
-    std::string lastTunnelError_;
-    bool ensureSessionLocked();
-    void standOffLocked(std::int64_t seconds);
-    void ensureServerKeyLocked();
-    ApiResponse tunnelledLocked(const std::string& method, const std::string& path,
-        const std::string& query, const Bytes& body, const std::string& contentType,
-        const std::map<std::string, std::string>& headers, int readTimeoutSeconds);
 
     WireLog* wireLog_ = nullptr;
     std::shared_ptr<bazarish::i2p::Endpoint> i2pOut_;
