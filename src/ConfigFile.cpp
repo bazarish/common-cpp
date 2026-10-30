@@ -40,6 +40,7 @@ void writeWhole(const fs::path& path, const std::string& text)
             throw std::runtime_error("cannot write " + temporary.string());
         }
     }
+    fs::permissions(temporary, fs::status(path).permissions(), fs::perm_options::replace);
     fs::rename(temporary, path);
 }
 

@@ -1,0 +1,8 @@
+// Bazarish project (c) 2026
+#pragma once
+
+namespace bazarish {
+
+inline constexpr char kBuildVersion[] = "@BAZARISH_BUILD_VERSION@";
+
+}  // namespace bazarish

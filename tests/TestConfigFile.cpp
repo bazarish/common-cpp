@@ -5,6 +5,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 using namespace bazarish;
@@ -133,6 +135,23 @@ void testReadingSettings()
     CHECK(halfAnEndpoint);
 }
 
+void testSettingKeepsTheFileMode()
+{
+    const std::filesystem::path path
+        = std::filesystem::temp_directory_path() / "bazarish-config-mode-test.json";
+    for (const std::filesystem::perms mode :
+        {std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+            std::filesystem::perms::owner_read | std::filesystem::perms::owner_write
+                | std::filesystem::perms::group_read}) {
+        { std::ofstream(path) << kConfig; }
+        std::filesystem::permissions(path, mode, std::filesystem::perm_options::replace);
+        ConfigFile(path).set({"registration", "requireApproval"}, true);
+        CHECK(std::filesystem::status(path).permissions() == mode);
+        CHECK(ConfigFile(path).read().at("registration").at("requireApproval") == true);
+    }
+    std::filesystem::remove(path);
+}
+
 }  // namespace
 
 int main()
@@ -143,6 +162,7 @@ int main()
     testWritesKeysTheFileDoesNotHave();
     testRefusesWhatItCannotPatch();
     testReadingSettings();
+    testSettingKeepsTheFileMode();
     std::printf("TestConfigFile: all checks passed\n");
     return 0;
 }

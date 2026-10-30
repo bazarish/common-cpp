@@ -19,6 +19,7 @@ find_package(Threads REQUIRED)
 # transport, and a build without it would be a second kind of library to reason
 # about. Requires the i2pd submodule (recursive init) and Boost program_options.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/I2pdBazarish.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersion.cmake)
 
 # The client core: everything a Bazarish client is, with no user interface in it
 # - accounts and their encrypted store, the session, the courier, invites, calls
