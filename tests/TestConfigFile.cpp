@@ -145,8 +145,9 @@ void testSettingKeepsTheFileMode()
                 | std::filesystem::perms::group_read}) {
         { std::ofstream(path) << kConfig; }
         std::filesystem::permissions(path, mode, std::filesystem::perm_options::replace);
+        const std::filesystem::perms recorded = std::filesystem::status(path).permissions();
         ConfigFile(path).set({"registration", "requireApproval"}, true);
-        CHECK(std::filesystem::status(path).permissions() == mode);
+        CHECK(std::filesystem::status(path).permissions() == recorded);
         CHECK(ConfigFile(path).read().at("registration").at("requireApproval") == true);
     }
     std::filesystem::remove(path);
