@@ -91,8 +91,7 @@ void requireVersion(const nlohmann::json& frame)
     }
 }
 
-// Both halves sign the same message, and it names both public keys: swapping
-// either half invalidates the other half's signature.
+// The message names both public keys: swapping either half breaks the other's signature.
 Bytes signedMessage(
     const Bytes& classicalPublicDer, const Bytes& pqPublicDer, const Bytes& body)
 {

@@ -255,8 +255,7 @@ int main()
         content.sealingPublicKeyDer = aliceSealing.publicDer();
         content.presenceKeyDer = Key::generateX25519().publicDer();
         content.presenceDest = aliceDest;
-        const PublishResult result = client.publishCard(content, serving);
-        CHECK(result.quotaBytes == 10u * 1024 * 1024);
+        const PublishResult result = client.publishCard(content, serving, 0);
         CHECK(result.dest == aliceDest);
         CHECK(result.servingSealingKeyDer == servingSealing.publicDer());
         CHECK(!result.cardDer.empty());

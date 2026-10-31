@@ -14,7 +14,6 @@ Bytes fromHex(const std::string& text);
 
 // Base32 per RFC 4648, lowercase, no padding.
 std::string toBase32(const Bytes& data);
-Bytes fromBase32(const std::string& text);
 
 // Base64, standard alphabet with padding.
 std::string toBase64(const Bytes& data);

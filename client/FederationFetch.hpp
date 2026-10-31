@@ -25,32 +25,24 @@ enum class FetchStage {
 void tellFetchStages(std::function<void(FetchStage)> tell);
 
 FetchOutcome federationFetchOverI2p(bazarish::i2p::Router& router, const std::string& dest,
-    const std::string& op, const Bytes& sealed,
-    bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax,
-    const std::string& owner = {});
+    const std::string& op, const Bytes& sealed, bazarish::i2p::Privacy privacy,
+    const std::string& owner);
 
 FetchOutcome resolverFetchOverI2p(bazarish::i2p::Router& router, const std::string& host,
-    const std::string& op, const Bytes& body,
-    bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax,
-    const std::string& owner = {});
+    const std::string& op, const Bytes& body, bazarish::i2p::Privacy privacy,
+    const std::string& owner);
 
 // The HTTP status the site answered with; empty when the site could not be reached.
 std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
     const service::LoginCallback& callback, const std::string& challenge, const std::string& blob,
     bazarish::i2p::Privacy privacy, const std::string& owner);
 
-// The challenge a link points at, as the site sent it; empty when the site could not be reached
-// or the asker gave up, which stops it before the next step.
+// Empty when the site could not be reached or the asker gave up.
 std::optional<std::string> getLoginChallengeOverI2p(bazarish::i2p::Router& router,
     const service::LoginCallback& address, bazarish::i2p::Privacy privacy,
     const std::string& owner, const std::atomic<bool>& cancelled);
 
-FetchTransport resolverHeldDest(bazarish::i2p::Router& router,
-    bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax,
-    const std::string& owner = {});
-
-FetchTransport federationHeldDest(bazarish::i2p::Router& router,
-    bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax,
-    const std::string& owner = {});
+FetchTransport resolverHeldDest(
+    bazarish::i2p::Router& router, bazarish::i2p::Privacy privacy, const std::string& owner);
 
 }  // namespace bazarish::client

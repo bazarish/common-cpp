@@ -39,7 +39,6 @@ enum class Role { eClient, eServer };
 class Keys {
 public:
     static Keys generate();
-    // Parse a serialized i2pd private-keys blob (a ".dat"); throws if malformed.
     static Keys fromBlob(const Bytes& blob);
 
     Keys(const Keys&);
@@ -49,9 +48,7 @@ public:
     ~Keys();
 
     Bytes blob() const;
-    // I2P-base64 of the private keys (the destination private form).
     std::string privateBase64() const;
-    // Base64 of the public destination (shareable; feeds address derivation/cards).
     std::string publicBase64() const;
     bool isOffline() const;
     std::int64_t transientExpires() const;
@@ -69,15 +66,11 @@ private:
 
 std::string routingHost(const std::string& publicBase64);
 
-// The version of the embedded upstream i2pd engine (e.g.
 std::string routerVersion();
 
 std::vector<Bytes> sampleRouterInfos(std::size_t count);
 
 Bytes packReseedSu3(const std::vector<Bytes>& routers, const std::string& signerId);
-
-std::size_t seedRouterInfos(
-    const std::filesystem::path& dataDir, const std::vector<Bytes>& routers);
 
 class Stream {
 public:
@@ -129,7 +122,6 @@ public:
     bool waitReady(std::chrono::seconds timeout);
     bool lost() const;
 
-    // The shareable base64 destination (goes into a contact card).
     std::string publicBase64() const;
     std::string routingHost() const;
     Bytes privateBlob() const;
@@ -138,7 +130,6 @@ public:
     // EndpointConfig::leaseSetReaderKey for a destination already made, such as a warm one.
     void setLeaseSetReaderKey(const Bytes& rawPrivate);
 
-    // Open a stream to a ".b32.i2p" host (b32 or b33) or a base64 destination.
     std::unique_ptr<Stream> connect(const std::string& host, std::chrono::seconds timeout);
     std::unique_ptr<Stream> accept(std::string& peerBase64, std::chrono::seconds timeout);
 
@@ -241,8 +232,7 @@ struct TransportPeer {
 void setI2pLogging(bool enabled);
 bool i2pLogging();
 
-// Grows each time the way to the I2P network may be back: the link returned after it was
-// lost, or the device moved to another network.
+// Grows each time the network may be back: the link returned, or the device moved network.
 std::uint64_t carryReturns();
 void networkChanged();
 // Told on whichever thread grows carryReturns(); an empty function stops the telling.

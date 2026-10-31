@@ -144,11 +144,6 @@ std::vector<Bytes> sampleRouterInfos(const std::size_t count)
     return backend::embeddedSampleRouterInfos(count);
 }
 
-std::size_t seedRouterInfos(const std::filesystem::path& dataDir, const std::vector<Bytes>& routers)
-{
-    return backend::embeddedSeedRouterInfos(dataDir, routers);
-}
-
 std::optional<Privacy> privacyFromString(const std::string_view text)
 {
     if (text == "minimal") {

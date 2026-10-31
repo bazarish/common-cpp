@@ -8,7 +8,6 @@ namespace bazarish {
 enum class AccountKind { eUser, eBot, eChat };
 
 std::string_view accountKindName(AccountKind kind);
-// Throws on a name that is not one of the three.
 AccountKind accountKindFromName(std::string_view name);
 
 }  // namespace bazarish

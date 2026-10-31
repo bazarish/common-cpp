@@ -176,7 +176,6 @@ AliasCertificate AliasCertificate::verify(const Bytes& der)
 {
     const VerifiedJson verified = verifyTagged(der, kAliasCertificateType);
     AliasCertificate cert;
-    cert.v = verified.body.at("v").get<int>();
     cert.alias = verified.body.at("alias").get<std::string>();
     cert.user = verified.body.at("user").get<std::string>();
     cert.issuedAt = verified.body.at("issuedAt").get<std::int64_t>();
@@ -201,7 +200,6 @@ ServerCard ServerCard::verify(const Bytes& der, const Service service)
 {
     const VerifiedJson verified = verifyTagged(der, cardType(service));
     ServerCard card;
-    card.v = verified.body.at("v").get<int>();
     card.server = verified.body.at("server").get<std::string>();
     card.sealingPublicKeyDer = fromBase64(verified.body.at("sealingKey").get<std::string>());
     card.issuedAt = verified.body.at("issuedAt").get<std::int64_t>();
@@ -233,7 +231,6 @@ DelegationCertificate DelegationCertificate::verify(const Bytes& der)
 {
     const VerifiedJson verified = verifyTagged(der, kDelegationCertificateType);
     DelegationCertificate cert;
-    cert.v = verified.body.at("v").get<int>();
     cert.root = verified.body.at("root").get<std::string>();
     cert.delegatedClassicalPublicDer
         = fromBase64(verified.body.at("delegatedClassical").get<std::string>());

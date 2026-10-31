@@ -18,7 +18,6 @@ struct SocketDial {
     std::string path = "/";
     std::map<std::string, std::string> headers;
     std::string subprotocol;
-    std::string sni;
     bool tls = true;
     std::string pin;
     std::chrono::seconds connectTimeout{15};

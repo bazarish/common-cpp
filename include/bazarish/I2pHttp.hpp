@@ -121,10 +121,10 @@ I2pHttpResponse readI2pHttpResponse(Stream& stream, const std::size_t maxBodyByt
     if (const auto it = response.headers.find("content-length"); it != response.headers.end()) {
         try {
             expected = static_cast<std::size_t>(std::stoull(it->second));
-            framed = true;
         } catch (const std::exception&) {
-            framed = false;
+            throw std::runtime_error("i2p response Content-Length is not a number: " + it->second);
         }
+        framed = true;
     }
     if (framed) {
         refuseOversized(expected);

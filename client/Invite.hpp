@@ -12,7 +12,6 @@ struct ServerLink {
     std::vector<std::string> reseedUrls;
 };
 
-std::string encodeServerLink(const ServerLink& link);
 ServerLink decodeServerLink(const std::string& uri);
 
 }  // namespace bazarish::client

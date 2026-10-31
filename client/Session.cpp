@@ -13,20 +13,17 @@
 
 #include <bazarish/Address.hpp>
 #include <bazarish/PathText.hpp>
-#include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Cms.hpp>
 #include <bazarish/Hybrid.hpp>
 #include <bazarish/Descriptor.hpp>
 #include <bazarish/Resolve.hpp>
 #include <bazarish/Errors.hpp>
-#include <bazarish/Hmac.hpp>
 #include <bazarish/Limits.hpp>
 #include <bazarish/PrivateFile.hpp>
 #include <bazarish/Padding.hpp>
 #include <bazarish/Pass.hpp>
 #include <bazarish/Log.hpp>
-#include <bazarish/Portal.hpp>
 #include <bazarish/Reactions.hpp>
 #include <bazarish/I2pAddress.hpp>
 
@@ -292,11 +289,8 @@ nlohmann::json decodedBody(const Bytes& bytes)
     return nlohmann::json::from_cbor(unpadFromLadder(bytes));
 }
 
-bazarish::i2p::Router& routerForAdd(const bool i2pEnabled)
+bazarish::i2p::Router& routerForAdd()
 {
-    if (!i2pEnabled) {
-        throw std::runtime_error("adding a contact needs I2P, and it is switched off");
-    }
     bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
     if (router == nullptr || !router->ready()) {
         throw std::runtime_error(
@@ -1984,8 +1978,8 @@ FetchTransport Session::fetchTransport() const
         return fetchTransportOverride_;
     }
     return [this](const std::string& toDest, const std::string& op, const Bytes& sealed) {
-        return federationFetchOverI2p(routerForAdd(i2pEnabled()), toDest, op, sealed,
-            transferPrivacy(), destinationOwner());
+        return federationFetchOverI2p(routerForAdd(), toDest, op, sealed, tunnelPrivacy(),
+            destinationOwner());
     };
 }
 
@@ -2006,12 +2000,8 @@ Session::ContactFetchContext Session::contactFetchContext() const
     ctx.endpoint = endpoint();
     ctx.i2pDataDir = i2pDirFor(accountPath_);
     ctx.resolver = resolverCoordinate_;
-    ctx.i2pEnabled = i2pEnabled();
-    ctx.blobFetchPrivacy = transferPrivacy();
+    ctx.privacy = tunnelPrivacy();
     ctx.destinationOwner = destinationOwner();
-    if (!myServingKeyB64_.empty()) {
-        ctx.servingSealingKeyDer = fromBase64(myServingKeyB64_);
-    }
     return ctx;
 }
 
@@ -2049,15 +2039,15 @@ Session::ContactCardResolved Session::resolveContactCard(const ContactFetchConte
         const FetchTransport transport = [&context](const std::string& toDest,
                                              const std::string& op,
                                              const Bytes& sealed) -> FetchOutcome {
-            return federationFetchOverI2p(routerForAdd(context.i2pEnabled), toDest, op, sealed,
-                context.blobFetchPrivacy, context.destinationOwner);
+            return federationFetchOverI2p(routerForAdd(), toDest, op, sealed, context.privacy,
+                context.destinationOwner);
         };
 
         const FetchTransport toRegistry = [&context](const std::string& host,
                                               const std::string& op,
                                               const Bytes& body) -> FetchOutcome {
-            return resolverFetchOverI2p(routerForAdd(context.i2pEnabled), host, op, body,
-                context.blobFetchPrivacy, context.destinationOwner);
+            return resolverFetchOverI2p(routerForAdd(), host, op, body, context.privacy,
+                context.destinationOwner);
         };
 
         if (request.byAlias) {
@@ -2534,7 +2524,7 @@ void Session::tellRoutingTo(const std::string& peerFingerprint)
               queue->routingTold.emplace_back(peerFingerprint, outcome.stored);
           };
     try {
-        (void)sendContent(peerFingerprint, std::move(inner), watch, /*waitForOutcome=*/false,
+        (void)sendContent(peerFingerprint, std::move(inner), watch,
             /*establishOnFirstReply=*/false);
     } catch (const std::exception& error) {
         bazarish::log::warn("routing update not sent to {}: {}",
@@ -2672,10 +2662,7 @@ void Session::sendReceipt(const std::string& peerFingerprint, const std::string&
     });
     bazarish::log::info("read receipt for {} on its way to {}", refMessageId,
         bazarish::log::redact(peerFingerprint));
-    if (!sendContent(peerFingerprint, std::move(inner), {}, false,
-            /*establishOnFirstReply=*/false)) {
-        bazarish::log::info("the read receipt for {} waits for a token", refMessageId);
-    }
+    (void)sendContent(peerFingerprint, std::move(inner), {}, /*establishOnFirstReply=*/false);
 }
 
 void Session::sendReaction(const std::string& peerFingerprint, const std::string& refMessageId,
@@ -2883,16 +2870,6 @@ void Session::releaseI2pLinks()
     stopFacadeLinkFor(destinationOwner());
 }
 
-bazarish::i2p::Privacy Session::transferPrivacy() const
-{
-    return transferPrivacy_.value_or(tunnelPrivacy());
-}
-
-void Session::setTransferPrivacy(const bazarish::i2p::Privacy privacy)
-{
-    transferPrivacy_ = privacy;
-}
-
 void Session::serveRequestedFile(const std::string& peerFingerprint, const std::string& fileId,
     const std::string& forAsk)
 {
@@ -2934,7 +2911,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, TransferStage::eMakingAddress,
                 peerFingerprint);
             bazarish::i2p::EndpointConfig config;
-            config.privacy = transferPrivacy();
+            config.privacy = tunnelPrivacy();
             config.tunnelQuantity = 2;
             config.label = "File upload";
             config.bulk = true;
@@ -3033,7 +3010,7 @@ void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& pee
         try {
             emitTransfer(offer.fileId, TransferState::eRequested, 0, 0, {},
                 TransferStage::eConnecting, peer);
-            fetchFileOverI2p(i2pRouter(), offer, announcedSha256, target, transferPrivacy(),
+            fetchFileOverI2p(i2pRouter(), offer, announcedSha256, target, tunnelPrivacy(),
                 [this, &offer, &peer](const std::uint64_t got, const std::uint64_t total) {
                     emitTransfer(
                         offer.fileId, TransferState::eRunning, got, total, {},
@@ -3070,7 +3047,7 @@ nlohmann::json Session::envelope(
 }
 
 bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inner,
-    const DeliveryWatch& watch, bool waitForOutcome, bool establishOnFirstReply)
+    const DeliveryWatch& watch, bool establishOnFirstReply)
 {
     requireSwitchedOn();
     if (isSavedChat(peerFingerprint)) {
@@ -3165,7 +3142,7 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     }
 
     const bool delivered = deliver(contact.dest, peerServingKey, "content", peerFingerprint,
-        pass, payload, watchWithLog, waitForOutcome, inner.value("id", std::string()));
+        pass, payload, watchWithLog, /*waitForOutcome=*/false, inner.value("id", std::string()));
     return delivered;
 }
 
@@ -3283,7 +3260,6 @@ std::vector<IncomingMessage> Session::takeIn(
             }
 
             IncomingMessage message;
-            message.deliveryClass = entry.deliveryClass;
             if (body.value("type", std::string()) == "device.message"
                 && body.value("from", std::string()) == fingerprint()) {
                 if (body.value("device", std::string()) == client_->clientId()) {
@@ -3880,11 +3856,6 @@ std::optional<Bytes> Session::picture(const std::string& e2eId) const
     return db_->get(pictureKey(e2eId));
 }
 
-bool Session::hasPicture(const std::string& e2eId) const
-{
-    return db_->has(pictureKey(e2eId));
-}
-
 void Session::putVoice(const std::string& e2eId, const Bytes& bytes)
 {
     db_->put(voiceKey(e2eId), bytes);
@@ -3903,11 +3874,6 @@ std::vector<Client::DeviceEntry> Session::devices()
 void Session::retireDevice(const std::string& clientId)
 {
     client_->retireClient(clientId);
-}
-
-void Session::retireThisDevice()
-{
-    client_->retireClient(client_->clientId());
 }
 
 void Session::closeAccountOnServer()
@@ -4225,10 +4191,8 @@ void Session::startCall(const std::string& peerFingerprint)
     call_.muted = false;
     call_.startedAtMs = nowMillis();
     call_.answerByMs = invitedAt + kCallAnswerWindowMs;
-    call_.deliveredAtMs = 0;
     call_.dgram = std::move(dgram);
     if (delivered) {
-        call_.deliveredAtMs = nowMillis();
         call_.stage = CallStage::eDelivered;
     } else {
         call_.stage = CallStage::eDelivering;
@@ -4419,10 +4383,6 @@ Session::CallInfo Session::currentCall() const
     }
     info.peerRinging = call_.peerRingingAtMs > 0;
     info.connectedAtMs = call_.connectedAtMs;
-    if (call_.media) {
-        info.packetsSent = call_.media->packetsSent();
-        info.packetsReceived = call_.media->packetsReceived();
-    }
     return info;
 }
 
@@ -4784,13 +4744,8 @@ bool tellAliasesWhereWeAre(const Session::AliasErrandContext& context, const Ide
     return needed != 0 && accepted == needed;
 }
 
-FetchTransport heldDestFor(
-    const bool i2pEnabled, const bazarish::i2p::Privacy privacy, const std::string& owner)
+FetchTransport heldDestFor(const bazarish::i2p::Privacy privacy, const std::string& owner)
 {
-    if (!i2pEnabled) {
-        throw std::runtime_error("The alias registry is reached over I2P, and I2P is "
-                                 "switched off.");
-    }
     bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
     if (router == nullptr || !router->ready()) {
         throw std::runtime_error("The I2P router is still building tunnels.");
@@ -4805,7 +4760,7 @@ FetchTransport Session::heldTransport() const
     if (fetchTransportOverride_) {
         return fetchTransportOverride_;
     }
-    return heldDestFor(i2pEnabled(), transferPrivacy(), destinationOwner());
+    return heldDestFor(tunnelPrivacy(), destinationOwner());
 }
 
 bool Session::refreshAliasStatus(const FetchTransport& over)
@@ -4924,8 +4879,7 @@ Session::AliasErrandContext Session::aliasErrandContext() const
     AliasErrandContext context;
     context.identityPem = client_->identity().privatePem();
     context.resolver = resolverCoordinate_;
-    context.i2pEnabled = i2pEnabled();
-    context.privacy = transferPrivacy();
+    context.privacy = tunnelPrivacy();
     context.destinationOwner = destinationOwner();
     context.fingerprint = fingerprint();
     context.dest = myDest_;
@@ -4944,7 +4898,7 @@ Session::AliasErrandResult Session::runAliasErrand(const AliasErrandContext& con
     try {
         const FetchTransport over = context.transport
             ? context.transport
-            : heldDestFor(context.i2pEnabled, context.privacy, context.destinationOwner);
+            : heldDestFor(context.privacy, context.destinationOwner);
         const std::int64_t now = nowSeconds();
         out.answer = askAliasStatus(context, Identity::fromPrivatePem(context.identityPem),
             over, now);
@@ -5054,7 +5008,7 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent)
     }
 
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
-        = publishPairDest(i2pRouter(), transferPrivacy(), destinationOwner());
+        = publishPairDest(i2pRouter(), tunnelPrivacy(), destinationOwner());
 
     PairingOffer offer;
     offer.code = code;

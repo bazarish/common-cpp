@@ -1,5 +1,4 @@
 // Bazarish project (c) 2026
-#include "Qr.hpp"
 #include "Session.hpp"
 
 #include <bazarish/Bytes.hpp>
@@ -52,12 +51,6 @@ int main()
 
     CHECK_THROWS(parseDescriptor("http://example/x"));
     CHECK_THROWS(parseDescriptor("bazarish://invite?v=1&fp=short"));
-
-    const std::vector<std::string> codes = renderQrCodes(uri);
-    CHECK(!codes.empty());
-    for (const std::string& code : codes) {
-        CHECK(!code.empty());
-    }
 
     ServerEndpoint endpoint;
     endpoint.serverFingerprint = serverFp;

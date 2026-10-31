@@ -125,7 +125,6 @@ void stopWarmPool()
     }
 }
 
-std::atomic<bool> g_i2pEnabled{true};
 std::atomic<bazarish::i2p::Privacy> g_tunnelPrivacy{bazarish::i2p::Privacy::eMinimal};
 std::string g_proxyHost;
 std::string g_samHost;
@@ -152,65 +151,69 @@ ConnectProgressFn& progressSink()
     static ConnectProgressFn sink;
     return sink;
 }
-}  // namespace
 
-namespace {
-std::mutex& noticeMutex()
+std::mutex& reseedsMutex()
 {
     static std::mutex mutex;
     return mutex;
 }
-BootstrapNoticeFn& noticeSink()
-{
-    static BootstrapNoticeFn sink;
-    return sink;
-}
-}  // namespace
 
-void setBootstrapNoticeSink(BootstrapNoticeFn sink)
+std::vector<std::string>& reseedsSlot()
 {
-    const std::lock_guard<std::mutex> lock(noticeMutex());
-    noticeSink() = std::move(sink);
+    static std::vector<std::string> reseeds;
+    return reseeds;
 }
 
-void reportBootstrapNotice(const std::string& message)
+bool usingSamTransport()
 {
-    BootstrapNoticeFn sink;
-    {
-        const std::lock_guard<std::mutex> lock(noticeMutex());
-        sink = noticeSink();
-    }
-    if (sink) {
-        sink(message);
-    }
+    const std::lock_guard<std::mutex> lock(proxyMutex());
+    return !g_samHost.empty();
 }
 
-namespace {
-std::mutex& facadesMutex()
+bool usingGatewayTransport()
 {
-    static std::mutex mutex;
-    return mutex;
+    const std::lock_guard<std::mutex> lock(proxyMutex());
+    return g_gateway.has_value();
 }
-std::vector<std::string>& facadesSlot()
+
+std::string samTransportHost()
 {
-    static std::vector<std::string> facades;
-    return facades;
+    const std::lock_guard<std::mutex> lock(proxyMutex());
+    return g_samHost;
+}
+
+int samTransportPort()
+{
+    const std::lock_guard<std::mutex> lock(proxyMutex());
+    return g_samPort;
+}
+
+std::string i2pSocksProxyHost()
+{
+    const std::lock_guard<std::mutex> lock(proxyMutex());
+    return g_proxyHost;
+}
+
+int i2pSocksProxyPort()
+{
+    const std::lock_guard<std::mutex> lock(proxyMutex());
+    return g_proxyPort;
 }
 }  // namespace
 
 void setReseedUrls(std::vector<std::string> urls)
 {
-    const std::lock_guard<std::mutex> lock(facadesMutex());
-    facadesSlot() = std::move(urls);
+    const std::lock_guard<std::mutex> lock(reseedsMutex());
+    reseedsSlot() = std::move(urls);
 }
 
 std::vector<std::string> reseedUrls()
 {
-    const std::lock_guard<std::mutex> lock(facadesMutex());
-    return facadesSlot();
+    const std::lock_guard<std::mutex> lock(reseedsMutex());
+    return reseedsSlot();
 }
 
-std::size_t knownRouterCount(const std::filesystem::path& dataDir, const std::size_t limit)
+std::size_t knownRouterCount(const std::filesystem::path& dataDir)
 {
     std::error_code ec;
     const std::filesystem::path netDb = dataDir / "netDb";
@@ -225,7 +228,7 @@ std::size_t knownRouterCount(const std::filesystem::path& dataDir, const std::si
     for (const std::filesystem::directory_entry& entry : entries) {
         if (entry.is_regular_file(ec)) {
             ++count;
-            if (count >= limit) {
+            if (count >= kMinKnownRouters) {
                 break;
             }
         }
@@ -246,35 +249,11 @@ void setRouterTransit(const bool transit)
     g_transit = transit;
 }
 
-bool usingSamTransport()
-{
-    const std::lock_guard<std::mutex> lock(proxyMutex());
-    return !g_samHost.empty();
-}
-
 void setGatewayTransport(const GatewayAddress& address, std::string pin)
 {
     const std::lock_guard<std::mutex> lock(proxyMutex());
     g_gateway = address;
     g_gatewayPin = std::move(pin);
-}
-
-bool usingGatewayTransport()
-{
-    const std::lock_guard<std::mutex> lock(proxyMutex());
-    return g_gateway.has_value();
-}
-
-std::string samTransportHost()
-{
-    const std::lock_guard<std::mutex> lock(proxyMutex());
-    return g_samHost;
-}
-
-int samTransportPort()
-{
-    const std::lock_guard<std::mutex> lock(proxyMutex());
-    return g_samPort;
 }
 
 bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir)
@@ -418,18 +397,6 @@ void setI2pSocksProxy(std::string host, const int port)
     router->setSocksProxy(i2pSocksProxyHost(), i2pSocksProxyPort());
 }
 
-std::string i2pSocksProxyHost()
-{
-    const std::lock_guard<std::mutex> lock(proxyMutex());
-    return g_proxyHost;
-}
-
-int i2pSocksProxyPort()
-{
-    const std::lock_guard<std::mutex> lock(proxyMutex());
-    return g_proxyPort;
-}
-
 std::optional<bazarish::i2p::ProxyState> i2pProxyState()
 {
     const std::lock_guard<std::mutex> lock(routerMutex());
@@ -443,9 +410,8 @@ std::optional<bazarish::i2p::ProxyState> i2pProxyState()
     return router->proxyState();
 }
 
-void restartI2pRouter(const std::filesystem::path& dataDir)
+void restartI2pRouter()
 {
-    (void)dataDir;
     if (usingSamTransport() || usingGatewayTransport()) {
         return;
     }
@@ -470,12 +436,13 @@ void restartI2pRouter(const std::filesystem::path& dataDir)
 
 namespace {
 
-// The retry stays in the router-start stage, which the interface filters as
-// monotonic, so it must not report less than the start itself did.
+// The interface filters this stage as monotonic: the retry must not report less than the start.
 constexpr int kRouterStartPercent = 30;
+// What i2pd itself spends on a reseed before it gives up (RESEED_GIVEUP_TIMEOUT).
+constexpr int kReseedWaitSeconds = 180;
+constexpr int kReseedPollSeconds = 3;
 
-// The router holds its database in memory and writes it out on its own schedule,
-// so the count to wait on is the live one, not the files under netDb.
+// The router writes netDb out on its own schedule: the live count is the one to wait on.
 bool knownEnough(const bazarish::i2p::Router& router)
 {
     return static_cast<std::size_t>(router.knownRouters()) >= kMinKnownRouters;
@@ -488,9 +455,6 @@ bool waitForNetDb(const bazarish::i2p::Router& router)
     while (std::chrono::steady_clock::now() < deadline) {
         if (knownEnough(router)) {
             return true;
-        }
-        if (!i2pEnabled()) {
-            return false;
         }
         std::this_thread::sleep_for(std::chrono::seconds(kReseedPollSeconds));
     }
@@ -520,31 +484,8 @@ I2pBootstrap bootstrapI2pRouter(const std::filesystem::path& dataDir)
     reportConnectProgress(kRouterStartPercent, "Starting with the built-in reseeds");
     setReseedUrls({});
     router.setReseedUrls({});
-    restartI2pRouter(dataDir);
+    restartI2pRouter();
     return waitForNetDb(router) ? I2pBootstrap::eBuiltIn : I2pBootstrap::eEmpty;
-}
-
-void reconcileI2pRouter(const std::filesystem::path& dataDir)
-{
-    const std::lock_guard<std::mutex> lifecycle(lifecycleMutex());
-    const std::lock_guard<std::mutex> lock(routerMutex());
-    std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
-    if (g_i2pEnabled.load()) {
-        if (!router) {
-            try {
-                router = std::make_unique<bazarish::i2p::Router>(routerConfigFor(dataDir));
-            } catch (const std::exception& error) {
-                bazarish::log::warn("i2p: no transport: {}", error.what());
-                return;
-            }
-        } else {
-            router->start();
-        }
-        ensureWarmPool(*router);
-    } else if (router) {
-        stopWarmPool();
-        router->stop();
-    }
 }
 
 void setConnectProgressSink(ConnectProgressFn sink)
@@ -563,16 +504,6 @@ void reportConnectProgress(const int percent, const std::string& text)
     if (sink) {
         sink(percent, text);
     }
-}
-
-void setI2pEnabled(bool enabled)
-{
-    g_i2pEnabled.store(enabled);
-}
-
-bool i2pEnabled()
-{
-    return g_i2pEnabled.load();
 }
 
 void setTunnelPrivacy(const bazarish::i2p::Privacy privacy)

@@ -137,8 +137,7 @@ using NativeSocket = int;
 
 void closeSocket(const Socket socket) { ::close(static_cast<int>(socket)); }
 
-// A peer that has gone away must not raise SIGPIPE and take the process with it:
-// Linux carries that on the call, the BSDs on the socket.
+// A gone peer must not raise SIGPIPE: Linux carries the flag on the call, the BSDs on the socket.
 #ifdef MSG_NOSIGNAL
 constexpr int kNoSignal = MSG_NOSIGNAL;
 #else
@@ -482,7 +481,6 @@ std::string styleName(const Style style)
     throw Error(Result::eI2pError, "SAM: unknown session style");
 }
 
-// The tunnel profile as I2CP options.
 std::string privacyOptions(const i2p::Privacy privacy)
 {
     int length = 0;
@@ -557,27 +555,6 @@ std::uint16_t RouterAddress::resolvedDatagramPort() const
 {
     return datagramPort != 0 ? datagramPort
                              : static_cast<std::uint16_t>(controlPort - kDatagramPortBelowControl);
-}
-
-std::string_view toString(const Result result)
-{
-    switch (result) {
-        case Result::eOk:
-            return "OK";
-        case Result::eInvalidId:
-            return "INVALID_ID";
-        case Result::eDuplicatedId:
-            return "DUPLICATED_ID";
-        case Result::eInvalidKey:
-            return "INVALID_KEY";
-        case Result::eCantReachPeer:
-            return "CANT_REACH_PEER";
-        case Result::eI2pError:
-            return "I2P_ERROR";
-        case Result::eUnknown:
-            return "UNKNOWN";
-    }
-    return "UNKNOWN";
 }
 
 Error::Error(const Result result, const std::string& message)

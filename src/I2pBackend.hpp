@@ -93,8 +93,6 @@ std::unique_ptr<RouterBackend> makeGatewayRouter(const RouterConfig& config);
 std::unique_ptr<RouterBackend> makeEmbeddedRouter(const RouterConfig& config);
 std::string embeddedRouterVersion();
 std::vector<Bytes> embeddedSampleRouterInfos(std::size_t count);
-std::size_t embeddedSeedRouterInfos(
-    const std::filesystem::path& dataDir, const std::vector<Bytes>& routers);
 Bytes generateKeysBlob();
 // A raw 32-byte X25519 key in the I2P base64 an I2CP lease-set option expects.
 inline constexpr std::size_t kLeaseSetKeyBytes = 32;

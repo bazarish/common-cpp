@@ -37,7 +37,6 @@ struct I2pDestStatus {
     std::string approval;
     std::string registrationMessage;
     std::int64_t transientExpires = 0;
-    std::int64_t transientUpdatedAt = 0;
 
     bool approved() const { return approval == "approved"; }
 };
@@ -49,7 +48,6 @@ struct StorageUsage {
 };
 
 struct PublishResult {
-    std::uint64_t quotaBytes = 0;
     std::string dest;
     Bytes servingSealingKeyDer;
     Bytes cardDer;
@@ -117,8 +115,8 @@ public:
     void setDestinationOwner(std::string owner);
     void releaseI2pLink();
 
-    PublishResult publishCard(const ContactCard& content, const DestinationInfo& serving = {},
-        std::int64_t notBefore = 0);
+    PublishResult publishCard(
+        const ContactCard& content, const DestinationInfo& serving, std::int64_t notBefore);
 
     void closeAccount();
     PortalInfo fetchPortalInfo();
@@ -150,8 +148,7 @@ public:
     // Items no longer held are left out of the answer.
     std::vector<FetchedItem> fetch(const std::vector<std::string>& ids);
     void ack(const std::vector<std::string>& ids);
-    void submitSelf(const std::string& deliveryId, const Bytes& payload,
-        const std::string& kind = {});
+    void submitSelf(const std::string& deliveryId, const Bytes& payload, const std::string& kind);
 
     WireLog& wireLog();
     std::shared_ptr<WireLog> wireLogHandle() const;

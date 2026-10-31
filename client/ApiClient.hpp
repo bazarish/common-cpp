@@ -26,8 +26,6 @@
 
 namespace bazarish::client {
 
-using UploadProgressFn = std::function<void(std::uint64_t sent, std::uint64_t total)>;
-
 struct Facade {
     std::string host;
     int port = 0;
@@ -47,8 +45,6 @@ inline constexpr const char* kEventsPath = "/v1/messaging/events";
 struct ApiResponse {
     int status = 0;
     Bytes body;
-    std::string contentType;
-    std::map<std::string, std::string> headers;
 
     nlohmann::json json() const;
 };
@@ -93,18 +89,15 @@ private:
 
     ApiResponse send(const std::string& method, const std::string& path,
         const std::string& query, const Bytes& body, const std::string& contentType,
-        bool authenticate, const std::map<std::string, std::string>& extraHeaders = {},
-        int readTimeoutSeconds = kDefaultReadTimeoutSeconds,
-        const std::string& note = {});
+        int readTimeoutSeconds = kDefaultReadTimeoutSeconds, const std::string& note = {});
     ApiResponse transmitLocked(const std::string& method, const std::string& path,
-        const std::string& query, const Bytes& body, const std::string& contentType,
-        const std::map<std::string, std::string>& headers, int readTimeoutSeconds);
+        const Bytes& body, const std::string& contentType, int readTimeoutSeconds);
 
     static bool facadeIsI2p(const Facade& facade);
     static bool facadeIsOwnLoopback(const Facade& facade);
     std::vector<std::size_t> facadeOrder() const;
     std::optional<ApiResponse> i2pExchange(const Facade& facade, const std::string& method,
-        const std::string& fullPath, const std::map<std::string, std::string>& headers,
+        const std::string& path, const std::map<std::string, std::string>& headers,
         std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody,
         int readTimeoutSeconds);
 

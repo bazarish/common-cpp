@@ -20,7 +20,6 @@
 #include <bazarish/Padding.hpp>
 #include <bazarish/Pass.hpp>
 
-#include <bazarish/FederationFrame.hpp>
 #include <bazarish/HttpServer.hpp>
 
 #include "TestUtil.hpp"
@@ -87,7 +86,6 @@ constexpr const char* kTestResolverDest
 
 struct Mock {
     std::mutex mu;
-    std::string serverFp;
     std::map<std::string, std::string> sealingFor;
     std::map<std::string, std::string> destFor;
     std::map<std::string, std::string> certFor;  // fingerprint -> contact card (base64 DER)
@@ -236,9 +234,7 @@ private:
 int main()
 {
     bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
-    const Identity serverIdentity = Identity::generate();
     Mock m;
-    m.serverFp = serverIdentity.fingerprint();
 
     http::Server server(localOptions());
 
@@ -310,25 +306,6 @@ int main()
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
             respondJson(response, {{"ok", true}});
-        }));
-
-    server.get("/v1/account/card",
-        stub([&](const http::Request& request, http::Response& response) {
-            const std::string user = request.query("user");
-            std::lock_guard<std::mutex> lock(m.mu);
-            const auto found = m.certFor.find(user);
-            if (found == m.certFor.end()) {
-                response.status = 404;
-                respondJson(response, {{"error", "unknown"}});
-                return;
-            }
-            const ContactCard card = ContactCard::verify(fromBase64(found->second));
-            if (toBase64Url(card.servingSealingKeyDer) != request.query("key")) {
-                response.status = 404;
-                respondJson(response, {{"error", "unknown"}});
-                return;
-            }
-            respondJson(response, {{"user", user}, {"card", found->second}});
         }));
 
     server.post("/v1/messaging/passes",

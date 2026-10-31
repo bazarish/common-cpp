@@ -42,7 +42,6 @@ public:
 
     std::string privatePem(const std::string& passphrase = {}) const;
     Bytes publicDer() const;
-    // base32(sha256(SubjectPublicKeyInfo DER)).
     std::string fingerprint() const;
     bool hasPrivate() const;
     bool isA(const char* algorithmName) const;

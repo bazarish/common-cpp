@@ -21,8 +21,7 @@ extern const char* const kHeaderSignatureClassical;
 extern const char* const kHeaderSignaturePq;
 extern const char* const kHeaderNonce;
 
-// Ed25519 is deterministic, so a retry of the same request would otherwise be
-// indistinguishable from its replay: the nonce is what makes it distinct.
+// Ed25519 is deterministic: without a nonce a retry is indistinguishable from a replay.
 inline constexpr std::size_t kAuthNonceBytes = 16;
 
 using Headers = std::map<std::string, std::string>;
@@ -55,16 +54,8 @@ Headers signRequest(const Identity& identity, std::int64_t timestamp,
     const std::string& method, const std::string& path, const Bytes& body,
     const std::string& clientId = {});
 
-Headers signRequestDigest(const Identity& identity, std::int64_t timestamp,
-    const std::string& method, const std::string& path, const std::string& bodySha256Hex,
-    const std::string& clientId = {});
-
 std::string verifyRequest(const Headers& headers, std::int64_t now, const std::string& method,
     const std::string& path, const Bytes& body, const std::string& clientId = {});
-
-std::string verifyRequestDigest(const Headers& headers, std::int64_t now,
-    const std::string& method, const std::string& path, const std::string& bodySha256Hex,
-    const std::string& clientId = {});
 
 class ReplayCache {
 public:
@@ -83,9 +74,5 @@ std::string authorizeRequest(const Headers& headers, std::int64_t now,
 std::string verifyRequest(const Headers& headers, std::int64_t now, const std::string& method,
     const std::string& path, const Bytes& body, ReplayCache& replayCache,
     const std::string& clientId = {});
-
-std::string verifyRequestDigest(const Headers& headers, std::int64_t now,
-    const std::string& method, const std::string& path, const std::string& bodySha256Hex,
-    ReplayCache& replayCache, const std::string& clientId = {});
 
 }  // namespace bazarish::auth

@@ -19,8 +19,6 @@ public:
     AccountDb(const AccountDb&) = delete;
     AccountDb& operator=(const AccountDb&) = delete;
 
-    static bool opens(const std::filesystem::path& file, const std::string& passphrase);
-
     std::optional<Bytes> get(const std::string& name) const;
     std::string text(const std::string& name) const;
     void put(const std::string& name, const Bytes& value);

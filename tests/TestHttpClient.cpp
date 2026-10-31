@@ -19,7 +19,6 @@ using namespace bazarish;
 namespace {
 
 constexpr int kTimeoutSeconds = 10;
-constexpr std::size_t kUploadBytes = 300 * 1024;
 
 std::string readHead(boost::asio::ip::tcp::socket& peer)
 {
@@ -77,12 +76,6 @@ int main()
         http::Response answer;
         answer.contentType = "text/plain";
         answer.body = request.cookie(request.query("name"));
-        return answer;
-    });
-    server.put("/sink", [](const http::Request& request) {
-        http::Response answer;
-        answer.contentType = "text/plain";
-        answer.body = std::to_string(request.body.size());
         return answer;
     });
     server.get("/vault", [](const http::Request& request) {
@@ -160,23 +153,6 @@ int main()
     CHECK(posted.status == 200);
     CHECK(posted.body == "aGVsbG8+d29ybGQ=|a/b");
 
-    http::ClientRequest put;
-    put.method = "PUT";
-    put.target = "/sink";
-    put.contentType = "application/octet-stream";
-    std::size_t produced = 0;
-    const http::BodyProvider provider = [&produced](char* const chunk, const std::size_t capacity) {
-        const std::size_t want = std::min(capacity, kUploadBytes - produced);
-        std::fill_n(chunk, want, 'x');
-        produced += want;
-        return want;
-    };
-    const http::ClientResponse stored
-        = http::upload("127.0.0.1", port, put, kUploadBytes, provider, options);
-    CHECK(stored.status == 200);
-    CHECK(stored.body == std::to_string(kUploadBytes));
-    CHECK(produced == kUploadBytes);
-
     http::ClientOptions vaultOptions = options;
     vaultOptions.digestUser = "walletuser";
     vaultOptions.digestPassword = "walletpass";
@@ -207,41 +183,6 @@ int main()
     CHECK(late.readTimedOut);
 
     server.stop();
-    {
-        std::string sawAuthorization;
-        http::Server::Options options;
-        options.port = 0;
-        http::Server server(options);
-        server.get("/basic", [&sawAuthorization](const http::Request& request) {
-            const auto found = request.headers.find("authorization");
-            sawAuthorization = found == request.headers.end() ? std::string() : found->second;
-            http::Response response;
-            response.status = sawAuthorization.empty() ? 401 : 200;
-            response.body = "{}";
-            return response;
-        });
-        const int port = server.start();
-        CHECK(port > 0);
-
-        http::ClientRequest ask;
-        ask.method = "GET";
-        ask.target = "/basic";
-        http::ClientOptions withBasic;
-        withBasic.basicUser = "rpcuser";
-        withBasic.basicPassword = "s3cret";
-        const http::ClientResponse answered = http::request("127.0.0.1", port, ask, withBasic);
-        CHECK(answered.status == 200);
-        const std::string pair = "rpcuser:s3cret";
-        CHECK(sawAuthorization
-            == "Basic " + bazarish::toBase64(bazarish::Bytes(pair.begin(), pair.end())));
-
-        sawAuthorization.clear();
-        const http::ClientResponse bare = http::request("127.0.0.1", port, ask, {});
-        CHECK(bare.status == 401);
-        CHECK(sawAuthorization.empty());
-        server.stop();
-    }
-
     {
         using boost::asio::ip::tcp;
         boost::asio::io_context loop;

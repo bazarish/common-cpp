@@ -6,26 +6,16 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 3.5 is where ML-DSA and ML-KEM arrived, and every signature and every sealed
-# envelope in this protocol is hybrid: an older OpenSSL builds a server that
-# cannot verify or open anything, so it is refused here rather than at the first
-# request. Distributions that ship an older one (Debian 12 has 3.0) need one
-# built alongside: -DOPENSSL_ROOT_DIR=/path/to/openssl-3.5.
+# ML-DSA and ML-KEM arrived in 3.5; over an older system one pass -DOPENSSL_ROOT_DIR.
 find_package(OpenSSL 3.5 REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
 
-# The embedded I2P transport, which every consumer of common gets: I2P is the
-# transport, and a build without it would be a second kind of library to reason
-# about. Requires the i2pd submodule (recursive init) and Boost program_options.
+# The embedded I2P transport, in every build: the i2pd submodule and Boost program_options.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/I2pdBazarish.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersion.cmake)
 
-# The client core: everything a Bazarish client is, with no user interface in it
-# - accounts and their encrypted store, the session, the courier, invites, calls
-# and the bot framework. It lives here because it has two consumers, the desktop
-# application and the daemon, and neither owns it. Servers do not need it, so
-# they build with -DBAZARISH_WITH_CLIENT=OFF and pay for none of it.
+# The client core of the desktop client and of bazarish-bot; servers build it OFF.
 option(BAZARISH_WITH_CLIENT "Build the client core library" ON)
 
 add_library(bazarish_common STATIC
@@ -83,24 +73,17 @@ target_include_directories(bazarish_common SYSTEM
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 target_link_libraries(bazarish_common PUBLIC OpenSSL::Crypto OpenSSL::SSL ZLIB::ZLIB)
-# The SAM client speaks to the router over a socket of its own, and on Windows
-# that is a library rather than the C runtime.
+# On Windows the SAM client's sockets are a library rather than the C runtime.
 if(WIN32)
-    # Sockets, and the process counters the health report reads.
-    target_link_libraries(bazarish_common PUBLIC ws2_32 psapi)
+    target_link_libraries(bazarish_common PUBLIC ws2_32)
 endif()
 target_compile_options(bazarish_common PRIVATE -Wall -Wextra -Werror)
 
-# Asio allocates a coroutine's frame through its own allocator and frees it the
-# same way. Once GCC 14 inlines that frame (-O2 and up) it pairs the allocation
-# with the plain operator delete and calls the result a mismatch. The pairing is
-# the compiler's, not ours, so the false positive is silenced where the
-# coroutines live rather than across the library.
+# GCC 14 pairs Asio's inlined coroutine frame with plain delete: a false positive, silenced here.
 set_source_files_properties(src/HttpServer.cpp src/HttpClient.cpp PROPERTIES
     COMPILE_OPTIONS -Wno-mismatched-new-delete)
 
-# The I2P transport wrapper. Its i2pd and Boost includes arrive (as SYSTEM)
-# through Bazarish::I2pd, so they stay out of our -Werror surface.
+# Its i2pd and Boost includes arrive as SYSTEM through Bazarish::I2pd, out of -Werror.
 target_sources(bazarish_common PRIVATE src/I2pEmbedded.cpp)
 target_link_libraries(bazarish_common PUBLIC Bazarish::I2pd)
 # Manual end-to-end smoke over live I2P (not a unit test - needs the network).
@@ -137,8 +120,7 @@ bazarish_add_test(TestI2pAddress)
 bazarish_add_test(TestI2pDelegation)
 bazarish_add_test(TestI2pKeyBlob)
 
-# Live end-to-end over an external router reached by SAM (not a unit test - it
-# needs a running i2pd and the network), the counterpart of i2p_smoke.
+# Live end-to-end over an external router by SAM: needs a running i2pd, so not a unit test.
 add_executable(sam_streams tests/SamStreams.cpp)
 target_link_libraries(sam_streams PRIVATE bazarish_common)
 target_compile_options(sam_streams PRIVATE -Wall -Wextra -Werror)
@@ -161,10 +143,7 @@ bazarish_add_test(TestLoginChallenge)
 bazarish_add_test(TestConfigFile)
 bazarish_add_test(TestWebAssets)
 
-# These four play the far end over POSIX sockets of their own - socketpair,
-# read and write on a descriptor. What they cover is portable; the harness is
-# not, and Windows is a client-only target where they run on the primary
-# platform instead.
+# These four fake the far end over POSIX sockets; Windows is a client-only target.
 if(NOT WIN32)
     bazarish_add_test(TestFederationFrame)
     bazarish_add_test(TestSam)
@@ -172,20 +151,12 @@ if(NOT WIN32)
     bazarish_add_test(TestWebSocketTlsDuplex)
 endif()
 
-# The client core and its tests. Its own dependencies are looked for only when
-# it is wanted: a server build asks for none of them.
+# A server build looks for none of the client core's dependencies.
 if(BAZARISH_WITH_CLIENT)
-    # The account store is SQLCipher (an encrypted SQLite): one file per account,
-    # unreadable without its key. It is a fork of SQLite exporting the same
-    # symbols, so nothing in this project may link plain libsqlite3 next to it.
+    # SQLCipher exports SQLite's symbols: nothing here may link plain libsqlite3 beside it.
     find_library(SQLCIPHER_LIBRARY NAMES sqlcipher REQUIRED)
     find_path(SQLCIPHER_INCLUDE_DIR NAMES sqlcipher/sqlite3.h REQUIRED)
-    # libqrencode renders contact invites as QR codes (multi-symbol structured
-    # append for the full self-verifying chain).
-    find_library(QRENCODE_LIBRARY NAMES qrencode REQUIRED)
-    find_path(QRENCODE_INCLUDE_DIR NAMES qrencode.h REQUIRED)
-    # libopus encodes call audio (48 kHz mono, 20 ms frames). The media rides I2P
-    # datagrams; this is only the codec, so it stays private to the library.
+    # libopus is only the call codec, so it stays private to the library.
     find_library(OPUS_LIBRARY NAMES opus REQUIRED)
     find_path(OPUS_INCLUDE_DIR NAMES opus/opus.h REQUIRED)
 
@@ -211,21 +182,19 @@ if(BAZARISH_WITH_CLIENT)
         client/OutboundCourier.cpp
         client/OutboundLeases.cpp
         client/Presence.cpp
-        client/Qr.cpp
         client/Session.cpp
         client/SocksProxy.cpp
         client/WarmDestPool.cpp
         client/WireLog.cpp
     )
     add_library(Bazarish::Client ALIAS bazarish_client)
-    # The headers sit beside their sources and are included by name, which is how
-    # both front-ends already spell them.
+    # Headers sit beside their sources and are included by name, as both front-ends spell them.
     target_include_directories(bazarish_client PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/client)
     target_include_directories(bazarish_client PRIVATE
-        ${SQLCIPHER_INCLUDE_DIR} ${QRENCODE_INCLUDE_DIR} ${OPUS_INCLUDE_DIR})
+        ${SQLCIPHER_INCLUDE_DIR} ${OPUS_INCLUDE_DIR})
     target_link_libraries(bazarish_client PUBLIC bazarish_common Threads::Threads
         ${SQLCIPHER_LIBRARY})
-    target_link_libraries(bazarish_client PRIVATE ${QRENCODE_LIBRARY} ${OPUS_LIBRARY})
+    target_link_libraries(bazarish_client PRIVATE ${OPUS_LIBRARY})
     target_compile_options(bazarish_client PRIVATE -Wall -Wextra -Werror)
 
     function(bazarish_client_add_test name)
@@ -249,16 +218,11 @@ endif()
     bazarish_client_add_test(TestClient)
     bazarish_client_add_test(TestPresence)
 
-    # Live end-to-end against a running resolver over real I2P: the coordinate a
-    # build ships with, the frame on the real transport, and the chain checked
-    # against the root this binary was built with. Needs the network and a
-    # resolver that is up, so it is run by hand rather than by ctest.
+    # Live against a running resolver over real I2P, so run by hand rather than by ctest.
     add_executable(alias_smoke client/tests/AliasSmoke.cpp)
     target_link_libraries(alias_smoke PRIVATE bazarish_client)
     target_compile_options(alias_smoke PRIVATE -Wall -Wextra -Werror)
-    # What a send costs against a real account and a real server, with a
-    # timestamp on every step. Not a unit test, for the same reason as the two
-    # above: it needs the network and something to talk to.
+    # What a send costs against a real account and server: needs the network, not a unit test.
     add_executable(send_smoke client/tests/SendSmoke.cpp)
     target_link_libraries(send_smoke PRIVATE bazarish_client)
     target_compile_options(send_smoke PRIVATE -Wall -Wextra -Werror)

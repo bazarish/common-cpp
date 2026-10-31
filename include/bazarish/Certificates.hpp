@@ -42,7 +42,6 @@ struct ContactCard {
 };
 
 struct AliasCertificate {
-    int v = kCertificateFormatVersion;
     std::string alias;
     std::string user;
     std::int64_t issuedAt = 0;
@@ -57,7 +56,6 @@ struct ServerCard {
     // A facade carries a tunnel to each, and each opens it under its own sealing key.
     enum class Service { eMessaging, eServiceNode };
 
-    int v = kCertificateFormatVersion;
     std::string server;
     Bytes sealingPublicKeyDer;
     std::int64_t issuedAt = 0;
@@ -71,7 +69,6 @@ struct ServerCard {
 };
 
 struct DelegationCertificate {
-    int v = kCertificateFormatVersion;
     std::string root;
     Bytes delegatedClassicalPublicDer;
     Bytes delegatedPqPublicDer;

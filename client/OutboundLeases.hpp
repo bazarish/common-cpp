@@ -39,7 +39,6 @@ public:
         const std::string& toDest, std::chrono::seconds timeout);
     void release(const std::string& toDest);
     void retire(const std::string& toDest);
-    void clear();
 
     void setAddressing(OutboundAddressing addressing);
     void keepOwn(const std::string& toDest);

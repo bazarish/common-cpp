@@ -682,8 +682,7 @@ struct Presence::Impl {
         if (!watching || !watcher) {
             return;
         }
-        // Watches go before our address is up, so a contact on our gateway is met at once; a watcher
-        // that looked contacts up before then may hold their previous addresses, as they may ours.
+        // Watches go before our address is up, so a contact on our gateway is met at once.
         const bool holderUp = holder && holder->link->ready();
         if (holderUp && !announced) {
             announced = true;

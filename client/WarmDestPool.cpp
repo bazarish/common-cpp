@@ -1,8 +1,6 @@
 // Bazarish project (c) 2026
 #include "WarmDestPool.hpp"
 
-#include "I2pRouter.hpp"
-
 #include <bazarish/Log.hpp>
 
 #include <algorithm>

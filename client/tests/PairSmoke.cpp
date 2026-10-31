@@ -63,7 +63,6 @@ int main()
 {
     gStart = Clock::now();
     log::setLevel(log::Level::eInfo);
-    setI2pEnabled(true);
 
     const fs::path root = fs::temp_directory_path() / ("bazarish-pair-smoke-" + toHex(randomBytes(8)));
     const fs::path second = root / "second";

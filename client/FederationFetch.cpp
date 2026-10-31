@@ -255,14 +255,4 @@ FetchTransport resolverHeldDest(
     };
 }
 
-FetchTransport federationHeldDest(
-    bazarish::i2p::Router& router, const bazarish::i2p::Privacy privacy, const std::string& owner)
-{
-    const std::shared_ptr<bazarish::i2p::Endpoint> held
-        = takeThrowawayDest(router, privacy, owner, std::string());
-    return [held](const std::string& dest, const std::string& op, const Bytes& sealed) {
-        return fetchOver(*held, dest, op, sealed, Face::eFederationFrame);
-    };
-}
-
 }  // namespace bazarish::client

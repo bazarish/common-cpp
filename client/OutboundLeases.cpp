@@ -212,12 +212,6 @@ void OutboundLeases::retire(const std::string& toDest)
     leases_.erase(keyForLocked(toDest));
 }
 
-void OutboundLeases::clear()
-{
-    const std::lock_guard<std::mutex> lock(mutex_);
-    leases_.clear();
-}
-
 void OutboundLeases::setAddressing(const OutboundAddressing addressing)
 {
     const std::lock_guard<std::mutex> lock(mutex_);

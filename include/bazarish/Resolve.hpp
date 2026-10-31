@@ -16,14 +16,8 @@ struct CardFetchQuery {
     std::string fingerprint;
 };
 
-struct CardFetchResponse {
-    Bytes cardDer;
-};
-
 nlohmann::json toJson(const CardFetchQuery& query);
 CardFetchQuery cardFetchQueryFromJson(const nlohmann::json& body);
-nlohmann::json toJson(const CardFetchResponse& response);
-CardFetchResponse cardFetchResponseFromJson(const nlohmann::json& body);
 
 struct ResolveQuery {
     std::string alias;

@@ -11,7 +11,7 @@
 
 namespace bazarish::service {
 
-// Sign-in-with-key wire contract - must stay in lockstep with the client (Session::signLogin).
+// The sign-in-with-key wire contract (docs-main api/SignInWithKey.md).
 inline constexpr const char* kLoginMethod = "BZ-LOGIN";
 inline constexpr const char* kLoginPath = "/portal/login";
 
@@ -23,8 +23,7 @@ inline constexpr char kLoginChallengeField[] = "c=";
 
 struct LoginConsumer {
     std::string name;
-    // Every address this place answers at, in the order it publishes them: the
-    // signature covers the list, so the order is part of what is signed.
+    // The signature covers the list, so its order is part of what is signed.
     std::vector<std::string> place;
     std::string role;
 
@@ -34,8 +33,7 @@ struct LoginConsumer {
 inline constexpr std::size_t kConsumerNameMax = 96;
 inline constexpr std::size_t kConsumerPlaceMax = 256;
 inline constexpr std::size_t kConsumerRoleMax = 48;
-// A list nobody reads is not a check: a reader has to be able to find their own
-// address in it at a glance.
+// A reader has to find their own address in the list at a glance.
 inline constexpr std::size_t kConsumerPlacesMax = 4;
 
 struct LoginCallback {

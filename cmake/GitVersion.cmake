@@ -28,9 +28,7 @@ function(bazarish_git_version sourceDir outName outCode)
     set(${outCode} "${commits}" PARENT_SCOPE)
 endfunction()
 
-# Gives the target BuildVersion.hpp with the version of the repository it is built
-# from. Stamped on every build and not at configure time: a tag made or a commit
-# written after the build directory was configured still reaches the binary.
+# Stamped at every build, so a tag or a commit made after configure still reaches the binary.
 function(bazarish_stamp_version target)
     set(stampDir "${CMAKE_CURRENT_BINARY_DIR}/${target}-version")
     add_custom_target(${target}-version ALL

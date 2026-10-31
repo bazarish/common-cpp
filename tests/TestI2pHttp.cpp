@@ -66,15 +66,14 @@ int main()
     // signal the process.
     ::signal(SIGPIPE, SIG_IGN);
     {
-        const std::string get
-            = buildI2pHttpRequest("GET", "h.b32.i2p", "/b/x", {{"Range", "bytes=10-"}}, 0);
+        const std::string get = buildI2pHttpRequest(
+            "GET", "h.b32.i2p", "/v1/server/card", {{"X-Bazarish-Client", "dev"}}, 0);
         CHECK(get
-            == "GET /b/x HTTP/1.1\r\nHost: h.b32.i2p\r\n"
-               "Range: bytes=10-\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        const std::string post
-            = buildI2pHttpRequest("POST", "h.b32.i2p", "/b/x/confirm", {}, 42);
+            == "GET /v1/server/card HTTP/1.1\r\nHost: h.b32.i2p\r\n"
+               "X-Bazarish-Client: dev\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        const std::string post = buildI2pHttpRequest("POST", "h.b32.i2p", "/t", {}, 42);
         CHECK(post
-            == "POST /b/x/confirm HTTP/1.1\r\nHost: h.b32.i2p\r\n"
+            == "POST /t HTTP/1.1\r\nHost: h.b32.i2p\r\n"
                "Content-Length: 42\r\nConnection: close\r\n\r\n");
     }
 
@@ -86,14 +85,14 @@ int main()
 
     {
         const std::map<std::string, std::string> headers = parseI2pHttpHeaders(
-            "HTTP/1.1 206 Partial Content\r\n"
+            "HTTP/1.1 200 OK\r\n"
             "Content-Length:  123\r\n"
-            "Content-Range: bytes 10-132/200\r\n"
-            "X-Blob-Total:\t77\r\n"
+            "Content-Type: application/json\r\n"
+            "X-Bazarish-Client:\t77\r\n"
             "junk-line-without-colon");
         CHECK(headers.at("content-length") == "123");
-        CHECK(headers.at("content-range") == "bytes 10-132/200");
-        CHECK(headers.at("x-blob-total") == "77");
+        CHECK(headers.at("content-type") == "application/json");
+        CHECK(headers.at("x-bazarish-client") == "77");
         CHECK(headers.find("junk-line-without-colon") == headers.end());
     }
 

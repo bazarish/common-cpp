@@ -37,8 +37,6 @@ enum class Result {
     eUnknown,
 };
 
-std::string_view toString(Result result);
-
 class Error : public std::runtime_error {
 public:
     Error(Result result, const std::string& message);
@@ -51,7 +49,6 @@ private:
 enum class Style { eStream, eDatagram, eRaw };
 
 struct SessionConfig {
-    // The private keys as I2P base64.
     std::string privateKeys;
     Style style = Style::eStream;
     i2p::Privacy privacy = i2p::Privacy::eMax;
@@ -102,23 +99,19 @@ public:
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
 
-    // Our own destination, base64 and as the ".b32.i2p" host peers dial.
     const std::string& publicDestination() const;
     const std::string& privateKeys() const;
     std::string routingHost() const;
 
     bool alive() const;
 
-    // Opens a stream to a ".b32.i2p" host (b32 or b33) or a base64 destination.
     std::unique_ptr<Stream> connect(
         const std::string& destination, std::chrono::seconds timeout);
 
     void listen();
-    // Waits for an incoming stream and fills peerDestination with the caller's base64 destination.
     std::unique_ptr<Stream> accept(
         std::string& peerDestination, std::chrono::milliseconds timeout);
 
-    // One datagram to a host or base64 destination.
     void sendDatagram(const std::string& destination, const void* data, std::size_t size);
     std::vector<std::uint8_t> receiveDatagram(
         std::string* peerDestination, std::chrono::milliseconds timeout);

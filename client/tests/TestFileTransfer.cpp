@@ -4,7 +4,6 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/PathText.hpp>
-#include <bazarish/ServerDescriptor.hpp>
 
 #include "TestUtil.hpp"
 
@@ -50,7 +49,6 @@ FetchAttemptFn servingFrom(const Bytes& ciphertext, const std::size_t limit)
 
 int main()
 {
-    bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
     const fs::path root = fs::temp_directory_path() / ("bazarish-xfer-" + toHex(randomBytes(8)));
     fs::create_directories(root);
 

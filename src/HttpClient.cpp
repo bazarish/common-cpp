@@ -63,7 +63,6 @@ using asio::ip::tcp;
 
 // HTTP/1.1, as an integer, the way Beast spells a version.
 constexpr int kHttpVersion11 = 11;
-constexpr std::size_t kUploadChunkBytes = 64 * 1024;
 constexpr int kUnauthorizedStatus = 401;
 constexpr const char* kFirstNonceCount = "00000001";
 constexpr std::size_t kClientNonceBytes = 8;
@@ -115,56 +114,16 @@ ClientResponse fromBeast(const beasthttp::response<beasthttp::string_body>& in)
 
 template <class Stream>
 asio::awaitable<ClientResponse> exchangeOn(Stream& stream, const std::string& host,
-    const ClientRequest& request, const ClientOptions& options, const std::uint64_t length,
-    const BodyProvider* const provider, Phase& phase, beast::flat_buffer& buffer,
-    const bool keepAlive)
+    const ClientRequest& request, const ClientOptions& options, Phase& phase,
+    beast::flat_buffer& buffer, const bool keepAlive)
 {
     phase = Phase::eWrite;
     beast::get_lowest_layer(stream).expires_after(options.writeTimeout);
-    if (provider == nullptr) {
-        beasthttp::request<beasthttp::string_body> out;
-        applyHead(out, host, request, keepAlive);
-        out.body() = request.body;
-        out.prepare_payload();
-        co_await beasthttp::async_write(stream, out, asio::use_awaitable);
-    } else {
-        beasthttp::request<beasthttp::buffer_body> out;
-        applyHead(out, host, request, keepAlive);
-        out.content_length(length);
-        out.body().data = nullptr;
-        out.body().more = true;
-
-        beasthttp::request_serializer<beasthttp::buffer_body> serializer(out);
-        boost::system::error_code error;
-        co_await beasthttp::async_write_header(
-            stream, serializer, asio::redirect_error(asio::use_awaitable, error));
-        if (error) {
-            throw boost::system::system_error(error);
-        }
-
-        std::array<char, kUploadChunkBytes> chunk{};
-        std::uint64_t remaining = length;
-        while (remaining > 0) {
-            const std::size_t want
-                = static_cast<std::size_t>(std::min<std::uint64_t>(remaining, chunk.size()));
-            const std::size_t got = (*provider)(chunk.data(), want);
-            if (got == 0) {
-                throw std::runtime_error("upload body ended early");
-            }
-            remaining -= got;
-            out.body().data = chunk.data();
-            out.body().size = got;
-            out.body().more = remaining > 0;
-            beast::get_lowest_layer(stream).expires_after(options.writeTimeout);
-            co_await beasthttp::async_write(
-                stream, serializer, asio::redirect_error(asio::use_awaitable, error));
-            // Beast reports a consumed buffer as need_buffer: it is asking for the next chunk, not failing.
-            if (error && error != beasthttp::error::need_buffer) {
-                throw boost::system::system_error(error);
-            }
-            error.clear();
-        }
-    }
+    beasthttp::request<beasthttp::string_body> out;
+    applyHead(out, host, request, keepAlive);
+    out.body() = request.body;
+    out.prepare_payload();
+    co_await beasthttp::async_write(stream, out, asio::use_awaitable);
 
     phase = Phase::eRead;
     beasthttp::response<beasthttp::string_body> in;
@@ -243,13 +202,12 @@ std::string digestAuthorization(const ClientOptions& options, const std::string&
 
 template <class Stream>
 asio::awaitable<ClientResponse> exchangeAuthorized(Stream& stream, const std::string& host,
-    const ClientRequest& request, const ClientOptions& options, const std::uint64_t length,
-    const BodyProvider* const provider, Phase& phase)
+    const ClientRequest& request, const ClientOptions& options, Phase& phase)
 {
     beast::flat_buffer buffer;
-    const bool answerable = provider == nullptr && !options.digestUser.empty();
-    ClientResponse answer = co_await exchangeOn(
-        stream, host, request, options, length, provider, phase, buffer, answerable);
+    const bool answerable = !options.digestUser.empty();
+    ClientResponse answer
+        = co_await exchangeOn(stream, host, request, options, phase, buffer, answerable);
     if (!answerable || answer.status != kUnauthorizedStatus) {
         co_return answer;
     }
@@ -260,13 +218,11 @@ asio::awaitable<ClientResponse> exchangeAuthorized(Stream& stream, const std::st
     ClientRequest authorized = request;
     authorized.headers["Authorization"] = digestAuthorization(
         options, request.method, request.target, challengeFields(challenge->second));
-    co_return co_await exchangeOn(
-        stream, host, authorized, options, length, provider, phase, buffer, false);
+    co_return co_await exchangeOn(stream, host, authorized, options, phase, buffer, false);
 }
 
 asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const std::string& host,
-    const int port, const ClientRequest& request, const ClientOptions& options,
-    const std::uint64_t length, const BodyProvider* const provider)
+    const int port, const ClientRequest& request, const ClientOptions& options)
 {
     ClientResponse answer;
     Phase phase = Phase::eConnect;
@@ -302,16 +258,14 @@ asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const s
                 && bazarish::tls::pinOf(stream.native_handle()) != options.pin) {
                 throw std::runtime_error("the peer's key is not the pinned one");
             }
-            answer = co_await exchangeAuthorized(
-                stream, host, request, options, length, provider, phase);
+            answer = co_await exchangeAuthorized(stream, host, request, options, phase);
             boost::system::error_code ignored;
             co_await stream.async_shutdown(asio::redirect_error(asio::use_awaitable, ignored));
         } else {
             beast::tcp_stream stream(executor);
             stream.expires_after(options.connectTimeout);
             co_await stream.async_connect(endpoints, asio::use_awaitable);
-            answer = co_await exchangeAuthorized(
-                stream, host, request, options, length, provider, phase);
+            answer = co_await exchangeAuthorized(stream, host, request, options, phase);
             boost::system::error_code ignored;
             stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
         }
@@ -328,12 +282,11 @@ asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const s
 }
 
 ClientResponse runOnce(const std::string& host, const int port, const ClientRequest& request,
-    const ClientOptions& options, const std::uint64_t length, const BodyProvider* const provider)
+    const ClientOptions& options)
 {
     asio::io_context loop;
     ClientResponse answer;
-    asio::co_spawn(loop, exchange(loop.get_executor(), host, port, request, options, length,
-                             provider),
+    asio::co_spawn(loop, exchange(loop.get_executor(), host, port, request, options),
         [&answer](const std::exception_ptr error, ClientResponse result) {
             if (error) {
                 try {
@@ -355,7 +308,7 @@ asio::awaitable<Response> fetch(asio::any_io_executor executor, const std::strin
     const int port, ClientRequest request, const ClientOptions& options)
 {
     const ClientResponse result
-        = co_await exchange(executor, host, port, request, options, 0, nullptr);
+        = co_await exchange(executor, host, port, request, options);
     if (result.status == 0) {
         bazarish::log::warn("upstream {}:{} failed: {}", host, port, result.error);
     }
@@ -369,19 +322,7 @@ asio::awaitable<Response> fetch(asio::any_io_executor executor, const std::strin
 ClientResponse request(const std::string& host, const int port, const ClientRequest& request,
     const ClientOptions& options)
 {
-    ClientRequest outgoing = request;
-    if (!options.basicUser.empty()) {
-        const std::string pair = options.basicUser + ":" + options.basicPassword;
-        outgoing.headers["Authorization"]
-            = "Basic " + toBase64(Bytes(pair.begin(), pair.end()));
-    }
-    return runOnce(host, port, outgoing, options, 0, nullptr);
-}
-
-ClientResponse upload(const std::string& host, const int port, const ClientRequest& request,
-    const std::uint64_t length, const BodyProvider& provider, const ClientOptions& options)
-{
-    return runOnce(host, port, request, options, length, &provider);
+    return runOnce(host, port, request, options);
 }
 
 }  // namespace bazarish::http

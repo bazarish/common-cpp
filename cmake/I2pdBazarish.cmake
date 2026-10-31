@@ -1,14 +1,5 @@
 # Bazarish project (c) 2026
-#
-# Builds libi2pd_bazarish: a single static library with only what the embedded
-# I2P transport needs - the i2pd router core (libi2pd) plus i18n - compiled from
-# the pristine PurpleI2P/i2pd submodule. The client-bridge library (SAM, BOB,
-# SOCKS, HTTP/SOCKS proxy, I2CP server, addressbook, client tunnels) and the
-# daemon (webconsole, I2PControl, UPnP) are simply never compiled here.
-#
-# The submodule stays byte-for-byte upstream so it is trivial to bump; the only
-# local change is one reviewable patch (a callback log sink) applied at configure
-# time. Floodfill-server and transit remain config-gated in the upstream sources.
+# libi2pd_bazarish: only the i2pd router core and i18n, from the pristine upstream submodule.
 
 set(I2PD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/i2pd)
 set(I2PD_PATCH_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/i2pd-patches)
@@ -21,9 +12,7 @@ endif()
 
 find_package(Git REQUIRED)
 
-# Apply each patch idempotently: skip if a reverse-apply check succeeds (already
-# applied), otherwise apply it. This keeps the submodule pristine in git terms
-# while overlaying our changes on the working tree for the build.
+# Each patch applies idempotently, so the submodule stays pristine in git.
 file(GLOB I2PD_PATCHES ${I2PD_PATCH_DIR}/*.patch)
 list(SORT I2PD_PATCHES)
 foreach(patch ${I2PD_PATCHES})
@@ -43,16 +32,13 @@ foreach(patch ${I2PD_PATCHES})
     endif()
 endforeach()
 
-# Dependencies. Boost headers (asio) are header-only; only program_options needs
-# a library. Prefer the CMake package; fall back to find_library for systems that
-# ship the runtime library without the CMake config.
+# Of Boost only program_options is a library: the CMake package where there is one.
 find_package(Threads REQUIRED)
 find_package(Boost QUIET CONFIG COMPONENTS program_options)
 if(TARGET Boost::program_options)
     set(I2PD_BOOST_PO Boost::program_options)
 else()
-    # No CMake config (or no -dev symlink): take the unversioned .so, then fall
-    # back to a versioned runtime .so (systems that ship runtime-only Boost).
+    # No CMake config: the unversioned .so, or a versioned runtime one.
     find_library(I2PD_BOOST_PO_LIB NAMES boost_program_options)
     if(NOT I2PD_BOOST_PO_LIB)
         file(GLOB _bpo_versioned
@@ -77,8 +63,7 @@ file(GLOB I2PD_LANG_SRC CONFIGURE_DEPENDS ${I2PD_DIR}/i18n/*.cpp)
 add_library(i2pd_bazarish STATIC ${I2PD_CORE_SRC} ${I2PD_LANG_SRC})
 add_library(Bazarish::I2pd ALIAS i2pd_bazarish)
 
-# Upstream headers are exposed to embedders; SYSTEM keeps their warnings out of
-# our -Werror builds.
+# SYSTEM keeps the upstream headers' warnings out of our -Werror builds.
 target_include_directories(i2pd_bazarish SYSTEM PUBLIC
     ${I2PD_DIR}/libi2pd
     ${I2PD_DIR}/libi2pd_client
@@ -88,30 +73,21 @@ if(Boost_INCLUDE_DIRS)
 endif()
 
 target_compile_features(i2pd_bazarish PUBLIC cxx_std_20)
-# Vendored upstream code: do not lint it (and never inherit our -Werror).
-# The forced include is for Boost.Asio 1.81 (Debian 12), whose awaitable.hpp uses
-# std::exchange without including <utility>: with libstdc++ 12 that is a hard
-# error in a system header, and it is not ours to patch.
+# Vendored code is not linted; Boost.Asio 1.81's awaitable.hpp uses std::exchange without <utility>.
 target_compile_options(i2pd_bazarish PRIVATE -w -include utility)
 
 target_link_libraries(i2pd_bazarish PUBLIC
     OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB ${I2PD_BOOST_PO} Threads::Threads)
-# libatomic is a GNU runtime detail and is not a library everywhere; Windows
-# instead needs the sockets and adapter interfaces the engine calls.
+# libatomic is GNU's runtime; Windows needs the sockets and adapter interfaces instead.
 if(WIN32)
-    # On MinGW the engine takes paths through Boost.Filesystem, not the standard
-    # one, because it does not trust that compiler's path conversions.
+    # On MinGW the engine takes its paths through Boost.Filesystem by its own choice.
     find_package(Boost REQUIRED CONFIG COMPONENTS filesystem)
     target_link_libraries(i2pd_bazarish PUBLIC
         ws2_32 wsock32 iphlpapi crypt32 Boost::filesystem)
-    # What the engine's own MinGW build defines. The API level stays private:
-    # Qt sets a higher one of its own, and two on a command line is a warning
-    # about which of them wins.
+    # The engine's own MinGW defines; the API level stays private, Qt sets a higher one.
     target_compile_definitions(i2pd_bazarish PUBLIC WIN32_LEAN_AND_MEAN)
     target_compile_definitions(i2pd_bazarish PRIVATE WINVER=0x0602 _WIN32_WINNT=0x0602)
-    # Asio picks its threads and locks by _POSIX_THREADS, which libstdc++ here
-    # defines only where it was included first: one object, two layouts, a join
-    # that waits on a pthread_t read as a handle. So every file gets one answer.
+    # libstdc++ here defines _POSIX_THREADS by include order, and Asio's layout follows it.
     include(CheckCXXSourceCompiles)
     check_cxx_source_compiles(
         "#include <mutex>\n#include <thread>\n#ifndef _POSIX_THREADS\n#error\n#endif\nint main() { return 0; }"

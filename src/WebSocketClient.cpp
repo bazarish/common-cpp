@@ -56,8 +56,7 @@ std::string spkiFingerprint(SSL* const connection)
     return fingerprint;
 }
 
-// One thread owns the stream: Beast's and OpenSSL's streams take no concurrent callers, and
-// Beast keeps its idle timeout and pings only for asynchronous operations.
+// One thread owns the stream: no concurrent callers, and Beast pings only for async operations.
 template <class Stream>
 class ClientSocket : public Socket, public std::enable_shared_from_this<ClientSocket<Stream>> {
 public:
@@ -264,8 +263,7 @@ Connected connect(const SocketDial& dial)
     out.tls->set_verify_mode(ssl::verify_none);
     out.secure = std::make_unique<TlsStream>(*out.loop, *out.tls);
 
-    const std::string sni = dial.sni.empty() ? dial.host : dial.sni;
-    if (SSL_set_tlsext_host_name(out.secure->native_handle(), sni.c_str()) != 1) {
+    if (SSL_set_tlsext_host_name(out.secure->native_handle(), dial.host.c_str()) != 1) {
         out.error = "the name would not go in the handshake";
         return out;
     }
@@ -321,9 +319,8 @@ std::string upgrade(
                 request.set(bhttp::field::sec_websocket_protocol, dial.subprotocol);
             }
         }));
-    const std::string host = dial.sni.empty() ? dial.host : dial.sni;
-    const boost::system::error_code error = awaited(loop, [&stream, &host, &dial](auto&& handler) {
-        stream.async_handshake(host, dial.path, std::move(handler));
+    const boost::system::error_code error = awaited(loop, [&stream, &dial](auto&& handler) {
+        stream.async_handshake(dial.host, dial.path, std::move(handler));
     });
     if (error) {
         return "the upgrade was refused: " + error.message();
@@ -380,7 +377,7 @@ void exchange(asio::io_context& loop, Stream& stream, const SocketDial& dial,
 {
     bhttp::request<bhttp::string_body> out{
         body.empty() ? bhttp::verb::get : bhttp::verb::post, dial.path, 11};
-    out.set(bhttp::field::host, dial.sni.empty() ? dial.host : dial.sni);
+    out.set(bhttp::field::host, dial.host);
     for (const auto& [name, value] : dial.headers) {
         out.set(name, value);
     }

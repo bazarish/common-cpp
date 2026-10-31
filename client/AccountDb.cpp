@@ -76,11 +76,6 @@ AccountDb::~AccountDb()
     sqlite3_close(db_);
 }
 
-bool AccountDb::opens(const fs::path& file, const std::string& passphrase)
-{
-    return fs::exists(file) && accountkey::unlocks(file, passphrase);
-}
-
 std::optional<Bytes> AccountDb::get(const std::string& name) const
 {
     sqlite3_stmt* statement = nullptr;

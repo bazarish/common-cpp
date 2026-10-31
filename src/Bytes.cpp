@@ -25,17 +25,6 @@ int hexValue(const char c)
     return -1;
 }
 
-int base32Value(const char c)
-{
-    if (c >= 'a' && c <= 'z') {
-        return c - 'a';
-    }
-    if (c >= '2' && c <= '7') {
-        return c - '2' + 26;
-    }
-    return -1;
-}
-
 }  // namespace
 
 namespace bazarish {
@@ -85,30 +74,6 @@ std::string toBase32(const Bytes& data)
     }
     if (bits > 0) {
         out.push_back(kBase32Digits[(buffer << (5 - bits)) & 0x1f]);
-    }
-    return out;
-}
-
-Bytes fromBase32(const std::string& text)
-{
-    Bytes out;
-    out.reserve(text.size() * 5 / 8);
-    unsigned int buffer = 0;
-    int bits = 0;
-    for (const char c : text) {
-        const int value = base32Value(c);
-        if (value < 0) {
-            throw std::invalid_argument("invalid base32 character");
-        }
-        buffer = (buffer << 5) | static_cast<unsigned int>(value);
-        bits += 5;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<unsigned char>((buffer >> bits) & 0xff));
-        }
-    }
-    if (bits > 0 && (buffer & ((1u << bits) - 1)) != 0) {
-        throw std::invalid_argument("invalid base32 trailing bits");
     }
     return out;
 }

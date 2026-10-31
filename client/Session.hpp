@@ -129,7 +129,6 @@ struct IncomingMessage {
     std::string contentType;
     std::string fromFingerprint;
     std::string text;
-    std::string deliveryClass;
     bool sentByUs = false;
     bool establishedContact = false;
     std::string rawType;
@@ -213,7 +212,6 @@ public:
     static Session create(const std::filesystem::path& accountFile, AccountKind kind,
         const ServerEndpoint& endpoint, const std::string& passphrase);
     static Session open(const std::filesystem::path& accountFile, const std::string& passphrase = {});
-    // Empty for an account made before accounts had a kind.
     static std::optional<AccountKind> storedKind(
         const std::filesystem::path& accountFile, const std::string& passphrase);
     // Gives an unencrypted bot or chat account its kind, so it opens; a different kind throws.
@@ -270,7 +268,6 @@ public:
     AccountKind kind() const { return kind_; }
     const std::string& presenceDest() const { return presenceDest_; }
     const Key& presenceKey() const;
-    const Bytes& presenceDestKeys() const { return presenceDestKeys_; }
     std::string sealingPublicB64() const;
     const std::string& displayName() const;
     void setDisplayName(const std::string& name);
@@ -333,13 +330,11 @@ public:
 
     void putPicture(const std::string& e2eId, const Bytes& bytes);
     std::optional<Bytes> picture(const std::string& e2eId) const;
-    bool hasPicture(const std::string& e2eId) const;
     void putVoice(const std::string& e2eId, const Bytes& bytes);
     std::optional<Bytes> voice(const std::string& e2eId) const;
 
     std::vector<Client::DeviceEntry> devices();
     void retireDevice(const std::string& clientId);
-    void retireThisDevice();
     void closeAccountOnServer();
 
     PortalInfo serverPortalInfo();
@@ -351,7 +346,6 @@ public:
     AddressKeys addressKeys();
     void issueAddressKeys();
     bool hasI2pDestination() const;
-    // The stable base32 address (without the ".b32.i2p" suffix), or empty.
     std::string i2pAddress() const;
 
     void disableI2pDest();
@@ -403,20 +397,17 @@ public:
     std::string addByAlias(const std::string& alias, const std::string& text);
 
     struct ContactFetchContext {
-        std::string identityPem;        // unencrypted in-memory private PEM
+        std::string identityPem;
         std::string clientId;
         ServerEndpoint endpoint;
         std::filesystem::path i2pDataDir;
         ResolverCoordinate resolver;
-        bool i2pEnabled = false;
-        bazarish::i2p::Privacy blobFetchPrivacy = bazarish::i2p::Privacy::eMax;
+        bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax;
         std::string destinationOwner;
-        Bytes servingSealingKeyDer;
     };
     struct AliasErrandContext {
-        std::string identityPem;        // unencrypted in-memory private PEM
+        std::string identityPem;
         ResolverCoordinate resolver;
-        bool i2pEnabled = false;
         bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax;
         std::string destinationOwner;
         std::string fingerprint;
@@ -608,8 +599,6 @@ public:
     void forgetSentFilesFor(const std::string& peerFingerprint);
     void unsend(const std::string& e2eId);
 
-    void setTransferPrivacy(bazarish::i2p::Privacy privacy);
-
     void releaseI2pLinks();
 
     enum class CallState {
@@ -651,8 +640,6 @@ public:
         std::string callId;
         std::string peerFingerprint;
         bool muted = false;
-        std::uint64_t packetsSent = 0;
-        std::uint64_t packetsReceived = 0;
         CallStage stage = CallStage::eNone;
         bool peerRinging = false;
         std::int64_t connectedAtMs = 0;
@@ -784,8 +771,7 @@ private:
         nlohmann::json payload = nlohmann::json::object()) const;
 
     bool sendContent(const std::string& peerFingerprint, nlohmann::json inner,
-        const DeliveryWatch& watch = {}, bool waitForOutcome = false,
-        bool establishOnFirstReply = true);
+        const DeliveryWatch& watch = {}, bool establishOnFirstReply = true);
 
     void syncI2pMasterToSelf();
     bool adoptI2pMasterFromOwnMailbox(const std::string& wantedHost = {});
@@ -886,8 +872,6 @@ private:
     bool tellRegistryWhereWeAre();
     void noteRegistryTold();
     bool switchedOff_ = false;
-    bazarish::i2p::Privacy transferPrivacy() const;
-    std::optional<bazarish::i2p::Privacy> transferPrivacy_;
     bazarish::i2p::Router& i2pRouter() const;
 
     AudioSourceFactory audioSourceFactory_;
@@ -903,7 +887,6 @@ private:
         bool muted = false;
         std::int64_t startedAtMs = 0;
         std::int64_t answerByMs = 0;
-        std::int64_t deliveredAtMs = 0;
         CallStage stage = CallStage::eNone;
         std::int64_t peerRingingAtMs = 0;
         std::int64_t connectedAtMs = 0;

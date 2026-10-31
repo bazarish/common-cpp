@@ -56,20 +56,6 @@ int main()
         != identity.fingerprint());
 
     {
-        const std::string bodyDigest = toHex(sha256(body));
-        const auth::Headers digestHeaders
-            = auth::signRequestDigest(identity, kNow, "PUT", "/v1/storage/blob", bodyDigest);
-        CHECK(auth::verifyRequest(digestHeaders, kNow, "PUT", "/v1/storage/blob", body)
-            == identity.fingerprint());
-        const auth::Headers bodyHeaders
-            = auth::signRequest(identity, kNow, "PUT", "/v1/storage/blob", body);
-        CHECK(auth::verifyRequestDigest(bodyHeaders, kNow, "PUT", "/v1/storage/blob", bodyDigest)
-            == identity.fingerprint());
-        CHECK_THROWS(auth::verifyRequestDigest(
-            bodyHeaders, kNow, "PUT", "/v1/storage/blob", toHex(sha256(Bytes{'x'}))));
-    }
-
-    {
         auth::ReplayCache cache;
         const auth::Headers first
             = auth::signRequest(identity, kNow, "POST", "/v1/messaging/ack", body);
@@ -92,13 +78,6 @@ int main()
             auth::verifyRequest(renonced, kNow, "POST", "/v1/messaging/ack", body, cache));
         CHECK_THROWS(auth::verifyRequest(first, kNow + auth::kAuthFreshnessWindowSeconds + 1,
             "POST", "/v1/messaging/ack", body, cache));
-        const std::string blobDigest = toHex(sha256(body));
-        const auth::Headers blob
-            = auth::signRequestDigest(identity, kNow, "PUT", "/v1/storage/blob", blobDigest);
-        CHECK(auth::verifyRequestDigest(blob, kNow, "PUT", "/v1/storage/blob", blobDigest, cache)
-            == identity.fingerprint());
-        CHECK_THROWS(
-            auth::verifyRequestDigest(blob, kNow, "PUT", "/v1/storage/blob", blobDigest, cache));
     }
 
     {
@@ -116,14 +95,6 @@ int main()
             == auth::makeCanonicalString(kNow, "GET", "/healthz", body, std::string()));
         CHECK(auth::makeCanonicalString(kNow, "GET", "/healthz", body, "dev-a")
             != auth::makeCanonicalString(kNow, "GET", "/healthz", body));
-        const std::string bodyDigest = toHex(sha256(body));
-        const auth::Headers streamed = auth::signRequestDigest(
-            identity, kNow, "PUT", "/v1/messaging/self", bodyDigest, "dev-a");
-        CHECK(auth::verifyRequestDigest(
-                  streamed, kNow, "PUT", "/v1/messaging/self", bodyDigest, "dev-a")
-            == identity.fingerprint());
-        CHECK_THROWS(auth::verifyRequestDigest(
-            streamed, kNow, "PUT", "/v1/messaging/self", bodyDigest, "dev-b"));
     }
 
     {

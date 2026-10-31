@@ -127,6 +127,8 @@ std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, const s
     return seq;
 }
 
+namespace {
+
 Headers signRequestDigest(const Identity& identity, const std::int64_t timestamp,
     const std::string& method, const std::string& path, const std::string& bodySha256Hex,
     const std::string& clientId)
@@ -151,12 +153,16 @@ Headers signRequestDigest(const Identity& identity, const std::int64_t timestamp
     return headers;
 }
 
+}  // namespace
+
 Headers signRequest(const Identity& identity, const std::int64_t timestamp,
     const std::string& method, const std::string& path, const Bytes& body,
     const std::string& clientId)
 {
     return signRequestDigest(identity, timestamp, method, path, toHex(sha256(body)), clientId);
 }
+
+namespace {
 
 std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
     const std::string& method, const std::string& path, const std::string& bodySha256Hex,
@@ -196,6 +202,8 @@ std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
 
     return hybridFingerprint(classicalDer, pqDer);
 }
+
+}  // namespace
 
 std::string verifyRequest(const Headers& headers, const std::int64_t now,
     const std::string& method, const std::string& path, const Bytes& body,
@@ -243,6 +251,8 @@ bool ReplayCache::checkAndRecord(
     return seen_.emplace(nonce, timestamp).second;
 }
 
+namespace {
+
 std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
     const std::string& method, const std::string& path, const std::string& bodySha256Hex,
     ReplayCache& replayCache, const std::string& clientId)
@@ -256,6 +266,8 @@ std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
     }
     return fingerprint;
 }
+
+}  // namespace
 
 std::string verifyRequest(const Headers& headers, const std::int64_t now,
     const std::string& method, const std::string& path, const Bytes& body,

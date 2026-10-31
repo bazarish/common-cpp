@@ -38,7 +38,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <fstream>
 #include <memory>
 #include <map>
 #include <set>
@@ -56,7 +55,6 @@
 #include <thread>
 #include <vector>
 
-// Reach the embedded i2pd engine.
 namespace i2pd = ::i2p;
 
 namespace bazarish::i2p {
@@ -301,7 +299,6 @@ std::atomic<bool> g_routerLive{false};
 
 std::string backend::embeddedRouterVersion()
 {
-    // The upstream i2pd version baked into the embedded engine (e.g.
     return I2PD_VERSION;
 }
 
@@ -324,34 +321,6 @@ std::vector<Bytes> backend::embeddedSampleRouterInfos(const std::size_t count)
     sample.reserve(unique.size());
     for (auto& [ident, buffer] : unique) { sample.push_back(std::move(buffer)); }
     return sample;
-}
-
-std::size_t backend::embeddedSeedRouterInfos(
-    const std::filesystem::path& dataDir, const std::vector<Bytes>& routers)
-{
-    ensureCryptoInit();
-    const std::filesystem::path netDb = dataDir / "netDb";
-    std::size_t written = 0;
-    for (const Bytes& buffer : routers)
-    {
-        if (buffer.empty()) { continue; }
-        const i2pd::data::RouterInfo router(buffer.data(), buffer.size());
-        const std::string ident = router.GetIdentHashBase64();
-        if (ident.empty()) { continue; }
-        std::string safeIdent = ident;
-        std::replace(safeIdent.begin(), safeIdent.end(), '/', '-');
-        std::replace(safeIdent.begin(), safeIdent.end(), '\\', '-');
-        const std::filesystem::path dir = netDb / (std::string("r") + safeIdent[0]);
-        std::error_code ec;
-        std::filesystem::create_directories(dir, ec);
-        std::ofstream out(dir / ("routerInfo-" + safeIdent + ".dat"), std::ios::binary
-            | std::ios::trunc);
-        if (!out) { continue; }
-        out.write(reinterpret_cast<const char*>(buffer.data()),
-            static_cast<std::streamsize>(buffer.size()));
-        if (out) { ++written; }
-    }
-    return written;
 }
 
 class EmbeddedStream final : public backend::StreamBackend {

@@ -47,8 +47,6 @@ struct ClientOptions {
     std::chrono::seconds writeTimeout{60};
     std::string digestUser;
     std::string digestPassword;
-    std::string basicUser;
-    std::string basicPassword;
 };
 
 boost::asio::awaitable<Response> fetch(boost::asio::any_io_executor executor,
@@ -65,10 +63,5 @@ struct ClientResponse {
 
 ClientResponse request(
     const std::string& host, int port, const ClientRequest& request, const ClientOptions& options);
-
-using BodyProvider = std::function<std::size_t(char* chunk, std::size_t capacity)>;
-
-ClientResponse upload(const std::string& host, int port, const ClientRequest& request,
-    std::uint64_t length, const BodyProvider& provider, const ClientOptions& options);
 
 }  // namespace bazarish::http

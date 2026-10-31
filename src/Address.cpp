@@ -112,43 +112,4 @@ std::string aliasQueryText(const AliasQuery& query)
     return query.word.empty() ? query.name : query.name + kAliasWordSeparator + query.word;
 }
 
-std::optional<Address> parseAddress(const std::string& text)
-{
-    const std::size_t at = text.find('@');
-    if (at != text.rfind('@')) {
-        return std::nullopt;
-    }
-
-    const std::string local = at == std::string::npos ? text : text.substr(0, at);
-    const std::string server = at == std::string::npos ? std::string() : text.substr(at + 1);
-
-    if (at != std::string::npos && !isFingerprint(server)) {
-        return std::nullopt;
-    }
-
-    Address address;
-    address.server = server;
-    address.local = local;
-    if (isFingerprint(local)) {
-        if (server.empty()) {
-            return std::nullopt;
-        }
-        address.kind = Address::Kind::eFingerprint;
-        return address;
-    }
-    if (isAlias(local)) {
-        address.kind = Address::Kind::eAlias;
-        return address;
-    }
-    return std::nullopt;
-}
-
-std::string formatAddress(const Address& address)
-{
-    if (address.server.empty()) {
-        return address.local;
-    }
-    return address.local + "@" + address.server;
-}
-
 }  // namespace bazarish

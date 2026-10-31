@@ -115,7 +115,6 @@ int main()
     CHECK(checked.names[0].autoRenew);
     CHECK(!checked.names[1].autoRenew);
     CHECK(checked.depositCoversRenewals);
-    CHECK(!toJson(status).contains("balance"));
 
     CHECK(throws([&] {
         (void)verifyAliasStatus(

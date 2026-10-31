@@ -62,7 +62,7 @@ Bytes verifierOf(const std::string& passphrase)
 {
     Bytes digest(EVP_MAX_MD_SIZE);
     unsigned int size = 0;
-    const std::string labelled = "bazarish-account-key\0" + passphrase;
+    const std::string labelled = std::string("bazarish-account-key") + '\0' + passphrase;
     if (EVP_Digest(labelled.data(), labelled.size(), digest.data(), &size, EVP_sha256(), nullptr)
         != 1) {
         throw std::runtime_error("account key: could not hash the passphrase");
@@ -263,16 +263,6 @@ Bytes keyFor(const fs::path& databaseFile, const std::string& passphrase)
     const std::lock_guard<std::mutex> lock(g_cacheMutex);
     g_cache[databaseFile] = Cached{verifier, key};
     return key;
-}
-
-bool unlocks(const fs::path& databaseFile, const std::string& passphrase)
-{
-    try {
-        (void)keyFor(databaseFile, passphrase);
-        return true;
-    } catch (const std::exception&) {
-        return false;
-    }
 }
 
 void rewrap(const fs::path& databaseFile, const std::string& passphrase)

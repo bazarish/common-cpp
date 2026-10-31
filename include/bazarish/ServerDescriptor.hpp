@@ -7,7 +7,7 @@
 namespace bazarish {
 
 struct ServerDescriptor {
-    std::string fingerprint;           // 52-char base32 server fingerprint
+    std::string fingerprint;
     std::vector<std::string> facades;
     std::vector<std::string> reseeds;
 };

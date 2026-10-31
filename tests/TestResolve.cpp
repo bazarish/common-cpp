@@ -27,14 +27,9 @@ int main()
     const CardFetchQuery q2 = cardFetchQueryFromJson(toJson(query));
     CHECK(q2.fingerprint == query.fingerprint);
 
-    const CardFetchResponse response{Bytes{0xDE, 0xAD, 0xBE, 0xEF, 0x42}};
-    const CardFetchResponse r2 = cardFetchResponseFromJson(toJson(response));
-    CHECK(r2.cardDer == response.cardDer);
-
     const ResolveQuery rq{"alice"};
     const ResolveQuery rq2 = resolveQueryFromJson(toJson(rq));
     CHECK(rq2.alias == rq.alias);
-    CHECK(!toJson(rq).contains("responseKey"));
 
     const ResolveResponse rr{
         Bytes{0xAA, 0xBB, 0xCC}, Bytes{0xDD, 0xEE, 0xFF, 0x01}, Bytes{0x11, 0x22}};

@@ -130,12 +130,10 @@ PublishResult Client::publishCard(const ContactCard& content, const DestinationI
     signedCard.dest = serving.dest;
     signedCard.servingSealingKeyDer = serving.servingSealingKeyDer;
     const Bytes card = signedCard.issue(identity_);
-    const ApiResponse response = api_.postJson("/v1/account/card", {{"card", toBase64(card)}});
-    const nlohmann::json body = response.json();
+    (void)api_.postJson("/v1/account/card", {{"card", toBase64(card)}});
 
     PublishResult result;
     result.cardDer = card;
-    result.quotaBytes = body.at("quotaBytes").get<std::uint64_t>();
     result.dest = serving.dest;
     result.servingSealingKeyDer = serving.servingSealingKeyDer;
     return result;
@@ -189,7 +187,6 @@ I2pDestStatus Client::i2pStatus()
     status.approval = body.value("approval", std::string());
     status.registrationMessage = body.value("registrationMessage", std::string());
     status.transientExpires = body.value("transientExpires", std::int64_t{0});
-    status.transientUpdatedAt = body.value("transientUpdatedAt", std::int64_t{0});
     return status;
 }
 

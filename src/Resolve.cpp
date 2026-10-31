@@ -72,22 +72,6 @@ CardFetchQuery cardFetchQueryFromJson(const nlohmann::json& body)
     return query;
 }
 
-nlohmann::json toJson(const CardFetchResponse& response)
-{
-    return {
-        {"v", 1},
-        {"card", toBase64(response.cardDer)},
-    };
-}
-
-CardFetchResponse cardFetchResponseFromJson(const nlohmann::json& body)
-{
-    requireVersion(body, "card-fetch response");
-    CardFetchResponse response;
-    response.cardDer = fromBase64(body.at("card").get<std::string>());
-    return response;
-}
-
 nlohmann::json toJson(const ResolveQuery& query)
 {
     nlohmann::json body = {

@@ -14,13 +14,10 @@
 #include <bazarish/HttpClient.hpp>
 
 #include <algorithm>
-#include <array>
-#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <ctime>
 #include <filesystem>
-#include <fstream>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -223,8 +220,8 @@ void ApiClient::ensureSealingKeyLocked(Tunnel& tunnel)
     if (!tunnel.sealingKeyDer.empty()) {
         return;
     }
-    const ApiResponse response = transmitLocked("GET", cardPathOf(tunnel.service), {}, {}, {},
-        {}, kDefaultReadTimeoutSeconds);
+    const ApiResponse response
+        = transmitLocked("GET", cardPathOf(tunnel.service), {}, {}, kDefaultReadTimeoutSeconds);
     const ServerCard card = ServerCard::verify(response.body, tunnel.service);
     if (!endpoint_.serverFingerprint.empty() && card.server != endpoint_.serverFingerprint) {
         throw std::runtime_error("the server card names another server than the one we joined");
@@ -255,8 +252,8 @@ bool ApiClient::ensureSessionLocked(Tunnel& tunnel)
             bazarish::tunnel::kHelloPath, hello.secret);
         const Bytes frame
             = bazarish::tunnel::sealHello(hello, Key::fromPublicDer(tunnel.sealingKeyDer));
-        const ApiResponse response = transmitLocked("POST", tunnelPathOf(tunnel.service), {},
-            frame, "application/octet-stream", {}, kDefaultReadTimeoutSeconds);
+        const ApiResponse response = transmitLocked("POST", tunnelPathOf(tunnel.service), frame,
+            "application/octet-stream", kDefaultReadTimeoutSeconds);
         const bazarish::tunnel::Welcome welcome
             = bazarish::tunnel::openWelcome(response.body, replyKey);
         tunnel.sessionSecret = hello.secret;
@@ -325,7 +322,7 @@ std::string ApiClient::activeFacadeAddress() const
 }
 
 std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const std::string& method,
-    const std::string& fullPath, const std::map<std::string, std::string>& headers,
+    const std::string& path, const std::map<std::string, std::string>& headers,
     const std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody,
     const int readTimeoutSeconds)
 {
@@ -386,7 +383,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
         i2pStreamUsedAt_ = askedAt;
         try {
             const std::string head = buildI2pHttpRequest(
-                method, facade.host, fullPath, headers, bodyLen, /*keepAlive=*/true);
+                method, facade.host, path, headers, bodyLen, /*keepAlive=*/true);
             i2pStream_->writeAll(head.data(), head.size());
             if (bodyLen > 0 && writeBody) {
                 writeBody(*i2pStream_);
@@ -400,10 +397,6 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
             ApiResponse response;
             response.status = parsed.status;
             response.body = Bytes(parsed.body.begin(), parsed.body.end());
-            if (const auto it = parsed.headers.find("content-type"); it != parsed.headers.end()) {
-                response.contentType = it->second;
-            }
-            response.headers = parsed.headers;
             i2pStreamUsedAt_ = std::chrono::steady_clock::now();
             return response;
         } catch (const std::exception& error) {
@@ -429,20 +422,20 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
 
 ApiResponse ApiClient::get(const std::string& path, const std::string& query)
 {
-    return send("GET", path, query, {}, {}, true);
+    return send("GET", path, query, {}, {});
 }
 
 ApiResponse ApiClient::getWaiting(
     const std::string& path, const std::string& query, const int readTimeoutSeconds)
 {
-    return send("GET", path, query, {}, {}, true, {}, readTimeoutSeconds);
+    return send("GET", path, query, {}, {}, readTimeoutSeconds);
 }
 
 ApiResponse ApiClient::postJson(const std::string& path, const nlohmann::json& body,
     const int readTimeoutSeconds, const std::string& note)
 {
     const std::string text = body.dump();
-    return send("POST", path, {}, Bytes(text.begin(), text.end()), "application/json", true, {},
+    return send("POST", path, {}, Bytes(text.begin(), text.end()), "application/json",
         readTimeoutSeconds, note);
 }
 
@@ -455,7 +448,7 @@ ApiResponse ApiClient::del(const std::string& path, const nlohmann::json& body)
         encoded.assign(text.begin(), text.end());
         contentType = "application/json";
     }
-    return send("DELETE", path, {}, encoded, contentType, true);
+    return send("DELETE", path, {}, encoded, contentType);
 }
 
 void ApiClient::setWireLog(WireLog* const log)
@@ -493,8 +486,8 @@ ApiResponse ApiClient::tunnelledLocked(Tunnel& tunnel, const std::string& method
     const std::uint64_t seq = ++tunnel.sessionSeq;
     const Bytes frame = bazarish::tunnel::carry(auth::sessionHandle(tunnel.sessionSecret, seq),
         tunnel.tunnelKey, bazarish::tunnel::encodeRequest(inner));
-    const ApiResponse carried = transmitLocked("POST", tunnelPathOf(tunnel.service), {}, frame,
-        "application/octet-stream", {}, readTimeoutSeconds);
+    const ApiResponse carried = transmitLocked("POST", tunnelPathOf(tunnel.service), frame,
+        "application/octet-stream", readTimeoutSeconds);
     bazarish::tunnel::Response answered;
     try {
         answered = bazarish::tunnel::decodeResponse(
@@ -505,38 +498,31 @@ ApiResponse ApiClient::tunnelledLocked(Tunnel& tunnel, const std::string& method
     }
     ApiResponse response;
     response.status = answered.status;
-    response.contentType = answered.contentType;
     response.body = answered.body;
     return response;
 }
 
 ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     const std::string& query, const Bytes& body, const std::string& contentType,
-    const bool authenticate, const std::map<std::string, std::string>& extraHeaders,
     const int readTimeoutSeconds, const std::string& note)
 {
     const std::lock_guard<std::mutex> lock(netMutex_);
     Tunnel& tunnel = tunnelFor(path);
-    std::map<std::string, std::string> headers;
-    if (authenticate) {
-        auth::Headers authHeaders;
-        if (ensureSessionLocked(tunnel)) {
-            const std::uint64_t seq = tunnel.sessionSeq + 1;
-            authHeaders = auth::macRequest(auth::sessionHandle(tunnel.sessionSecret, seq),
-                tunnel.sessionKey, seq, nowSeconds(), method, path, body, clientId_);
-        } else {
-            const std::string reason = tunnel.lastError.empty()
-                ? std::string("no tunnel to the server")
-                : "no tunnel to the server: " + tunnel.lastError;
-            noteWire(method, path, note, "failed: " + reason, 0, 0);
-            throw ApiError(std::nullopt, 0, reason);
-        }
-        headers = std::map<std::string, std::string>(authHeaders.begin(), authHeaders.end());
+    if (!ensureSessionLocked(tunnel)) {
+        const std::string reason = tunnel.lastError.empty()
+            ? std::string("no tunnel to the server")
+            : "no tunnel to the server: " + tunnel.lastError;
+        noteWire(method, path, note, "failed: " + reason, 0, 0);
+        throw ApiError(std::nullopt, 0, reason);
+    }
+    const auto macHeaders = [&]() {
+        const std::uint64_t seq = tunnel.sessionSeq + 1;
+        const auth::Headers mac = auth::macRequest(auth::sessionHandle(tunnel.sessionSecret, seq),
+            tunnel.sessionKey, seq, nowSeconds(), method, path, body, clientId_);
+        std::map<std::string, std::string> headers(mac.begin(), mac.end());
         headers.emplace("X-Bazarish-Client", clientId_);
-    }
-    for (const auto& [key, value] : extraHeaders) {
-        headers.emplace(key, value);
-    }
+        return headers;
+    };
     const bool quietOnSuccess = path == kEventsPath;
     const auto startedAt = std::chrono::steady_clock::now();
     const auto elapsedMillis = [&startedAt]() {
@@ -558,7 +544,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     };
     try {
         const ApiResponse response = tunnelledLocked(
-            tunnel, method, path, query, body, contentType, headers, readTimeoutSeconds);
+            tunnel, method, path, query, body, contentType, macHeaders(), readTimeoutSeconds);
         accept(response);
         return response;
     } catch (const ApiError& error) {
@@ -580,42 +566,25 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
             failed("no tunnel");
             throw;
         }
-        const std::uint64_t seq = tunnel.sessionSeq + 1;
-        const auth::Headers retryAuth
-            = auth::macRequest(auth::sessionHandle(tunnel.sessionSecret, seq), tunnel.sessionKey,
-                seq, nowSeconds(), method, path, body, clientId_);
-        std::map<std::string, std::string> retryHeaders(retryAuth.begin(), retryAuth.end());
-        retryHeaders.emplace("X-Bazarish-Client", clientId_);
-        for (const auto& [key, value] : extraHeaders) {
-            retryHeaders.emplace(key, value);
-        }
         const ApiResponse response = tunnelledLocked(
-            tunnel, method, path, query, body, contentType, retryHeaders, readTimeoutSeconds);
+            tunnel, method, path, query, body, contentType, macHeaders(), readTimeoutSeconds);
         accept(response);
         return response;
     }
 }
 
 ApiResponse ApiClient::transmitLocked(const std::string& method, const std::string& path,
-    const std::string& query, const Bytes& body, const std::string& contentType,
-    const std::map<std::string, std::string>& headerMap, const int readTimeoutSeconds)
+    const Bytes& body, const std::string& contentType, const int readTimeoutSeconds)
 {
-    std::map<std::string, std::string> i2pHeaders = headerMap;
+    std::map<std::string, std::string> i2pHeaders;
     if (!body.empty() && !contentType.empty()) {
         i2pHeaders["Content-Type"] = contentType;
     }
 
     const auto clearnetAttempt = [&](const Facade& facade) -> bazarish::http::ClientResponse {
-        if (method != "GET" && method != "POST" && method != "PUT" && method != "DELETE") {
-            throw ApiError(std::nullopt, 0, "unsupported HTTP method: " + method);
-        }
         bazarish::http::ClientRequest out;
         out.method = method;
         out.target = path;
-        if (!query.empty()) {
-            out.target += "?" + query;
-        }
-        out.headers = headerMap;
         out.body = std::string(body.begin(), body.end());
         if (!body.empty()) {
             out.contentType = contentType;
@@ -632,20 +601,12 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
         const Facade& facade = facades[index];
 
         if (facadeIsI2p(facade)) {
-            if (!i2pEnabled()) {
-                lastError = "i2p is turned off (clearnet only): " + shortHost(facade.host);
-                continue;
-            }
             if (i2pDataDir_.empty()) {
                 lastError = "i2p facade without an I2P transport: " + shortHost(facade.host);
                 continue;
             }
-            std::string fullPath = path;
-            if (!query.empty()) {
-                fullPath += "?" + query;
-            }
             const std::optional<ApiResponse> response
-                = i2pExchange(facade, method, fullPath, i2pHeaders, body.size(),
+                = i2pExchange(facade, method, path, i2pHeaders, body.size(),
                     [&body](bazarish::i2p::Stream& stream) {
                         stream.writeAll(body.data(), body.size());
                     },
@@ -678,8 +639,6 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
         ApiResponse response;
         response.status = result.status;
         response.body = Bytes(result.body.begin(), result.body.end());
-        response.contentType = result.contentType;
-        response.headers = result.headers;
         if (response.status < 200 || response.status >= 300) {
             raiseFromResponse(response.status, response.body);
         }

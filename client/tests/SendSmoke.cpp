@@ -47,7 +47,6 @@ void useConfiguredTransport(const fs::path& settingsFile, const fs::path& i2pDir
     in >> settings;
     const nlohmann::json i2p = settings.value("i2p", nlohmann::json::object());
     const nlohmann::json gateway = i2p.value("gateway", nlohmann::json::object());
-    setI2pEnabled(true);
     if (gateway.value("enabled", false)) {
         const std::optional<GatewayAddress> address
             = GatewayAddress::parse(gateway.value("address", std::string()));
