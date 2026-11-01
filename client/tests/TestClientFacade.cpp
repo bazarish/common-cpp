@@ -52,7 +52,7 @@ void testServerLink()
     link.facades = {kI2pHost, "127.0.0.1:18482"};
     const std::string uri = bazarish::encodeServerDescriptor(
         {link.serverFingerprint, link.facades, link.reseedUrls});
-    CHECK(uri.rfind("bazarish://server?v=1&", 0) == 0);
+    CHECK(uri.rfind("https://bazari.sh/#server?v=1&", 0) == 0);
     CHECK(uri.find("fp=" + link.serverFingerprint) != std::string::npos);
     CHECK(uri.find("facade=" + kI2pHost) != std::string::npos);
     CHECK(uri.find("facade=127.0.0.1:18482") != std::string::npos);

@@ -119,12 +119,16 @@ void testCallbacks(const Session& session)
 
 void testChallengeLinks()
 {
-    const std::string at = std::string(kSignUri) + service::kLoginLinkField;
+    const std::string at = webLink(std::string(kSignKind) + service::kLoginLinkField);
     CHECK(!service::readLoginChallengeLink(encodedChallenge(envelopeWith(siteConsumer())))
             .has_value());
     const std::optional<service::LoginCallback> link
         = service::readLoginChallengeLink(at + kSiteHost + "/login/c/5f3c");
     CHECK(link.has_value() && link->host == kSiteHost && link->path == "/login/c/5f3c");
+    CHECK(service::readLoginChallengeLink(std::string(kSchemeLinkPrefix) + kSignKind
+              + service::kLoginLinkField + kSiteHost + "/login/c/5f3c")
+              ->host
+        == kSiteHost);
     for (const std::string& refused : {
              at + "site.example/login/c/5f3c",
              at + kSiteHost,
@@ -171,7 +175,8 @@ int main()
         const std::string text = envelopeWith(portalConsumer()).dump();
         CHECK_THROWS(session.signLogin(toBase64(Bytes(text.begin(), text.end()))));
         CHECK_THROWS(session.signLogin(challenge + "&c=x"));
-        CHECK_THROWS(session.signLogin(std::string(kInviteUri) + challenge.substr(16)));
+        CHECK_THROWS(session.signLogin(
+            webLink(kInviteKind) + challenge.substr(webLink(kSignKind).size())));
         CHECK_THROWS(session.signLogin(encodedChallenge(
             {{"v", service::kLoginChallengeVersion}, {"nonce", "abc"}, {"ts", now()}})));
 

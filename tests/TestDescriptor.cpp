@@ -20,7 +20,10 @@ int main()
 
     const Descriptor original{fp, srv};
     const std::string uri = encodeDescriptor(original);
-    CHECK(uri.rfind("bazarish://invite?v=1&", 0) == 0);
+    CHECK(uri.rfind("https://bazari.sh/#invite?v=1&", 0) == 0);
+    CHECK(parseDescriptor("bazarish://" + uri.substr(std::string("https://bazari.sh/#").size()))
+              .dest
+        == parseDescriptor(uri).dest);
 
     const Descriptor parsed = parseDescriptor(uri);
     CHECK(parsed.fingerprint == fp);

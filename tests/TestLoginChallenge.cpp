@@ -31,7 +31,11 @@ void testHappyPathAndReplay()
     const std::int64_t t = 5000;
 
     const std::string challenge = portal.issue(t);
+    CHECK(challenge.rfind("https://bazari.sh/#sign?c=", 0) == 0);
     const std::string blob = signLoginBlob(identity, t, challenge);
+    const std::string handedOver
+        = "bazarish://" + challenge.substr(std::string("https://bazari.sh/#").size());
+    const std::string blobFromScheme = signLoginBlob(identity, t, handedOver);
 
     const LoginConsumer named = readLoginConsumer(challenge);
     CHECK(named.name == panel().name);
@@ -40,6 +44,7 @@ void testHappyPathAndReplay()
 
     CHECK(portal.verify(challenge, blob, t) == identity.fingerprint());
     CHECK_THROWS(portal.verify(challenge, blob, t));
+    CHECK(verifyLoginBlob(blobFromScheme, t, challenge) == identity.fingerprint());
 }
 
 void testRejections()

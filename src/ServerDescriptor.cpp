@@ -8,13 +8,6 @@
 
 #include <atomic>
 #include <stdexcept>
-#include <string_view>
-
-namespace {
-
-constexpr std::string_view kPrefix = bazarish::kServerUri;
-
-}  // namespace
 
 namespace bazarish {
 
@@ -70,20 +63,21 @@ bool isI2pFacadeAddress(const std::string& address)
 
 std::string encodeServerDescriptor(const ServerDescriptor& descriptor)
 {
-    std::string uri = std::string(kPrefix) + "v=1&fp=" + descriptor.fingerprint;
+    std::string query = "v=1&fp=" + descriptor.fingerprint;
     for (const std::string& facade : descriptor.facades) {
-        uri += "&facade=" + facade;
+        query += "&facade=" + facade;
     }
     for (const std::string& reseed : descriptor.reseeds) {
-        uri += "&reseed=" + reseed;
+        query += "&reseed=" + reseed;
     }
-    return uri;
+    return webLink(std::string(kServerKind) + query);
 }
 
 ServerDescriptor parseServerDescriptor(const std::string& uri)
 {
-    if (uri.size() <= kPrefix.size() || uri.compare(0, kPrefix.size(), kPrefix) != 0) {
-        throw std::invalid_argument("not a bazarish://server descriptor");
+    const std::string query = linkQuery(uri, kServerKind);
+    if (query.empty()) {
+        throw std::invalid_argument("not a server link");
     }
 
     ServerDescriptor descriptor;
@@ -91,7 +85,6 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
     bool haveVersion = false;
     bool haveFingerprint = false;
 
-    const std::string query = uri.substr(kPrefix.size());
     std::size_t pos = 0;
     while (pos < query.size()) {
         const std::size_t amp = query.find('&', pos);

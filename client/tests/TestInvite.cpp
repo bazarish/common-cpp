@@ -43,7 +43,7 @@ int main()
 
     const Descriptor descriptor{user.fingerprint(), userDest};
     const std::string uri = encodeDescriptor(descriptor);
-    CHECK(uri.rfind("bazarish://invite?", 0) == 0);
+    CHECK(uri.rfind("https://bazari.sh/#invite?", 0) == 0);
 
     const Descriptor decoded = parseDescriptor(uri);
     CHECK(decoded.fingerprint == user.fingerprint());

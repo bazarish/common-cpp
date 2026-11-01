@@ -17,8 +17,12 @@ int main()
     const std::string seedB = "https://other.example/";
 
     const std::string bare = encodePairLink(PairLink{b33, {}});
-    CHECK(bare == "bazarish://pair?v=1&dest=" + b33);
+    CHECK(bare == "https://bazari.sh/#pair?v=1&dest=" + b33);
     CHECK(parsePairLink(bare).dest == b33);
+    CHECK(parsePairLink("bazarish://pair?v=1&dest=" + b33).dest == b33);
+    CHECK_THROWS(parsePairLink("https://bazari.sh/pair?v=1&dest=" + b33));
+    CHECK_THROWS(parsePairLink("https://bazari.example/#pair?v=1&dest=" + b33));
+    CHECK_THROWS(parsePairLink("bazarish://#pair?v=1&dest=" + b33));
     CHECK(parsePairLink(bare).reseeds.empty());
 
     const std::string two = encodePairLink(PairLink{b33, {seedA, seedB}});

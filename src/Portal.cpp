@@ -88,17 +88,17 @@ LoginCallback parseI2pPlace(const std::string& address, const std::string& what)
 
 std::string encodeLoginChallenge(const std::string& envelope)
 {
-    return std::string(kSignUri) + kLoginChallengeField
-        + toBase64Url(Bytes(envelope.begin(), envelope.end()));
+    return webLink(std::string(kSignKind) + kLoginChallengeField
+        + toBase64Url(Bytes(envelope.begin(), envelope.end())));
 }
 
 std::string decodeLoginChallenge(const std::string& challenge)
 {
-    const std::string prefix = std::string(kSignUri) + kLoginChallengeField;
-    if (challenge.rfind(prefix, 0) != 0) {
-        throw std::runtime_error("it is not a bazarish://sign link");
+    const std::string query = linkQuery(challenge, kSignKind);
+    if (query.rfind(kLoginChallengeField, 0) != 0) {
+        throw std::runtime_error("it is not a sign link");
     }
-    const std::string encoded = challenge.substr(prefix.size());
+    const std::string encoded = query.substr(std::string_view(kLoginChallengeField).size());
     const bool base64Url = !encoded.empty()
         && std::all_of(encoded.begin(), encoded.end(), [](const char c) {
                return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_';
@@ -186,11 +186,12 @@ std::optional<LoginCallback> readLoginCallback(const std::string& challenge)
 
 std::optional<LoginCallback> readLoginChallengeLink(const std::string& link)
 {
-    const std::string prefix = std::string(kSignUri) + kLoginLinkField;
-    if (link.rfind(prefix, 0) != 0) {
+    const std::string query = linkQuery(link, kSignKind);
+    if (query.rfind(kLoginLinkField, 0) != 0) {
         return std::nullopt;
     }
-    return parseI2pPlace(kLoginCallbackScheme + link.substr(prefix.size()), "link");
+    return parseI2pPlace(
+        kLoginCallbackScheme + query.substr(std::string_view(kLoginLinkField).size()), "link");
 }
 
 void requireChallengeReturnsTo(const std::string& challenge, const std::string& host)
@@ -213,8 +214,9 @@ std::int64_t loginChallengeExpiresAt(const std::string& challenge)
 std::string signLoginBlob(
     const Identity& identity, const std::int64_t timestamp, const std::string& challenge)
 {
+    const std::string issued = canonicalLink(challenge);
     const auth::Headers headers = auth::signRequest(
-        identity, timestamp, kLoginMethod, kLoginPath, Bytes(challenge.begin(), challenge.end()));
+        identity, timestamp, kLoginMethod, kLoginPath, Bytes(issued.begin(), issued.end()));
     const nlohmann::json blob = {
         {"k", headers.at(auth::kHeaderKeys)},
         {"t", headers.at(auth::kHeaderTimestamp)},
@@ -231,7 +233,7 @@ std::string verifyLoginBlob(
 {
     const char* const kNotASignature
         = "this is not a signature: the field wants what your client's Signature window copied";
-    if (blob.rfind(kSignUri, 0) == 0) {
+    if (!linkTail(blob).empty()) {
         throw std::runtime_error(
             "this is the challenge, not the signature: paste what your client copied");
     }

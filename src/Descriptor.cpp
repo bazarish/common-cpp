@@ -8,12 +8,9 @@
 
 #include <map>
 #include <stdexcept>
-#include <string_view>
 #include <string>
 
 namespace {
-
-constexpr std::string_view kPrefix = bazarish::kInviteUri;
 
 std::string percentEncode(const std::string& value)
 {
@@ -71,22 +68,21 @@ namespace bazarish {
 
 std::string encodeDescriptor(const Descriptor& descriptor)
 {
-    std::string uri = std::string(kPrefix) + "v=1&fp=" + descriptor.fingerprint
-        + "&dest=" + descriptor.dest;
+    std::string query = "v=1&fp=" + descriptor.fingerprint + "&dest=" + descriptor.dest;
     if (!descriptor.name.empty()) {
-        uri += "&name=" + percentEncode(descriptor.name);
+        query += "&name=" + percentEncode(descriptor.name);
     }
-    return uri;
+    return webLink(std::string(kInviteKind) + query);
 }
 
 Descriptor parseDescriptor(const std::string& uri)
 {
-    if (uri.size() <= kPrefix.size() || uri.compare(0, kPrefix.size(), kPrefix) != 0) {
-        throw std::invalid_argument("not a bazarish://invite descriptor");
+    const std::string query = linkQuery(uri, kInviteKind);
+    if (query.empty()) {
+        throw std::invalid_argument("not an invite link");
     }
 
     std::map<std::string, std::string> params;
-    const std::string query = uri.substr(kPrefix.size());
     std::size_t pos = 0;
     while (pos < query.size()) {
         const std::size_t amp = query.find('&', pos);
