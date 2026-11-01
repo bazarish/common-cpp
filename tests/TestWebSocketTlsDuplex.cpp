@@ -208,6 +208,10 @@ int main()
     CHECK(done);
 
     dialled.socket->close();
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        CHECK(lost);
+    }
     server.stop();
     std::filesystem::remove_all(root);
     std::printf("TestWebSocketTlsDuplex ok\n");

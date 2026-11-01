@@ -39,6 +39,8 @@ using asio::ip::tcp;
 
 using TlsStream = beast::ssl_stream<beast::tcp_stream>;
 
+thread_local bool tOnSocketThread = false;
+
 std::string spkiFingerprint(SSL* const connection)
 {
     X509* const certificate = SSL_get1_peer_certificate(connection);
@@ -109,14 +111,21 @@ public:
 
     void close() override
     {
-        if (!open_.exchange(false)) {
+        if (open_.exchange(false)) {
+            asio::post(*loop_, [self = this->shared_from_this()]() {
+                boost::system::error_code ignored;
+                beast::get_lowest_layer(*self->stream_).socket().shutdown(
+                    tcp::socket::shutdown_both, ignored);
+            });
+        }
+        // A socket's own callbacks may close other sockets: waiting there could wait in a circle.
+        if (tOnSocketThread) {
             return;
         }
-        asio::post(*loop_, [self = this->shared_from_this()]() {
-            boost::system::error_code ignored;
-            beast::get_lowest_layer(*self->stream_).socket().shutdown(
-                tcp::socket::shutdown_both, ignored);
-        });
+        const std::lock_guard<std::mutex> lock(joinMutex_);
+        if (thread_.joinable()) {
+            thread_.join();
+        }
     }
 
     bool open() const override { return open_.load(); }
@@ -129,7 +138,10 @@ public:
         const std::shared_ptr<ClientSocket> self = this->shared_from_this();
         loop_->restart();
         readNext();
-        thread_ = std::thread([self]() { self->loop_->run(); });
+        thread_ = std::thread([self]() {
+            tOnSocketThread = true;
+            self->loop_->run();
+        });
     }
 
 private:
@@ -164,6 +176,11 @@ private:
         open_.store(false);
         boost::system::error_code ignored;
         beast::get_lowest_layer(*stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
+        websocket::stream_base::timeout off{};
+        off.handshake_timeout = websocket::stream_base::none();
+        off.idle_timeout = websocket::stream_base::none();
+        off.keep_alive_pings = false;
+        stream_->set_option(off);
         if (closed_) {
             closed_(this->shared_from_this());
         }
@@ -203,6 +220,7 @@ private:
     std::function<void(const SocketPtr&)> closed_;
     beast::flat_buffer buffer_;
     std::thread thread_;
+    std::mutex joinMutex_;
     mutable std::mutex mutex_;
     std::deque<std::vector<unsigned char>> queue_;
     std::size_t queued_ = 0;
