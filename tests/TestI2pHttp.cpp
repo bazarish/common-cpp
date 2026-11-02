@@ -17,6 +17,14 @@ using namespace bazarish;
 
 namespace {
 
+constexpr int kServiceUnavailable = 503;
+constexpr int kSeeOther = 303;
+constexpr int kNoSuchStatus = 999;
+
+}  // namespace
+
+namespace {
+
 class FdStream {
 public:
     explicit FdStream(int fd) : fd_(fd) {}
@@ -206,7 +214,9 @@ int main()
             == "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         CHECK(buildI2pHttpResponse(kI2pHttpNotFound, {}, 0).find("404 Not Found") == 9);
         CHECK(buildI2pHttpResponse(kI2pHttpBadRequest, {}, 0).find("400 Bad Request") == 9);
-        CHECK_THROWS(buildI2pHttpResponse(418, {}, 0));
+        CHECK(buildI2pHttpResponse(kServiceUnavailable, {}, 0).find("503 Service Unavailable") == 9);
+        CHECK(buildI2pHttpResponse(kSeeOther, {{"Location", "/"}}, 0).find("303 See Other") == 9);
+        CHECK_THROWS(buildI2pHttpResponse(kNoSuchStatus, {}, 0));
     }
 
     std::printf("TestI2pHttp: all checks passed\n");
