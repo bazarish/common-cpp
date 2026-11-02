@@ -35,7 +35,33 @@ constexpr auto kEndpointReadyPoll = std::chrono::milliseconds(200);
 constexpr auto kRouterReadyPoll = std::chrono::milliseconds(500);
 
 constexpr std::size_t kElGamalPrivateKeyBytes = 256;
+constexpr std::size_t kX25519PrivateKeyBytes = 32;
 constexpr std::size_t kEd25519PrivateKeyBytes = 32;
+// The key certificate after the 384-byte keys: type, length, signing type, crypto type.
+constexpr std::size_t kKeyCertificateAt = 384;
+constexpr std::uint8_t kKeyCertificateType = 5;
+constexpr std::size_t kCryptoTypeAt = kKeyCertificateAt + 5;
+constexpr unsigned kCryptoElGamal = 0;
+constexpr unsigned kCryptoX25519 = 4;
+
+// Where the signing private key starts: the encryption key before it is as long as its type says.
+std::size_t signingKeyOffset(const Bytes& blob)
+{
+    const std::size_t identity = i2pIdentityLength(blob);
+    if (blob[kKeyCertificateAt] != kKeyCertificateType) {
+        return identity + kElGamalPrivateKeyBytes;
+    }
+    const unsigned crypto
+        = (static_cast<unsigned>(blob[kCryptoTypeAt]) << 8) | blob[kCryptoTypeAt + 1];
+    if (crypto == kCryptoElGamal) {
+        return identity + kElGamalPrivateKeyBytes;
+    }
+    if (crypto == kCryptoX25519) {
+        return identity + kX25519PrivateKeyBytes;
+    }
+    throw std::runtime_error(
+        "bazarish::i2p: keys of encryption type " + std::to_string(crypto) + " are not read here");
+}
 // The expiry that opens an offline signature block, big-endian unix seconds.
 constexpr std::size_t kOfflineExpiresBytes = 4;
 
@@ -100,7 +126,7 @@ std::string Keys::publicBase64() const
 
 bool Keys::isOffline() const
 {
-    const std::size_t signingAt = i2pIdentityLength(impl_->blob) + kElGamalPrivateKeyBytes;
+    const std::size_t signingAt = signingKeyOffset(impl_->blob);
     if (impl_->blob.size() < signingAt + kEd25519PrivateKeyBytes) {
         throw std::runtime_error("bazarish::i2p: truncated private keys blob");
     }
@@ -112,8 +138,7 @@ bool Keys::isOffline() const
 std::int64_t Keys::transientExpires() const
 {
     if (!isOffline()) { return 0; }
-    const std::size_t expiresAt
-        = i2pIdentityLength(impl_->blob) + kElGamalPrivateKeyBytes + kEd25519PrivateKeyBytes;
+    const std::size_t expiresAt = signingKeyOffset(impl_->blob) + kEd25519PrivateKeyBytes;
     if (impl_->blob.size() < expiresAt + kOfflineExpiresBytes) {
         throw std::runtime_error("bazarish::i2p: truncated private keys blob");
     }

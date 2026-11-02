@@ -75,8 +75,32 @@ const std::string kMasterPrivateBase64
 
 }  // namespace
 
+// An offline-signed destination whose encryption key is X25519, written by libi2pd itself.
+const std::string kX25519OfflineBlob
+    = "76a3d15885409bb7c21627eac4243fefbee3afa5e98b84090afb2e073ad5bbfc76a3d15885409bb7c21627ea"
+      "c4243fefbee3afa5e98b84090afb2e073ad5bbfc76a3d15885409bb7c21627eac4243fefbee3afa5e98b8409"
+      "0afb2e073ad5bbfc76a3d15885409bb7c21627eac4243fefbee3afa5e98b84090afb2e073ad5bbfc76a3d158"
+      "85409bb7c21627eac4243fefbee3afa5e98b84090afb2e073ad5bbfc76a3d15885409bb7c21627eac4243fef"
+      "bee3afa5e98b84090afb2e073ad5bbfc76a3d15885409bb7c21627eac4243fefbee3afa5e98b84090afb2e07"
+      "3ad5bbfc76a3d15885409bb7c21627eac4243fefbee3afa5e98b84090afb2e073ad5bbfc76a3d15885409bb7"
+      "c21627eac4243fefbee3afa5e98b84090afb2e073ad5bbfc76a3d15885409bb7c21627eac4243fefbee3afa5"
+      "e98b84090afb2e073ad5bbfc76a3d15885409bb7c21627eac4243fefbee3afa5e98b84090afb2e073ad5bbfc"
+      "f7506e9c4f206d39a0dea925fc5ba97bdec13f05fe3f1e5af143fcac1a4fa64c0500040007000486716f11e5"
+      "5b13d6275b84937d88c1742ea3a9a1bb93db454576e8bab2c942040000000000000000000000000000000000"
+      "0000000000000000000000000000006b1088ba0007fc91e90ff6b24b93264787f06b0875a97a561c14242608"
+      "be5aa128f8323b069504c52f75d0c570d4703e1eab9042d24f40f3e78178f656e4e3c0d51eecc7a2465bbc9d"
+      "0802eeca596a4ca74da799d32a2799e58df30a118b21645547f6f0f90b4bf9937415717c38f60e35b955a22b"
+      "0b6e86534cb21c78f0135a906967e941f3";
+constexpr std::int64_t kX25519OfflineExpires = 1796245690;
+const std::string kX25519Host = "hxt2gnncntx3bmw4phabl44ml67r2ekts366xzex3f63iff6ttya.b32.i2p";
+
 int main()
 {
+    const i2p::Keys x25519 = i2p::Keys::fromBlob(bazarish::fromHex(kX25519OfflineBlob));
+    CHECK(x25519.isOffline());
+    CHECK(x25519.transientExpires() == kX25519OfflineExpires);
+    CHECK(i2p::routingHost(x25519.publicBase64(), false) == kX25519Host);
+
     const Bytes masterBlob = bazarish::fromHex(kMasterBlob);
     const i2p::Keys master = i2p::Keys::fromBlob(masterBlob);
 
