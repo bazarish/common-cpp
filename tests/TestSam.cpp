@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/Sam.hpp"
+#include "bazarish/I2pAddress.hpp"
 
 #include "TestUtil.hpp"
 
@@ -388,6 +389,20 @@ void testSessionCreate()
     CHECK(session.alive());
 }
 
+void testPlainSessionCreate()
+{
+    FakeRouter router;
+    sam::SessionConfig config = streamConfig();
+    config.blinded = false;
+    const sam::Session session(router.address(), config, kReady);
+
+    const std::string create = router.waitForCommand("SESSION CREATE");
+    CHECK(contains(create, "i2cp.leaseSetType=3"));
+    CHECK(!contains(create, "i2cp.leaseSetType=5"));
+    CHECK(session.routingHost() == plainLeaseSetHost(kDestination));
+    CHECK(session.routingHost() != kB33);
+}
+
 void testConnectAndEcho()
 {
     FakeRouter router;
@@ -602,6 +617,7 @@ int main()
     testProbe();
     testGenerateDestination();
     testSessionCreate();
+    testPlainSessionCreate();
     testConnectAndEcho();
     testRefusalCarriesItsCode();
     testForwardedAccept();

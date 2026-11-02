@@ -24,6 +24,7 @@ int main()
     const std::string expectedB33 = "a2pbgr7utvu7l5hgvsgc5p5chkylyj7ipplkyykxekjp66enh7hxiwxr.b32.i2p";
 
     CHECK(encryptedLeaseSetHost(destination) == expectedB33);
+    CHECK(plainLeaseSetHost(destination) == "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
 
     bool threw = false;
     try {

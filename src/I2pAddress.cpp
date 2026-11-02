@@ -86,9 +86,9 @@ std::size_t i2pIdentityLength(const Bytes& buffer)
 
 namespace i2p {
 
-std::string routingHost(const std::string& publicBase64)
+std::string routingHost(const std::string& publicBase64, const bool blinded)
 {
-    return encryptedLeaseSetHost(publicBase64);
+    return blinded ? encryptedLeaseSetHost(publicBase64) : plainLeaseSetHost(publicBase64);
 }
 
 }  // namespace i2p
@@ -125,6 +125,14 @@ std::string encryptedLeaseSetHost(const std::string& i2pBase64Destination)
     addr[2] ^= static_cast<std::uint8_t>(checksum >> 16);
 
     return toBase32(Bytes(addr.begin(), addr.end())) + ".b32.i2p";
+}
+
+std::string plainLeaseSetHost(const std::string& i2pBase64Destination)
+{
+    const Bytes destination = fromBase64(i2pToStandardBase64(i2pBase64Destination));
+    const Bytes identity(
+        destination.begin(), destination.begin() + i2pIdentityLength(destination));
+    return toBase32(sha256(identity)) + kB32Suffix;
 }
 
 bool isB32I2pHost(const std::string& host)

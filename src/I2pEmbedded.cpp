@@ -1309,12 +1309,13 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     auto impl = std::make_shared<EmbeddedEndpoint>();
     impl->tag = std::make_shared<DestTag>(config.label, config.owner);
     impl->publicDestination = keys.publicBase64();
-    impl->hostAddress = bazarish::i2p::routingHost(impl->publicDestination);
+    impl->hostAddress = bazarish::i2p::routingHost(impl->publicDestination, config.blinded);
     impl->keysBlob = keys.blob();
 
     i2pd::util::Mapping params;
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_TYPE,
-        std::to_string(i2pd::data::NETDB_STORE_TYPE_ENCRYPTED_LEASESET2));
+        std::to_string(config.blinded ? i2pd::data::NETDB_STORE_TYPE_ENCRYPTED_LEASESET2
+                                      : i2pd::data::NETDB_STORE_TYPE_STANDARD_LEASESET2));
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_ENCRYPTION_TYPE, "4");
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_PERSIST_KEYS, "false");
     if (!config.leaseSetReaders.empty()) {

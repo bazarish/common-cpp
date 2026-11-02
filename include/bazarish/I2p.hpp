@@ -64,7 +64,7 @@ private:
     friend class Endpoint;
 };
 
-std::string routingHost(const std::string& publicBase64);
+std::string routingHost(const std::string& publicBase64, bool blinded = true);
 
 std::string routerVersion();
 
@@ -110,6 +110,8 @@ struct EndpointConfig {
     std::vector<Bytes> leaseSetReaders = {};
     // Raw X25519 private key for reading lease sets that list it as a reader.
     Bytes leaseSetReaderKey = {};
+    // False publishes a plain lease set, reached at the b32 of the destination itself.
+    bool blinded = true;
 };
 
 class Endpoint {

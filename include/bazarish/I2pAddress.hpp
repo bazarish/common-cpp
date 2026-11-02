@@ -9,6 +9,7 @@
 namespace bazarish {
 
 std::string encryptedLeaseSetHost(const std::string& i2pBase64Destination);
+std::string plainLeaseSetHost(const std::string& i2pBase64Destination);
 
 bool isB32I2pHost(const std::string& host);
 

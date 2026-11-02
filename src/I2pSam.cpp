@@ -45,6 +45,7 @@ sam::SessionConfig sessionConfigFor(const EndpointConfig& config, const sam::Sty
     session.privacy = config.privacy;
     session.tunnelQuantity = config.tunnelQuantity;
     session.published = config.published;
+    session.blinded = config.blinded;
     for (const Bytes& reader : config.leaseSetReaders) {
         session.leaseSetReaders.push_back(backend::leaseSetKeyBase64(reader));
     }
@@ -83,7 +84,7 @@ public:
         : router_(std::move(router))
         , config_(config)
         , publicDestination_(config.keys.value().publicBase64())
-        , hostAddress_(i2p::routingHost(publicDestination_))
+        , hostAddress_(i2p::routingHost(publicDestination_, config.blinded))
         , keysBlob_(config.keys.value().blob())
         , label_(config.label)
     {

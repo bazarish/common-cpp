@@ -34,6 +34,7 @@ constexpr int kEd25519SignatureType = 7;
 
 // The NETDB_STORE_TYPE value for i2cp.leaseSetType.
 constexpr int kEncryptedLeaseSetType = 5;
+constexpr int kStandardLeaseSetType = 3;
 // I2P proposal 123: lease-set client authorisation by X25519.
 constexpr int kLeaseSetAuthTypeDh = 1;
 
@@ -521,7 +522,8 @@ std::string sessionCreateLine(const std::string& id, const SessionConfig& config
          << " DESTINATION="
          << (config.privateKeys.empty() ? kTransientDestination : config.privateKeys)
          << " SIGNATURE_TYPE=" << kEd25519SignatureType
-         << " i2cp.leaseSetType=" << kEncryptedLeaseSetType;
+         << " i2cp.leaseSetType="
+         << (config.blinded ? kEncryptedLeaseSetType : kStandardLeaseSetType);
     if (!config.published) {
         line << " i2cp.dontPublishLeaseSet=true";
     }
@@ -807,7 +809,7 @@ const std::string& Session::privateKeys() const
 
 std::string Session::routingHost() const
 {
-    return i2p::routingHost(impl_->publicDestination);
+    return i2p::routingHost(impl_->publicDestination, impl_->config.blinded);
 }
 
 bool Session::alive() const

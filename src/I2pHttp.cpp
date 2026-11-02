@@ -1,10 +1,13 @@
 // Bazarish project (c) 2026
 #include "bazarish/I2pHttp.hpp"
 
+#include <boost/beast/http.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <stdexcept>
+#include <string_view>
 
 namespace bazarish {
 
@@ -35,15 +38,13 @@ std::string quoteForError(const std::string& line)
     return "\"" + quoted + "\"";
 }
 
-const char* reasonFor(const int status)
+std::string_view reasonFor(const int status)
 {
-    switch (status) {
-        case kI2pHttpOk:         return "OK";
-        case kI2pHttpBadRequest: return "Bad Request";
-        case kI2pHttpForbidden:  return "Forbidden";
-        case kI2pHttpNotFound:   return "Not Found";
-        default:                 return nullptr;
+    const auto known = boost::beast::http::int_to_status(static_cast<unsigned>(status));
+    if (known == boost::beast::http::status::unknown) {
+        return {};
     }
+    return boost::beast::http::obsolete_reason(known);
 }
 
 }  // namespace
@@ -51,12 +52,13 @@ const char* reasonFor(const int status)
 std::string buildI2pHttpResponse(const int status,
     const std::map<std::string, std::string>& extraHeaders, const std::size_t bodySize)
 {
-    const char* const reason = reasonFor(status);
-    if (reason == nullptr) {
+    const std::string_view reason = reasonFor(status);
+    if (reason.empty()) {
         throw std::invalid_argument(
             "no reason phrase for i2p http status " + std::to_string(status));
     }
-    std::string response = "HTTP/1.1 " + std::to_string(status) + " " + reason + "\r\n";
+    std::string response
+        = "HTTP/1.1 " + std::to_string(status) + " " + std::string(reason) + "\r\n";
     for (const auto& [key, value] : extraHeaders) {
         response += key + ": " + value + "\r\n";
     }
