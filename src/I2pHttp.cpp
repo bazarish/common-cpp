@@ -44,7 +44,8 @@ std::string_view reasonFor(const int status)
     if (known == boost::beast::http::status::unknown) {
         return {};
     }
-    return boost::beast::http::obsolete_reason(known);
+    const auto phrase = boost::beast::http::obsolete_reason(known);
+    return std::string_view(phrase.data(), phrase.size());
 }
 
 }  // namespace
