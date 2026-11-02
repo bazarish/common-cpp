@@ -33,13 +33,18 @@ inline std::string webLink(const std::string_view tail)
     return std::string(kWebLinkPrefix) + std::string(tail);
 }
 
+inline std::string schemeLink(const std::string_view tail)
+{
+    return std::string(kSchemeLinkPrefix) + std::string(tail);
+}
+
 inline std::string canonicalLink(const std::string_view link)
 {
     const std::string tail = linkTail(link);
     if (tail.empty()) {
         throw std::invalid_argument("not a Bazarish link");
     }
-    return webLink(tail);
+    return schemeLink(tail);
 }
 
 inline std::string linkQuery(const std::string_view link, const std::string_view kind)

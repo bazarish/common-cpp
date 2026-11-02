@@ -176,7 +176,7 @@ int main()
         CHECK_THROWS(session.signLogin(toBase64(Bytes(text.begin(), text.end()))));
         CHECK_THROWS(session.signLogin(challenge + "&c=x"));
         CHECK_THROWS(session.signLogin(
-            webLink(kInviteKind) + challenge.substr(webLink(kSignKind).size())));
+            webLink(kInviteKind) + challenge.substr(schemeLink(kSignKind).size())));
         CHECK_THROWS(session.signLogin(encodedChallenge(
             {{"v", service::kLoginChallengeVersion}, {"nonce", "abc"}, {"ts", now()}})));
 

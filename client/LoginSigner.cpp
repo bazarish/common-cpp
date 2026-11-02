@@ -4,6 +4,7 @@
 #include "FederationFetch.hpp"
 #include "I2pRouter.hpp"
 
+#include <bazarish/Links.hpp>
 #include <bazarish/Log.hpp>
 
 #include <ctime>
@@ -59,7 +60,8 @@ std::optional<int> LoginSigner::send(const std::string& challenge) const
     bazarish::i2p::Router& router = readyRouter();
     const std::string blob = sign(challenge);
     log::info("sending a login signature to {}", log::redact(callback->host));
-    return postLoginOverI2p(router, *callback, challenge, blob, tunnelPrivacy(), owner_);
+    return postLoginOverI2p(
+        router, *callback, canonicalLink(challenge), blob, tunnelPrivacy(), owner_);
 }
 
 std::optional<std::string> LoginSigner::fetch(

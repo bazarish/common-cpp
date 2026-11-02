@@ -88,7 +88,7 @@ LoginCallback parseI2pPlace(const std::string& address, const std::string& what)
 
 std::string encodeLoginChallenge(const std::string& envelope)
 {
-    return webLink(std::string(kSignKind) + kLoginChallengeField
+    return schemeLink(std::string(kSignKind) + kLoginChallengeField
         + toBase64Url(Bytes(envelope.begin(), envelope.end())));
 }
 
@@ -254,8 +254,9 @@ std::string verifyLoginBlob(
     } catch (const nlohmann::json::exception&) {
         throw std::runtime_error(kNotASignature);
     }
+    const std::string issued = canonicalLink(challenge);
     return auth::verifyRequest(
-        headers, now, kLoginMethod, kLoginPath, Bytes(challenge.begin(), challenge.end()));
+        headers, now, kLoginMethod, kLoginPath, Bytes(issued.begin(), issued.end()));
 }
 
 }  // namespace bazarish::service
