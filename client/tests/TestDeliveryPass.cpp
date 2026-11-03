@@ -662,14 +662,9 @@ int main()
                 return false;
             };
             alice.sendMessage(bob.fingerprint(), "logged");
-            bool stored = false;
-            for (int round = 0; round < 20 && !stored; ++round) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                stored = logHas(alice.connectionLog(), "text to", "stored");
-            }
+            CHECK(waitFor([&]() { return logHas(alice.connectionLog(), "text to", "stored"); }));
             const std::vector<WireEvent> aliceLog = alice.connectionLog();
             CHECK(logHas(aliceLog, "text to", "sending"));
-            CHECK(stored);
             CHECK(logHas(aliceLog, "POST /v1/messaging/", "200"));
             for (const WireEvent& event : aliceLog) {
                 CHECK(event.what.find("logged") == std::string::npos);
@@ -686,7 +681,7 @@ int main()
             const Bytes opus{'O', 'p', 'u', 's'};
             alice.sendVoice(bob.fingerprint(), opus, 2500);
             bool heard = false;
-            for (int round = 0; round < 3 && !heard; ++round) {
+            CHECK(waitFor([&]() {
                 for (const IncomingMessage& item : bob.sync()) {
                     if (item.contentType == "audio") {
                         heard = true;
@@ -695,7 +690,8 @@ int main()
                         CHECK(item.attachmentSize == opus.size());
                     }
                 }
-            }
+                return heard;
+            }));
             CHECK(heard);
         }
 
@@ -707,13 +703,14 @@ int main()
             alice.sendFile(bob.fingerprint(), forwardedFile.string(), {}, {}, {}, true);
             alice.sendPicture(bob.fingerprint(), Bytes{'J', 'P', 'G'}, "own.jpg", "image/jpeg");
             std::map<std::string, bool> marks;
-            for (int round = 0; round < 3 && marks.size() < 3; ++round) {
+            CHECK(waitFor([&]() {
                 for (const IncomingMessage& item : bob.sync()) {
                     if (item.contentType == "image" || item.contentType == "file") {
                         marks[item.attachmentName] = item.forwarded;
                     }
                 }
-            }
+                return marks.size() >= 3;
+            }));
             CHECK(marks.size() == 3);
             CHECK(marks["p.png"]);
             CHECK(marks["bz-pass-forwarded.txt"]);
@@ -768,13 +765,14 @@ int main()
         {
             alice.setAvatar(Bytes(kAvatarMaxBytes, 'a'), "image/jpeg");
             std::size_t received = 0;
-            for (int round = 0; round < 3 && received == 0; ++round) {
+            CHECK(waitFor([&]() {
                 for (const IncomingMessage& item : bob.sync()) {
                     if (item.contentType == "avatar") {
                         received = item.avatarData.size();
                     }
                 }
-            }
+                return received != 0;
+            }));
             CHECK(received == kAvatarMaxBytes);
         }
 
@@ -785,13 +783,14 @@ int main()
             };
             alice.sendInteractive(bob.fingerprint(), "pick one", keyboard);
             std::string received;
-            for (int round = 0; round < 3 && received.empty(); ++round) {
+            CHECK(waitFor([&]() {
                 for (const IncomingMessage& item : bob.sync()) {
                     if (item.contentType == "text" && item.text == "pick one") {
                         received = item.keyboardJson;
                     }
                 }
-            }
+                return !received.empty();
+            }));
             CHECK(!received.empty());
             const nlohmann::json rows = nlohmann::json::parse(received);
             CHECK(rows.is_array() && rows.size() == 2);
@@ -1033,13 +1032,14 @@ int main()
 
             std::map<std::string, IncomingMessage> seen;
             std::vector<std::string> order;
-            for (int round = 0; round < 3 && seen.size() < 5; ++round) {
+            CHECK(waitFor([&]() {
                 for (const IncomingMessage& item : bob.sync()) {
                     const std::string key = item.contentType == "text" ? item.text : item.contentType;
                     seen[key] = item;
                     order.push_back(key);
                 }
-            }
+                return seen.size() >= 5;
+            }));
             CHECK(seen.size() == 5);
             const auto relayedAt = std::find(order.begin(), order.end(), "relayed");
             CHECK(relayedAt != order.end() && std::next(relayedAt) != order.end()
@@ -1087,24 +1087,26 @@ int main()
             alice.relayPosts(bob.fingerprint(), {post, again});
             alice.relayPosts(bob.fingerprint(), {post, again, later});
             bool sawLater = false;
-            for (int round = 0; round < 3 && !sawLater; ++round) {
+            CHECK(waitFor([&]() {
                 for (const IncomingMessage& item : bob.sync()) {
                     sawLater = sawLater || item.text == "only in the longer one";
                 }
-            }
+                return sawLater;
+            }));
             CHECK(sawLater);
 
             alice.setGroupBlockSource({});
             alice.sendMessage(bob.fingerprint(), "no longer a group");
             bool plain = false;
-            for (int round = 0; round < 3 && !plain; ++round) {
+            CHECK(waitFor([&]() {
                 for (const IncomingMessage& item : bob.sync()) {
                     if (item.text == "no longer a group") {
                         plain = true;
                         CHECK(!item.group.has_value());
                     }
                 }
-            }
+                return plain;
+            }));
             CHECK(plain);
         }
 
@@ -1387,9 +1389,10 @@ int main()
             const std::size_t beforeRequests = heldForAlice();
             CHECK(beforeRequests == beforeAdding + 1);
             CHECK(alice.hasContact(dana.fingerprint()));
-            for (int round = 0; round < 3; ++round) {
+            CHECK(waitFor([&]() {
                 dana.sync();
-            }
+                return dana.contactIsPending(alice.fingerprint());
+            }));
             CHECK(dana.hasContact(alice.fingerprint()));
             CHECK(dana.contactIsPending(alice.fingerprint()));
             CHECK(heldForAlice() == beforeRequests);
@@ -1402,10 +1405,10 @@ int main()
             CHECK(dana.contactAcceptInFlight(alice.fingerprint()));
             dana.acceptContactRequest(alice.fingerprint());
             CHECK(waitFor([&]() { return heldForAlice() > beforeRequests; }));
-            for (int round = 0; round < 3 && dana.contactIsPending(alice.fingerprint());
-                ++round) {
+            CHECK(waitFor([&]() {
                 dana.sync();
-            }
+                return !dana.contactIsPending(alice.fingerprint());
+            }));
             CHECK(!dana.contactIsPending(alice.fingerprint()));
             CHECK(!dana.contactAcceptInFlight(alice.fingerprint()));
 
@@ -1413,15 +1416,15 @@ int main()
             CHECK(!alice.hasContact(dana.fingerprint()));
             const std::size_t beforeReturn = heldForAlice();
             alice.addByInvite(dana.inviteUri(), "me again");
-            for (int round = 0; round < 3 && !dana.contactAcceptInFlight(alice.fingerprint());
-                ++round) {
+            CHECK(waitFor([&]() {
                 dana.sync();
-            }
+                return dana.contactAcceptInFlight(alice.fingerprint());
+            }));
             CHECK(waitFor([&]() { return heldForAlice() > beforeReturn; }));
-            for (int round = 0; round < 3 && dana.contactIsPending(alice.fingerprint());
-                ++round) {
+            CHECK(waitFor([&]() {
                 dana.sync();
-            }
+                return !dana.contactIsPending(alice.fingerprint());
+            }));
             CHECK(!dana.contactIsPending(alice.fingerprint()));
             CHECK(waitFor([&]() {
                 alice.sync();
@@ -1469,9 +1472,10 @@ int main()
             alice.setOutboundCourier(courierFor());
             alice.sendContactRequest(erin.fingerprint(), "resent-request", "are you there",
                 DeliveryWatch{}, /*waitForOutcome=*/true);
-            for (int round = 0; round < 3 && !erin.hasContact(alice.fingerprint()); ++round) {
+            CHECK(waitFor([&]() {
                 erin.sync();
-            }
+                return erin.hasContact(alice.fingerprint());
+            }));
             CHECK(erin.contactIsPending(alice.fingerprint()));
             erin.acceptContactRequest(alice.fingerprint());
             CHECK(waitFor([&]() {
@@ -1484,10 +1488,10 @@ int main()
         {
             const Bytes face = {0xFF, 0xD8, 0xFF, 0xE0, 'b', 'o', 'b'};
             bob.setAvatar(face, "image/jpeg");
-            for (int round = 0; round < 3 && alice.contactAvatar(bob.fingerprint()).empty();
-                ++round) {
+            CHECK(waitFor([&]() {
                 alice.sync();
-            }
+                return !alice.contactAvatar(bob.fingerprint()).empty();
+            }));
             CHECK(alice.contactAvatar(bob.fingerprint()) == face);
             alice.renameContact(bob.fingerprint(), "Bob of the book");
 
@@ -1500,9 +1504,10 @@ int main()
 
             second.sync();
             alice.sync();
-            for (int round = 0; round < 3 && !second.hasContact(bob.fingerprint()); ++round) {
+            CHECK(waitFor([&]() {
                 second.sync();
-            }
+                return second.hasContact(bob.fingerprint());
+            }));
             CHECK(second.hasContact(bob.fingerprint()));
             CHECK(second.contactDisplayName(bob.fingerprint()) == "Bob of the book");
             CHECK(second.contactAvatar(bob.fingerprint()) == face);
@@ -1535,11 +1540,12 @@ int main()
             }));
             bob.sendMessage(alice.fingerprint(), "hello, second device");
             bool sawBob = false;
-            for (int round = 0; round < 3 && !sawBob; ++round) {
+            CHECK(waitFor([&]() {
                 for (const IncomingMessage& item : second.sync()) {
                     sawBob = sawBob || item.text == "hello, second device";
                 }
-            }
+                return sawBob;
+            }));
             CHECK(sawBob);
 
             {
@@ -1557,21 +1563,24 @@ int main()
 
                 alice.addByInvite(finn.inviteUri(), "added on one device");
                 alice.renameContact(finn.fingerprint(), "Finn of the phone");
-                for (int round = 0; round < 3 && !second.hasContact(finn.fingerprint()); ++round) {
+                CHECK(waitFor([&]() {
                     second.sync();
-                }
+                    return second.hasContact(finn.fingerprint());
+                }));
                 CHECK(second.hasContact(finn.fingerprint()));
-                for (int round = 0; round < 3; ++round) {
+                CHECK(waitFor([&]() {
                     finn.sync();
-                }
+                    return finn.contactIsPending(alice.fingerprint());
+                }));
                 finn.acceptContactRequest(alice.fingerprint());
                 finn.sendMessage(alice.fingerprint(), "seen on the other device too");
                 bool sawFinn = false;
-                for (int round = 0; round < 3 && !sawFinn; ++round) {
+                CHECK(waitFor([&]() {
                     for (const IncomingMessage& item : second.sync()) {
                         sawFinn = sawFinn || item.text == "seen on the other device too";
                     }
-                }
+                    return sawFinn;
+                }));
                 CHECK(sawFinn);
                 CHECK(second.contactDisplayName(finn.fingerprint()) == "Finn of the phone");
             }
@@ -1579,10 +1588,10 @@ int main()
             {
                 const Bytes huge(200 * 1024, 0x41);
                 bob.setAvatar(huge, "image/jpeg");
-                for (int round = 0; round < 3 && alice.contactAvatar(bob.fingerprint()) != huge;
-                    ++round) {
+                CHECK(waitFor([&]() {
                     alice.sync();
-                }
+                    return alice.contactAvatar(bob.fingerprint()) == huge;
+                }));
                 CHECK(alice.contactAvatar(bob.fingerprint()) == huge);
 
                 const fs::path thirdDir = fs::temp_directory_path() / "bz-pass-a-third.db";
@@ -1591,9 +1600,10 @@ int main()
                 Session third = Session::open(thirdDir, std::string{});
                 third.sync();
                 alice.sync();
-                for (int round = 0; round < 3 && !third.hasContact(bob.fingerprint()); ++round) {
+                CHECK(waitFor([&]() {
                     third.sync();
-                }
+                    return third.hasContact(bob.fingerprint());
+                }));
                 CHECK(third.hasContact(bob.fingerprint()));
                 CHECK(third.contactAvatar(bob.fingerprint()).empty());
                 CHECK(third.contactDisplayName(bob.fingerprint()) == "Bob of the book");
