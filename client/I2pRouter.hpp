@@ -53,6 +53,7 @@ void setSamTransport(std::string host, int port);
 void setRouterTransit(bool transit);
 
 void setGatewayTransport(const GatewayAddress& address, std::string pin);
+void clearGatewayTransport();
 
 void setI2pSocksProxy(std::string host, int port);
 void restartI2pRouter();

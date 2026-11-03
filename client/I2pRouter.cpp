@@ -256,6 +256,13 @@ void setGatewayTransport(const GatewayAddress& address, std::string pin)
     g_gatewayPin = std::move(pin);
 }
 
+void clearGatewayTransport()
+{
+    const std::lock_guard<std::mutex> lock(proxyMutex());
+    g_gateway.reset();
+    g_gatewayPin.clear();
+}
+
 bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir)
 {
     bazarish::i2p::RouterConfig config;
