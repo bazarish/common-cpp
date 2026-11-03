@@ -278,15 +278,35 @@ bool echoesToOwnDevices(const std::string& type)
 
 constexpr std::size_t kSealOverheadAllowance = 8 * 1024;
 
-Bytes encodedBody(const nlohmann::json& inner)
+constexpr std::size_t kMessageCeiling = kMaxMessagePayloadBytes - kSealOverheadAllowance;
+// Messages.md: an envelope's delivery id is derived from the ids of all its messages.
+constexpr const char* kEnvelopeIdSeparator = ",";
+
+// Messages.md: a sealed body is always a CBOR array of messages, oldest first.
+Bytes encodedBatch(const std::vector<nlohmann::json>& items)
 {
-    return padToLadder(
-        nlohmann::json::to_cbor(inner), kMaxMessagePayloadBytes - kSealOverheadAllowance);
+    return padToLadder(nlohmann::json::to_cbor(nlohmann::json(items)), kMessageCeiling);
 }
 
-nlohmann::json decodedBody(const Bytes& bytes)
+Bytes encodedBody(const nlohmann::json& inner)
 {
-    return nlohmann::json::from_cbor(unpadFromLadder(bytes));
+    return encodedBatch({inner});
+}
+
+std::vector<nlohmann::json> decodedBody(const Bytes& bytes)
+{
+    nlohmann::json items = nlohmann::json::from_cbor(unpadFromLadder(bytes));
+    if (!items.is_array() || items.empty()) {
+        throw std::runtime_error("a sealed body is not a list of messages");
+    }
+    std::vector<nlohmann::json> messages;
+    for (nlohmann::json& item : items) {
+        if (!item.is_object()) {
+            throw std::runtime_error("a sealed body holds something other than a message");
+        }
+        messages.push_back(std::move(item));
+    }
+    return messages;
 }
 
 bazarish::i2p::Router& routerForAdd()
@@ -1207,22 +1227,23 @@ bool Session::adoptI2pMasterFromOwnMailbox(const std::string& wantedHost)
             begin = end;
         }
         for (const MailboxItem& item : held) {
-            const nlohmann::json body = decodedBody(hybrid::unseal(item.blob, sealingKey_));
-            if (body.value("type", std::string()) != "device.i2p-master"
-                || body.value("from", std::string()) != fingerprint()) {
-                continue;
+            for (const nlohmann::json& body : decodedBody(hybrid::unseal(item.blob, sealingKey_))) {
+                if (body.value("type", std::string()) != "device.i2p-master"
+                    || body.value("from", std::string()) != fingerprint()) {
+                    continue;
+                }
+                if (authorOf(body, knownKeysFor(fingerprint())) != fingerprint()) {
+                    continue;
+                }
+                const Bytes master = fromBase64(body.at("i2pMaster").get<std::string>());
+                if (!wantedHost.empty() && i2pRoutingHost(master) != wantedHost) {
+                    continue;
+                }
+                replaceI2pMaster(master, body.at("addressSealing").get<std::string>(),
+                    body.at("addressSigning").get<std::string>());
+                log::info("adopted this account's address from another of its devices");
+                return true;
             }
-            if (authorOf(body, knownKeysFor(fingerprint())) != fingerprint()) {
-                continue;
-            }
-            const Bytes master = fromBase64(body.at("i2pMaster").get<std::string>());
-            if (!wantedHost.empty() && i2pRoutingHost(master) != wantedHost) {
-                continue;
-            }
-            replaceI2pMaster(master, body.at("addressSealing").get<std::string>(),
-                body.at("addressSigning").get<std::string>());
-            log::info("adopted this account's address from another of its devices");
-            return true;
         }
     } catch (const std::exception& error) {
         log::warn("could not read this account's own mailbox for its address: {}",
@@ -2388,20 +2409,32 @@ nlohmann::json Session::relayedEnvelope(const RelayedPost& post) const
     return inner;
 }
 
-bool Session::relayPost(
-    const std::string& peerFingerprint, const RelayedPost& post, const DeliveryWatch& watch)
+bool Session::relayPosts(const std::string& peerFingerprint,
+    const std::vector<RelayedPost>& posts, const DeliveryWatch& watch)
 {
-    return sendContent(peerFingerprint, relayedEnvelope(post), watch);
+    std::vector<nlohmann::json> items;
+    for (const RelayedPost& post : posts) {
+        items.push_back(relayedEnvelope(post));
+    }
+    return sendContents(peerFingerprint, std::move(items), watch);
 }
 
-bool Session::relayFits(const RelayedPost& post) const
+std::size_t Session::relayFitting(const std::vector<RelayedPost>& posts) const
 {
-    nlohmann::json inner = relayedEnvelope(post);
-    inner["group"] = groupBlockToJson(GroupBlock{GroupKind::eChannel,
+    const nlohmann::json widestBlock = groupBlockToJson(GroupBlock{GroupKind::eChannel,
         std::numeric_limits<std::int64_t>::max(), true, true,
         std::numeric_limits<std::int64_t>::max()});
-    signAuthorship(inner, client_->identity(), /*withKeys=*/false);
-    return encodedBody(inner).size() <= kMaxMessagePayloadBytes - kSealOverheadAllowance;
+    std::vector<nlohmann::json> items;
+    for (const RelayedPost& post : posts) {
+        nlohmann::json inner = relayedEnvelope(post);
+        inner["group"] = widestBlock;
+        signAuthorship(inner, client_->identity(), /*withKeys=*/false);
+        items.push_back(std::move(inner));
+        if (encodedBatch(items).size() > kMessageCeiling) {
+            return items.size() - 1;
+        }
+    }
+    return items.size();
 }
 
 void Session::sendGroupState(const std::string& peerFingerprint, const DeliveryWatch& watch)
@@ -3049,9 +3082,23 @@ nlohmann::json Session::envelope(
 bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inner,
     const DeliveryWatch& watch, bool establishOnFirstReply)
 {
+    std::vector<nlohmann::json> items;
+    items.push_back(std::move(inner));
+    return sendContents(peerFingerprint, std::move(items), watch, establishOnFirstReply);
+}
+
+bool Session::sendContents(const std::string& peerFingerprint, std::vector<nlohmann::json> items,
+    const DeliveryWatch& watch, bool establishOnFirstReply)
+{
     requireSwitchedOn();
+    if (items.empty()) {
+        throw std::invalid_argument("an envelope carries at least one message");
+    }
     if (isSavedChat(peerFingerprint)) {
-        const bool kept = saveToSelf(std::move(inner));
+        bool kept = true;
+        for (nlohmann::json& item : items) {
+            kept = saveToSelf(std::move(item)) && kept;
+        }
         if (watch.onOutcome) {
             OutboundCourier::Outcome outcome;
             outcome.stored = kept;
@@ -3062,15 +3109,19 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     if (isBlocked(peerFingerprint)) {
         throw std::runtime_error("this contact is blocked; unblock them to write to them");
     }
-    if (groupBlockSource_) {
-        inner["group"] = groupBlockToJson(groupBlockSource_(peerFingerprint));
+    const std::optional<std::int64_t> menuId = botMenus_.idFor(peerFingerprint);
+    std::vector<nlohmann::json> echoPayloads;
+    for (nlohmann::json& inner : items) {
+        if (groupBlockSource_) {
+            inner["group"] = groupBlockToJson(groupBlockSource_(peerFingerprint));
+        }
+        if (menuId && carriesMenuId(inner.value("type", std::string()))) {
+            inner["menuId"] = *menuId;
+        }
+        if (echoesToOwnDevices(inner.value("type", std::string()))) {
+            echoPayloads.push_back(inner);
+        }
     }
-    if (const std::optional<std::int64_t> menuId = botMenus_.idFor(peerFingerprint);
-        menuId && carriesMenuId(inner.value("type", std::string()))) {
-        inner["menuId"] = *menuId;
-    }
-    const nlohmann::json echoPayload
-        = echoesToOwnDevices(inner.value("type", std::string())) ? inner : nlohmann::json();
     const auto found = contacts_.find(peerFingerprint);
     if (found == contacts_.end()) {
         throw std::runtime_error("unknown contact: " + peerFingerprint);
@@ -3086,12 +3137,20 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     DeliveryWatch watchWithLog = watch;
 
     if (establishOnFirstReply && !contact.issuedToThem && !contact.acceptInFlight) {
-        inner["bootstrap"] = bootstrapBlock(registerPassFor(peerFingerprint));
+        items.front()["bootstrap"] = bootstrapBlock(registerPassFor(peerFingerprint));
         bootstrapIssued = true;
     }
 
-    signAuthorship(inner, client_->identity(), /*withKeys=*/false);
-    const Bytes innerBytes = encodedBody(inner);
+    for (nlohmann::json& inner : items) {
+        signAuthorship(inner, client_->identity(), /*withKeys=*/false);
+    }
+    std::string envelopeIds;
+    for (const nlohmann::json& inner : items) {
+        envelopeIds += (envelopeIds.empty() ? "" : kEnvelopeIdSeparator)
+            + inner.value("id", std::string());
+    }
+    const std::string firstType = items.front().value("type", std::string("?"));
+    const Bytes innerBytes = encodedBatch(items);
     const Key peerSealing = Key::fromPublicDer(fromBase64(contact.sealingPublicB64));
     const Bytes payload = hybrid::seal(innerBytes, peerSealing);
     if (payload.size() > kMaxMessagePayloadBytes) {
@@ -3106,25 +3165,28 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
         contact.acceptInFlight = true;
     }
     {
-        const std::string kind = inner.value("type", std::string("?"));
+        const std::string kind = items.size() == 1
+            ? firstType
+            : std::to_string(items.size()) + " messages";
         const std::string peerLabel = wireName(peerFingerprint);
         const std::string shortId
-            = deliveryIdFor(inner.value("id", std::string()), peerFingerprint)
-                  .substr(0, kShortFingerprintChars);
+            = deliveryIdFor(envelopeIds, peerFingerprint).substr(0, kShortFingerprintChars);
         noteWire(true, kind + " to " + peerLabel, "sending",
             "id " + shortId + ", pass " + toHex(pass).substr(0, kPassPrefixChars));
         DeliveryWatch logged = watch;
         const std::shared_ptr<WireLog> log = client_->wireLogHandle();
-        logged.onOutcome = [log, kind, peerLabel, shortId, peerFingerprint, echoPayload,
+        logged.onOutcome = [log, kind, peerLabel, shortId, peerFingerprint, echoPayloads,
                                echoQueue = echoQueue_, onOutcome = watch.onOutcome,
                                bootstrapIssued](const OutboundCourier::Outcome& outcome) {
             const std::string status = outcome.stored
                 ? std::string("stored")
                 : "failed" + (outcome.errorCode.empty() ? std::string() : ": " + outcome.errorCode);
             log->record({0, true, kind + " to " + peerLabel, status, "id " + shortId});
-            if (outcome.stored && !echoPayload.is_null()) {
+            if (outcome.stored && !echoPayloads.empty()) {
                 const std::lock_guard<std::mutex> lock(echoQueue->mutex);
-                echoQueue->pending.push_back({peerFingerprint, echoPayload});
+                for (const nlohmann::json& echoed : echoPayloads) {
+                    echoQueue->pending.push_back({peerFingerprint, echoed});
+                }
             }
             if (bootstrapIssued) {
                 const std::lock_guard<std::mutex> lock(echoQueue->mutex);
@@ -3142,7 +3204,7 @@ bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inn
     }
 
     const bool delivered = deliver(contact.dest, peerServingKey, "content", peerFingerprint,
-        pass, payload, watchWithLog, /*waitForOutcome=*/false, inner.value("id", std::string()));
+        pass, payload, watchWithLog, /*waitForOutcome=*/false, envelopeIds);
     return delivered;
 }
 
@@ -3229,488 +3291,488 @@ std::vector<IncomingMessage> Session::takeIn(
         try {
             const Bytes blob = std::move(item.blob);
             const Bytes plain = hybrid::unseal(blob, sealingKey_);
-            nlohmann::json body = decodedBody(plain);
-
-            {
-                const std::string claimed = body.value("from", std::string());
-                std::string author;
+            std::vector<IncomingMessage> surfaced;
+            for (nlohmann::json& body : decodedBody(plain)) {
                 try {
-                    author = authorOf(body, knownKeysFor(claimed));
-                } catch (const std::exception& error) {
-                    bazarish::log::warn("sync: dropping an item that does not name its "
-                                        "author: {}", error.what());
-                    noteWire(false, "unsigned item", "dropped", error.what());
-                    releaseItem(entry.id);
-                    continue;
-                }
-                if (author != claimed) {
-                    bazarish::log::warn("sync: dropping an item signed by {} claiming to be {}",
-                        bazarish::log::redact(author), bazarish::log::redact(claimed));
-                    noteWire(false, "item signed by another key", "dropped", {});
-                    releaseItem(entry.id);
-                    continue;
-                }
-            }
 
-            if (body.at("v").get<int>() > kMessageFormatVersion) {
-                bazarish::log::info("sync: an item from a newer message format was not read");
-                noteWire(false, "item in a newer format", "dropped", {});
-                releaseItem(entry.id);
-                continue;
-            }
-
-            IncomingMessage message;
-            if (body.value("type", std::string()) == "device.message"
-                && body.value("from", std::string()) == fingerprint()) {
-                if (body.value("device", std::string()) == client_->clientId()) {
-                    releaseItem(entry.id);
-                    continue;
-                }
-                const std::string peer = body.value("peer", std::string());
-                body = body.at("message");
-                body["from"] = peer;
-                message.sentByUs = true;
-            }
-            if (body.value("type", std::string()) == "device.saved"
-                && body.value("from", std::string()) == fingerprint()) {
-                if (body.value("device", std::string()) == client_->clientId()) {
-                    releaseItem(entry.id);
-                    continue;
-                }
-                body = body.at("message");
-                body["from"] = fingerprint();
-                message.sentByUs = true;
-            }
-            message.fromFingerprint = body.at("from").get<std::string>();
-            message.e2eId = body.value("id", std::string());
-            message.sentAt = body.value("sentAt", static_cast<std::int64_t>(0));
-            message.forwarded = body.value("forwarded", false);
-            std::string type = body.value("type", std::string("text"));
-
-            const bool fromOurselves = message.fromFingerprint == fingerprint();
-            const bool known = contacts_.find(message.fromFingerprint) != contacts_.end();
-            const bool asking = type == "contact.request";
-            if (!fromOurselves
-                && (isBlocked(message.fromFingerprint) || (!known && !asking))) {
-                releaseItem(entry.id);
-                continue;
-            }
-
-            if (body.contains("routing")) {
-                const nlohmann::json& routing = body.at("routing");
-                Contact& peer = contacts_[message.fromFingerprint];
-                const std::string dest = routing.value("dest", std::string());
-                const std::string servingKey = routing.value("servingKey", std::string());
-                if (!dest.empty() && !servingKey.empty()
-                    && (peer.dest != dest || peer.servingSealingB64 != servingKey)) {
-                    validateB32I2pHost(dest);
-                    bazarish::log::info("contact {} answers at a new destination now",
-                        bazarish::log::redact(message.fromFingerprint));
-                    peer.dest = dest;
-                    peer.servingSealingB64 = servingKey;
-                    persistContacts();
-                }
-            }
-
-            if (body.contains("bootstrap")) {
-                Contact& peer = contacts_[message.fromFingerprint];
-                rememberKeys(peer, keysIn(body));
-                applyBootstrap(peer, body.at("bootstrap"));
-                message.establishedContact = true;
-                establishedPeers.insert(message.fromFingerprint);
-            }
-
-            if (type == "contact.request" || type == "contact.accept") {
-                const std::string dn = body.value("dn", std::string());
-                Contact& peer = contacts_[message.fromFingerprint];
-                if (peer.displayName.empty()) {
-                    const std::string chosen = chosenName(message.fromFingerprint);
-                    if (!chosen.empty()) {
-                        peer.displayName = safeContactName(chosen);
-                        forgetChosenName(message.fromFingerprint);
-                    } else if (!dn.empty()) {
-                        peer.displayName = safeContactName(dn);
-                    }
-                }
-            }
-
-            if (asking && known && contacts_[message.fromFingerprint].issuedToThem) {
-                contacts_[message.fromFingerprint].issuedToThem = false;
-                reaskedPeers.insert(message.fromFingerprint);
-            }
-
-            if (body.contains("group")) {
-                message.group = groupBlockFromJson(body.at("group"));
-                message.author = body.value("author", std::string());
-                message.contactable = body.value("contactable", false);
-                message.fromHost = body.value("fromHost", false);
-            }
-
-            if (type == "text" || type == "contact.request") {
-                message.contentType = type;
-                message.text = body.value("text", std::string());
-            } else if (type == kTypeGroupState && message.group) {
-                message.contentType = type;
-            } else if (type == kTypeGroupReactions && message.group) {
-                message.contentType = type;
-                message.groupReactionsJson = body.at("reactions").dump();
-            } else if (type == kTypeImage) {
-                message.contentType = type;
-                const nlohmann::json& picture = body.at("image");
-                message.attachmentName = picture.value("name", std::string());
-                message.attachmentMime = picture.value("mime", std::string());
-                message.attachmentSize = picture.value("size", std::uint64_t{0});
-                const nlohmann::json::binary_t& data = picture.at("data").get_binary();
-                putPicture(message.e2eId, Bytes(data.begin(), data.end()));
-            } else if (type == kTypeAudio) {
-                message.contentType = type;
-                const nlohmann::json& audio = body.at("audio");
-                message.attachmentMime = "audio/opus";
-                message.attachmentSize = audio.value("size", std::uint64_t{0});
-                message.attachmentDurationMs = audio.value("durationMs", std::int64_t{0});
-                const nlohmann::json::binary_t& data = audio.at("data").get_binary();
-                putVoice(message.e2eId, Bytes(data.begin(), data.end()));
-            } else if (type == kTypeFile) {
-                message.contentType = type;
-                const nlohmann::json& file = body.at("file");
-                message.attachmentRef = file.value("sha256", std::string());
-                message.attachmentName = file.value("name", std::string());
-                message.attachmentMime = file.value("mime", std::string());
-                message.attachmentSize = file.value("size", std::uint64_t{0});
-            } else if (type == "file.request") {
-                message.contentType = type;
-                const std::int64_t askedAt = body.value("sentAt", std::int64_t{0});
-                if (askedAt != 0 && nowMillis() - askedAt > kFileRequestFreshnessMs) {
-                    bazarish::log::info("file request from {} is stale, not serving",
-                        bazarish::log::redact(message.fromFingerprint));
-                } else {
-                    serveRequestedFile(message.fromFingerprint,
-                        body.value("fileId", std::string()), body.value("ask", std::string()));
-                }
-            } else if (type == "file.offer") {
-                message.contentType = type;
-                const std::string offerFor = body.value("forAsk", std::string());
-                if (!offerFor.empty() && !awaitingAsk(offerFor)) {
-                    releaseItem(entry.id);
-                    continue;
-                }
-                try {
-                    startAnnouncedFetch(
-                        fileOfferFromJson(body.at("offer")), message.fromFingerprint);
-                } catch (const std::exception& error) {
-                    bazarish::log::warn("file offer ignored: {}", error.what());
-                }
-            } else if (type == "file.cancel") {
-                message.contentType = type;
-                stopTransfer(body.value("fileId", std::string()), message.fromFingerprint,
-                    body.value("ask", std::string()));
-            } else if (type == "file.unavailable") {
-                message.contentType = type;
-                const std::string fileId = body.value("fileId", std::string());
-                {
-                    const std::lock_guard<std::mutex> lock(transfers_->mutex);
-                    transfers_->pending.erase(fileId);
-                }
-                emitTransfer(fileId, TransferState::eFailed, 0, 0,
-                    "the sender could not send this file", {}, message.fromFingerprint);
-            } else if (type == "bot.command") {
-                message.contentType = type;
-                message.commandName = body.value("command", std::string());
-                message.commandArgs = body.value("args", std::string());
-                message.text = "/" + message.commandName
-                    + (message.commandArgs.empty() ? std::string() : " " + message.commandArgs);
-            } else if (type == "bot.callback") {
-                message.contentType = type;
-                message.callbackData = body.value("data", std::string());
-                message.refId = body.value("ref", std::string());
-            } else if (type == kTypeBotMenu && !message.sentByUs) {
-                const BotMenu menu = botMenuFromJson(body);
-                if (!botMenus_.admit(message.fromFingerprint, menu.id, message.sentAt)) {
-                    releaseItem(entry.id);
-                    continue;
-                }
-                db_->putText("bot-menus", botMenus_.toJson().dump());
-                message.contentType = type;
-                message.menuItemsJson = botMenuItemsJson(menu.items).dump();
-            } else if (type == "edit") {
-                message.contentType = type;
-                message.refId = body.value("ref", std::string());
-                message.text = body.value("text", std::string());
-            } else if (type == "delete") {
-                message.contentType = type;
-                message.refId = body.value("ref", std::string());
-            } else if (type == "receipt") {
-                message.contentType = type;
-                message.refId = body.value("ref", std::string());
-            } else if (type == "reaction") {
-                message.contentType = type;
-                message.refId = body.value("ref", std::string());
-                message.text = body.value("text", std::string());
-                if (!reactionWithinLimits(message.text)) {
-                    bazarish::log::info("oversized reaction from {} ignored",
-                        bazarish::log::redact(message.fromFingerprint));
-                    releaseItem(entry.id);
-                    continue;
-                }
-            } else if (type == "call.invite" || type == "call.accept" || type == "call.decline"
-                || type == "call.end" || type == "call.ring" || type == "call.taken") {
-                handleCallSignal(type, message.fromFingerprint, body, message);
-            } else if (type.rfind("device.", 0) == 0
-                && message.fromFingerprint != fingerprint()) {
-                bazarish::log::warn("sync: dropping a device message from {}",
-                    bazarish::log::redact(message.fromFingerprint));
-                noteWire(false, "device message from a contact", "dropped", type);
-                releaseItem(entry.id);
-                continue;
-            } else if (type == "device.delegation-term") {
-                message.contentType = type;
-                if (body.value("device", std::string()) != client_->clientId()) {
-                    const std::int64_t days = body.value("days", kDefaultDelegationDays);
-                    if (days >= kMinDelegationDays && days <= kMaxDelegationDays
-                        && days != delegationDays_) {
-                        setDelegationDays(days, false);
-                    }
-                }
-            } else if (type == "device.contacts-request") {
-                message.contentType = type;
-                if (body.value("device", std::string()) != client_->clientId()) {
-                    sendContactBookTo(body.value("device", std::string()));
-                }
-            } else if (type == "device.contact") {
-                message.contentType = type;
-                if (body.value("device", std::string()) != client_->clientId()
-                    && body.contains("contact")) {
-                    applyContactBook(nlohmann::json::array({body.at("contact")}));
-                }
-            } else if (type == "device.contacts") {
-                message.contentType = type;
-                if (body.value("forDevice", std::string()) == client_->clientId()
-                    && body.contains("contacts")) {
-                    applyContactBook(body.at("contacts"));
-                }
-            } else if (type == "device.i2p-master-request") {
-                message.contentType = type;
-                const std::string wanted = body.value("host", std::string());
-                const bool haveWanted = !i2pMaster_.empty()
-                    && (wanted.empty() || i2pRoutingHost(i2pMaster_) == wanted);
-                if (body.value("device", std::string()) != client_->clientId() && haveWanted) {
-                    try {
-                        syncI2pMasterToSelf();
-                    } catch (const std::exception& error) {
-                        log::info("could not answer a device asking for our address: {}",
-                            error.what());
-                    }
-                }
-            } else if (type == "device.alias-status") {
-                message.contentType = type;
-                if (message.fromFingerprint == fingerprint()
-                    && resolverCoordinate_.configured()) {
-                    try {
-                        const AliasStatus status
-                            = verifyAliasStatus(fromBase64(body.at("status").get<std::string>()),
-                                fromBase64(body.at("delegation").get<std::string>()),
-                                resolverCoordinate_.rootFingerprint, nowSeconds());
-                        if (status.owner == fingerprint()
-                            && status.issuedAt >= aliasStatusAt_) {
-                            adoptAliasStatus(status);
+                    {
+                        const std::string claimed = body.value("from", std::string());
+                        std::string author;
+                        try {
+                            author = authorOf(body, knownKeysFor(claimed));
+                        } catch (const std::exception& error) {
+                            bazarish::log::warn("sync: dropping an item that does not name its "
+                                                "author: {}", error.what());
+                            noteWire(false, "unsigned item", "dropped", error.what());
+                            continue;
                         }
-                    } catch (const std::exception& error) {
-                        log::info("a device's name answer was not accepted: {}", error.what());
+                        if (author != claimed) {
+                            bazarish::log::warn("sync: dropping an item signed by {} claiming to be {}",
+                                bazarish::log::redact(author), bazarish::log::redact(claimed));
+                            noteWire(false, "item signed by another key", "dropped", {});
+                            continue;
+                        }
                     }
-                }
-            } else if (type == "device.i2p-master") {
-                message.contentType = type;
-                if (message.fromFingerprint == fingerprint()) {
-                    try {
-                        const Bytes master
-                            = fromBase64(body.at("i2pMaster").get<std::string>());
-                        const std::string sealingPem
-                            = body.at("addressSealing").get<std::string>();
-                        const std::string signingPem
-                            = body.at("addressSigning").get<std::string>();
-                        if (i2pMaster_.empty()) {
-                            replaceI2pMaster(master, sealingPem, signingPem);
-                        } else if (master == i2pMaster_) {
-                            adoptAddressKeys(sealingPem, signingPem);
-                        } else {
-                            const std::string offered = i2pRoutingHost(master);
-                            if (client_->myDestination().dest == offered) {
-                                replaceI2pMaster(master, sealingPem, signingPem);
-                                log::info("this account's address is now {}", offered);
-                            } else {
-                                log::info("ignoring an address another device sent: the "
-                                          "server does not serve it");
+
+                    if (body.at("v").get<int>() > kMessageFormatVersion) {
+                        bazarish::log::info("sync: an item from a newer message format was not read");
+                        noteWire(false, "item in a newer format", "dropped", {});
+                        continue;
+                    }
+
+                    IncomingMessage message;
+                    if (body.value("type", std::string()) == "device.message"
+                        && body.value("from", std::string()) == fingerprint()) {
+                        if (body.value("device", std::string()) == client_->clientId()) {
+                            continue;
+                        }
+                        const std::string peer = body.value("peer", std::string());
+                        body = body.at("message");
+                        body["from"] = peer;
+                        message.sentByUs = true;
+                    }
+                    if (body.value("type", std::string()) == "device.saved"
+                        && body.value("from", std::string()) == fingerprint()) {
+                        if (body.value("device", std::string()) == client_->clientId()) {
+                            continue;
+                        }
+                        body = body.at("message");
+                        body["from"] = fingerprint();
+                        message.sentByUs = true;
+                    }
+                    message.fromFingerprint = body.at("from").get<std::string>();
+                    message.e2eId = body.value("id", std::string());
+                    message.sentAt = body.value("sentAt", static_cast<std::int64_t>(0));
+                    message.forwarded = body.value("forwarded", false);
+                    std::string type = body.value("type", std::string("text"));
+
+                    const bool fromOurselves = message.fromFingerprint == fingerprint();
+                    const bool known = contacts_.find(message.fromFingerprint) != contacts_.end();
+                    const bool asking = type == "contact.request";
+                    if (!fromOurselves
+                        && (isBlocked(message.fromFingerprint) || (!known && !asking))) {
+                        continue;
+                    }
+
+                    if (body.contains("routing")) {
+                        const nlohmann::json& routing = body.at("routing");
+                        Contact& peer = contacts_[message.fromFingerprint];
+                        const std::string dest = routing.value("dest", std::string());
+                        const std::string servingKey = routing.value("servingKey", std::string());
+                        if (!dest.empty() && !servingKey.empty()
+                            && (peer.dest != dest || peer.servingSealingB64 != servingKey)) {
+                            validateB32I2pHost(dest);
+                            bazarish::log::info("contact {} answers at a new destination now",
+                                bazarish::log::redact(message.fromFingerprint));
+                            peer.dest = dest;
+                            peer.servingSealingB64 = servingKey;
+                            persistContacts();
+                        }
+                    }
+
+                    if (body.contains("bootstrap")) {
+                        Contact& peer = contacts_[message.fromFingerprint];
+                        rememberKeys(peer, keysIn(body));
+                        applyBootstrap(peer, body.at("bootstrap"));
+                        message.establishedContact = true;
+                        establishedPeers.insert(message.fromFingerprint);
+                    }
+
+                    if (type == "contact.request" || type == "contact.accept") {
+                        const std::string dn = body.value("dn", std::string());
+                        Contact& peer = contacts_[message.fromFingerprint];
+                        if (peer.displayName.empty()) {
+                            const std::string chosen = chosenName(message.fromFingerprint);
+                            if (!chosen.empty()) {
+                                peer.displayName = safeContactName(chosen);
+                                forgetChosenName(message.fromFingerprint);
+                            } else if (!dn.empty()) {
+                                peer.displayName = safeContactName(dn);
                             }
                         }
-                    } catch (const std::exception& error) {
-                        bazarish::log::warn("master key from another device rejected: {}",
-                            error.what());
                     }
-                }
-            } else if (type == "avatar") {
-                message.contentType = type;
-                try {
-                    const nlohmann::json& av = body.at("avatar");
-                    const nlohmann::json::binary_t& raw = av.at("data").get_binary();
-                    const Bytes data(raw.begin(), raw.end());
-                    storeContactAvatar(
-                        message.fromFingerprint, data, av.value("mime", std::string()));
-                    message.avatarData = std::string(data.begin(), data.end());
-                } catch (const std::exception& error) {
-                    bazarish::log::warn("contact avatar ignored: {}", error.what());
-                }
-            } else if (type == "device.avatar") {
-                message.contentType = type;
-                if (message.fromFingerprint == fingerprint()) {
-                    try {
-                        const nlohmann::json& av = body.at("avatar");
-                        const nlohmann::json::binary_t& raw = av.at("data").get_binary();
-                        const Bytes data(raw.begin(), raw.end());
-                        storeOwnAvatar(data, av.value("mime", std::string()));
-                        message.avatarData = std::string(data.begin(), data.end());
-                    } catch (const std::exception& error) {
-                        bazarish::log::warn("own avatar from another device ignored: {}",
-                            error.what());
+
+                    if (asking && known && contacts_[message.fromFingerprint].issuedToThem) {
+                        contacts_[message.fromFingerprint].issuedToThem = false;
+                        reaskedPeers.insert(message.fromFingerprint);
                     }
-                }
-            } else if (type == "device.contact-name") {
-                message.contentType = type;
-                if (message.fromFingerprint == fingerprint()) {
-                    const auto named = contacts_.find(body.value("peer", std::string()));
-                    if (named != contacts_.end()) {
-                        named->second.displayName
-                            = safeContactName(body.value("name", std::string()));
+
+                    if (body.contains("group")) {
+                        message.group = groupBlockFromJson(body.at("group"));
+                        message.author = body.value("author", std::string());
+                        message.contactable = body.value("contactable", false);
+                        message.fromHost = body.value("fromHost", false);
                     }
-                }
-            } else if (type == "device.chat-pin") {
-                message.contentType = type;
-                if (message.fromFingerprint == fingerprint()) {
-                    message.refId = body.value("peer", std::string());
-                    message.text
-                        = body.value("pinned", false) ? std::string("1") : std::string("0");
-                }
-            } else if (type == "device.read") {
-                if (message.fromFingerprint == fingerprint()) {
-                    message.contentType = type;
-                    message.refId = body.value("peer", std::string());
-                    message.text = std::to_string(body.value("ts", std::int64_t{0}));
-                }
-            } else if (type == "device.chat-clear") {
-                if (message.fromFingerprint == fingerprint()) {
-                    message.contentType = type;
-                    message.refId = body.value("peer", std::string());
-                }
-            } else if (type == "device.account-name") {
-                if (message.fromFingerprint == fingerprint()) {
-                    message.contentType = type;
-                    const std::string name = body.value("name", std::string());
-                    if (!name.empty() && name.size() <= kMaxAccountNameBytes && name != name_) {
-                        name_ = name;
-                        client_->setDestinationOwner(destinationOwner());
-                        persistMeta();
-                    }
-                    message.text = name_;
-                }
-            } else if (type == "device.account-prefs") {
-                if (message.fromFingerprint == fingerprint()) {
-                    message.contentType = type;
-                    const bool accept = body.value("acceptCalls", acceptCalls_);
-                    const bool receipts = body.value("sendReceipts", sendReceipts_);
-                    const bool presence = body.value("showPresence", showPresence_);
-                    if (accept != acceptCalls_ || receipts != sendReceipts_
-                        || presence != showPresence_) {
-                        acceptCalls_ = accept;
-                        sendReceipts_ = receipts;
-                        showPresence_ = presence;
-                        persistMeta();
-                        if (presence_) {
-                            presence_->setShown(showPresence_);
-                        }
-                    }
-                }
-            } else if (type == "device.saved-clear") {
-                if (message.fromFingerprint == fingerprint()) {
-                    message.contentType = type;
-                }
-            } else if (type == "device.contact-remove") {
-                if (message.fromFingerprint == fingerprint()) {
-                    message.contentType = type;
-                    message.refId = body.value("peer", std::string());
-                    removeContact(message.refId);
-                }
-            } else if (type == "device.contact-block") {
-                if (message.fromFingerprint == fingerprint()) {
-                    message.contentType = type;
-                    message.refId = body.value("peer", std::string());
-                    const bool blocked = body.value("blocked", false);
-                    message.text = blocked ? std::string("1") : std::string("0");
-                    if (!message.refId.empty()) {
-                        if (blocked) {
-                            blocked_.insert(message.refId);
+
+                    if (type == "text" || type == "contact.request") {
+                        message.contentType = type;
+                        message.text = body.value("text", std::string());
+                    } else if (type == kTypeGroupState && message.group) {
+                        message.contentType = type;
+                    } else if (type == kTypeGroupReactions && message.group) {
+                        message.contentType = type;
+                        message.groupReactionsJson = body.at("reactions").dump();
+                    } else if (type == kTypeImage) {
+                        message.contentType = type;
+                        const nlohmann::json& picture = body.at("image");
+                        message.attachmentName = picture.value("name", std::string());
+                        message.attachmentMime = picture.value("mime", std::string());
+                        message.attachmentSize = picture.value("size", std::uint64_t{0});
+                        const nlohmann::json::binary_t& data = picture.at("data").get_binary();
+                        putPicture(message.e2eId, Bytes(data.begin(), data.end()));
+                    } else if (type == kTypeAudio) {
+                        message.contentType = type;
+                        const nlohmann::json& audio = body.at("audio");
+                        message.attachmentMime = "audio/opus";
+                        message.attachmentSize = audio.value("size", std::uint64_t{0});
+                        message.attachmentDurationMs = audio.value("durationMs", std::int64_t{0});
+                        const nlohmann::json::binary_t& data = audio.at("data").get_binary();
+                        putVoice(message.e2eId, Bytes(data.begin(), data.end()));
+                    } else if (type == kTypeFile) {
+                        message.contentType = type;
+                        const nlohmann::json& file = body.at("file");
+                        message.attachmentRef = file.value("sha256", std::string());
+                        message.attachmentName = file.value("name", std::string());
+                        message.attachmentMime = file.value("mime", std::string());
+                        message.attachmentSize = file.value("size", std::uint64_t{0});
+                    } else if (type == "file.request") {
+                        message.contentType = type;
+                        const std::int64_t askedAt = body.value("sentAt", std::int64_t{0});
+                        if (askedAt != 0 && nowMillis() - askedAt > kFileRequestFreshnessMs) {
+                            bazarish::log::info("file request from {} is stale, not serving",
+                                bazarish::log::redact(message.fromFingerprint));
                         } else {
-                            blocked_.erase(message.refId);
+                            serveRequestedFile(message.fromFingerprint,
+                                body.value("fileId", std::string()), body.value("ask", std::string()));
                         }
-                        persistBlocked();
+                    } else if (type == "file.offer") {
+                        message.contentType = type;
+                        const std::string offerFor = body.value("forAsk", std::string());
+                        if (!offerFor.empty() && !awaitingAsk(offerFor)) {
+                            continue;
+                        }
+                        try {
+                            startAnnouncedFetch(
+                                fileOfferFromJson(body.at("offer")), message.fromFingerprint);
+                        } catch (const std::exception& error) {
+                            bazarish::log::warn("file offer ignored: {}", error.what());
+                        }
+                    } else if (type == "file.cancel") {
+                        message.contentType = type;
+                        stopTransfer(body.value("fileId", std::string()), message.fromFingerprint,
+                            body.value("ask", std::string()));
+                    } else if (type == "file.unavailable") {
+                        message.contentType = type;
+                        const std::string fileId = body.value("fileId", std::string());
+                        {
+                            const std::lock_guard<std::mutex> lock(transfers_->mutex);
+                            transfers_->pending.erase(fileId);
+                        }
+                        emitTransfer(fileId, TransferState::eFailed, 0, 0,
+                            "the sender could not send this file", {}, message.fromFingerprint);
+                    } else if (type == "bot.command") {
+                        message.contentType = type;
+                        message.commandName = body.value("command", std::string());
+                        message.commandArgs = body.value("args", std::string());
+                        message.text = "/" + message.commandName
+                            + (message.commandArgs.empty() ? std::string() : " " + message.commandArgs);
+                    } else if (type == "bot.callback") {
+                        message.contentType = type;
+                        message.callbackData = body.value("data", std::string());
+                        message.refId = body.value("ref", std::string());
+                    } else if (type == kTypeBotMenu && !message.sentByUs) {
+                        const BotMenu menu = botMenuFromJson(body);
+                        if (!botMenus_.admit(message.fromFingerprint, menu.id, message.sentAt)) {
+                            continue;
+                        }
+                        db_->putText("bot-menus", botMenus_.toJson().dump());
+                        message.contentType = type;
+                        message.menuItemsJson = botMenuItemsJson(menu.items).dump();
+                    } else if (type == "edit") {
+                        message.contentType = type;
+                        message.refId = body.value("ref", std::string());
+                        message.text = body.value("text", std::string());
+                    } else if (type == "delete") {
+                        message.contentType = type;
+                        message.refId = body.value("ref", std::string());
+                    } else if (type == "receipt") {
+                        message.contentType = type;
+                        message.refId = body.value("ref", std::string());
+                    } else if (type == "reaction") {
+                        message.contentType = type;
+                        message.refId = body.value("ref", std::string());
+                        message.text = body.value("text", std::string());
+                        if (!reactionWithinLimits(message.text)) {
+                            bazarish::log::info("oversized reaction from {} ignored",
+                                bazarish::log::redact(message.fromFingerprint));
+                            continue;
+                        }
+                    } else if (type == "call.invite" || type == "call.accept" || type == "call.decline"
+                        || type == "call.end" || type == "call.ring" || type == "call.taken") {
+                        handleCallSignal(type, message.fromFingerprint, body, message);
+                    } else if (type.rfind("device.", 0) == 0
+                        && message.fromFingerprint != fingerprint()) {
+                        bazarish::log::warn("sync: dropping a device message from {}",
+                            bazarish::log::redact(message.fromFingerprint));
+                        noteWire(false, "device message from a contact", "dropped", type);
+                        continue;
+                    } else if (type == "device.delegation-term") {
+                        message.contentType = type;
+                        if (body.value("device", std::string()) != client_->clientId()) {
+                            const std::int64_t days = body.value("days", kDefaultDelegationDays);
+                            if (days >= kMinDelegationDays && days <= kMaxDelegationDays
+                                && days != delegationDays_) {
+                                setDelegationDays(days, false);
+                            }
+                        }
+                    } else if (type == "device.contacts-request") {
+                        message.contentType = type;
+                        if (body.value("device", std::string()) != client_->clientId()) {
+                            sendContactBookTo(body.value("device", std::string()));
+                        }
+                    } else if (type == "device.contact") {
+                        message.contentType = type;
+                        if (body.value("device", std::string()) != client_->clientId()
+                            && body.contains("contact")) {
+                            applyContactBook(nlohmann::json::array({body.at("contact")}));
+                        }
+                    } else if (type == "device.contacts") {
+                        message.contentType = type;
+                        if (body.value("forDevice", std::string()) == client_->clientId()
+                            && body.contains("contacts")) {
+                            applyContactBook(body.at("contacts"));
+                        }
+                    } else if (type == "device.i2p-master-request") {
+                        message.contentType = type;
+                        const std::string wanted = body.value("host", std::string());
+                        const bool haveWanted = !i2pMaster_.empty()
+                            && (wanted.empty() || i2pRoutingHost(i2pMaster_) == wanted);
+                        if (body.value("device", std::string()) != client_->clientId() && haveWanted) {
+                            try {
+                                syncI2pMasterToSelf();
+                            } catch (const std::exception& error) {
+                                log::info("could not answer a device asking for our address: {}",
+                                    error.what());
+                            }
+                        }
+                    } else if (type == "device.alias-status") {
+                        message.contentType = type;
+                        if (message.fromFingerprint == fingerprint()
+                            && resolverCoordinate_.configured()) {
+                            try {
+                                const AliasStatus status
+                                    = verifyAliasStatus(fromBase64(body.at("status").get<std::string>()),
+                                        fromBase64(body.at("delegation").get<std::string>()),
+                                        resolverCoordinate_.rootFingerprint, nowSeconds());
+                                if (status.owner == fingerprint()
+                                    && status.issuedAt >= aliasStatusAt_) {
+                                    adoptAliasStatus(status);
+                                }
+                            } catch (const std::exception& error) {
+                                log::info("a device's name answer was not accepted: {}", error.what());
+                            }
+                        }
+                    } else if (type == "device.i2p-master") {
+                        message.contentType = type;
+                        if (message.fromFingerprint == fingerprint()) {
+                            try {
+                                const Bytes master
+                                    = fromBase64(body.at("i2pMaster").get<std::string>());
+                                const std::string sealingPem
+                                    = body.at("addressSealing").get<std::string>();
+                                const std::string signingPem
+                                    = body.at("addressSigning").get<std::string>();
+                                if (i2pMaster_.empty()) {
+                                    replaceI2pMaster(master, sealingPem, signingPem);
+                                } else if (master == i2pMaster_) {
+                                    adoptAddressKeys(sealingPem, signingPem);
+                                } else {
+                                    const std::string offered = i2pRoutingHost(master);
+                                    if (client_->myDestination().dest == offered) {
+                                        replaceI2pMaster(master, sealingPem, signingPem);
+                                        log::info("this account's address is now {}", offered);
+                                    } else {
+                                        log::info("ignoring an address another device sent: the "
+                                                  "server does not serve it");
+                                    }
+                                }
+                            } catch (const std::exception& error) {
+                                bazarish::log::warn("master key from another device rejected: {}",
+                                    error.what());
+                            }
+                        }
+                    } else if (type == "avatar") {
+                        message.contentType = type;
+                        try {
+                            const nlohmann::json& av = body.at("avatar");
+                            const nlohmann::json::binary_t& raw = av.at("data").get_binary();
+                            const Bytes data(raw.begin(), raw.end());
+                            storeContactAvatar(
+                                message.fromFingerprint, data, av.value("mime", std::string()));
+                            message.avatarData = std::string(data.begin(), data.end());
+                        } catch (const std::exception& error) {
+                            bazarish::log::warn("contact avatar ignored: {}", error.what());
+                        }
+                    } else if (type == "device.avatar") {
+                        message.contentType = type;
+                        if (message.fromFingerprint == fingerprint()) {
+                            try {
+                                const nlohmann::json& av = body.at("avatar");
+                                const nlohmann::json::binary_t& raw = av.at("data").get_binary();
+                                const Bytes data(raw.begin(), raw.end());
+                                storeOwnAvatar(data, av.value("mime", std::string()));
+                                message.avatarData = std::string(data.begin(), data.end());
+                            } catch (const std::exception& error) {
+                                bazarish::log::warn("own avatar from another device ignored: {}",
+                                    error.what());
+                            }
+                        }
+                    } else if (type == "device.contact-name") {
+                        message.contentType = type;
+                        if (message.fromFingerprint == fingerprint()) {
+                            const auto named = contacts_.find(body.value("peer", std::string()));
+                            if (named != contacts_.end()) {
+                                named->second.displayName
+                                    = safeContactName(body.value("name", std::string()));
+                            }
+                        }
+                    } else if (type == "device.chat-pin") {
+                        message.contentType = type;
+                        if (message.fromFingerprint == fingerprint()) {
+                            message.refId = body.value("peer", std::string());
+                            message.text
+                                = body.value("pinned", false) ? std::string("1") : std::string("0");
+                        }
+                    } else if (type == "device.read") {
+                        if (message.fromFingerprint == fingerprint()) {
+                            message.contentType = type;
+                            message.refId = body.value("peer", std::string());
+                            message.text = std::to_string(body.value("ts", std::int64_t{0}));
+                        }
+                    } else if (type == "device.chat-clear") {
+                        if (message.fromFingerprint == fingerprint()) {
+                            message.contentType = type;
+                            message.refId = body.value("peer", std::string());
+                        }
+                    } else if (type == "device.account-name") {
+                        if (message.fromFingerprint == fingerprint()) {
+                            message.contentType = type;
+                            const std::string name = body.value("name", std::string());
+                            if (!name.empty() && name.size() <= kMaxAccountNameBytes && name != name_) {
+                                name_ = name;
+                                client_->setDestinationOwner(destinationOwner());
+                                persistMeta();
+                            }
+                            message.text = name_;
+                        }
+                    } else if (type == "device.account-prefs") {
+                        if (message.fromFingerprint == fingerprint()) {
+                            message.contentType = type;
+                            const bool accept = body.value("acceptCalls", acceptCalls_);
+                            const bool receipts = body.value("sendReceipts", sendReceipts_);
+                            const bool presence = body.value("showPresence", showPresence_);
+                            if (accept != acceptCalls_ || receipts != sendReceipts_
+                                || presence != showPresence_) {
+                                acceptCalls_ = accept;
+                                sendReceipts_ = receipts;
+                                showPresence_ = presence;
+                                persistMeta();
+                                if (presence_) {
+                                    presence_->setShown(showPresence_);
+                                }
+                            }
+                        }
+                    } else if (type == "device.saved-clear") {
+                        if (message.fromFingerprint == fingerprint()) {
+                            message.contentType = type;
+                        }
+                    } else if (type == "device.contact-remove") {
+                        if (message.fromFingerprint == fingerprint()) {
+                            message.contentType = type;
+                            message.refId = body.value("peer", std::string());
+                            removeContact(message.refId);
+                        }
+                    } else if (type == "device.contact-block") {
+                        if (message.fromFingerprint == fingerprint()) {
+                            message.contentType = type;
+                            message.refId = body.value("peer", std::string());
+                            const bool blocked = body.value("blocked", false);
+                            message.text = blocked ? std::string("1") : std::string("0");
+                            if (!message.refId.empty()) {
+                                if (blocked) {
+                                    blocked_.insert(message.refId);
+                                } else {
+                                    blocked_.erase(message.refId);
+                                }
+                                persistBlocked();
+                            }
+                        }
+                    } else if (type == "device.contact-accepted") {
+                        if (message.fromFingerprint == fingerprint()) {
+                            message.contentType = type;
+                            message.refId = body.value("peer", std::string());
+                            const auto known = contacts_.find(message.refId);
+                            if (known != contacts_.end() && !known->second.issuedToThem) {
+                                known->second.issuedToThem = true;
+                                persistContacts();
+                            }
+                        }
+                    } else if (type == "device.contact-prefs") {
+                        if (message.fromFingerprint == fingerprint()) {
+                            message.contentType = type;
+                            message.refId = body.value("peer", std::string());
+                            const auto known = contacts_.find(message.refId);
+                            if (known != contacts_.end()) {
+                                known->second.notifications = body.value("notifications", true);
+                                known->second.allowCalls = body.value("allowCalls", true);
+                                persistContacts();
+                            }
+                        }
+                    } else if (type == "chat.clear") {
+                        message.contentType = type;
+                    } else if (type == kTypeChatTimer
+                        && isChatTimerChoice(body.value("seconds", std::int64_t{-1}))) {
+                        message.contentType = type;
+                        message.timerSeconds = body.at("seconds").get<std::int64_t>();
+                    } else if (type == "contact.accept") {
+                        message.contentType = type;
+                    } else if (type == "contact.routing") {
+                        message.contentType = type;
+                    } else {
+                        message.contentType = "unsupported";
+                        message.rawType = type;
+                        message.rawBody = nlohmann::json::to_cbor(body);
                     }
-                }
-            } else if (type == "device.contact-accepted") {
-                if (message.fromFingerprint == fingerprint()) {
-                    message.contentType = type;
-                    message.refId = body.value("peer", std::string());
-                    const auto known = contacts_.find(message.refId);
-                    if (known != contacts_.end() && !known->second.issuedToThem) {
-                        known->second.issuedToThem = true;
-                        persistContacts();
-                    }
-                }
-            } else if (type == "device.contact-prefs") {
-                if (message.fromFingerprint == fingerprint()) {
-                    message.contentType = type;
-                    message.refId = body.value("peer", std::string());
-                    const auto known = contacts_.find(message.refId);
-                    if (known != contacts_.end()) {
-                        known->second.notifications = body.value("notifications", true);
-                        known->second.allowCalls = body.value("allowCalls", true);
-                        persistContacts();
-                    }
-                }
-            } else if (type == "chat.clear") {
-                message.contentType = type;
-            } else if (type == kTypeChatTimer
-                && isChatTimerChoice(body.value("seconds", std::int64_t{-1}))) {
-                message.contentType = type;
-                message.timerSeconds = body.at("seconds").get<std::int64_t>();
-            } else if (type == "contact.accept") {
-                message.contentType = type;
-            } else if (type == "contact.routing") {
-                message.contentType = type;
-            } else {
-                message.contentType = "unsupported";
-                message.rawType = type;
-                message.rawBody = nlohmann::json::to_cbor(body);
-            }
 
-            if (body.contains("keyboard")) {
-                message.keyboardJson = body.at("keyboard").dump();
+                    if (body.contains("keyboard")) {
+                        message.keyboardJson = body.at("keyboard").dump();
+                    }
+                    if (body.contains("menuId")) {
+                        message.menuId = botMenuIdFromJson(body.at("menuId"));
+                    }
+                    if (body.contains("replyTo")) {
+                        message.replyTo = body.value("replyTo", std::string());
+                    }
+                    noteWire(false,
+                        (message.contentType.empty() ? std::string("content")
+                                                     : message.contentType)
+                            + " from " + wireName(message.fromFingerprint),
+                        {},
+                        "id " + entry.id.substr(0, std::min(entry.id.size(), kShortFingerprintChars)));
+                    surfaced.push_back(std::move(message));
+                } catch (const std::exception& error) {
+                    bazarish::log::warn("sync: dropping an unreadable message: {}", error.what());
+                    noteWire(false, "unreadable message", "dropped", error.what());
+                }
             }
-            if (body.contains("menuId")) {
-                message.menuId = botMenuIdFromJson(body.at("menuId"));
-            }
-            if (body.contains("replyTo")) {
-                message.replyTo = body.value("replyTo", std::string());
-            }
-
-            if (autoAckSurfaced) {
+            if (surfaced.empty() || autoAckSurfaced) {
                 releaseItem(entry.id);
             } else {
-                message.pendingId = entry.id;
+                // The envelope is acknowledged with its last message, once all before it are kept.
+                surfaced.back().pendingId = entry.id;
                 awaitingAck_.insert(entry.id);
             }
-            noteWire(false,
-                (message.contentType.empty() ? std::string("content") : message.contentType)
-                    + " from " + wireName(message.fromFingerprint),
-                {}, "id " + entry.id.substr(0, std::min(entry.id.size(), kShortFingerprintChars)));
-            result.push_back(std::move(message));
+            std::move(surfaced.begin(), surfaced.end(), std::back_inserter(result));
         } catch (const std::exception& error) {
             bazarish::log::warn(
                 "sync: dropping unreadable pending item: {}", error.what());

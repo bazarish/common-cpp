@@ -28,6 +28,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <iterator>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -1017,27 +1018,32 @@ int main()
             post.replyTo = "group-post-0";
             post.author = "Ann";
             post.contactable = true;
-            CHECK(alice.relayFits(post));
-            alice.relayPost(bob.fingerprint(), post);
             RelayedPost hostPost;
             hostPost.type = "text";
             hostPost.id = "group-post-2";
             hostPost.sentAt = kPostSentAt;
             hostPost.text = "from the host";
             hostPost.fromHost = true;
-            alice.relayPost(bob.fingerprint(), hostPost);
+            CHECK(alice.relayFitting({post, hostPost}) == 2);
+            alice.relayPosts(bob.fingerprint(), {post, hostPost});
             alice.sendGroupReactions(bob.fingerprint(),
                 nlohmann::json::array({{{"ref", "group-post-1"}, {"counts", {{"+", 2}}}}}));
             alice.sendGroupState(bob.fingerprint());
             alice.sendMessage(bob.fingerprint(), "plain");
 
             std::map<std::string, IncomingMessage> seen;
+            std::vector<std::string> order;
             for (int round = 0; round < 3 && seen.size() < 5; ++round) {
                 for (const IncomingMessage& item : bob.sync()) {
-                    seen[item.contentType == "text" ? item.text : item.contentType] = item;
+                    const std::string key = item.contentType == "text" ? item.text : item.contentType;
+                    seen[key] = item;
+                    order.push_back(key);
                 }
             }
             CHECK(seen.size() == 5);
+            const auto relayedAt = std::find(order.begin(), order.end(), "relayed");
+            CHECK(relayedAt != order.end() && std::next(relayedAt) != order.end()
+                && *std::next(relayedAt) == "from the host");
             const IncomingMessage& relayed = seen["relayed"];
             CHECK(relayed.e2eId == "group-post-1");
             CHECK(relayed.sentAt == kPostSentAt);
@@ -1066,7 +1072,27 @@ int main()
             oversized.media = Bytes(kMaxMessagePayloadBytes, 0);
             oversized.mediaName = "big.png";
             oversized.mime = "image/png";
-            CHECK(!alice.relayFits(oversized));
+            CHECK(alice.relayFitting({oversized}) == 0);
+            CHECK(alice.relayFitting({post, oversized, hostPost}) == 1);
+            RelayedPost third = oversized;
+            third.media = Bytes(kMaxMessagePayloadBytes / 3, 0);
+            CHECK(alice.relayFitting({third, third, third, post}) == 2);
+
+            RelayedPost again = post;
+            again.id = "group-post-3";
+            again.text = "in two envelopes";
+            RelayedPost later = post;
+            later.id = "group-post-4";
+            later.text = "only in the longer one";
+            alice.relayPosts(bob.fingerprint(), {post, again});
+            alice.relayPosts(bob.fingerprint(), {post, again, later});
+            bool sawLater = false;
+            for (int round = 0; round < 3 && !sawLater; ++round) {
+                for (const IncomingMessage& item : bob.sync()) {
+                    sawLater = sawLater || item.text == "only in the longer one";
+                }
+            }
+            CHECK(sawLater);
 
             alice.setGroupBlockSource({});
             alice.sendMessage(bob.fingerprint(), "no longer a group");
@@ -1115,7 +1141,7 @@ int main()
                 signAuthorship(saved, aliceIdentity, /*withKeys=*/false);
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"saved-echo", "device",
-                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(saved)),
+                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({saved}))),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             }
             bool sawSaved = false;
@@ -1234,7 +1260,7 @@ int main()
             const auto intoAliceMailbox = [&](const std::string& id, nlohmann::json content) {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({id, "content",
-                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(content)),
+                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({content}))),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             };
             const auto text = [](const std::string& from, const std::string& id,
@@ -1250,6 +1276,17 @@ int main()
             nlohmann::json honest = text(bob.fingerprint(), "honest-1", "this one is mine");
             signAuthorship(honest, bobIdentity, /*withKeys=*/false);
             intoAliceMailbox("honest-1", honest);
+            nlohmann::json forgedInBatch = text(strangerFingerprint, "forged-2", "slipped in first");
+            signAuthorship(forgedInBatch, bobIdentity, /*withKeys=*/true);
+            nlohmann::json honestInBatch = text(bob.fingerprint(), "honest-2", "after a forged one");
+            signAuthorship(honestInBatch, bobIdentity, /*withKeys=*/false);
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[alice.fingerprint()].push_back({"mixed-1", "content",
+                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(
+                                     nlohmann::json::array({forgedInBatch, honestInBatch}))),
+                        Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
+            }
 
             const std::string plantedPeer = Identity::generate().fingerprint();
             const auto deviceNotice = [&](const std::string& id, nlohmann::json extra) {
@@ -1275,11 +1312,17 @@ int main()
             bool sawForged = false;
             bool sawUnsigned = false;
             bool sawHonest = false;
+            bool sawForgedInBatch = false;
+            bool sawHonestInBatch = false;
             for (const IncomingMessage& item : alice.sync()) {
                 sawForged = sawForged || item.text == "trust me, I am them";
                 sawUnsigned = sawUnsigned || item.text == "no signature";
                 sawHonest = sawHonest || item.text == "this one is mine";
+                sawForgedInBatch = sawForgedInBatch || item.text == "slipped in first";
+                sawHonestInBatch = sawHonestInBatch || item.text == "after a forged one";
             }
+            CHECK(!sawForgedInBatch);
+            CHECK(sawHonestInBatch);
             CHECK(!sawForged);
             CHECK(alice.delegationDays() == termBefore);
             CHECK(!alice.hasContact(plantedPeer));
@@ -1593,7 +1636,7 @@ int main()
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"self-" + notice.at("id").get<std::string>(),
                     "device",
-                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(notice)),
+                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({notice}))),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             };
             const auto notice = [&](const std::string& type, nlohmann::json extra) {
@@ -1676,7 +1719,7 @@ int main()
             {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice.fingerprint()].push_back({"stranger-blob", "content",
-                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(inner)),
+                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({inner}))),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             }
             for (const IncomingMessage& item : alice.sync()) {

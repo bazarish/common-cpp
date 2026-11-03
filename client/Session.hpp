@@ -510,9 +510,10 @@ public:
     using GroupBlockSource = std::function<GroupBlock(const std::string& peerFingerprint)>;
     void setGroupBlockSource(GroupBlockSource source);
 
-    bool relayPost(const std::string& peerFingerprint, const RelayedPost& post,
+    bool relayPosts(const std::string& peerFingerprint, const std::vector<RelayedPost>& posts,
         const DeliveryWatch& watch = {});
-    bool relayFits(const RelayedPost& post) const;
+    // How many of the posts, from the first, one envelope holds.
+    std::size_t relayFitting(const std::vector<RelayedPost>& posts) const;
     void sendGroupState(const std::string& peerFingerprint, const DeliveryWatch& watch = {});
     void sendGroupReactions(const std::string& peerFingerprint, const nlohmann::json& reactions,
         const DeliveryWatch& watch = {});
@@ -771,6 +772,8 @@ private:
         nlohmann::json payload = nlohmann::json::object()) const;
 
     bool sendContent(const std::string& peerFingerprint, nlohmann::json inner,
+        const DeliveryWatch& watch = {}, bool establishOnFirstReply = true);
+    bool sendContents(const std::string& peerFingerprint, std::vector<nlohmann::json> items,
         const DeliveryWatch& watch = {}, bool establishOnFirstReply = true);
 
     void syncI2pMasterToSelf();
