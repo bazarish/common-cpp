@@ -627,6 +627,28 @@ int main()
         CHECK(!slowNet.published(liz.dest));
     }
 
+    {
+        const Person ivy;
+        const Person jon;
+        net.knowReader(ivy.presence);
+        net.knowReader(jon.presence);
+        PresenceTimings longPulse = fastTimings();
+        longPulse.typingPulse = kLongSilence;
+        Observer jonSees;
+        Presence jon1(jon.account(), netFor(net), jonSees.sink(), fastTimings());
+        jon1.setContacts({ivy.contact()});
+        Observer ivySees;
+        Presence ivy1(ivy.account(), netFor(net), ivySees.sink(), longPulse);
+        ivy1.setContacts({jon.contact()});
+        jon1.setFocused(true);
+        jon1.watch({ivy.fp()});
+        ivy1.setFocused(true);
+        CHECK(jonSees.waitFor(ivy.fp(), kOnline));
+        CHECK(typeUntilSeen(ivy1, jon.fp(), jonSees, ivy.fp()));
+        ivy1.stoppedTyping(jon.fp());
+        CHECK(jonSees.waitFor(ivy.fp(), kOnline, kSettle));
+    }
+
     std::fprintf(stderr, "TestPresence passed\n");
     return 0;
 }

@@ -316,6 +316,7 @@ public:
     void setPresenceOrder(const std::vector<std::string>& chatOrder);
     void presenceWatch(std::vector<std::string> peerFingerprints);
     void presenceTyped(const std::string& peerFingerprint);
+    void presenceStoppedTyping(const std::string& peerFingerprint);
 
     void registerAccount();
 

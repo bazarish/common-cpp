@@ -106,6 +106,7 @@ public:
     // The contacts on screen: the open conversation and the visible rows of the chat list.
     void watch(std::vector<std::string> peers);
     void typed(const std::string& peer);
+    void stoppedTyping(const std::string& peer);
 
 private:
     struct Impl;

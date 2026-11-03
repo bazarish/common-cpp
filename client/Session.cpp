@@ -4374,6 +4374,13 @@ void Session::presenceTyped(const std::string& peerFingerprint)
     }
 }
 
+void Session::presenceStoppedTyping(const std::string& peerFingerprint)
+{
+    if (presence_) {
+        presence_->stoppedTyping(peerFingerprint);
+    }
+}
+
 void Session::syncAccountPrefsToSelf()
 {
     try {

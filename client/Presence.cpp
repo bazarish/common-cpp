@@ -869,6 +869,15 @@ void Presence::watch(std::vector<std::string> peers)
     impl_->wake.notify_all();
 }
 
+void Presence::stoppedTyping(const std::string& peer)
+{
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->inputs.typingUntil.erase(peer);
+    }
+    impl_->wake.notify_all();
+}
+
 void Presence::typed(const std::string& peer)
 {
     {
