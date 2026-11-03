@@ -3146,8 +3146,10 @@ bool Session::sendContents(const std::string& peerFingerprint, std::vector<nlohm
     }
     std::string envelopeIds;
     for (const nlohmann::json& inner : items) {
-        envelopeIds += (envelopeIds.empty() ? "" : kEnvelopeIdSeparator)
-            + inner.value("id", std::string());
+        if (!envelopeIds.empty()) {
+            envelopeIds += kEnvelopeIdSeparator;
+        }
+        envelopeIds += inner.value("id", std::string());
     }
     const std::string firstType = items.front().value("type", std::string("?"));
     const Bytes innerBytes = encodedBatch(items);
