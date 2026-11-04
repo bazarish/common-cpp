@@ -13,6 +13,7 @@ constexpr std::size_t kMaxContactRequestBytes = 17590;
 constexpr std::size_t kMaxContactGreetingBytes = 100;
 constexpr std::size_t kMaxAccountNameBytes = 64;
 constexpr std::size_t kAvatarMaxBytes = 500 * 1024;
+constexpr std::size_t kMaxPictureBytes = 256 * 1024;
 
 inline constexpr const char* kContentDeliveryClass = "content";
 inline constexpr const char* kContactDeliveryClass = "contact";

@@ -2347,6 +2347,10 @@ bool Session::sendPicture(const std::string& peerFingerprint, const Bytes& bytes
     if (bytes.empty()) {
         throw std::runtime_error("the picture is empty");
     }
+    if (bytes.size() > kMaxPictureBytes) {
+        throw std::invalid_argument(
+            "a picture is at most " + std::to_string(kMaxPictureBytes) + " bytes");
+    }
 
     const std::string id = e2eId.empty() ? toHex(randomBytes(8)) : e2eId;
     putPicture(id, bytes);
