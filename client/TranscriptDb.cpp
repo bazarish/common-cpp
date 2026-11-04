@@ -5,6 +5,7 @@
 #include "KeyedDatabase.hpp"
 #include "MediaKeys.hpp"
 
+#include <bazarish/Clock.hpp>
 #include <bazarish/Log.hpp>
 
 #include <nlohmann/json.hpp>
@@ -40,13 +41,6 @@ std::string expiringTypesSql()
         quoted += (quoted.empty() ? "'" : ",'") + std::string(type) + "'";
     }
     return quoted;
-}
-
-std::int64_t nowMillis()
-{
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch())
-        .count();
 }
 
 class Query {

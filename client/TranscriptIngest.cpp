@@ -5,6 +5,7 @@
 #include "MediaKeys.hpp"
 #include "MessageTypes.hpp"
 
+#include <bazarish/Clock.hpp>
 #include <bazarish/Log.hpp>
 
 #include <nlohmann/json.hpp>
@@ -21,13 +22,6 @@ namespace {
 constexpr int kReceived = static_cast<int>(DeliveryState::eReceived);
 constexpr int kAtRecipientServer = static_cast<int>(DeliveryState::eAtRecipientServer);
 constexpr int kDelivered = static_cast<int>(DeliveryState::eDelivered);
-
-std::int64_t nowMillis()
-{
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch())
-        .count();
-}
 
 struct Placement {
     std::int64_t displayTs = 0;

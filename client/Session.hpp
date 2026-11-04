@@ -125,6 +125,9 @@ inline constexpr std::int64_t kCallAnswerWindowMs = 60000;
 // When an invitation stops ringing; none for one that came too late to ring at all.
 std::optional<std::int64_t> callAnswerDeadline(std::int64_t sentAtMs, std::int64_t arrivedAtMs);
 
+inline constexpr std::size_t kMessageIdBytes = 8;
+std::string newMessageId();
+
 struct IncomingMessage {
     std::string contentType;
     std::string fromFingerprint;

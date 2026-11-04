@@ -25,6 +25,7 @@
 #include <bazarish/PrivateFile.hpp>
 #include <bazarish/Padding.hpp>
 #include <bazarish/Pass.hpp>
+#include <bazarish/Clock.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/Reactions.hpp>
 #include <bazarish/I2pAddress.hpp>
@@ -130,13 +131,6 @@ void applyPresence(Contact& contact, const AccountKind kind, const std::string& 
 std::int64_t nowSeconds()
 {
     return static_cast<std::int64_t>(std::time(nullptr));
-}
-
-std::int64_t nowMillis()
-{
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch())
-        .count();
 }
 
 nlohmann::json readBundle(const Bytes& plain)
@@ -1562,7 +1556,7 @@ void Session::maybeSendAvatarToContact(const std::string& peerFingerprint, const
         || contact.sealingPublicB64.empty() || contact.servingSealingB64.empty()) {
         return;
     }
-    nlohmann::json inner = envelope("avatar", toHex(randomBytes(8)), {
+    nlohmann::json inner = envelope("avatar", newMessageId(), {
         {"avatar", {{"mime", avatarMime_}, {"data", nlohmann::json::binary(avatar_)}}},
     });
     try {
@@ -2310,7 +2304,7 @@ void Session::acceptContactRequest(const std::string& peerFingerprint)
             bazarish::log::redact(peerFingerprint));
         return;
     }
-    nlohmann::json inner = envelope("contact.accept", toHex(randomBytes(8)), {
+    nlohmann::json inner = envelope("contact.accept", newMessageId(), {
         {"dn", name_},
     });
     sendContent(peerFingerprint, std::move(inner));
@@ -2320,7 +2314,7 @@ bool Session::sendMessage(const std::string& peerFingerprint, const std::string&
     const std::string& e2eId, const DeliveryWatch& watch, const std::string& replyTo,
     const bool forwarded)
 {
-    nlohmann::json inner = envelope("text", e2eId.empty() ? toHex(randomBytes(8)) : e2eId, {
+    nlohmann::json inner = envelope("text", e2eId.empty() ? newMessageId() : e2eId, {
         {"text", text},
     });
     addReplyAndForward(inner, replyTo, forwarded);
@@ -2352,7 +2346,7 @@ bool Session::sendPicture(const std::string& peerFingerprint, const Bytes& bytes
             "a picture is at most " + std::to_string(kMaxPictureBytes) + " bytes");
     }
 
-    const std::string id = e2eId.empty() ? toHex(randomBytes(8)) : e2eId;
+    const std::string id = e2eId.empty() ? newMessageId() : e2eId;
     putPicture(id, bytes);
 
     nlohmann::json inner = envelope(kTypeImage, id, {{"image", imageBody(name, mime, bytes)}});
@@ -2367,7 +2361,7 @@ bool Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
     if (opus.empty()) {
         throw std::runtime_error("there is nothing recorded to send");
     }
-    const std::string id = e2eId.empty() ? toHex(randomBytes(8)) : e2eId;
+    const std::string id = e2eId.empty() ? newMessageId() : e2eId;
     putVoice(id, opus);
 
     nlohmann::json inner = envelope(kTypeAudio, id, {{"audio", audioBody(durationMs, opus)}});
@@ -2434,21 +2428,21 @@ std::size_t Session::relayFitting(const std::vector<RelayedPost>& posts) const
 
 void Session::sendGroupState(const std::string& peerFingerprint, const DeliveryWatch& watch)
 {
-    sendContent(peerFingerprint, envelope(kTypeGroupState, toHex(randomBytes(8)), nlohmann::json::object()), watch);
+    sendContent(peerFingerprint, envelope(kTypeGroupState, newMessageId(), nlohmann::json::object()), watch);
 }
 
 void Session::sendGroupReactions(const std::string& peerFingerprint,
     const nlohmann::json& reactions, const DeliveryWatch& watch)
 {
     sendContent(peerFingerprint,
-        envelope(kTypeGroupReactions, toHex(randomBytes(8)), {{"reactions", reactions}}), watch);
+        envelope(kTypeGroupReactions, newMessageId(), {{"reactions", reactions}}), watch);
 }
 
 bool Session::announceTransfer(const std::string& type, const std::string& peerFingerprint,
     const std::string& location, const std::string& e2eId,
     const DeliveryWatch& watch, const std::string& replyTo, const bool forwarded)
 {
-    const std::string id = e2eId.empty() ? toHex(randomBytes(8)) : e2eId;
+    const std::string id = e2eId.empty() ? newMessageId() : e2eId;
     const std::unique_ptr<FileInput> input = files_->open(location);
     Sha256 hash;
     std::uint64_t size = 0;
@@ -2480,7 +2474,7 @@ void Session::sendInteractive(const std::string& peerFingerprint, const std::str
     const InlineKeyboard& keyboard, const std::string& e2eId,
     const DeliveryWatch& watch)
 {
-    nlohmann::json inner = envelope("text", e2eId.empty() ? toHex(randomBytes(8)) : e2eId, {
+    nlohmann::json inner = envelope("text", e2eId.empty() ? newMessageId() : e2eId, {
         {"text", text},
         {"keyboard", keyboardToJson(keyboard)},
     });
@@ -2491,7 +2485,7 @@ void Session::sendCommand(const std::string& peerFingerprint, const std::string&
     const std::string& args, const std::string& e2eId,
     const DeliveryWatch& watch)
 {
-    nlohmann::json inner = envelope("bot.command", e2eId.empty() ? toHex(randomBytes(8)) : e2eId, {
+    nlohmann::json inner = envelope("bot.command", e2eId.empty() ? newMessageId() : e2eId, {
         {"command", command},
         {"args", args},
     });
@@ -2501,7 +2495,7 @@ void Session::sendCommand(const std::string& peerFingerprint, const std::string&
 void Session::sendCallback(
     const std::string& peerFingerprint, const std::string& data, const std::string& refMessageId)
 {
-    nlohmann::json inner = envelope("bot.callback", toHex(randomBytes(8)), {
+    nlohmann::json inner = envelope("bot.callback", newMessageId(), {
         {"data", data},
         {"ref", refMessageId},
     });
@@ -2512,7 +2506,7 @@ void Session::sendMenu(
     const std::string& peerFingerprint, const BotMenu& menu, const DeliveryWatch& watch)
 {
     requireBotMenu(menu);
-    nlohmann::json inner = envelope(kTypeBotMenu, toHex(randomBytes(8)), {
+    nlohmann::json inner = envelope(kTypeBotMenu, newMessageId(), {
         {"menuId", menu.id},
         {"items", botMenuItemsJson(menu.items)},
     });
@@ -2523,7 +2517,7 @@ bool Session::sendEdit(const std::string& peerFingerprint, const std::string& re
     const std::string& text, const InlineKeyboard& keyboard,
     const DeliveryWatch& watch)
 {
-    nlohmann::json inner = envelope("edit", toHex(randomBytes(8)), {
+    nlohmann::json inner = envelope("edit", newMessageId(), {
         {"ref", refMessageId},
         {"text", text},
         {"keyboard", keyboardToJson(keyboard)},
@@ -2535,7 +2529,7 @@ void Session::sendDelete(const std::string& peerFingerprint, const std::string& 
     const DeliveryWatch& watch)
 {
     unsend(refMessageId);
-    nlohmann::json inner = envelope("delete", toHex(randomBytes(8)), {
+    nlohmann::json inner = envelope("delete", newMessageId(), {
         {"ref", refMessageId},
     });
     sendContent(peerFingerprint, std::move(inner), watch);
@@ -2543,7 +2537,7 @@ void Session::sendDelete(const std::string& peerFingerprint, const std::string& 
 
 void Session::tellRoutingTo(const std::string& peerFingerprint)
 {
-    nlohmann::json inner = envelope("contact.routing", toHex(randomBytes(8)),
+    nlohmann::json inner = envelope("contact.routing", newMessageId(),
         {{"routing", {{"dest", myDest_}, {"servingKey", myServingKeyB64_}}}});
     const std::shared_ptr<EchoQueue> queue = echoQueue_;
     DeliveryWatch watch;
@@ -2665,7 +2659,7 @@ void Session::sendReceipt(const std::string& peerFingerprint, const std::string&
     if (!found->second.issuedToThem) {
         return;
     }
-    nlohmann::json inner = envelope("receipt", toHex(randomBytes(8)), {
+    nlohmann::json inner = envelope("receipt", newMessageId(), {
         {"ref", refMessageId},
     });
     bazarish::log::info("read receipt for {} on its way to {}", refMessageId,
@@ -2680,7 +2674,7 @@ void Session::sendReaction(const std::string& peerFingerprint, const std::string
         throw std::runtime_error("a reaction is at most "
             + std::to_string(kMaxReactionChars) + " characters");
     }
-    nlohmann::json inner = envelope("reaction", toHex(randomBytes(8)), {
+    nlohmann::json inner = envelope("reaction", newMessageId(), {
         {"ref", refMessageId},
         {"text", emoji},
     });
@@ -2689,7 +2683,7 @@ void Session::sendReaction(const std::string& peerFingerprint, const std::string
 
 void Session::sendChatClear(const std::string& peerFingerprint)
 {
-    nlohmann::json inner = envelope("chat.clear", toHex(randomBytes(8)));
+    nlohmann::json inner = envelope("chat.clear", newMessageId());
     sendContent(peerFingerprint, std::move(inner));
 }
 
@@ -2699,7 +2693,7 @@ void Session::sendChatTimer(const std::string& peerFingerprint, const std::int64
         throw std::invalid_argument("not an auto-delete timer a chat can carry");
     }
     nlohmann::json inner
-        = envelope(kTypeChatTimer, toHex(randomBytes(8)), {{"seconds", seconds}});
+        = envelope(kTypeChatTimer, newMessageId(), {{"seconds", seconds}});
     sendContent(peerFingerprint, std::move(inner));
 }
 
@@ -2733,7 +2727,7 @@ void Session::requestFile(const std::string& peerFingerprint, const std::string&
 {
 
     const std::string ask = toHex(randomBytes(kTransferAskBytes));
-    nlohmann::json inner = envelope("file.request", toHex(randomBytes(8)), {
+    nlohmann::json inner = envelope("file.request", newMessageId(), {
         {"fileId", e2eId},
         {"ask", ask},
     });
@@ -2768,7 +2762,7 @@ void Session::expireFileRequests(const std::int64_t nowMs)
             TransferStage::eNone, request.peer);
         try {
             sendContent(request.peer,
-                envelope("file.cancel", toHex(randomBytes(8)),
+                envelope("file.cancel", newMessageId(),
                     {{"fileId", fileId}, {"ask", request.ask}}));
         } catch (const std::exception& error) {
             bazarish::log::warn("could not withdraw the file request to {}: {}",
@@ -2840,7 +2834,7 @@ void Session::cancelTransfer(const std::string& e2eId)
     for (const StoppedHalf& half : stopTransfer(e2eId)) {
         try {
             sendContent(half.peer,
-                envelope("file.cancel", toHex(randomBytes(8)),
+                envelope("file.cancel", newMessageId(),
                     {{"fileId", e2eId}, {"ask", half.ask}}));
         } catch (const std::exception& error) {
             bazarish::log::warn("could not tell {} the transfer was stopped: {}",
@@ -2891,7 +2885,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
         return;
     }
     if (!files_->exists(found->second.path)) {
-        nlohmann::json inner = envelope("file.unavailable", toHex(randomBytes(8)), {
+        nlohmann::json inner = envelope("file.unavailable", newMessageId(), {
             {"fileId", fileId},
         });
         sendContent(peerFingerprint, std::move(inner));
@@ -2946,7 +2940,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             offer.key = prepared.key;
             offer.sha256 = prepared.sha256;
             offer.size = prepared.size;
-            nlohmann::json inner = envelope("file.offer", toHex(randomBytes(8)), {
+            nlohmann::json inner = envelope("file.offer", newMessageId(), {
                 {"offer", fileOfferToJson(offer)},
                 {"forAsk", forAsk},
             });
@@ -2981,7 +2975,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             dropServe(serveId, cancel);
             try {
                 sendContent(peerFingerprint,
-                    envelope("file.unavailable", toHex(randomBytes(8)),
+                    envelope("file.unavailable", newMessageId(),
                         {{"fileId", fileId}}));
             } catch (const std::exception& tellError) {
                 bazarish::log::warn("could not tell {} the transfer failed: {}",
@@ -3210,6 +3204,11 @@ void Session::persistSentFiles() const
         };
     }
     db_->putText("sent-files", stored.dump());
+}
+
+std::string newMessageId()
+{
+    return toHex(randomBytes(kMessageIdBytes));
 }
 
 std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size_t maxItems)
@@ -4195,7 +4194,7 @@ void Session::announceCallTaken(const std::string& callId)
 bool Session::sendCallSignal(
     const std::string& peerFingerprint, const std::string& type, nlohmann::json extra)
 {
-    nlohmann::json inner = envelope(type, toHex(randomBytes(8)));
+    nlohmann::json inner = envelope(type, newMessageId());
     for (const auto& field : extra.items()) {
         inner[field.key()] = field.value();
     }
