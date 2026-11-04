@@ -188,6 +188,7 @@ if(BAZARISH_WITH_CLIENT)
         client/Session.cpp
         client/SocksProxy.cpp
         client/TranscriptDb.cpp
+        client/TranscriptIngest.cpp
         client/WarmDestPool.cpp
         client/WireLog.cpp
     )

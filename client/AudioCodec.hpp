@@ -4,6 +4,7 @@
 #include <bazarish/Bytes.hpp>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 typedef struct OpusEncoder OpusEncoder;
@@ -60,6 +61,9 @@ void normalizeVoicePcm(std::vector<std::int16_t>& pcm);
 inline constexpr int kWaveformLevels = 16;
 inline constexpr double kWaveformSilence = 0.01;
 std::vector<std::uint8_t> voiceWaveform(const Bytes& packed, int bars);
+inline constexpr int kVoiceWaveBars = 40;
+// One hex digit per bar, kVoiceWaveBars of them.
+std::string voiceWaveformHex(const Bytes& packed);
 
 class TimeStretch {
 public:

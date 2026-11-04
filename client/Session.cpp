@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "Session.hpp"
 #include "MediaKeys.hpp"
+#include "MessageTypes.hpp"
 
 #include "LoginSigner.hpp"
 
@@ -61,10 +62,6 @@ bool isBlank(const std::string& text)
     return text.find_first_not_of(" \t\r\n") == std::string::npos;
 }
 
-const char* const kTypeFile = "file";
-const char* const kTypeChatTimer = "chat.timer";
-const char* const kTypeImage = "image";
-const char* const kTypeAudio = "audio";
 constexpr std::size_t kDeliveryIdBytes = 16;
 constexpr std::size_t kContactBookChunkBytes = 128 * 1024;
 constexpr std::size_t kRequestIdBytes = 8;
@@ -234,10 +231,6 @@ std::string guessMime(const fs::path& path)
     return "application/octet-stream";
 }
 
-const char* const kGroupKindGroup = "group";
-const char* const kGroupKindChannel = "channel";
-const char* const kTypeGroupState = "group.state";
-const char* const kTypeGroupReactions = "group.reactions";
 
 nlohmann::json imageBody(const std::string& name, const std::string& mime, const Bytes& bytes)
 {

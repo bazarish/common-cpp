@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include "MessageTypes.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
@@ -13,7 +15,6 @@
 
 namespace bazarish::client {
 
-inline constexpr char kTypeBotMenu[] = "bot.menu";
 inline constexpr std::size_t kMaxBotMenuItems = 32;
 inline constexpr std::size_t kMaxBotMenuTitleChars = 32;
 inline constexpr std::size_t kMaxBotMenuCommandBytes = 32;

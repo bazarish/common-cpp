@@ -278,6 +278,16 @@ std::vector<std::uint8_t> voiceWaveform(const Bytes& packed, const int bars)
     return out;
 }
 
+std::string voiceWaveformHex(const Bytes& packed)
+{
+    constexpr char kHexDigits[] = "0123456789abcdef";
+    std::string hex;
+    for (const std::uint8_t bar : voiceWaveform(packed, kVoiceWaveBars)) {
+        hex.push_back(kHexDigits[bar]);
+    }
+    return hex;
+}
+
 void normalizeVoicePcm(std::vector<std::int16_t>& pcm)
 {
     if (pcm.empty()) {
