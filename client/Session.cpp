@@ -182,18 +182,6 @@ void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap)
         "delivery pass for {} accepted", bazarish::log::redact(contact.dest));
 }
 
-void writeFileText(const fs::path& path, const std::string& text)
-{
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        throw std::runtime_error("failed to open " + path.string());
-    }
-    out << text;
-    if (!out) {
-        throw std::runtime_error("failed to write " + path.string());
-    }
-}
-
 nlohmann::json keyboardToJson(const InlineKeyboard& keyboard)
 {
     nlohmann::json rows = nlohmann::json::array();
@@ -5226,7 +5214,7 @@ Bytes Session::exportAccountBytes(const std::string& password)
 void Session::exportAccount(const fs::path& outFile, const std::string& password)
 {
     const Bytes sealed = exportAccountBytes(password);
-    writeFileText(outFile, std::string(sealed.begin(), sealed.end()));
+    writePrivateFile(outFile, std::string(sealed.begin(), sealed.end()));
 }
 
 AccountKind Session::bundleKind(const Bytes& sealed, const std::string& password)

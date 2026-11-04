@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "bazarish/ConfigFile.hpp"
 
+#include "bazarish/PrivateFile.hpp"
+
 #include <cctype>
 #include <fstream>
 #include <optional>
@@ -25,23 +27,6 @@ std::string readWhole(const fs::path& path)
     std::ostringstream buffer;
     buffer << in.rdbuf();
     return buffer.str();
-}
-
-void writeWhole(const fs::path& path, const std::string& text)
-{
-    const fs::path temporary = path.string() + ".tmp";
-    {
-        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            throw std::runtime_error("cannot write " + temporary.string());
-        }
-        out << text;
-        if (!out) {
-            throw std::runtime_error("cannot write " + temporary.string());
-        }
-    }
-    fs::permissions(temporary, fs::status(path).permissions(), fs::perm_options::replace);
-    fs::rename(temporary, path);
 }
 
 std::size_t skipGaps(const std::string& text, std::size_t at)
@@ -352,7 +337,7 @@ nlohmann::json ConfigFile::read() const
 
 void ConfigFile::set(const std::vector<std::string>& keys, const nlohmann::json& value)
 {
-    writeWhole(path_, configWithValue(readWhole(path_), keys, value));
+    writeFileAtomic(path_, configWithValue(readWhole(path_), keys, value), fs::status(path_).permissions());
 }
 
 nlohmann::json readJsonFile(const std::filesystem::path& path)

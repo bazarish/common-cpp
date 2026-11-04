@@ -46,9 +46,9 @@ void flushOpened(const fs::path& path, const int flags)
 }
 #endif
 
+#ifdef _WIN32
 void syncFile(const fs::path& path)
 {
-#ifdef _WIN32
     const int fd = ::_wopen(path.c_str(), _O_WRONLY | _O_BINARY);
     if (fd < 0) {
         failedToSync(path, errno);
@@ -62,14 +62,21 @@ void syncFile(const fs::path& path)
     if (closed != 0) {
         failedToSync(path, errno);
     }
-#else
-    flushOpened(path, O_RDONLY);
-#endif
 }
+#endif
 
-fs::path writtenTemporary(const fs::path& path, const std::string_view bytes)
+constexpr fs::perms kOwnerOnly = fs::perms::owner_read | fs::perms::owner_write;
+constexpr fs::perms kUsual = fs::perms::owner_read | fs::perms::owner_write
+    | fs::perms::group_read | fs::perms::group_write | fs::perms::others_read
+    | fs::perms::others_write;
+
+// A temporary left by a crash is replaced, never reused with whatever permissions it had.
+fs::path writtenTemporary(const fs::path& path, const std::string_view bytes, const fs::perms perms)
 {
     const fs::path temporary = path.parent_path() / (path.filename().string() + ".tmp");
+    std::error_code ec;
+    fs::remove(temporary, ec);
+#ifdef _WIN32
     std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
     if (!out) {
         throw std::runtime_error("failed to open " + temporary.string());
@@ -81,7 +88,41 @@ fs::path writtenTemporary(const fs::path& path, const std::string_view bytes)
     if (!out) {
         throw std::runtime_error("failed to write " + temporary.string());
     }
+    fs::permissions(temporary, perms, fs::perm_options::replace, ec);
+    if (ec) {
+        fs::remove(temporary, ec);
+        throw std::runtime_error(
+            "cannot set permissions on " + temporary.string() + ": " + ec.message());
+    }
     syncFile(temporary);
+#else
+    const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+        static_cast<mode_t>(perms));
+    if (fd < 0) {
+        throw std::runtime_error("failed to open " + temporary.string() + ": " + std::strerror(errno));
+    }
+    std::size_t written = 0;
+    while (written < bytes.size()) {
+        const ssize_t step = ::write(fd, bytes.data() + written, bytes.size() - written);
+        if (step < 0 && errno == EINTR) {
+            continue;
+        }
+        if (step <= 0) {
+            const int error = errno;
+            ::close(fd);
+            fs::remove(temporary, ec);
+            throw std::runtime_error("failed to write " + temporary.string() + ": " + std::strerror(error));
+        }
+        written += static_cast<std::size_t>(step);
+    }
+    const int synced = ::fsync(fd);
+    const int syncError = errno;
+    const int closed = ::close(fd);
+    if (synced != 0 || closed != 0) {
+        fs::remove(temporary, ec);
+        failedToSync(temporary, synced != 0 ? syncError : errno);
+    }
+#endif
     return temporary;
 }
 
@@ -120,7 +161,7 @@ std::string readFileText(const fs::path& path)
 
 void writeFileAtomic(const fs::path& path, const std::string_view bytes)
 {
-    putInPlace(writtenTemporary(path, bytes), path);
+    writeFileAtomic(path, bytes, kUsual);
 }
 
 void writeFileAtomic(const fs::path& path, const Bytes& bytes)
@@ -129,18 +170,14 @@ void writeFileAtomic(const fs::path& path, const Bytes& bytes)
         std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
 
+void writeFileAtomic(const fs::path& path, const std::string_view bytes, const fs::perms perms)
+{
+    putInPlace(writtenTemporary(path, bytes, perms), path);
+}
+
 void writePrivateFile(const fs::path& path, const std::string& text)
 {
-    const fs::path temporary = writtenTemporary(path, text);
-    std::error_code ec;
-    fs::permissions(temporary, fs::perms::owner_read | fs::perms::owner_write,
-        fs::perm_options::replace, ec);
-    if (ec) {
-        fs::remove(temporary, ec);
-        throw std::runtime_error(
-            "cannot restrict permissions on " + temporary.string() + ": " + ec.message());
-    }
-    putInPlace(temporary, path);
+    writeFileAtomic(path, text, kOwnerOnly);
 }
 
 }  // namespace bazarish

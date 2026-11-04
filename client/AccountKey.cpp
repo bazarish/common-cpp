@@ -2,6 +2,7 @@
 #include "AccountKey.hpp"
 
 #include <bazarish/Argon2.hpp>
+#include <bazarish/PrivateFile.hpp>
 
 #include <openssl/evp.h>
 #include <openssl/crypto.h>
@@ -141,22 +142,20 @@ bool unseal(const Bytes& wrapping, const Sidecar& sidecar, Bytes& key)
 
 void write(const fs::path& file, const Sidecar& sidecar)
 {
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    out.write(kMagic, sizeof kMagic);
+    std::string out(kMagic, sizeof kMagic);
     for (const std::uint32_t value : {sidecar.memoryKiB, sidecar.passes}) {
-        std::array<unsigned char, 4> bytes{};
-        for (std::size_t i = 0; i < bytes.size(); ++i) {
-            bytes[i] = static_cast<unsigned char>((value >> (8 * i)) & 0xFF);
+        for (std::size_t i = 0; i < sizeof value; ++i) {
+            out.push_back(static_cast<char>((value >> (8 * i)) & 0xFF));
         }
-        out.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     }
-    out.write(reinterpret_cast<const char*>(sidecar.salt.data()), sidecar.salt.size());
-    out.write(reinterpret_cast<const char*>(sidecar.nonce.data()), sidecar.nonce.size());
-    out.write(reinterpret_cast<const char*>(sidecar.sealed.data()), sidecar.sealed.size());
-    out.write(reinterpret_cast<const char*>(sidecar.tag.data()), sidecar.tag.size());
-    if (!out) {
-        throw std::runtime_error("account key: could not write " + file.string());
-    }
+    const auto append = [&out](const auto& part) {
+        out.append(reinterpret_cast<const char*>(part.data()), part.size());
+    };
+    append(sidecar.salt);
+    append(sidecar.nonce);
+    append(sidecar.sealed);
+    append(sidecar.tag);
+    writePrivateFile(file, out);
 }
 
 Sidecar read(const fs::path& file)
