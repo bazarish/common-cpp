@@ -166,6 +166,9 @@ public:
 
     [[nodiscard]] std::int64_t append(const StoredMessage& message);
     [[nodiscard]] bool updateStatus(std::int64_t id, int status);
+    // A status only moves forward, and a failure may come at any point. Nothing when the store
+    // failed, false when the row keeps the status it has.
+    [[nodiscard]] std::optional<bool> advanceStatus(std::int64_t id, int status);
     [[nodiscard]] std::optional<int> failUnsentOnLoad(
         int preparingStatus, int deliveringStatus, int failedStatus);
     [[nodiscard]] std::optional<int> settleUnfinishedNotes(const std::string& type,

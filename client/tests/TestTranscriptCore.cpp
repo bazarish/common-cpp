@@ -66,6 +66,17 @@ int main()
     CHECK(account.has(kPictureKeyPrefix + std::string("o1")));
     CHECK(store.latestMessages(kOther, 10).size() == 1);
 
+    StoredMessage sent = line(kOther, "text", "s1");
+    sent.outgoing = true;
+    sent.status = static_cast<int>(DeliveryState::eDelivering);
+    const std::int64_t sentId = store.append(sent);
+    const auto statusOf = [&store](const std::int64_t id) { return store.messageById(id).status; };
+    CHECK(store.advanceStatus(sentId, static_cast<int>(DeliveryState::eDelivered)) == true);
+    CHECK(store.advanceStatus(sentId, static_cast<int>(DeliveryState::eAtRecipientServer)) == false);
+    CHECK(statusOf(sentId) == static_cast<int>(DeliveryState::eDelivered));
+    CHECK(store.advanceStatus(sentId, static_cast<int>(DeliveryState::eFailed)) == true);
+    CHECK(statusOf(sentId) == static_cast<int>(DeliveryState::eFailed));
+
     const DatabaseFootprint before = store.footprint();
     CHECK(before.freeBytes >= static_cast<std::int64_t>(kPictureBytes / 2));
     std::string reason;

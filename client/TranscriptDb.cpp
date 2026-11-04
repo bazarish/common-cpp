@@ -462,6 +462,22 @@ bool TranscriptStore::updateStatus(const std::int64_t id, const int status)
     return query.exec() || failed();
 }
 
+std::optional<bool> TranscriptStore::advanceStatus(const std::int64_t id, const int status)
+{
+    Query query(db_);
+    query.prepare("UPDATE messages SET status = ? WHERE id = ? AND (? = ? OR status < ?)");
+    query.bind(status);
+    query.bind(id);
+    query.bind(status);
+    query.bind(static_cast<int>(DeliveryState::eFailed));
+    query.bind(status);
+    if (!query.exec()) {
+        failed();
+        return std::nullopt;
+    }
+    return query.changes() > 0;
+}
+
 std::vector<StoredMessage> TranscriptReader::messagesFor(const std::string& peer) const
 {
     Query query(db_);
