@@ -66,7 +66,6 @@ constexpr std::size_t kDeliveryIdBytes = 16;
 constexpr std::size_t kContactBookChunkBytes = 128 * 1024;
 constexpr std::size_t kRequestIdBytes = 8;
 
-constexpr std::int64_t kRegistryFanoutRetrySeconds = 10;
 
 constexpr std::int64_t kAliasStatusIntervalSeconds = 24 * 3600;
 constexpr std::int64_t kAliasStatusJitterSeconds = 6 * 3600;
@@ -2572,7 +2571,6 @@ void Session::queueRoutingFanout()
     fanout_.registry = resolverCoordinate_.configured()
         && std::any_of(aliasNames_.begin(), aliasNames_.end(),
             [](const AliasHolding& holding) { return holding.bindingWanted; });
-    registryFanoutAfter_ = 0;
     persistRoutingFanout();
 }
 
@@ -2592,34 +2590,11 @@ void Session::retryRoutingTo(const std::string& peerFingerprint)
     tellRoutingTo(peerFingerprint);
 }
 
-bool Session::tellRegistryWhereWeAre()
-{
-    try {
-        if (aliasUpdatePending() && !pushAliasDescriptor()) {
-            return false;
-        }
-    } catch (const std::exception& error) {
-        log::info("the alias registry has not taken the new address yet: {}", error.what());
-        return false;
-    }
-    noteRegistryTold();
-    return true;
-}
-
 void Session::runRoutingFanout()
 {
     for (const std::string& peer : std::vector<std::string>(fanout_.contacts)) {
         tellRoutingTo(peer);
     }
-}
-
-void Session::serviceRoutingFanout()
-{
-    if (!fanout_.registry || nowSeconds() < registryFanoutAfter_) {
-        return;
-    }
-    registryFanoutAfter_ = nowSeconds() + kRegistryFanoutRetrySeconds;
-    (void)tellRegistryWhereWeAre();
 }
 
 void Session::noteRegistryTold()
@@ -2666,6 +2641,9 @@ void Session::announceNewRouting()
 
 void Session::sendReceipt(const std::string& peerFingerprint, const std::string& refMessageId)
 {
+    if (!sendReceipts_) {
+        return;
+    }
     const auto found = contacts_.find(peerFingerprint);
     if (found == contacts_.end() || found->second.sendPass.empty()) {
         return;

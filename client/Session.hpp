@@ -571,8 +571,6 @@ public:
 
     void runRoutingFanout();
 
-    void serviceRoutingFanout();
-
     void retryRoutingTo(const std::string& peerFingerprint);
 
     void sendReceipt(const std::string& peerFingerprint, const std::string& refMessageId);
@@ -861,7 +859,6 @@ private:
     std::string aliasPushedDest_;
     RoutingFanout fanout_;
     RoutingFanoutFn routingFanoutSink_;
-    std::int64_t registryFanoutAfter_ = 0;
 
     nlohmann::json aliasNamesToJson() const;
     void adoptAliasStatus(const AliasStatus& status);
@@ -873,7 +870,6 @@ private:
     void persistRoutingFanout() const;
     void dropFromRoutingFanout(const std::string& peerFingerprint);
     void tellRoutingTo(const std::string& peerFingerprint);
-    bool tellRegistryWhereWeAre();
     void noteRegistryTold();
     bool switchedOff_ = false;
     bazarish::i2p::Router& i2pRouter() const;
