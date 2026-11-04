@@ -468,6 +468,21 @@ void testForwardedAccept()
 
     std::string nobody;
     CHECK(session.accept(nobody, std::chrono::milliseconds(100)) == nullptr);
+
+    // Two threads wait on one session and one stream comes: both return, one holds it.
+    std::atomic<int> taken{0};
+    const auto wait = [&session, &taken]() {
+        std::string from;
+        if (session.accept(from, kAcceptWait) != nullptr) {
+            ++taken;
+        }
+    };
+    std::thread first(wait);
+    std::thread second(wait);
+    router.deliverIncoming(kDestination, payload);
+    first.join();
+    second.join();
+    CHECK(taken.load() == 1);
 }
 
 void testRawDatagrams()

@@ -10,6 +10,7 @@
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/ioctl.h>
@@ -19,6 +20,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -82,6 +84,19 @@ using NativeSocket = SOCKET;
 constexpr int kNoSignal = 0;
 
 void quietenSignals(Socket) { }
+
+void setBlocking(const Socket socket, const bool blocking)
+{
+    u_long nonBlocking = blocking ? 0 : 1;
+    if (::ioctlsocket(static_cast<SOCKET>(socket), FIONBIO, &nonBlocking) != 0) {
+        throw Error(Result::eI2pError, "SAM: could not set the socket's blocking mode");
+    }
+}
+
+bool nothingToTake()
+{
+    return ::WSAGetLastError() == WSAEWOULDBLOCK;
+}
 
 void closeSocket(const Socket socket) { ::closesocket(static_cast<SOCKET>(socket)); }
 
@@ -154,6 +169,22 @@ void quietenSignals([[maybe_unused]] const Socket socket)
         throw Error(Result::eI2pError, "SAM: socket would still signal on a closed peer");
     }
 #endif
+}
+
+void setBlocking(const Socket socket, const bool blocking)
+{
+    const int flags = ::fcntl(static_cast<int>(socket), F_GETFL, 0);
+    if (flags < 0
+        || ::fcntl(static_cast<int>(socket), F_SETFL,
+               blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK))
+            != 0) {
+        throw Error(Result::eI2pError, "SAM: could not set the socket's blocking mode");
+    }
+}
+
+bool nothingToTake()
+{
+    return errno == EAGAIN || errno == EWOULDBLOCK;
 }
 
 std::ptrdiff_t socketRead(const Socket socket, void* const buffer, const std::size_t size)
@@ -300,6 +331,8 @@ Socket openLocalUdpSocket(std::uint16_t& boundPort)
         throw Error(Result::eI2pError, "SAM: could not read the datagram port");
     }
     boundPort = ntohs(bound.sin_port);
+    // Several threads may wait on one session: whoever loses the race must not block in accept.
+    setBlocking(fd.get(), false);
     return fd.release();
 }
 
@@ -324,6 +357,8 @@ Socket openLocalListener(std::uint16_t& boundPort)
         throw Error(Result::eI2pError, "SAM: could not read the listening port");
     }
     boundPort = ntohs(bound.sin_port);
+    // Several threads may wait on one session: whoever loses the race must not block in accept.
+    setBlocking(fd.get(), false);
     return fd.release();
 }
 
@@ -842,8 +877,12 @@ std::unique_ptr<Stream> Session::accept(
     }
     Held incoming(::accept(native(impl_->listener.get()), nullptr, nullptr));
     if (!incoming.valid()) {
+        if (nothingToTake()) {
+            return nullptr;
+        }
         throw Error(Result::eI2pError, "SAM: could not take a forwarded stream");
     }
+    setBlocking(incoming.get(), true);
     // An accepted socket does not inherit this from the one that listened.
     quietenSignals(incoming.get());
     setSocketTimeouts(incoming.get(), kControlIoTimeoutSeconds);

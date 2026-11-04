@@ -197,8 +197,9 @@ if(BAZARISH_WITH_CLIENT)
     target_include_directories(bazarish_client PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/client)
     target_include_directories(bazarish_client PRIVATE
         ${SQLCIPHER_INCLUDE_DIR} ${OPUS_INCLUDE_DIR})
+    # A static SQLCipher needs libcrypto after it on the link line.
     target_link_libraries(bazarish_client PUBLIC bazarish_common Threads::Threads
-        ${SQLCIPHER_LIBRARY})
+        ${SQLCIPHER_LIBRARY} OpenSSL::Crypto)
     target_link_libraries(bazarish_client PRIVATE ${OPUS_LIBRARY})
     target_compile_options(bazarish_client PRIVATE -Wall -Wextra -Werror)
 
