@@ -41,6 +41,13 @@ constexpr std::chrono::milliseconds kSlowestRetry{15000};
 constexpr std::chrono::milliseconds kFarewellWait{2000};
 constexpr std::chrono::milliseconds kFarewellPoll{20};
 
+// What a request is answered with; anything else under the same id is news about it.
+bool answers(const FrameType type)
+{
+    return type == FrameType::eOk || type == FrameType::eError || type == FrameType::eReady
+        || type == FrameType::eStreamOpened;
+}
+
 std::int64_t millisNow()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -119,6 +126,8 @@ public:
     std::string cookie;
     std::map<std::uint32_t, std::shared_ptr<Pending>> awaited;
     std::map<std::uint32_t, std::weak_ptr<GatewayEndpoint>> endpoints;
+    // A status can reach the control socket before the create's answer reaches the one it went on.
+    std::map<std::uint32_t, std::optional<Frame>> creating;
     std::map<std::uint32_t, GatewayStream*> streams;
     std::map<std::uint32_t, http::SocketPtr> flows;
     std::set<std::uint32_t> orphaned;
@@ -1273,9 +1282,19 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
     if (!config.leaseSetReaderKey.empty()) {
         ask["readerKey"] = leaseSetKeyBase64(config.leaseSetReaderKey);
     }
+    {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        link_->creating[id] = std::nullopt;
+    }
     const std::optional<Frame> answer
         = link_->call(gateway::encodeJson(FrameType::eEndpointCreate, id, ask), id,
             kCallTimeout);
+    const std::string host = answer && answer->type == FrameType::eOk
+        ? gateway::bodyJson(*answer).value("host", std::string()) : std::string();
+    if (host.empty()) {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        link_->creating.erase(id);
+    }
     if (!answer) {
         throw std::runtime_error("bazarish::i2p: the gateway did not answer in time");
     }
@@ -1285,15 +1304,23 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         throw GatewayRefusal("bazarish::i2p: the gateway refused a destination: "
             + said.value("code", std::string()) + ": " + said.value("message", std::string()));
     }
-    const std::string host = gateway::bodyJson(*answer).value("host", std::string());
     if (host.empty()) {
         throw std::runtime_error("bazarish::i2p: the gateway named no address");
     }
     const auto endpoint = std::make_shared<GatewayEndpoint>(link_, id, host, raw,
         config.published, config.label, config.owner, config.target, config.keys);
     {
+        // Under the lock, so a status that comes after it lands on top of it.
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->endpoints[id] = endpoint;
+        const auto early = link_->creating.find(id);
+        if (early->second) {
+            const nlohmann::json body = gateway::bodyJson(*early->second);
+            endpoint->statusChanged(body.value("ready", false), body.value("tunnelsIn", 0),
+                body.value("tunnelsOut", 0), body.value("leaseSets", 0),
+                body.value("localRoute", false));
+        }
+        link_->creating.erase(early);
     }
     if (raw || config.bulk) {
         if (!attach(id, 0)) {
@@ -1369,7 +1396,7 @@ void GatewayRouter::dispatch(const Frame& frame)
             waiting = found->second;
         }
     }
-    if (waiting != nullptr) {
+    if (waiting != nullptr && answers(frame.type)) {
         const std::lock_guard<std::mutex> lock(waiting->mutex);
         waiting->answer = frame;
         waiting->done = true;
@@ -1389,6 +1416,11 @@ void GatewayRouter::dispatch(const Frame& frame)
     switch (frame.type) {
         case FrameType::eEndpointStatus: {
             if (endpoint == nullptr) {
+                const std::lock_guard<std::mutex> lock(link_->mutex);
+                const auto early = link_->creating.find(frame.ref);
+                if (early != link_->creating.end()) {
+                    early->second = frame;
+                }
                 return;
             }
             const nlohmann::json body = gateway::bodyJson(frame);
