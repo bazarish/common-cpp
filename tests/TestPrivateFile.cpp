@@ -16,10 +16,12 @@ namespace {
 constexpr fs::perms kOwnerOnly = fs::perms::owner_read | fs::perms::owner_write;
 constexpr fs::perms kGroupReadable = kOwnerOnly | fs::perms::group_read;
 
+#ifndef _WIN32
 fs::perms permsOf(const fs::path& file)
 {
     return fs::status(file).permissions() & fs::perms::all;
 }
+#endif
 
 }  // namespace
 
