@@ -31,6 +31,8 @@ enum class Result {
     eOk,
     eInvalidId,
     eDuplicatedId,
+    // The router still holds the destination for a while after its last session closed.
+    eDuplicatedDest,
     eInvalidKey,
     eCantReachPeer,
     eI2pError,

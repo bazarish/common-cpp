@@ -409,6 +409,9 @@ Result resultFromString(const std::string& text)
     if (text == "DUPLICATED_ID") {
         return Result::eDuplicatedId;
     }
+    if (text == "DUPLICATED_DEST") {
+        return Result::eDuplicatedDest;
+    }
     if (text == "INVALID_KEY") {
         return Result::eInvalidKey;
     }

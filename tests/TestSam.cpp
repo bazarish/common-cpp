@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/Sam.hpp"
+#include "bazarish/I2p.hpp"
 #include "bazarish/I2pAddress.hpp"
 
 #include "TestUtil.hpp"
@@ -114,6 +115,9 @@ public:
     {
         return sam::RouterAddress{"127.0.0.1", controlPort_, udpPort_};
     }
+
+    // The next sessions are refused the way a router refuses a destination it still holds.
+    void holdDestination(const int times) { held_ = times; }
 
     void setStreamStatus(const std::string& line)
     {
@@ -271,6 +275,11 @@ private:
                 if (!port.empty()) {
                     clientUdpPort_ = static_cast<std::uint16_t>(std::stoi(port));
                 }
+                if (held_.load() > 0) {
+                    --held_;
+                    writeAll(fd, "SESSION STATUS RESULT=DUPLICATED_DEST\n");
+                    break;
+                }
                 writeAll(fd, "SESSION STATUS RESULT=OK DESTINATION=" + kPrivateKeys + "\n");
             } else if (line.rfind("NAMING LOOKUP", 0) == 0) {
                 writeAll(fd, "NAMING REPLY RESULT=OK NAME=ME VALUE=" + kDestination + "\n");
@@ -318,6 +327,7 @@ private:
     std::atomic<std::uint16_t> forwardPort_{0};
     std::atomic<std::uint16_t> clientUdpPort_{0};
     std::atomic<bool> stopping_{false};
+    std::atomic<int> held_{0};
     std::thread acceptor_;
     mutable std::mutex mutex_;
     std::vector<std::thread> workers_;
@@ -565,6 +575,27 @@ void testSessionComesBackAfterTheRouterDoes()
     CHECK(session.publicDestination() == kDestination);
 }
 
+void testWaitsForAHeldDestination()
+{
+    FakeRouter router;
+    router.holdDestination(1);
+    i2p::RouterConfig config;
+    config.backend = i2p::Backend::eSam;
+    config.samHost = "127.0.0.1";
+    config.samControlPort = router.address().controlPort;
+    i2p::Router over(config);
+    over.start();
+    i2p::EndpointConfig wanted;
+    wanted.keys = i2p::Keys::generate();
+    const std::shared_ptr<i2p::Endpoint> endpoint = over.createEndpoint(wanted);
+    CHECK(router.waitForCommand("SESSION CREATE", 2) != "");
+    for (int waited = 0; waited < kWaitSeconds * 1000 / kPollSliceMs && !endpoint->ready();
+         ++waited) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kPollSliceMs));
+    }
+    CHECK(endpoint->ready());
+}
+
 void testRefusesWhatIsNotLoopback()
 {
     sam::RouterAddress elsewhere;
@@ -640,6 +671,7 @@ int main()
     testLeaseSetReaders();
     testRepliableDatagrams();
     testSessionComesBackAfterTheRouterDoes();
+    testWaitsForAHeldDestination();
     testRefusesWhatIsNotLoopback();
     testRefusesAnEndlessReply();
     std::printf("TestSam ok\n");

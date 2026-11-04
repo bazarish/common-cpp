@@ -17,6 +17,7 @@ namespace bazarish::i2p {
 namespace {
 
 constexpr auto kDestinationReadyTimeout = std::chrono::seconds(180);
+constexpr auto kHeldDestinationRetry = std::chrono::seconds(5);
 
 constexpr auto kProbeInterval = std::chrono::seconds(5);
 
@@ -93,6 +94,7 @@ public:
 
     ~SamEndpoint() override
     {
+        stop();
         if (builder_.joinable()) {
             builder_.join();
         }
@@ -218,10 +220,29 @@ private:
     void build()
     {
         try {
-            auto session = std::make_shared<sam::Session>(
-                router_, sessionConfigFor(config_, sam::Style::eStream), kDestinationReadyTimeout);
-            const std::lock_guard<std::mutex> lock(mutex_);
-            streams_ = std::move(session);
+            for (bool told = false;;) {
+                try {
+                    auto session = std::make_shared<sam::Session>(router_,
+                        sessionConfigFor(config_, sam::Style::eStream), kDestinationReadyTimeout);
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    streams_ = std::move(session);
+                    break;
+                } catch (const sam::Error& error) {
+                    if (error.result() != sam::Result::eDuplicatedDest) {
+                        throw;
+                    }
+                    if (!told) {
+                        bazarish::log::info("i2p: destination {} is still held by the router; "
+                                            "waiting for it to let go",
+                            label_.empty() ? std::string("unnamed") : label_);
+                        told = true;
+                    }
+                }
+                std::unique_lock<std::mutex> lock(mutex_);
+                if (ready_.wait_for(lock, kHeldDestinationRetry, [this] { return stopped_.load(); })) {
+                    return;
+                }
+            }
         } catch (const std::exception& error) {
             const std::lock_guard<std::mutex> lock(mutex_);
             failure_ = error.what();
