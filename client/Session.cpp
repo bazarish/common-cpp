@@ -2540,6 +2540,7 @@ bool Session::sendEdit(const std::string& peerFingerprint, const std::string& re
 void Session::sendDelete(const std::string& peerFingerprint, const std::string& refMessageId,
     const DeliveryWatch& watch)
 {
+    unsend(refMessageId);
     nlohmann::json inner = envelope("delete", toHex(randomBytes(8)), {
         {"ref", refMessageId},
     });
