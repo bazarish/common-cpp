@@ -1,5 +1,7 @@
 // Bazarish project (c) 2026
 #include "AccountDb.hpp"
+#include "AccountKey.hpp"
+#include "KeyedDatabase.hpp"
 #include "MediaKeys.hpp"
 #include "TranscriptDb.hpp"
 
@@ -85,6 +87,15 @@ int main()
     CHECK(after.freeBytes == 0);
     CHECK(after.fileBytes + static_cast<std::int64_t>(kPictureBytes / 2) < before.fileBytes);
     CHECK(account.has(kPictureKeyPrefix + std::string("o1")));
+
+    const fs::path copy = root / "copy.db";
+    copyKeyedDatabase(file, copy, accountkey::keyFor(file, "secret"));
+    {
+        TranscriptReader reader;
+        CHECK(reader.open(copy, accountkey::keyFor(file, "secret")));
+        CHECK(reader.latestMessages(kOther, 10).size() == 2);
+        CHECK(!reader.media(kPictureKeyPrefix + std::string("o1")).empty());
+    }
 
     store.close();
     fs::remove_all(root);
