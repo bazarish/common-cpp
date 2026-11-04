@@ -4,9 +4,7 @@
 #include "bazarish/PrivateFile.hpp"
 
 #include <cctype>
-#include <fstream>
 #include <optional>
-#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -17,17 +15,6 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr std::size_t kIndentWidth = 2;
-
-std::string readWhole(const fs::path& path)
-{
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        throw std::runtime_error("cannot read config " + path.string());
-    }
-    std::ostringstream buffer;
-    buffer << in.rdbuf();
-    return buffer.str();
-}
 
 std::size_t skipGaps(const std::string& text, std::size_t at)
 {
@@ -331,22 +318,19 @@ ConfigFile::ConfigFile(fs::path path)
 
 nlohmann::json ConfigFile::read() const
 {
-    const std::string text = readWhole(path_);
+    const std::string text = readFileText(path_);
     return nlohmann::json::parse(text, nullptr, true, true);
 }
 
 void ConfigFile::set(const std::vector<std::string>& keys, const nlohmann::json& value)
 {
-    writeFileAtomic(path_, configWithValue(readWhole(path_), keys, value), fs::status(path_).permissions());
+    writeFileAtomic(
+        path_, configWithValue(readFileText(path_), keys, value), fs::status(path_).permissions());
 }
 
 nlohmann::json readJsonFile(const std::filesystem::path& path)
 {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        throw std::runtime_error("failed to open " + path.string());
-    }
-    return nlohmann::json::parse(in);
+    return nlohmann::json::parse(readFileText(path));
 }
 
 void readEndpointInto(

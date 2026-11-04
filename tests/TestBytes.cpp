@@ -3,12 +3,28 @@
 
 #include "TestUtil.hpp"
 
+#include <array>
+#include <cstdint>
 #include <stdexcept>
 
 using namespace bazarish;
 
 int main()
 {
+    constexpr std::uint64_t kSides = 6;
+    constexpr int kThrows = 6000;
+    std::array<int, kSides> seen{};
+    for (int i = 0; i < kThrows; ++i) {
+        const std::uint64_t side = randomBelow(kSides);
+        CHECK(side < kSides);
+        ++seen[side];
+    }
+    for (const int count : seen) {
+        CHECK(count > 0);
+    }
+    CHECK(randomBelow(0) == 0);
+    CHECK(randomBelow(1) == 0);
+
     const Bytes data = {0x00, 0x01, 0xab, 0xff};
     CHECK(toHex(data) == "0001abff");
     CHECK(fromHex("0001abff") == data);

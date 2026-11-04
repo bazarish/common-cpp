@@ -74,18 +74,6 @@ static_assert(kAliasStatusIntervalSeconds + kAliasStatusJitterSeconds
         < bazarish::kAliasStatusValiditySeconds,
     "a relayed status must still be valid when the slowest device wakes");
 
-std::uint64_t randomBelow(const std::uint64_t bound)
-{
-    if (bound == 0) {
-        return 0;
-    }
-    const bazarish::Bytes bytes = bazarish::randomBytes(sizeof(std::uint64_t));
-    std::uint64_t value = 0;
-    for (const std::uint8_t byte : bytes) {
-        value = (value << 8) | byte;
-    }
-    return value % bound;
-}
 constexpr std::size_t kShortFingerprintChars = 8;
 constexpr const char* kPendingAddsKey = "pending-contact-adds";
 constexpr const char* kChosenNamesKey = "chosen-contact-names";

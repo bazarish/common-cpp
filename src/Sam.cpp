@@ -484,22 +484,9 @@ std::string styleName(const Style style)
 
 std::string privacyOptions(const i2p::Privacy privacy)
 {
-    int length = 0;
-    int variance = 0;
-    switch (privacy) {
-        case i2p::Privacy::eMinimal:
-            length = 1;
-            variance = 0;
-            break;
-        case i2p::Privacy::eMiddle:
-            length = 1;
-            variance = 1;
-            break;
-        case i2p::Privacy::eMax:
-            length = 3;
-            variance = 0;
-            break;
-    }
+    const i2p::TunnelLength tunnel = i2p::tunnelLengthFor(privacy);
+    const int length = tunnel.hops;
+    const int variance = tunnel.variance;
     std::ostringstream options;
     options << "inbound.length=" << length << " outbound.length=" << length
             << " inbound.lengthVariance=" << variance

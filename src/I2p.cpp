@@ -193,6 +193,21 @@ std::string_view privacyName(const Privacy privacy)
     return "max";
 }
 
+TunnelLength tunnelLengthFor(const Privacy privacy)
+{
+    constexpr int kShortHops = 1;
+    constexpr int kLongHops = 3;
+    switch (privacy) {
+    case Privacy::eMinimal:
+        return {kShortHops, 0};
+    case Privacy::eMiddle:
+        return {kShortHops, 1};
+    case Privacy::eMax:
+        return {kLongHops, 0};
+    }
+    return {kLongHops, 0};
+}
+
 void setI2pLogging(const bool enabled)
 {
     g_i2pLogging = enabled;

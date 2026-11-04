@@ -520,7 +520,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
         const auth::Headers mac = auth::macRequest(auth::sessionHandle(tunnel.sessionSecret, seq),
             tunnel.sessionKey, seq, nowSeconds(), method, path, body, clientId_);
         std::map<std::string, std::string> headers(mac.begin(), mac.end());
-        headers.emplace("X-Bazarish-Client", clientId_);
+        headers.emplace(auth::kHeaderClient, clientId_);
         return headers;
     };
     const bool quietOnSuccess = path == kEventsPath;

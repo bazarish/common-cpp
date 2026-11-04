@@ -196,16 +196,6 @@ Bytes createB33OfflineKeys(
     return batch;
 }
 
-void privacyToTunnel(Privacy privacy, int& length, int& variance)
-{
-    switch (privacy)
-    {
-        case Privacy::eMinimal: length = 1; variance = 0; break;
-        case Privacy::eMiddle:  length = 1; variance = 1; break;
-        case Privacy::eMax:     length = 3; variance = 0; break;
-    }
-}
-
 bool isClosedStatus(i2pd::stream::StreamStatus status)
 {
     return status == i2pd::stream::eStreamStatusReset
@@ -1331,13 +1321,11 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
         params.Insert(i2pd::client::I2CP_PARAM_LEASESET_PRIV_KEY,
             backend::leaseSetKeyBase64(config.leaseSetReaderKey));
     }
-    int length = 0;
-    int variance = 0;
-    privacyToTunnel(config.privacy, length, variance);
-    params.Insert(i2pd::client::I2CP_PARAM_INBOUND_TUNNEL_LENGTH, std::to_string(length));
-    params.Insert(i2pd::client::I2CP_PARAM_OUTBOUND_TUNNEL_LENGTH, std::to_string(length));
-    params.Insert(i2pd::client::I2CP_PARAM_INBOUND_TUNNELS_LENGTH_VARIANCE, std::to_string(variance));
-    params.Insert(i2pd::client::I2CP_PARAM_OUTBOUND_TUNNELS_LENGTH_VARIANCE, std::to_string(variance));
+    const TunnelLength length = tunnelLengthFor(config.privacy);
+    params.Insert(i2pd::client::I2CP_PARAM_INBOUND_TUNNEL_LENGTH, std::to_string(length.hops));
+    params.Insert(i2pd::client::I2CP_PARAM_OUTBOUND_TUNNEL_LENGTH, std::to_string(length.hops));
+    params.Insert(i2pd::client::I2CP_PARAM_INBOUND_TUNNELS_LENGTH_VARIANCE, std::to_string(length.variance));
+    params.Insert(i2pd::client::I2CP_PARAM_OUTBOUND_TUNNELS_LENGTH_VARIANCE, std::to_string(length.variance));
     const int quantity = std::clamp(config.tunnelQuantity, 1, 16);
     params.Insert(i2pd::client::I2CP_PARAM_INBOUND_TUNNELS_QUANTITY, std::to_string(quantity));
     params.Insert(i2pd::client::I2CP_PARAM_OUTBOUND_TUNNELS_QUANTITY, std::to_string(quantity));

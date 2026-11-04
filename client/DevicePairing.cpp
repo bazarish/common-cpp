@@ -8,7 +8,6 @@
 #include <bazarish/Log.hpp>
 
 #include <cctype>
-#include <limits>
 
 namespace bazarish::client {
 
@@ -36,12 +35,6 @@ constexpr unsigned pairCodeSpace()
 }
 
 constexpr unsigned kPairCodeSpace = pairCodeSpace();
-constexpr unsigned kPairCodeDraws
-    = static_cast<unsigned>(std::numeric_limits<std::uint16_t>::max()) + 1U;
-constexpr unsigned kPairCodeRejectFrom = kPairCodeDraws / kPairCodeSpace * kPairCodeSpace;
-
-static_assert(kPairCodeSpace <= kPairCodeDraws);
-static_assert(kPairCodeRejectFrom % kPairCodeSpace == 0);
 
 std::shared_ptr<bazarish::i2p::Endpoint> pairEndpoint(bazarish::i2p::Router& router,
     const bazarish::i2p::Privacy privacy, const std::string& owner, const bool published)
@@ -65,12 +58,7 @@ void notePairingTrouble(const std::string& reason)
 
 std::string newPairCode()
 {
-    unsigned draw = kPairCodeRejectFrom;
-    while (draw >= kPairCodeRejectFrom) {
-        const Bytes drawn = randomBytes(sizeof(std::uint16_t));
-        draw = (static_cast<unsigned>(drawn[0]) << CHAR_BIT) | drawn[1];
-    }
-    std::string code = std::to_string(draw % kPairCodeSpace);
+    std::string code = std::to_string(randomBelow(kPairCodeSpace));
     code.insert(code.begin(), kPairCodeDigits - code.size(), '0');
     return code;
 }

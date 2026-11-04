@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -24,5 +25,7 @@ Bytes fromBase64Url(const std::string& text);
 
 // Cryptographically secure random bytes (OpenSSL RAND).
 Bytes randomBytes(std::size_t count);
+// Uniform in [0, bound); 0 when bound is 0.
+std::uint64_t randomBelow(std::uint64_t bound);
 
 }  // namespace bazarish

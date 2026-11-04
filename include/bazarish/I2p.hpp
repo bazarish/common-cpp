@@ -28,6 +28,13 @@ std::optional<Privacy> privacyFromString(std::string_view text);
 
 std::string_view privacyName(Privacy privacy);
 
+struct TunnelLength {
+    int hops = 0;
+    int variance = 0;
+};
+// The same for the embedded router and for SAM.
+TunnelLength tunnelLengthFor(Privacy privacy);
+
 inline constexpr int kDefaultTunnelQuantity = 3;
 inline constexpr int kMaxTunnelQuantity = 16;
 // A call sends on the fastest of these tunnels crossed with the peer's.

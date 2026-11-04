@@ -60,12 +60,7 @@ std::uint64_t drawBetween(const std::uint64_t low, const std::uint64_t high)
     if (high <= low) {
         return low;
     }
-    const Bytes draw = randomBytes(sizeof(std::uint64_t));
-    std::uint64_t value = 0;
-    for (const unsigned char byte : draw) {
-        value = (value << 8) | byte;
-    }
-    return low + value % (high - low + 1);
+    return low + randomBelow(high - low + 1);
 }
 
 std::chrono::milliseconds drawBetween(

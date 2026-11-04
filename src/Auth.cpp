@@ -34,6 +34,7 @@ const char* const kHeaderTimestamp = "X-Bazarish-Timestamp";
 const char* const kHeaderSignatureClassical = "X-Bazarish-Sig-Classical";
 const char* const kHeaderSignaturePq = "X-Bazarish-Sig-Pq";
 const char* const kHeaderNonce = "X-Bazarish-Nonce";
+const char* const kHeaderClient = "X-Bazarish-Client";
 
 namespace {
 

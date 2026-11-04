@@ -3,9 +3,8 @@
 
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
+#include "bazarish/PrivateFile.hpp"
 
-#include <fstream>
-#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -33,20 +32,9 @@ const char* const kTemplateContentType = "text/html; charset=utf-8";
 
 constexpr int kNotModified = 304;
 
-std::string readFile(const std::filesystem::path& path)
-{
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) {
-        throw std::runtime_error("web asset cannot be read: " + path.string());
-    }
-    std::ostringstream buffer;
-    buffer << stream.rdbuf();
-    return buffer.str();
-}
-
 WebAssets::File loadFile(const std::filesystem::path& path, const std::string& contentType)
 {
-    std::string body = readFile(path);
+    std::string body = readFileText(path);
     const Bytes bytes(body.begin(), body.end());
     std::string etag = "\"";
     etag += toHex(sha256(bytes));

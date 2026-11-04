@@ -4,6 +4,8 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <climits>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -155,6 +157,25 @@ Bytes randomBytes(const std::size_t count)
         throw std::runtime_error("RAND_bytes failed");
     }
     return out;
+}
+
+std::uint64_t randomBelow(const std::uint64_t bound)
+{
+    if (bound == 0) {
+        return 0;
+    }
+    // Draws past the last whole multiple of bound are thrown away, so every value is as likely.
+    const std::uint64_t rejectFrom = std::numeric_limits<std::uint64_t>::max()
+        - std::numeric_limits<std::uint64_t>::max() % bound;
+    for (;;) {
+        std::uint64_t value = 0;
+        for (const std::uint8_t byte : randomBytes(sizeof(std::uint64_t))) {
+            value = (value << CHAR_BIT) | byte;
+        }
+        if (value < rejectFrom) {
+            return value % bound;
+        }
+    }
 }
 
 }  // namespace bazarish
