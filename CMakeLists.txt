@@ -180,11 +180,13 @@ if(BAZARISH_WITH_CLIENT)
         client/GatewayAddress.cpp
         client/I2pRouter.cpp
         client/Invite.cpp
+        client/KeyedDatabase.cpp
         client/OutboundCourier.cpp
         client/OutboundLeases.cpp
         client/Presence.cpp
         client/Session.cpp
         client/SocksProxy.cpp
+        client/TranscriptDb.cpp
         client/WarmDestPool.cpp
         client/WireLog.cpp
     )
@@ -218,6 +220,7 @@ endif()
     bazarish_client_add_test(TestCallWindow)
     bazarish_client_add_test(TestClient)
     bazarish_client_add_test(TestPresence)
+    bazarish_client_add_test(TestTranscriptCore)
 
     # Live against a running resolver over real I2P, so run by hand rather than by ctest.
     add_executable(alias_smoke client/tests/AliasSmoke.cpp)

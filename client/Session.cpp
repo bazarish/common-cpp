@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "Session.hpp"
+#include "MediaKeys.hpp"
 
 #include "LoginSigner.hpp"
 
@@ -3900,12 +3901,12 @@ namespace {
 
 std::string pictureKey(const std::string& e2eId)
 {
-    return "picture:" + e2eId;
+    return kPictureKeyPrefix + e2eId;
 }
 
 std::string voiceKey(const std::string& e2eId)
 {
-    return "voice:" + e2eId;
+    return kVoiceKeyPrefix + e2eId;
 }
 
 }  // namespace

@@ -2,6 +2,7 @@
 #include "AccountDb.hpp"
 
 #include "AccountKey.hpp"
+#include "KeyedDatabase.hpp"
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/PathText.hpp>
@@ -16,13 +17,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr int kBusyTimeoutMs = 5000;
-
-std::string rawKeyLiteral(const Bytes& key)
-{
-    return "x'" + toHex(key) + "'";
-}
-
 void run(sqlite3* const db, const std::string& sql)
 {
     char* message = nullptr;
@@ -31,29 +25,6 @@ void run(sqlite3* const db, const std::string& sql)
         sqlite3_free(message);
         throw std::runtime_error("account database: " + reason);
     }
-}
-
-sqlite3* openKeyed(const fs::path& file, const Bytes& key)
-{
-    sqlite3* db = nullptr;
-    // SQLite takes a UTF-8 file name.
-    if (sqlite3_open(utf8OfPath(file).c_str(), &db) != SQLITE_OK) {
-        sqlite3_close(db);
-        return nullptr;
-    }
-    sqlite3_exec(db, "PRAGMA cipher_log_level = NONE", nullptr, nullptr, nullptr);
-    const std::string pragma = "PRAGMA key = \"" + rawKeyLiteral(key) + "\"";
-    if (sqlite3_exec(db, pragma.c_str(), nullptr, nullptr, nullptr) != SQLITE_OK) {
-        sqlite3_close(db);
-        return nullptr;
-    }
-    sqlite3_busy_timeout(db, kBusyTimeoutMs);
-    if (sqlite3_exec(db, "SELECT count(*) FROM sqlite_master", nullptr, nullptr, nullptr)
-        != SQLITE_OK) {
-        sqlite3_close(db);
-        return nullptr;
-    }
-    return db;
 }
 
 }  // namespace
