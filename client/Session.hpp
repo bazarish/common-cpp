@@ -468,6 +468,10 @@ public:
     void sendContactRequest(const std::string& peerFingerprint, const std::string& requestId,
         const std::string& text, const DeliveryWatch& watch, bool waitForOutcome);
     bool contactAwaitsAnswer(const std::string& peerFingerprint) const;
+    // A definite refusal takes back the contact the request recorded; an unreachable server
+    // leaves it, since the request may still be answered.
+    void settleContactRequest(
+        const std::string& peerFingerprint, const OutboundCourier::Outcome& outcome);
     void forgetUnansweredContact(const std::string& peerFingerprint);
 
     void setResolverCoordinate(ResolverCoordinate coordinate);

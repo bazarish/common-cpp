@@ -2102,6 +2102,16 @@ bool Session::contactAwaitsAnswer(const std::string& peerFingerprint) const
         && found->second.sendPass.empty();
 }
 
+void Session::settleContactRequest(
+    const std::string& peerFingerprint, const OutboundCourier::Outcome& outcome)
+{
+    if (outcome.stored
+        || errorCodeFromString(outcome.errorCode) == ErrorCode::eRecipientServerUnreachable) {
+        return;
+    }
+    forgetUnansweredContact(peerFingerprint);
+}
+
 void Session::forgetUnansweredContact(const std::string& peerFingerprint)
 {
     if (contactAwaitsAnswer(peerFingerprint)) {
