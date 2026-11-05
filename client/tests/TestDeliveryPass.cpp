@@ -1023,10 +1023,13 @@ int main()
             hostPost.sentAt = kPostSentAt;
             hostPost.text = "from the host";
             hostPost.fromHost = true;
-            CHECK(alice.relayFitting({post, hostPost}) == 2);
-            alice.relayPosts(bob.fingerprint(), {post, hostPost});
-            alice.sendGroupReactions(bob.fingerprint(),
-                nlohmann::json::array({{{"ref", "group-post-1"}, {"counts", {{"+", 2}}}}}));
+            RelayedPost counts;
+            counts.kind = RelayKind::eReactions;
+            counts.id = "group-counts-1";
+            counts.reactions
+                = nlohmann::json::array({{{"ref", "group-post-1"}, {"counts", {{"+", 2}}}}});
+            CHECK(alice.relayFitting({post, hostPost, counts}) == 3);
+            alice.relayPosts(bob.fingerprint(), {post, hostPost, counts});
             alice.sendGroupState(bob.fingerprint());
             alice.sendMessage(bob.fingerprint(), "plain");
 

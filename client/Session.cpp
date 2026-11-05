@@ -2364,6 +2364,17 @@ void Session::setGroupBlockSource(GroupBlockSource source)
 
 nlohmann::json Session::relayedEnvelope(const RelayedPost& post) const
 {
+    switch (post.kind) {
+    case RelayKind::eEdit:
+        return envelope("edit", post.id,
+            {{"ref", post.ref}, {"text", post.text}, {"keyboard", keyboardToJson({})}});
+    case RelayKind::eDelete:
+        return envelope("delete", post.id, {{"ref", post.ref}});
+    case RelayKind::eReactions:
+        return envelope(kTypeGroupReactions, post.id, {{"reactions", post.reactions}});
+    case RelayKind::ePost:
+        break;
+    }
     nlohmann::json inner;
     if (post.type == kTypeImage) {
         inner = envelope(kTypeImage, post.id,
@@ -2391,6 +2402,9 @@ bool Session::relayPosts(const std::string& peerFingerprint,
 {
     std::vector<nlohmann::json> items;
     for (const RelayedPost& post : posts) {
+        if (post.kind == RelayKind::eDelete) {
+            unsend(post.ref);
+        }
         items.push_back(relayedEnvelope(post));
     }
     return sendContents(peerFingerprint, std::move(items), watch);
@@ -2417,13 +2431,6 @@ std::size_t Session::relayFitting(const std::vector<RelayedPost>& posts) const
 void Session::sendGroupState(const std::string& peerFingerprint, const DeliveryWatch& watch)
 {
     sendContent(peerFingerprint, envelope(kTypeGroupState, newMessageId(), nlohmann::json::object()), watch);
-}
-
-void Session::sendGroupReactions(const std::string& peerFingerprint,
-    const nlohmann::json& reactions, const DeliveryWatch& watch)
-{
-    sendContent(peerFingerprint,
-        envelope(kTypeGroupReactions, newMessageId(), {{"reactions", reactions}}), watch);
 }
 
 bool Session::announceTransfer(const std::string& type, const std::string& peerFingerprint,

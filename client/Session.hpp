@@ -93,7 +93,19 @@ struct GroupBlock {
 nlohmann::json groupBlockToJson(const GroupBlock& block);
 GroupBlock groupBlockFromJson(const nlohmann::json& body);
 
+enum class RelayKind {
+    ePost,
+    eEdit,
+    eDelete,
+    eReactions,
+};
+
+// One entry of a group's log, as a member is handed it: a post, or an edit, delete or reaction
+// counts about one; `ref` names the post the last three are about.
 struct RelayedPost {
+    RelayKind kind = RelayKind::ePost;
+    std::string ref;
+    nlohmann::json reactions;
     std::string type;
     std::string id;
     std::int64_t sentAt = 0;
@@ -523,8 +535,6 @@ public:
     // How many of the posts, from the first, one envelope holds.
     std::size_t relayFitting(const std::vector<RelayedPost>& posts) const;
     void sendGroupState(const std::string& peerFingerprint, const DeliveryWatch& watch = {});
-    void sendGroupReactions(const std::string& peerFingerprint, const nlohmann::json& reactions,
-        const DeliveryWatch& watch = {});
 
     struct AliasHolding {
         std::string alias;
