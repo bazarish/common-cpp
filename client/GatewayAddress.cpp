@@ -3,9 +3,11 @@
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/GatewayProtocol.hpp>
+#include <bazarish/Links.hpp>
 #include <bazarish/WebSocketClient.hpp>
 
 #include <cstdlib>
+#include <stdexcept>
 
 namespace bazarish::client {
 
@@ -16,6 +18,19 @@ constexpr const char* kPlain = "http://";
 constexpr int kHttpsPort = 443;
 constexpr int kHttpPort = 80;
 constexpr int kHighestPort = 65535;
+constexpr char kQueryUnsafe[] = "&# \t\r\n";
+
+std::string baseOf(const GatewayAddress& address)
+{
+    std::string text = address.tls ? kSecure : kPlain;
+    text += address.host;
+    const int standard = address.tls ? kHttpsPort : kHttpPort;
+    if (address.port != standard) {
+        text += ':';
+        text += std::to_string(address.port);
+    }
+    return text + address.path;
+}
 
 }  // namespace
 
@@ -76,17 +91,56 @@ std::optional<GatewayAddress> GatewayAddress::parse(const std::string& text)
 
 std::string GatewayAddress::toString() const
 {
-    std::string text = tls ? kSecure : kPlain;
-    text += host;
-    const int standard = tls ? kHttpsPort : kHttpPort;
-    if (port != standard) {
-        text += ':';
-        text += std::to_string(port);
+    return baseOf(*this) + '#' + token;
+}
+
+std::optional<GatewayAddress> GatewayAddress::fromLink(const std::string& link)
+{
+    const std::string query = linkQuery(link, kGatewayKind);
+    if (query.empty()) {
+        return std::nullopt;
     }
-    text += path;
-    text += '#';
-    text += token;
-    return text;
+    std::string version;
+    std::string url;
+    std::string token;
+    std::size_t pos = 0;
+    while (pos <= query.size()) {
+        const std::size_t amp = query.find('&', pos);
+        const std::string pair = query.substr(pos, amp == std::string::npos ? amp : amp - pos);
+        const std::size_t eq = pair.find('=');
+        if (eq == std::string::npos) {
+            return std::nullopt;
+        }
+        const std::string key = pair.substr(0, eq);
+        const std::string value = pair.substr(eq + 1);
+        if (key == "v") {
+            version = value;
+        } else if (key == "url") {
+            url = value;
+        } else if (key == "token") {
+            token = value;
+        }
+        if (amp == std::string::npos) {
+            break;
+        }
+        pos = amp + 1;
+    }
+    if (version != kGatewayLinkVersion || url.empty() || token.empty()
+        || url.find_first_of(kQueryUnsafe) != std::string::npos
+        || token.find_first_of(kQueryUnsafe) != std::string::npos) {
+        return std::nullopt;
+    }
+    return parse(url + '#' + token);
+}
+
+std::string GatewayAddress::link() const
+{
+    const std::string base = baseOf(*this);
+    if (base.find_first_of(kQueryUnsafe) != std::string::npos
+        || token.find_first_of(kQueryUnsafe) != std::string::npos) {
+        throw std::invalid_argument("a gateway address with that in it does not fit a link");
+    }
+    return gatewayLink(base, token);
 }
 
 GatewayCheck checkGateway(const GatewayAddress& address, const std::string& pin)

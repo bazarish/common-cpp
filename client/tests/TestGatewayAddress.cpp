@@ -56,6 +56,23 @@ int main()
     CHECK(awkward.has_value());
     CHECK(awkward->token == "a-b_c.d~e/f=g");
 
+    const std::string handed = awkward->link();
+    CHECK(handed == "https://bazari.sh/#gateway?v=1&url=https://gate.example/p&token=a-b_c.d~e/f=g");
+    const std::optional<GatewayAddress> taken = GatewayAddress::fromLink(handed);
+    CHECK(taken.has_value() && taken->toString() == awkward->toString());
+    const std::optional<GatewayAddress> scheme = GatewayAddress::fromLink(
+        "bazarish://gateway?v=1&url=http://127.0.0.1:8431/secret&token=t");
+    CHECK(scheme.has_value() && !scheme->tls && scheme->port == 8431 && scheme->token == "t");
+    CHECK(!GatewayAddress::fromLink("https://gate.example/p#token").has_value());
+    CHECK(!GatewayAddress::fromLink("https://bazari.sh/#gateway?v=2&url=https://g.example/p&token=t")
+            .has_value());
+    CHECK(!GatewayAddress::fromLink("https://bazari.sh/#gateway?v=1&url=https://g.example/p")
+            .has_value());
+    CHECK(!GatewayAddress::fromLink(
+        "https://bazari.sh/#gateway?v=1&url=https://g.example/p#x&token=t").has_value());
+    CHECK(!GatewayAddress::fromLink("https://bazari.sh/#invite?v=1&url=https://g.example/p&token=t")
+            .has_value());
+
     std::printf("TestGatewayAddress ok\n");
     return 0;
 }
