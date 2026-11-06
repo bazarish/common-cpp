@@ -11,6 +11,15 @@ find_package(OpenSSL 3.5 REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
 
+set(BAZARISH_SANITIZE "" CACHE STRING "Build with a sanitizer: address,undefined | thread")
+if(BAZARISH_SANITIZE)
+    # Under a sanitizer GCC raises maybe-uninitialized inside libstdc++ headers.
+    set(BAZARISH_SANITIZE_COMPILE -fsanitize=${BAZARISH_SANITIZE} -fno-omit-frame-pointer -g
+        -Wno-error=maybe-uninitialized)
+    add_compile_options(${BAZARISH_SANITIZE_COMPILE})
+    add_link_options(-fsanitize=${BAZARISH_SANITIZE})
+endif()
+
 # The embedded I2P transport, in every build: the i2pd submodule and Boost program_options.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/I2pdBazarish.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersion.cmake)
@@ -78,6 +87,10 @@ if(WIN32)
     target_link_libraries(bazarish_common PUBLIC ws2_32)
 endif()
 target_compile_options(bazarish_common PRIVATE -Wall -Wextra -Werror)
+if(BAZARISH_SANITIZE)
+    target_compile_options(bazarish_common INTERFACE ${BAZARISH_SANITIZE_COMPILE})
+    target_link_options(bazarish_common INTERFACE -fsanitize=${BAZARISH_SANITIZE})
+endif()
 
 # GCC 14 pairs Asio's inlined coroutine frame with plain delete: a false positive, silenced here.
 set_source_files_properties(src/HttpServer.cpp src/HttpClient.cpp PROPERTIES
