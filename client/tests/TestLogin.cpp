@@ -84,7 +84,6 @@ void testCallbacks(const Session& session)
 
     const std::string elsewhere = std::string(52, 'c') + ".b32.i2p";
     for (const std::string& refused : {
-             "http://" + elsewhere + "/login",
              "https://" + kSiteHost + "/login",
              "http://" + kSiteHost + ":8080/login",
              "http://" + kSiteHost,
@@ -107,7 +106,27 @@ void testCallbacks(const Session& session)
     CHECK(service::verifyLoginBlob(session.signLogin(issued), now(), issued)
         == session.fingerprint());
     CHECK(site.verify(issued, session.signLogin(issued), now()) == session.fingerprint());
-    CHECK_THROWS(site.issue(now(), "http://" + elsewhere + "/login"));
+
+    const std::string unlisted = site.issue(now(), "http://" + elsewhere + "/login");
+    CHECK(service::readLoginCallback(unlisted)->host == elsewhere);
+    CHECK(site.verify(unlisted, session.signLogin(unlisted), now()) == session.fingerprint());
+
+    const auto edited = [](const std::string& challenge, const auto& change) {
+        nlohmann::json envelope = nlohmann::json::parse(service::decodeLoginChallenge(challenge));
+        change(envelope);
+        return encodedChallenge(envelope);
+    };
+    const auto fresh = [&] { return site.issue(now(), "http://" + kSiteHost + "/login"); };
+    for (const std::string& forged : {
+             edited(fresh(),
+                 [&](nlohmann::json& e) { e["callback"] = "http://" + elsewhere + "/login"; }),
+             edited(fresh(), [](nlohmann::json& e) { e["callback"] = "http://" + kSiteHost + "/x"; }),
+             edited(fresh(), [](nlohmann::json& e) { e.erase("callback"); }),
+             edited(site.issue(now()),
+                 [](nlohmann::json& e) { e["callback"] = "http://" + kSiteHost + "/login"; }),
+         }) {
+        CHECK_THROWS(site.verify(forged, session.signLogin(forged), now()));
+    }
 
     const std::int64_t minted = now();
     CHECK(service::loginChallengeExpiresAt(site.issue(minted))

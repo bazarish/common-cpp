@@ -46,17 +46,6 @@ void requireField(const std::string& value, const std::size_t limit, const std::
 // RFC 3986: unreserved, sub-delims, ':', '@', '/', '?' and the percent sign.
 constexpr char kCallbackPathMarks[] = "-._~!$&'()*+,;=:@/?%";
 
-std::string placeHost(const std::string& place)
-{
-    std::string rest = place;
-    if (rest.rfind(kLoginCallbackScheme, 0) == 0) {
-        rest = rest.substr(std::string(kLoginCallbackScheme).size());
-    } else if (rest.find("://") != std::string::npos) {
-        return {};
-    }
-    return rest.substr(0, rest.find('/'));
-}
-
 LoginCallback parseI2pPlace(const std::string& address, const std::string& what)
 {
     if (address.size() > kLoginCallbackMax) {
@@ -110,15 +99,9 @@ std::string decodeLoginChallenge(const std::string& challenge)
     return std::string(raw.begin(), raw.end());
 }
 
-LoginCallback parseLoginCallback(const std::string& callback, const LoginConsumer& consumer)
+LoginCallback parseLoginCallback(const std::string& callback)
 {
-    const LoginCallback parsed = parseI2pPlace(callback, "callback");
-    const bool listed = std::any_of(consumer.place.begin(), consumer.place.end(),
-        [&parsed](const std::string& place) { return placeHost(place) == parsed.host; });
-    if (!listed) {
-        throw std::runtime_error("the callback goes to an address the consumer does not list");
-    }
-    return parsed;
+    return parseI2pPlace(callback, "callback");
 }
 
 void requireUsableConsumer(const LoginConsumer& consumer)
@@ -173,7 +156,6 @@ LoginConsumer readLoginConsumer(const std::string& challenge)
 
 std::optional<LoginCallback> readLoginCallback(const std::string& challenge)
 {
-    const LoginConsumer consumer = readLoginConsumer(challenge);
     const nlohmann::json envelope = nlohmann::json::parse(decodeLoginChallenge(challenge));
     if (!envelope.contains("callback")) {
         return std::nullopt;
@@ -181,7 +163,7 @@ std::optional<LoginCallback> readLoginCallback(const std::string& challenge)
     if (!envelope.at("callback").is_string()) {
         throw std::runtime_error("this login challenge's callback is not text");
     }
-    return parseLoginCallback(envelope.at("callback").get<std::string>(), consumer);
+    return parseLoginCallback(envelope.at("callback").get<std::string>());
 }
 
 std::optional<LoginCallback> readLoginChallengeLink(const std::string& link)

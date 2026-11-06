@@ -9,6 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -17,9 +18,10 @@ namespace bazarish::service {
 namespace {
 
 std::string tagFor(const std::string& secret, const std::string& nonce, const std::int64_t ts,
-    const std::string& canonicalConsumer)
+    const std::string& canonicalConsumer, const std::string& callback)
 {
-    return hmacSha256Hex(secret, nonce + "\n" + std::to_string(ts) + "\n" + canonicalConsumer);
+    return hmacSha256Hex(secret,
+        nonce + "\n" + std::to_string(ts) + "\n" + canonicalConsumer + "\n" + callback);
 }
 
 }  // namespace
@@ -57,16 +59,20 @@ std::string LoginChallenge::issue(const std::int64_t now, const std::string& cal
 {
     const std::string canonical = currentCanonical();
     const std::string nonce = toHex(randomBytes(16));
+    std::string checkedCallback;
+    if (!callback.empty()) {
+        const LoginCallback checked = parseLoginCallback(callback);
+        checkedCallback = kLoginCallbackScheme + checked.host + checked.path;
+    }
     nlohmann::json challenge = {
         {"v", kLoginChallengeVersion},
         {"nonce", nonce},
         {"ts", now},
         {"consumer", nlohmann::json::parse(canonical)},
-        {"tag", tagFor(secret_, nonce, now, canonical)},
+        {"tag", tagFor(secret_, nonce, now, canonical, checkedCallback)},
     };
-    if (!callback.empty()) {
-        const LoginCallback checked = parseLoginCallback(callback, consumer());
-        challenge["callback"] = kLoginCallbackScheme + checked.host + checked.path;
+    if (!checkedCallback.empty()) {
+        challenge["callback"] = checkedCallback;
     }
     return encodeLoginChallenge(challenge.dump());
 }
@@ -93,11 +99,14 @@ std::string LoginChallenge::verify(
     const std::string nonce = parsed.at("nonce").get<std::string>();
     const std::int64_t ts = parsed.at("ts").get<std::int64_t>();
     const std::string tag = parsed.at("tag").get<std::string>();
+    const std::optional<LoginCallback> callback = readLoginCallback(challenge);
+    const std::string signedCallback
+        = callback.has_value() ? kLoginCallbackScheme + callback->host + callback->path : "";
 
     if (ts < now - windowSeconds_ || ts > now + windowSeconds_) {
         throw std::runtime_error("login challenge: expired");
     }
-    if (!constantTimeEqual(tag, tagFor(secret_, nonce, ts, canonical))) {
+    if (!constantTimeEqual(tag, tagFor(secret_, nonce, ts, canonical, signedCallback))) {
         throw std::runtime_error("login challenge: unknown here");
     }
 

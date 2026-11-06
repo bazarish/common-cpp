@@ -49,8 +49,8 @@ std::string decodeLoginChallenge(const std::string& challenge);
 
 void requireUsableConsumer(const LoginConsumer& consumer);
 
-// Only http to a .b32.i2p host that the consumer lists among its own places.
-LoginCallback parseLoginCallback(const std::string& callback, const LoginConsumer& consumer);
+// Only http to a .b32.i2p host; the challenge's tag covers it.
+LoginCallback parseLoginCallback(const std::string& callback);
 
 std::optional<LoginCallback> readLoginCallback(const std::string& challenge);
 
