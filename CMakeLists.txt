@@ -14,7 +14,7 @@ find_package(Threads REQUIRED)
 set(BAZARISH_SANITIZE "" CACHE STRING "Build with a sanitizer: address,undefined | thread")
 if(BAZARISH_SANITIZE)
     # Under a sanitizer GCC raises maybe-uninitialized inside libstdc++ headers.
-    set(BAZARISH_SANITIZE_COMPILE -fsanitize=${BAZARISH_SANITIZE} -fno-omit-frame-pointer -g
+    set(BAZARISH_SANITIZE_COMPILE -fsanitize=${BAZARISH_SANITIZE} -fno-omit-frame-pointer -g1
         -Wno-error=maybe-uninitialized)
     add_compile_options(${BAZARISH_SANITIZE_COMPILE})
     add_link_options(-fsanitize=${BAZARISH_SANITIZE})
