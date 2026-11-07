@@ -17,7 +17,7 @@ inline constexpr char kServerKind[] = "server?";
 inline constexpr char kPairKind[] = "pair?";
 inline constexpr char kSignKind[] = "sign?";
 inline constexpr char kGatewayKind[] = "gateway?";
-inline constexpr char kGatewayLinkVersion[] = "2";
+inline constexpr char kGatewayLinkVersion[] = "1";
 
 inline std::string linkTail(const std::string_view link)
 {

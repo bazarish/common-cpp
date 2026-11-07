@@ -16,7 +16,7 @@
 
 namespace bazarish::gateway {
 
-inline constexpr int kProtocolVersion = 2;
+inline constexpr int kProtocolVersion = 1;
 
 inline constexpr std::chrono::seconds kSessionTtl{300};
 inline constexpr std::size_t kSessionCookieBytes = 32;

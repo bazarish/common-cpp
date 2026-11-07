@@ -68,24 +68,24 @@ int main()
 
     const std::string handed = six->link();
     CHECK(handed
-        == "https://bazari.sh/#gateway?v=2&url=http://[2001:db8::5]:8080/secret&fp=" + kFingerprint);
+        == "https://bazari.sh/#gateway?v=1&url=http://[2001:db8::5]:8080/secret&fp=" + kFingerprint);
     const std::optional<GatewayAddress> taken = GatewayAddress::fromLink(handed);
     CHECK(taken.has_value() && taken->toString() == six->toString());
     const std::optional<GatewayAddress> scheme = GatewayAddress::fromLink(
-        "bazarish://gateway?v=2&url=https://127.0.0.1:8431/secret&fp=" + kFingerprint);
+        "bazarish://gateway?v=1&url=https://127.0.0.1:8431/secret&fp=" + kFingerprint);
     CHECK(scheme.has_value() && scheme->port == 8431);
-    CHECK(!GatewayAddress::fromLink("bazarish://gateway?v=1&url=https://127.0.0.1:8431/secret&fp="
+    CHECK(!GatewayAddress::fromLink("bazarish://gateway?v=2&url=https://127.0.0.1:8431/secret&fp="
         + kFingerprint)
                .has_value());
     CHECK(!GatewayAddress::fromLink(
-        "https://bazari.sh/#gateway?v=2&url=https://g.example/p&token=t").has_value());
-    CHECK(!GatewayAddress::fromLink("https://bazari.sh/#gateway?v=2&url=https://g.example/p")
+        "https://bazari.sh/#gateway?v=1&url=https://g.example/p&token=t").has_value());
+    CHECK(!GatewayAddress::fromLink("https://bazari.sh/#gateway?v=1&url=https://g.example/p")
             .has_value());
     CHECK(!GatewayAddress::fromLink(
-        "https://bazari.sh/#gateway?v=2&url=https://g.example/p#x&fp=" + kFingerprint)
+        "https://bazari.sh/#gateway?v=1&url=https://g.example/p#x&fp=" + kFingerprint)
                .has_value());
     CHECK(!GatewayAddress::fromLink(
-        "https://bazari.sh/#invite?v=2&url=https://g.example/p&fp=" + kFingerprint)
+        "https://bazari.sh/#invite?v=1&url=https://g.example/p&fp=" + kFingerprint)
                .has_value());
 
     std::printf("TestGatewayAddress ok\n");
