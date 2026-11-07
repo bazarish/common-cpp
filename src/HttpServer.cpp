@@ -115,6 +115,7 @@ struct Resolved {
 };
 
 constexpr char kEveryPath[] = "*";
+constexpr std::string_view kNotInLiteral = "(){}[]*+?|\\^$";
 constexpr char kPathSeparator = '/';
 
 std::vector<std::string_view> pathSegments(const std::string_view path)
@@ -194,6 +195,8 @@ Route routeFor(const std::string& method, const std::string& pattern, AsyncHandl
         RoutePart part;
         if (segment.size() > 2 && segment.front() == '{' && segment.back() == '}') {
             part.kind = segmentClassNamed(segment.substr(1, segment.size() - 2));
+        } else if (segment.find_first_of(kNotInLiteral) != std::string_view::npos) {
+            throw std::invalid_argument("a route segment is a literal or a {class}: " + pattern);
         } else {
             part.literal = std::string(segment);
         }

@@ -97,6 +97,7 @@ int main()
     CHECK(ask(server, "GET", "/v1/transfers/" + hostile).status == kMissing);
 
     CHECK_THROWS(server.get("/v1/{nonsense}", echo(captured)));
+    CHECK_THROWS(server.get("/price/(.+)", echo(captured)));
 
     CHECK(ask(server, "POST", "/v1/op/alias.renew", "cross-site").status == kForbidden);
     CHECK(ask(server, "POST", "/v1/op/alias.renew", "same-site").status == kForbidden);
