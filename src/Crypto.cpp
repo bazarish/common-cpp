@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/Crypto.hpp"
+#include "bazarish/JsonRead.hpp"
 
 #include <openssl/bio.h>
 #include <nlohmann/json.hpp>
@@ -157,7 +158,7 @@ Key Key::fromPublicDer(const Bytes& spkiDer)
     // The pair form is CBOR; a bare SPKI is DER.
     if (!spkiDer.empty()) {
         const nlohmann::json pair
-            = nlohmann::json::from_cbor(spkiDer, true, false, nlohmann::json::cbor_tag_handler_t::error);
+            = parseCborOrDiscarded(spkiDer);
         {
             if (pair.is_object() && pair.value("t", std::string()) == kSealingPairTag) {
                 const nlohmann::json::binary_t& classical = pair.at("c").get_binary();

@@ -277,7 +277,11 @@ Connected connect(const SocketDial& dial)
         return out;
     }
 
-    out.tls = std::make_unique<ssl::context>(ssl::context::tlsv12_client);
+    out.tls = std::make_unique<ssl::context>(ssl::context::tls_client);
+    if (SSL_CTX_set_min_proto_version(out.tls->native_handle(), TLS1_3_VERSION) != 1) {
+        out.error = "TLS 1.3 is not available";
+        return out;
+    }
     out.tls->set_verify_mode(ssl::verify_none);
     out.secure = std::make_unique<TlsStream>(*out.loop, *out.tls);
 

@@ -208,6 +208,22 @@ int main()
     const Bytes bundle = patternOf(1000);
 
     {
+        i2p::RouterConfig throughGateway;
+        throughGateway.backend = i2p::Backend::eGateway;
+        throughGateway.gatewayHost = "127.0.0.1";
+        throughGateway.gatewayPath = "/p";
+        throughGateway.gatewayToken = "t";
+        i2p::Router router(throughGateway);
+        bool refused = false;
+        try {
+            (void)publishPairDest(router, i2p::Privacy::eMinimal, kPairingOwner);
+        } catch (const PairingThroughGateway&) {
+            refused = true;
+        }
+        CHECK(refused);
+    }
+
+    {
         std::set<std::string> drawn;
         for (int draw = 0; draw < 2000; ++draw) {
             const std::string one = newPairCode();

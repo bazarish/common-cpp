@@ -308,7 +308,9 @@ public:
 
     Capabilities capabilities() const override
     {
-        return Capabilities{};
+        Capabilities what;
+        what.privateStreams = true;
+        return what;
     }
 
     void start() override

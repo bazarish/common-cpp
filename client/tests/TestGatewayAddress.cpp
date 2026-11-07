@@ -19,7 +19,6 @@ int main()
     CHECK(full->port == 8443);
     CHECK(full->path == "/f3a9c2e1b7d4");
     CHECK(full->token == "a-static-token");
-    CHECK(full->tls);
     CHECK(full->toString() == "https://gate.example:8443/f3a9c2e1b7d4#a-static-token");
 
     const std::optional<GatewayAddress> plainPort
@@ -28,11 +27,7 @@ int main()
     CHECK(plainPort->port == 443);
     CHECK(plainPort->toString() == "https://gate.example/secret#token");
 
-    const std::optional<GatewayAddress> local
-        = GatewayAddress::parse("http://127.0.0.1:8431/secret#token");
-    CHECK(local.has_value());
-    CHECK(!local->tls);
-    CHECK(local->port == 8431);
+    CHECK(!GatewayAddress::parse("http://127.0.0.1:8431/secret#token").has_value());
 
     const std::optional<GatewayAddress> deep
         = GatewayAddress::parse("https://gate.example/one/two/three#token");
@@ -61,8 +56,10 @@ int main()
     const std::optional<GatewayAddress> taken = GatewayAddress::fromLink(handed);
     CHECK(taken.has_value() && taken->toString() == awkward->toString());
     const std::optional<GatewayAddress> scheme = GatewayAddress::fromLink(
-        "bazarish://gateway?v=1&url=http://127.0.0.1:8431/secret&token=t");
-    CHECK(scheme.has_value() && !scheme->tls && scheme->port == 8431 && scheme->token == "t");
+        "bazarish://gateway?v=1&url=https://127.0.0.1:8431/secret&token=t");
+    CHECK(scheme.has_value() && scheme->port == 8431 && scheme->token == "t");
+    CHECK(!GatewayAddress::fromLink("bazarish://gateway?v=1&url=http://127.0.0.1:8431/secret&token=t")
+            .has_value());
     CHECK(!GatewayAddress::fromLink("https://gate.example/p#token").has_value());
     CHECK(!GatewayAddress::fromLink("https://bazari.sh/#gateway?v=2&url=https://g.example/p&token=t")
             .has_value());

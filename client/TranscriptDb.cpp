@@ -7,6 +7,7 @@
 
 #include <bazarish/Clock.hpp>
 #include <bazarish/Log.hpp>
+#include <bazarish/JsonRead.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -754,7 +755,18 @@ bool TranscriptStore::removeById(const std::int64_t id)
     if (naming.next()) {
         named = naming.text(0);
     }
-    if (!removeMediaOfMessage(named)) {
+    Query sharing(db_);
+    sharing.prepare("SELECT 1 FROM messages WHERE e2eId = ? AND id <> ? LIMIT 1");
+    sharing.bind(named);
+    sharing.bind(id);
+    if (!sharing.exec()) {
+        return failed();
+    }
+    // Another chat holds a message under the same id: what hangs off that id is its, too.
+    if (sharing.next()) {
+        named.clear();
+    }
+    if (!named.empty() && !removeMediaOfMessage(named)) {
         return false;
     }
     if (!named.empty()) {
@@ -1073,7 +1085,7 @@ std::string TranscriptReader::botMenu(const std::string& peer) const
 
 bool TranscriptStore::setBotMenu(const std::string& peer, const std::string& itemsJson)
 {
-    const nlohmann::json items = nlohmann::json::parse(itemsJson, nullptr, false);
+    const nlohmann::json items = parseJsonOrDiscarded(itemsJson);
     Query query(db_);
     if (!items.is_array() || items.empty()) {
         query.prepare("DELETE FROM bot_menus WHERE peer = ?");

@@ -14,18 +14,15 @@ namespace bazarish::client {
 namespace {
 
 constexpr const char* kSecure = "https://";
-constexpr const char* kPlain = "http://";
 constexpr int kHttpsPort = 443;
-constexpr int kHttpPort = 80;
 constexpr int kHighestPort = 65535;
 constexpr char kQueryUnsafe[] = "&# \t\r\n";
 
 std::string baseOf(const GatewayAddress& address)
 {
-    std::string text = address.tls ? kSecure : kPlain;
+    std::string text = kSecure;
     text += address.host;
-    const int standard = address.tls ? kHttpsPort : kHttpPort;
-    if (address.port != standard) {
+    if (address.port != kHttpsPort) {
         text += ':';
         text += std::to_string(address.port);
     }
@@ -37,17 +34,10 @@ std::string baseOf(const GatewayAddress& address)
 std::optional<GatewayAddress> GatewayAddress::parse(const std::string& text)
 {
     GatewayAddress address;
-    std::string rest;
-    if (text.rfind(kSecure, 0) == 0) {
-        rest = text.substr(std::string(kSecure).size());
-        address.port = kHttpsPort;
-    } else if (text.rfind(kPlain, 0) == 0) {
-        rest = text.substr(std::string(kPlain).size());
-        address.tls = false;
-        address.port = kHttpPort;
-    } else {
+    if (text.rfind(kSecure, 0) != 0) {
         return std::nullopt;
     }
+    std::string rest = text.substr(std::string(kSecure).size());
 
     const std::size_t hash = rest.find('#');
     if (hash == std::string::npos) {
@@ -149,7 +139,6 @@ GatewayCheck checkGateway(const GatewayAddress& address, const std::string& pin)
     dial.host = address.host;
     dial.port = address.port;
     dial.path = address.path;
-    dial.tls = address.tls;
     dial.pin = pin;
     dial.headers[gateway::kTokenHeader] = address.token;
 

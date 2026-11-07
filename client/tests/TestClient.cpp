@@ -109,7 +109,15 @@ int main()
             CHECK(!card.sealingPublicKeyDer.empty());
             CHECK(card.dest == aliceDest);
             CHECK(card.servingSealingKeyDer == servingSealing.publicDer());
-            respondJson(response, {{"quotaBytes", 10 * 1024 * 1024}});
+            respondJson(response, {{"quotaBytes", 10 * 1024 * 1024}, {"approval", "approved"},
+                {"registrationMessage", ""}});
+        }));
+
+    server.get("/v1/account/portal",
+        stub([&](const http::Request&, http::Response& response) {
+            respondJson(response, {{"message", ""},
+                {"links", {"file:///x", "smb://h/s", "javascript:1", "https://", "https:///p",
+                              "http://plain.example", "https://ok.example/page"}}});
         }));
 
     server.get("/v1/messaging/destination",
@@ -244,6 +252,7 @@ int main()
     endpoint.facades = {Facade{"127.0.0.1", port}};
 
     Client client(Identity::fromPrivatePem(alice.privatePem()), "client01", endpoint);
+    CHECK(client.fetchPortalInfo().links == std::vector<std::string>{"https://ok.example/page"});
 
     {
         const Key aliceSealing = Key::generateSealing();
@@ -256,6 +265,7 @@ int main()
         content.presenceKeyDer = Key::generateX25519().publicDer();
         content.presenceDest = aliceDest;
         const PublishResult result = client.publishCard(content, serving, 0);
+        CHECK(!result.approvalPending);
         CHECK(result.dest == aliceDest);
         CHECK(result.servingSealingKeyDer == servingSealing.publicDer());
         CHECK(!result.cardDer.empty());

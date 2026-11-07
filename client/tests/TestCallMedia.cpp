@@ -201,6 +201,30 @@ void testVoiceNormalization()
 }
 
 constexpr int kWantedFrames = 5;
+// api/Calls.md: role, track, heard flag, then the sequence in the nonce's last 8 bytes.
+constexpr std::uint8_t kCallerRole = 1;
+constexpr std::uint8_t kAudioTrack = 0;
+constexpr std::size_t kHeardFlagAt = 2;
+constexpr std::size_t kSequenceBytes = 8;
+// An Opus TOC for one 60 ms SILK frame: more samples than a 20 ms call frame holds.
+constexpr std::uint8_t kSixtyMsToc = 0x18;
+constexpr std::size_t kHostileBodyBytes = 40;
+
+std::vector<std::uint8_t> callPacket(
+    const Bytes& key, const std::uint64_t sequence, const Bytes& payload)
+{
+    Bytes nonce(kAeadNonceBytes, 0);
+    nonce[0] = kCallerRole;
+    nonce[1] = kAudioTrack;
+    nonce[kHeardFlagAt] = 1;
+    for (std::size_t i = 0; i < kSequenceBytes; ++i) {
+        nonce[kAeadNonceBytes - 1 - i] = static_cast<std::uint8_t>((sequence >> (8 * i)) & 0xff);
+    }
+    const Bytes sealed = aeadSeal(key, nonce, payload);
+    std::vector<std::uint8_t> packet(nonce.begin(), nonce.end());
+    packet.insert(packet.end(), sealed.begin(), sealed.end());
+    return packet;
+}
 constexpr int kWaitMs = 10000;
 constexpr int kPollMs = 10;
 
@@ -303,6 +327,32 @@ int main()
         };
         const double heard = pitchOf(fast);
         CHECK(std::abs(heard - kToneHz) / kToneHz < kPitchTolerance);
+    }
+
+    {
+        LoopbackChannel toCallee;
+        LoopbackChannel fromCallee;
+        LoopbackTransport calleeTransport(fromCallee, toCallee);
+        const Bytes key(kAeadKeyBytes, 0x5b);
+        CallMedia callee(calleeTransport, std::make_unique<SineAudioSource>(660.0),
+            std::make_unique<CapturingAudioSink>(), key, CallRole::eCallee);
+        callee.start();
+
+        Bytes hostile(kHostileBodyBytes, 0);
+        hostile[0] = kSixtyMsToc;
+        toCallee.push(callPacket(key, 0, hostile));
+        AudioEncoder encoder;
+        SineAudioSource source(440.0);
+        source.start();
+        const std::vector<std::int16_t> tone = source.readFrame();
+        source.stop();
+        toCallee.push(callPacket(key, 1, encoder.encode(tone.data(), kCallSamplesPerFrame)));
+        for (int waited = 0; waited < kWaitMs && callee.packetsReceived() < 1; waited += kPollMs) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(kPollMs));
+        }
+        CHECK(callee.packetsReceived() == 1);
+        CHECK(!callee.broken());
+        callee.stop();
     }
 
     {

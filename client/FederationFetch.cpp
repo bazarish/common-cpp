@@ -9,6 +9,7 @@
 #include <bazarish/Limits.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/Resolve.hpp>
+#include <bazarish/JsonRead.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -50,7 +51,7 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(bazarish::i2p::Router
     const bazarish::i2p::Privacy privacy, const std::string& owner, const std::string& target,
     const char* const label = kContactLookupLabel)
 {
-    std::shared_ptr<bazarish::i2p::Endpoint> endpoint = acquireWarmDest();
+    std::shared_ptr<bazarish::i2p::Endpoint> endpoint = acquireWarmDest(privacy);
     if (endpoint) {
         sayStage(FetchStage::eTakingDest);
         router.retagEndpoint(*endpoint, label, owner);
@@ -79,7 +80,7 @@ FetchOutcome askResolver(bazarish::i2p::Stream& stream, const std::string& host,
     std::string path = "/v1/op/" + op;
     std::string payload(body.begin(), body.end());
     if (op == kResolveOp) {
-        const ResolveQuery query = resolveQueryFromJson(nlohmann::json::parse(payload));
+        const ResolveQuery query = resolveQueryFromJson(parseJson(payload));
         method = "GET";
         path = "/v1/alias/" + aliasQueryText({query.alias, query.word});
         if (!query.stamp.empty()) {
@@ -107,7 +108,7 @@ FetchOutcome askResolver(bazarish::i2p::Stream& stream, const std::string& host,
     outcome.refusal.assign(answer.body.begin(), answer.body.end());
     try {
         outcome.errorCode
-            = nlohmann::json::parse(answer.body).value("errorCode", std::string());
+            = parseJson(answer.body).value("errorCode", std::string());
     } catch (const std::exception&) {
         outcome.errorCode = "HTTP_" + std::to_string(answer.status);
     }

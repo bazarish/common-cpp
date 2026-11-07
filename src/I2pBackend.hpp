@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -98,6 +99,7 @@ Bytes generateKeysBlob();
 inline constexpr std::size_t kLeaseSetKeyBytes = 32;
 std::string leaseSetKeyBase64(const Bytes& raw);
 Bytes issueTransientBlob(const Bytes& master, int days);
-int b33OfflineKeyDays(const Bytes& blob);
+std::optional<std::int64_t> offlineExpires(const Bytes& blob);
+bool b33OfflineKeysCover(const Bytes& blob, std::int64_t fromUnix, std::int64_t untilUnix);
 
 }  // namespace bazarish::i2p::backend

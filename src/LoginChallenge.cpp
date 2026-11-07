@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/LoginChallenge.hpp"
+#include "bazarish/JsonRead.hpp"
 
 #include "bazarish/Hmac.hpp"
 #include "bazarish/Portal.hpp"
@@ -68,7 +69,7 @@ std::string LoginChallenge::issue(const std::int64_t now, const std::string& cal
         {"v", kLoginChallengeVersion},
         {"nonce", nonce},
         {"ts", now},
-        {"consumer", nlohmann::json::parse(canonical)},
+        {"consumer", parseJson(canonical)},
         {"tag", tagFor(secret_, nonce, now, canonical, checkedCallback)},
     };
     if (!checkedCallback.empty()) {
@@ -95,7 +96,7 @@ std::string LoginChallenge::verify(
     if (canonicalConsumer(readLoginConsumer(challenge)) != canonical) {
         throw std::runtime_error("login challenge: it names another consumer");
     }
-    const nlohmann::json parsed = nlohmann::json::parse(decodeLoginChallenge(challenge));
+    const nlohmann::json parsed = parseJson(decodeLoginChallenge(challenge));
     const std::string nonce = parsed.at("nonce").get<std::string>();
     const std::int64_t ts = parsed.at("ts").get<std::int64_t>();
     const std::string tag = parsed.at("tag").get<std::string>();

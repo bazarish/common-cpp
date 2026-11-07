@@ -22,7 +22,6 @@ constexpr char kPairCodeHeaderKey[] = "x-bazarish-pair";
 constexpr char kPairTriesLeftHeader[] = "X-Bazarish-Pair-Left";
 constexpr char kPairTriesLeftHeaderKey[] = "x-bazarish-pair-left";
 constexpr char kPairBundleContentType[] = "application/octet-stream";
-constexpr int kPairTunnelQuantity = 2;
 constexpr char kPairDestLabel[] = "Device pairing";
 
 constexpr unsigned pairCodeSpace()
@@ -39,9 +38,12 @@ constexpr unsigned kPairCodeSpace = pairCodeSpace();
 std::shared_ptr<bazarish::i2p::Endpoint> pairEndpoint(bazarish::i2p::Router& router,
     const bazarish::i2p::Privacy privacy, const std::string& owner, const bool published)
 {
+    if (!router.capabilities().privateStreams) {
+        throw PairingThroughGateway();
+    }
     bazarish::i2p::EndpointConfig config;
     config.privacy = privacy;
-    config.tunnelQuantity = kPairTunnelQuantity;
+    config.tunnelQuantity = bazarish::i2p::kDefaultTunnelQuantity;
     config.published = published;
     config.label = kPairDestLabel;
     config.owner = owner;

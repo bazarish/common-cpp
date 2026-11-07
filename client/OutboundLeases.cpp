@@ -138,15 +138,16 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
     const std::string label = key == toDest ? labelFor(peerName) : std::string(kSharedLeaseLabel);
     if (making) {
         const log::Slow timed("making an address ready to send from", kSlowPrepare);
+        const bazarish::i2p::Privacy privacy = tunnelPrivacy();
         try {
-            endpoint = acquireWarmDest();
+            endpoint = acquireWarmDest(privacy);
             if (endpoint) {
                 router_.retagEndpoint(*endpoint, label, owner_);
             } else {
                 log::info("no warm address for {}: building one, which is tunnels",
                     log::redact(toDest));
                 bazarish::i2p::EndpointConfig config;
-                config.privacy = tunnelPrivacy();
+                config.privacy = privacy;
                 config.published = false;
                 config.label = label;
                 config.owner = owner_;
@@ -171,7 +172,7 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
                 && !leaseSpent(found->second.created, found->second.lastUsed, now)) {
                 endpoint = found->second.endpoint;
             } else {
-                leases_[key] = Lease{endpoint, now, now, tunnelPrivacy()};
+                leases_[key] = Lease{endpoint, now, now, privacy};
             }
             preparing_.erase(key);
         }

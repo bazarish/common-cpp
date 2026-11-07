@@ -20,7 +20,6 @@ namespace bazarish::client {
 
 namespace {
 constexpr std::size_t kWarmPoolSize = 2;
-constexpr int kWarmPoolTunnelQuantity = 3;
 constexpr std::size_t kWarmWatcherPoolSize = 1;
 
 std::atomic<bool> g_warmDestsWanted{true};
@@ -60,7 +59,7 @@ bazarish::i2p::EndpointConfig warmStreamShape()
 {
     bazarish::i2p::EndpointConfig config;
     config.privacy = tunnelPrivacy();
-    config.tunnelQuantity = kWarmPoolTunnelQuantity;
+    config.tunnelQuantity = bazarish::i2p::kDefaultTunnelQuantity;
     config.published = false;
     config.label = "Warm reserve";
     return config;
@@ -130,6 +129,8 @@ std::string g_proxyHost;
 std::string g_samHost;
 std::optional<GatewayAddress> g_gateway;
 std::string g_gatewayPin;
+std::string g_transportRefusal;
+bool g_routerRetired = false;
 int g_samPort = 0;
 bool g_transit = false;
 int g_proxyPort = 0;
@@ -254,6 +255,7 @@ void setGatewayTransport(const GatewayAddress& address, std::string pin)
     const std::lock_guard<std::mutex> lock(proxyMutex());
     g_gateway = address;
     g_gatewayPin = std::move(pin);
+    g_transportRefusal.clear();
 }
 
 void clearGatewayTransport()
@@ -261,10 +263,54 @@ void clearGatewayTransport()
     const std::lock_guard<std::mutex> lock(proxyMutex());
     g_gateway.reset();
     g_gatewayPin.clear();
+    g_transportRefusal.clear();
+}
+
+void refuseI2pTransport(std::string reason)
+{
+    const std::lock_guard<std::mutex> lock(proxyMutex());
+    g_gateway.reset();
+    g_gatewayPin.clear();
+    g_transportRefusal = std::move(reason);
+}
+
+bool applyI2pTransport(const std::function<void()>& set)
+{
+    const std::lock_guard<std::mutex> lifecycle(lifecycleMutex());
+    {
+        const std::lock_guard<std::mutex> lock(routerMutex());
+        if (routerSlot() != nullptr || g_routerRetired) {
+            return false;
+        }
+    }
+    set();
+    return true;
+}
+
+void retireI2pRouter()
+{
+    const std::lock_guard<std::mutex> lifecycle(lifecycleMutex());
+    bazarish::i2p::Router* router = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(routerMutex());
+        g_routerRetired = true;
+        router = routerSlot().get();
+        if (router == nullptr) {
+            return;
+        }
+        stopWarmPool();
+    }
+    router->stop();
 }
 
 bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir)
 {
+    {
+        const std::lock_guard<std::mutex> lock(proxyMutex());
+        if (!g_transportRefusal.empty()) {
+            throw std::runtime_error(g_transportRefusal);
+        }
+    }
     bazarish::i2p::RouterConfig config;
     config.dataDir = dataDir;
     {
@@ -281,7 +327,6 @@ bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir
         config.gatewayPort = g_gateway->port;
         config.gatewayPath = g_gateway->path;
         config.gatewayToken = g_gateway->token;
-        config.gatewayTls = g_gateway->tls;
         config.gatewayPin = g_gatewayPin;
         return config;
     }
@@ -299,6 +344,9 @@ bazarish::i2p::Router& sharedI2pRouter(const std::filesystem::path& dataDir)
     bazarish::i2p::Router* router = nullptr;
     {
         const std::lock_guard<std::mutex> lock(routerMutex());
+        if (g_routerRetired) {
+            throw std::runtime_error("the I2P transport changed: start the application again");
+        }
         router = routerSlot().get();
     }
     if (router == nullptr) {
@@ -375,18 +423,18 @@ void stopFacadeLinkFor(const std::string& owner)
     }
 }
 
-std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest()
+std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest(const bazarish::i2p::Privacy privacy)
 {
     const std::lock_guard<std::mutex> lock(routerMutex());
     WarmDestPool* const pool = warmPoolSlot().get();
-    return pool != nullptr ? pool->acquire() : nullptr;
+    return pool != nullptr ? pool->acquire(privacy) : nullptr;
 }
 
-std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmWatcher()
+std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmWatcher(const bazarish::i2p::Privacy privacy)
 {
     const std::lock_guard<std::mutex> lock(routerMutex());
     WarmDestPool* const pool = warmWatcherPoolSlot().get();
-    return pool != nullptr ? pool->acquire() : nullptr;
+    return pool != nullptr ? pool->acquire(privacy) : nullptr;
 }
 
 void setI2pSocksProxy(std::string host, const int port)
@@ -419,15 +467,12 @@ std::optional<bazarish::i2p::ProxyState> i2pProxyState()
 
 void restartI2pRouter()
 {
-    if (usingSamTransport() || usingGatewayTransport()) {
-        return;
-    }
     const std::lock_guard<std::mutex> lifecycle(lifecycleMutex());
     bazarish::i2p::Router* router = nullptr;
     {
         const std::lock_guard<std::mutex> lock(routerMutex());
         router = routerSlot().get();
-        if (router == nullptr) {
+        if (router == nullptr || g_routerRetired || !router->capabilities().reseed) {
             return;
         }
         stopWarmPool();
@@ -449,6 +494,14 @@ constexpr int kRouterStartPercent = 30;
 constexpr int kReseedWaitSeconds = 180;
 constexpr int kReseedPollSeconds = 3;
 
+bool g_bootstrapFailed = false;
+
+std::mutex& bootstrapMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
 // The router writes netDb out on its own schedule: the live count is the one to wait on.
 bool knownEnough(const bazarish::i2p::Router& router)
 {
@@ -468,17 +521,12 @@ bool waitForNetDb(const bazarish::i2p::Router& router)
     return knownEnough(router);
 }
 
-}  // namespace
-
-I2pBootstrap bootstrapI2pRouter(const std::filesystem::path& dataDir)
+I2pBootstrap reseedPass(bazarish::i2p::Router& router)
 {
-    bazarish::i2p::Router& router = sharedI2pRouter(dataDir);
-    const bazarish::i2p::Capabilities what = router.capabilities();
-    if (!what.reseed || !what.routerCounters) {
-        return I2pBootstrap::eKnown;
-    }
-    if (knownEnough(router)) {
-        return I2pBootstrap::eKnown;
+    // i2pd reseeds only as its netDb starts and gives up for good: a failed pass needs a restart.
+    if (g_bootstrapFailed) {
+        router.setReseedUrls(reseedUrls());
+        restartI2pRouter();
     }
     if (reseedUrls().empty()) {
         return waitForNetDb(router) ? I2pBootstrap::eBuiltIn : I2pBootstrap::eEmpty;
@@ -493,6 +541,25 @@ I2pBootstrap bootstrapI2pRouter(const std::filesystem::path& dataDir)
     router.setReseedUrls({});
     restartI2pRouter();
     return waitForNetDb(router) ? I2pBootstrap::eBuiltIn : I2pBootstrap::eEmpty;
+}
+
+}  // namespace
+
+I2pBootstrap bootstrapI2pRouter(const std::filesystem::path& dataDir)
+{
+    bazarish::i2p::Router& router = sharedI2pRouter(dataDir);
+    const bazarish::i2p::Capabilities what = router.capabilities();
+    if (!what.reseed || !what.routerCounters) {
+        return I2pBootstrap::eKnown;
+    }
+    const std::lock_guard<std::mutex> pass(bootstrapMutex());
+    if (knownEnough(router)) {
+        g_bootstrapFailed = false;
+        return I2pBootstrap::eKnown;
+    }
+    const I2pBootstrap outcome = reseedPass(router);
+    g_bootstrapFailed = outcome == I2pBootstrap::eEmpty;
+    return outcome;
 }
 
 void setConnectProgressSink(ConnectProgressFn sink)

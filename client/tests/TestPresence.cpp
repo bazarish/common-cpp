@@ -4,6 +4,8 @@
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Crypto.hpp>
+#include <bazarish/Hybrid.hpp>
+#include <nlohmann/json.hpp>
 
 #include "TestUtil.hpp"
 
@@ -39,6 +41,8 @@ constexpr milliseconds kUnanswered{300};
 constexpr milliseconds kPublishDelay{300};
 constexpr milliseconds kQuietWatch{4000};
 constexpr milliseconds kLongSilence{20000};
+// Presence.md: the type byte that opens a watch frame.
+constexpr std::uint8_t kWatchFrameType = 1;
 constexpr milliseconds kStaleRetry{600};
 constexpr milliseconds kShortTail{300};
 constexpr milliseconds kAwayBeforeReturn{1000};
@@ -559,6 +563,16 @@ int main()
                 inbox.send(alice.dest, presenceWatchFrame(watch, signer, aliceSealing));
                 return inbox.receive(kKnockWait).has_value();
             };
+            const auto wronglyTyped = [&]() {
+                Bytes frame{kWatchFrameType};
+                const Bytes id = randomBytes(kPresenceSubscriptionIdBytes);
+                frame.insert(frame.end(), id.begin(), id.end());
+                const Bytes sealed
+                    = hybrid::seal(nlohmann::json::to_cbor(nlohmann::json{{"t", 1}}), aliceSealing);
+                frame.insert(frame.end(), sealed.begin(), sealed.end());
+                inbox.send(alice.dest, frame);
+            };
+            wronglyTyped();
             CHECK(knock(dave.identity.classical()));
             CHECK(!knock(bob.identity.classical()));
         }

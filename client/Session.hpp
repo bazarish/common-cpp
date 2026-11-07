@@ -220,6 +220,8 @@ struct TransferEvent {
 
 using TransferEventFn = std::function<void(const TransferEvent&)>;
 
+using RelayFitter = std::function<std::size_t(const std::vector<RelayedPost>&)>;
+
 class Session {
 public:
     static Session create(const std::filesystem::path& accountFile, AccountKind kind,
@@ -533,7 +535,7 @@ public:
     bool relayPosts(const std::string& peerFingerprint, const std::vector<RelayedPost>& posts,
         const DeliveryWatch& watch = {});
     // How many of the posts, from the first, one envelope holds.
-    std::size_t relayFitting(const std::vector<RelayedPost>& posts) const;
+    RelayFitter relayFitter() const;
     void sendGroupState(const std::string& peerFingerprint, const DeliveryWatch& watch = {});
 
     struct AliasHolding {
@@ -750,6 +752,7 @@ private:
 
     void sendSelf(nlohmann::json inner);
     bool saveToSelf(nlohmann::json message);
+    bool newerState(const std::string& slot, std::int64_t sentAt);
     void persistBlocked();
     void persistPendingRevokes();
     void retryPendingRevokes();
@@ -788,9 +791,9 @@ private:
         nlohmann::json payload = nlohmann::json::object()) const;
 
     bool sendContent(const std::string& peerFingerprint, nlohmann::json inner,
-        const DeliveryWatch& watch = {}, bool establishOnFirstReply = true);
+        const DeliveryWatch& watch = {}, bool establishOnFirstReply = false);
     bool sendContents(const std::string& peerFingerprint, std::vector<nlohmann::json> items,
-        const DeliveryWatch& watch = {}, bool establishOnFirstReply = true);
+        const DeliveryWatch& watch = {}, bool establishOnFirstReply = false);
 
     void syncI2pMasterToSelf();
     bool adoptI2pMasterFromOwnMailbox(const std::string& wantedHost = {});
@@ -855,10 +858,10 @@ private:
         std::string peer;
         std::string ask;
     };
-    bool awaitingAsk(const std::string& ask) const;
     std::vector<StoppedHalf> stopTransfer(const std::string& fileId,
         const std::string& fromPeer = {}, const std::string& forAsk = {});
-    void startAnnouncedFetch(const FileOffer& offer, const std::string& peer);
+    void startAnnouncedFetch(
+        const FileOffer& offer, const std::string& peer, const std::string& forAsk);
     void emitTransfer(const std::string& e2eId, TransferState state, std::uint64_t bytes,
         std::uint64_t total, const std::string& error = {},
         TransferStage stage = TransferStage::eNone,
@@ -960,6 +963,8 @@ private:
     Bytes deliverySecret_;
     std::map<std::string, Contact> contacts_;
     std::set<std::string> blocked_;
+    // The sentAt of the last applied state message per slot: an older one replayed is ignored.
+    std::map<std::string, std::int64_t> stateClock_;
     BotMenuMarks botMenus_;
     // Pass handles (base64) our server has not confirmed dropping.
     std::set<std::string> pendingPassRevokes_;

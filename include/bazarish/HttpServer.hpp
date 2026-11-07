@@ -57,6 +57,9 @@ Handler filled(Filler handler);
 
 class Server {
 public:
+    // What one websocket may hold unsent before it is taken for a reader that has stopped.
+    static constexpr std::size_t kMaxSocketQueueBytes = 64 * 1024 * 1024;
+
     struct Options {
         std::string host = "127.0.0.1";
         int port = 0;
@@ -67,6 +70,8 @@ public:
         std::string certificate;
         std::string key;
         std::vector<std::string> clientPins;
+        // Host names, no port. When set, Host must name one of them: a rebound name does not.
+        std::vector<std::string> hosts;
     };
 
     explicit Server(Options options);

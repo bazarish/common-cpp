@@ -20,9 +20,9 @@ bazarish::i2p::Router& sharedI2pRouter(const std::filesystem::path& dataDir);
 
 bazarish::i2p::Router* sharedI2pRouterIfRunning();
 
-std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest();
+std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest(bazarish::i2p::Privacy privacy);
 // A published datagram destination for presence watching; it gets its reader key when taken.
-std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmWatcher();
+std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmWatcher(bazarish::i2p::Privacy privacy);
 
 std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
     const std::string& owner, bazarish::i2p::Privacy privacy, const std::string& facadeHost);
@@ -54,6 +54,13 @@ void setRouterTransit(bool transit);
 
 void setGatewayTransport(const GatewayAddress& address, std::string pin);
 void clearGatewayTransport();
+// The chosen gateway cannot be used: no router starts until another choice is made.
+void refuseI2pTransport(std::string reason);
+
+// The transport holds from this process's first router on: false, and nothing set, once one exists.
+bool applyI2pTransport(const std::function<void()>& set);
+// A changed transport takes the router down for good; the process has to start again.
+void retireI2pRouter();
 
 void setI2pSocksProxy(std::string host, int port);
 void restartI2pRouter();

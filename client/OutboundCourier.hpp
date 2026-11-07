@@ -85,6 +85,7 @@ public:
         std::string deliveryId;
         PhaseFn onPhase;
         OutcomeFn onOutcome;
+        std::optional<Outcome> ready;
     };
 
     OutboundCourier(PrepareFn prepare, OpenStreamFn openStream, DeliverySchedule schedule = {},
@@ -93,6 +94,7 @@ public:
 
     Outcome deliverNow(const Task& task);
     void submit(Task task);
+    void report(OutcomeFn onOutcome, Outcome outcome);
     void stop();
 
 private:

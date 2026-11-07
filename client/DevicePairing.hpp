@@ -40,6 +40,14 @@ inline constexpr int kPairOwnTunnelsSeconds = 180;
 inline constexpr int kPairDialSeconds = 90;
 inline constexpr char kPairingOwner[] = "pairing";
 
+class PairingThroughGateway : public std::runtime_error {
+public:
+    PairingThroughGateway()
+        : std::runtime_error("pairing needs streams no gateway can read")
+    {
+    }
+};
+
 void notePairingTrouble(const std::string& reason);
 
 std::string newPairCode();

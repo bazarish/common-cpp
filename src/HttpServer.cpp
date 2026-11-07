@@ -30,7 +30,6 @@
 #include <cctype>
 #include <deque>
 #include <mutex>
-#include <regex>
 #include <thread>
 
 namespace bazarish::http {
@@ -44,6 +43,8 @@ using asio::ip::tcp;
 
 constexpr std::size_t kEscapeDigits = 2;
 constexpr int kHexBase = 16;
+constexpr int kForbidden = 403;
+constexpr int kMisdirected = 421;
 
 std::string lowered(std::string text)
 {
@@ -92,13 +93,142 @@ std::string valueFrom(const std::string& encoded, const std::string& key)
     return {};
 }
 
+enum class SegmentClass { eLiteral, eHex, eBase32, eLanguage, eOperation, eAssetName, eIdentifier,
+    eAlias, eAnySegment };
+
+struct RoutePart {
+    SegmentClass kind = SegmentClass::eLiteral;
+    std::string literal;
+};
+
 struct Route {
     std::string method;
     std::string pattern;
-    std::regex matcher;
-    bool isRegex = false;
+    bool everyPath = false;
+    std::vector<RoutePart> parts;
     AsyncHandler handler;
 };
+
+struct Resolved {
+    AsyncHandler handler;
+    std::vector<std::string> captures;
+};
+
+constexpr char kEveryPath[] = "*";
+constexpr char kPathSeparator = '/';
+
+std::vector<std::string_view> pathSegments(const std::string_view path)
+{
+    std::vector<std::string_view> segments;
+    std::size_t at = 0;
+    while (at <= path.size()) {
+        const std::size_t next = path.find(kPathSeparator, at);
+        const std::size_t end = next == std::string_view::npos ? path.size() : next;
+        segments.push_back(path.substr(at, end - at));
+        if (next == std::string_view::npos) {
+            break;
+        }
+        at = next + 1;
+    }
+    return segments;
+}
+
+SegmentClass segmentClassNamed(const std::string_view name)
+{
+    static const std::map<std::string_view, SegmentClass> kClasses = {
+        {"hex", SegmentClass::eHex},
+        {"b32", SegmentClass::eBase32},
+        {"lang", SegmentClass::eLanguage},
+        {"op", SegmentClass::eOperation},
+        {"asset", SegmentClass::eAssetName},
+        {"id", SegmentClass::eIdentifier},
+        {"alias", SegmentClass::eAlias},
+        {"segment", SegmentClass::eAnySegment},
+    };
+    const auto found = kClasses.find(name);
+    if (found == kClasses.end()) {
+        throw std::invalid_argument("unknown route segment class: " + std::string(name));
+    }
+    return found->second;
+}
+
+bool inClass(const SegmentClass kind, const char c)
+{
+    const bool lower = c >= 'a' && c <= 'z';
+    const bool upper = c >= 'A' && c <= 'Z';
+    const bool digit = c >= '0' && c <= '9';
+    switch (kind) {
+    case SegmentClass::eHex:
+        return digit || (c >= 'a' && c <= 'f');
+    case SegmentClass::eBase32:
+        return lower || (c >= '2' && c <= '7');
+    case SegmentClass::eLanguage:
+        return lower || c == '-';
+    case SegmentClass::eOperation:
+        return lower || c == '.';
+    case SegmentClass::eAssetName:
+        return lower || upper || digit || c == '.' || c == '_' || c == '-';
+    case SegmentClass::eIdentifier:
+        return lower || digit || c == '_' || c == '-';
+    case SegmentClass::eAlias:
+        return lower || digit || c == '-';
+    case SegmentClass::eAnySegment:
+        return true;
+    case SegmentClass::eLiteral:
+        break;
+    }
+    return false;
+}
+
+Route routeFor(const std::string& method, const std::string& pattern, AsyncHandler handler)
+{
+    Route route;
+    route.method = method;
+    route.pattern = pattern;
+    route.everyPath = pattern == kEveryPath;
+    route.handler = std::move(handler);
+    if (route.everyPath) {
+        return route;
+    }
+    for (const std::string_view segment : pathSegments(pattern)) {
+        RoutePart part;
+        if (segment.size() > 2 && segment.front() == '{' && segment.back() == '}') {
+            part.kind = segmentClassNamed(segment.substr(1, segment.size() - 2));
+        } else {
+            part.literal = std::string(segment);
+        }
+        route.parts.push_back(std::move(part));
+    }
+    return route;
+}
+
+std::optional<std::vector<std::string>> capturesOf(const Route& route, const std::string& path)
+{
+    if (route.everyPath) {
+        return std::vector<std::string>{path};
+    }
+    const std::vector<std::string_view> segments = pathSegments(path);
+    if (segments.size() != route.parts.size()) {
+        return std::nullopt;
+    }
+    std::vector<std::string> captures;
+    for (std::size_t i = 0; i < segments.size(); ++i) {
+        const RoutePart& part = route.parts[i];
+        if (part.kind == SegmentClass::eLiteral) {
+            if (segments[i] != part.literal) {
+                return std::nullopt;
+            }
+            continue;
+        }
+        if (segments[i].empty()
+            || !std::all_of(segments[i].begin(), segments[i].end(),
+                [&part](const char c) { return inClass(part.kind, c); })) {
+            return std::nullopt;
+        }
+        captures.emplace_back(segments[i]);
+    }
+    return captures;
+}
 
 struct SocketRoute {
     std::string pattern;
@@ -120,14 +250,24 @@ public:
         if (!open_.load()) {
             return;
         }
+        bool overflowing = false;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            queued_ += message.size();
-            queue_.push_back(std::move(message));
-            if (writing_) {
-                return;
+            overflowing = queued_ + message.size() > Server::kMaxSocketQueueBytes;
+            if (!overflowing) {
+                queued_ += message.size();
+                queue_.push_back(std::move(message));
+                if (writing_) {
+                    return;
+                }
+                writing_ = true;
             }
-            writing_ = true;
+        }
+        if (overflowing) {
+            log::warn("websocket: its reader is {} bytes behind; closed",
+                Server::kMaxSocketQueueBytes);
+            close();
+            return;
         }
         const std::shared_ptr<SocketImpl> self = shared_from_this();
         asio::post(stream_.get_executor(), [self]() { self->write(); });
@@ -229,6 +369,28 @@ asio::awaitable<void> runSocket(std::shared_ptr<SocketImpl> socket, Request requ
     }
 }
 
+std::string hostName(const std::string& hostHeader)
+{
+    const std::string host = lowered(hostHeader);
+    if (!host.empty() && host.front() == '[') {
+        return host.substr(0, host.find(']') + 1);
+    }
+    const std::size_t colon = host.find(':');
+    return colon != std::string::npos && host.find(':', colon + 1) == std::string::npos
+        ? host.substr(0, colon)
+        : host;
+}
+
+// Fetch Metadata: the browser names where a request came from, and no page can forge it.
+bool crossSiteWrite(const Request& request)
+{
+    if (request.method == "GET" || request.method == "HEAD" || request.method == "OPTIONS") {
+        return false;
+    }
+    const std::string site = request.header("Sec-Fetch-Site");
+    return site == "cross-site" || site == "same-site";
+}
+
 }  // namespace
 
 std::string Request::header(const std::string& name) const
@@ -240,6 +402,7 @@ std::string Request::header(const std::string& name) const
 std::string Request::cookie(const std::string& name) const
 {
     const std::string cookies = header("Cookie");
+    std::optional<std::string> found;
     std::size_t at = 0;
     while (at < cookies.size()) {
         std::size_t end = cookies.find(';', at);
@@ -252,11 +415,14 @@ std::string Request::cookie(const std::string& name) const
         }
         const std::size_t equals = pair.find('=');
         if (equals != std::string_view::npos && pair.substr(0, equals) == name) {
-            return std::string(pair.substr(equals + 1));
+            if (found.has_value()) {
+                return {};
+            }
+            found = std::string(pair.substr(equals + 1));
         }
         at = end + 1;
     }
-    return {};
+    return found.value_or(std::string());
 }
 
 bool Request::hasHeader(const std::string& name) const
@@ -287,8 +453,9 @@ struct Server::Impl {
     asio::io_context io;
     std::unique_ptr<tcp::acceptor> acceptor;
     std::unique_ptr<boost::asio::ssl::context> tls;
+    std::mutex lifecycleMutex;
     std::vector<std::thread> workers;
-    std::mutex routesMutex;
+    mutable std::mutex routesMutex;
     std::vector<Route> routes;
     std::vector<SocketRoute> socketRoutes;
     std::atomic<bool> stopping{false};
@@ -296,10 +463,12 @@ struct Server::Impl {
     explicit Impl(Options o)
         : options(std::move(o))
     {
+        for (std::string& host : options.hosts) {
+            host = lowered(host);
+        }
     }
 
-    const Route* match(const std::string& method, const std::string& path,
-        std::vector<std::string>& captures) const;
+    std::optional<Resolved> resolve(const Request& request) const;
     template <typename Stream>
     asio::awaitable<void> serveOn(Stream stream);
     asio::awaitable<void> serve(tcp::socket socket);
@@ -307,29 +476,33 @@ struct Server::Impl {
     asio::awaitable<void> accept();
 };
 
-const Route* Server::Impl::match(const std::string& method, const std::string& path,
-    std::vector<std::string>& captures) const
+std::optional<Resolved> Server::Impl::resolve(const Request& request) const
 {
+    const auto refusal = [](const int status, const std::string& why) {
+        return Resolved{[status, why](const Request&, Responder) -> std::optional<Response> {
+                            return Response{status, "application/json", {},
+                                makeErrorEnvelope(ErrorCode::eRequestFailed, why).dump()};
+                        },
+            {}};
+    };
+    if (!options.hosts.empty()
+        && std::find(options.hosts.begin(), options.hosts.end(), hostName(request.header("Host")))
+            == options.hosts.end()) {
+        return refusal(kMisdirected, "this server does not answer for that host");
+    }
+    if (crossSiteWrite(request)) {
+        return refusal(kForbidden, "a cross-site write is refused");
+    }
+    const std::lock_guard<std::mutex> lock(routesMutex);
     for (const Route& route : routes) {
-        if (route.method != method) {
+        if (route.method != request.method) {
             continue;
         }
-        if (!route.isRegex) {
-            if (route.pattern == path) {
-                return &route;
-            }
-            continue;
-        }
-        std::smatch found;
-        if (std::regex_match(path, found, route.matcher)) {
-            captures.clear();
-            for (std::size_t i = 1; i < found.size(); ++i) {
-                captures.push_back(found[i].str());
-            }
-            return &route;
+        if (std::optional<std::vector<std::string>> captures = capturesOf(route, request.path)) {
+            return Resolved{route.handler, std::move(*captures)};
         }
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 template <typename Stream>
@@ -435,13 +608,9 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
             }
 
             AsyncHandler handler;
-            {
-                const std::lock_guard<std::mutex> lock(routesMutex);
-                if (const Route* const route
-                    = match(request.method, request.path, request.captures);
-                    route != nullptr) {
-                    handler = route->handler;
-                }
+            if (std::optional<Resolved> resolved = resolve(request)) {
+                handler = std::move(resolved->handler);
+                request.captures = std::move(resolved->captures);
             }
             {
                 if (handler) {
@@ -595,14 +764,7 @@ void Server::route(const std::string& method, const std::string& pattern, Handle
 
 void Server::routeAsync(const std::string& method, const std::string& pattern, AsyncHandler handler)
 {
-    Route entry;
-    entry.method = method;
-    entry.pattern = pattern;
-    entry.isRegex = pattern.find('(') != std::string::npos;
-    if (entry.isRegex) {
-        entry.matcher = std::regex(pattern);
-    }
-    entry.handler = std::move(handler);
+    Route entry = routeFor(method, pattern, std::move(handler));
     const std::lock_guard<std::mutex> lock(impl_->routesMutex);
     impl_->routes.push_back(std::move(entry));
 }
@@ -645,13 +807,8 @@ Handler filled(Filler handler)
 
 void Server::dispatch(const Request& request, Responder respond)
 {
-    const Route* route = nullptr;
-    std::vector<std::string> captures;
-    {
-        const std::lock_guard<std::mutex> lock(impl_->routesMutex);
-        route = impl_->match(request.method, request.path, captures);
-    }
-    if (route == nullptr) {
+    std::optional<Resolved> resolved = impl_->resolve(request);
+    if (!resolved) {
         Response missing;
         missing.status = 404;
         missing.body = makeErrorEnvelope(ErrorCode::eRequestFailed, "no such route").dump();
@@ -659,10 +816,10 @@ void Server::dispatch(const Request& request, Responder respond)
         return;
     }
     Request routed = request;
-    routed.captures = captures;
+    routed.captures = std::move(resolved->captures);
     std::optional<Response> answered;
     try {
-        answered = route->handler(routed, respond);
+        answered = resolved->handler(routed, respond);
     } catch (const std::exception& error) {
         log::warn("handler for {} threw: {}", request.path, error.what());
         answered = Response{500, "application/json", {},
@@ -717,14 +874,18 @@ int Server::start()
     impl_->acceptor->bind(endpoint);
     impl_->acceptor->listen(asio::socket_base::max_listen_connections);
     asio::co_spawn(impl_->io, impl_->accept(), asio::detached);
-    for (int i = 0; i < std::max(1, impl_->options.threads); ++i) {
-        impl_->workers.emplace_back([this]() { impl_->io.run(); });
+    {
+        const std::lock_guard<std::mutex> lock(impl_->lifecycleMutex);
+        for (int i = 0; i < std::max(1, impl_->options.threads); ++i) {
+            impl_->workers.emplace_back([this]() { impl_->io.run(); });
+        }
     }
     return impl_->acceptor->local_endpoint().port();
 }
 
 void Server::stop()
 {
+    const std::lock_guard<std::mutex> lock(impl_->lifecycleMutex);
     if (impl_->workers.empty()) {
         return;
     }

@@ -6,6 +6,7 @@
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Hybrid.hpp>
 #include <bazarish/Log.hpp>
+#include <bazarish/JsonRead.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -44,7 +45,6 @@ constexpr char kWatchSignatureField[] = "sig";
 
 constexpr std::int64_t kWatchSkewSeconds = 120;
 constexpr milliseconds kReceiveSlice{250};
-constexpr int kPresenceTunnelQuantity = 2;
 constexpr char kPresenceAddressLabel[] = "Presence address";
 constexpr char kPresenceWatcherLabel[] = "Presence watcher";
 constexpr PresenceState kCarried{true, false};
@@ -132,7 +132,7 @@ std::optional<nlohmann::json> openedFrame(const Bytes& frame, const Bytes& key,
         return std::nullopt;
     }
     lastSequence = sequence;
-    return nlohmann::json::from_cbor(*plain);
+    return parseCbor(*plain);
 }
 
 class I2pPresenceLink final : public PresenceLink {
@@ -231,7 +231,7 @@ i2p::EndpointConfig presenceEndpointShape()
 {
     i2p::EndpointConfig endpoint;
     endpoint.privacy = tunnelPrivacy();
-    endpoint.tunnelQuantity = kPresenceTunnelQuantity;
+    endpoint.tunnelQuantity = i2p::kDefaultTunnelQuantity;
     endpoint.published = true;
     endpoint.traffic = i2p::Traffic::eRaw;
     return endpoint;
@@ -243,14 +243,14 @@ PresenceNet i2pPresenceNet(std::filesystem::path routerDir, std::string owner)
                const PresenceLinkConfig& config) -> std::unique_ptr<PresenceLink> {
         i2p::Router& router = sharedI2pRouter(routerDir);
         const bool watching = !config.keys.has_value() && !config.readerKey.empty();
+        i2p::EndpointConfig endpoint = presenceEndpointShape();
         if (watching) {
-            if (std::shared_ptr<i2p::Endpoint> warm = acquireWarmWatcher()) {
+            if (std::shared_ptr<i2p::Endpoint> warm = acquireWarmWatcher(endpoint.privacy)) {
                 warm->setLeaseSetReaderKey(config.readerKey);
                 router.retagEndpoint(*warm, kPresenceWatcherLabel, owner);
                 return std::make_unique<I2pPresenceLink>(std::move(warm));
             }
         }
-        i2p::EndpointConfig endpoint = presenceEndpointShape();
         endpoint.label = watching ? kPresenceWatcherLabel : kPresenceAddressLabel;
         endpoint.keys = config.keys;
         endpoint.owner = owner;
@@ -464,7 +464,7 @@ struct Presence::Impl {
         const Bytes id(frame.begin() + kTypeBytes, frame.begin() + kHeaderBytes);
         nlohmann::json content;
         try {
-            content = nlohmann::json::from_cbor(
+            content = parseCbor(
                 hybrid::unseal(Bytes(frame.begin() + kHeaderBytes, frame.end()), sealingKey));
         } catch (const std::exception& error) {
             bazarish::log::debug("presence: a watch that does not open was dropped: {}", error.what());
@@ -750,6 +750,16 @@ struct Presence::Impl {
         }
     }
 
+    static void takeFrame(const std::string_view kind, const std::function<void()>& take)
+    {
+        try {
+            take();
+        } catch (const std::exception& error) {
+            bazarish::log::info("presence: a {} frame that does not read was dropped: {}", kind,
+                error.what());
+        }
+    }
+
     void run()
     {
         while (true) {
@@ -791,14 +801,14 @@ struct Presence::Impl {
                     continue;
                 }
                 if (frame[0] == kWatchType) {
-                    onWatch(frame, now);
+                    takeFrame("watch", [&]() { onWatch(frame, now); });
                 } else if (frame[0] == kRenewType) {
-                    onRenew(frame, now);
+                    takeFrame("renew", [&]() { onRenew(frame, now); });
                 }
             }
             for (const Bytes& frame : watcherFrames) {
                 if (frame.size() > kHeaderBytes && frame[0] == kStateType) {
-                    onState(frame, now);
+                    takeFrame("state", [&]() { onState(frame, now); });
                 }
             }
             if (watcher && watcher->link->lost()) {

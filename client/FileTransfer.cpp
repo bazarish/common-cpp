@@ -119,28 +119,41 @@ FileOffer fileOfferFromJson(const nlohmann::json& json)
 
 namespace {
 
+class OfferBroken : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 class PartialSink : public TransferSink {
 public:
-    PartialSink(PartialFile& part, TransferProgressFn onProgress)
+    PartialSink(PartialFile& part, const std::uint64_t offered, TransferProgressFn onProgress)
         : part_(part)
+        , offered_(offered)
         , onProgress_(std::move(onProgress))
     {
     }
 
-    void total(const std::uint64_t bytes) override { declaredTotal = bytes; }
-
-    void append(const void* data, const std::size_t size) override
+    void total(const std::uint64_t bytes) override
     {
-        part_.append(data, size);
-        if (onProgress_ && declaredTotal != 0) {
-            onProgress_(part_.size(), declaredTotal);
+        if (bytes != offered_) {
+            throw OfferBroken("sender declares a different size than it offered");
         }
     }
 
-    std::uint64_t declaredTotal = 0;
+    void append(const void* data, const std::size_t size) override
+    {
+        if (part_.size() > offered_ || size > offered_ - part_.size()) {
+            throw OfferBroken("sender sent more than it offered");
+        }
+        part_.append(data, size);
+        if (onProgress_) {
+            onProgress_(part_.size(), offered_);
+        }
+    }
 
 private:
     PartialFile& part_;
+    const std::uint64_t offered_;
     TransferProgressFn onProgress_;
 };
 
@@ -256,21 +269,17 @@ void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer,
                 throw std::runtime_error("transfer cancelled");
             }
             const std::uint64_t before = part.size();
-            PartialSink sink(part, onProgress);
+            PartialSink sink(part, offer.size, onProgress);
             try {
                 fetch(before, sink);
+            } catch (const OfferBroken&) {
+                throw;
             } catch (const std::exception& error) {
                 log::warn("file-fetch: attempt failed: {}", error.what());
                 if (++stalled >= kMaxStalledAttempts) {
                     throw;
                 }
                 continue;
-            }
-            if (sink.declaredTotal != 0 && sink.declaredTotal != offer.size) {
-                throw std::runtime_error("sender declares a different size than it offered");
-            }
-            if (part.size() > offer.size) {
-                throw std::runtime_error("sender sent more than it offered");
             }
             if (part.size() == before) {
                 if (++stalled >= kMaxStalledAttempts) {
@@ -426,7 +435,7 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
         = [&router, &offer, privacy, &owner](const std::uint64_t offset, TransferSink& sink) {
               bazarish::i2p::EndpointConfig config;
               config.privacy = privacy;
-              config.tunnelQuantity = 2;
+              config.tunnelQuantity = bazarish::i2p::kDefaultTunnelQuantity;
               config.published = false;
               config.label = "File download";
               config.bulk = true;

@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "bazarish/GatewayProtocol.hpp"
+#include "bazarish/JsonRead.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 
@@ -203,7 +205,7 @@ nlohmann::json bodyJson(const Frame& frame)
         throw ProtocolError(Fault::eBadFrame, "this frame does not carry a document");
     }
     const nlohmann::json body
-        = nlohmann::json::parse(frame.body.begin(), frame.body.end(), nullptr, false);
+        = parseJsonOrDiscarded(frame.body);
     if (body.is_discarded() || !body.is_object()) {
         throw ProtocolError(Fault::eBadFrame, "frame body is not a document");
     }
@@ -236,7 +238,7 @@ Bytes encodeRawSend(const std::uint32_t endpoint, const std::string& host, const
     Bytes body(kHostLengthBytes + host.size() + size);
     body[0] = static_cast<unsigned char>((length >> kBitsPerByte) & kByteMask);
     body[1] = static_cast<unsigned char>(length & kByteMask);
-    std::memcpy(body.data() + kHostLengthBytes, host.data(), host.size());
+    std::copy(host.begin(), host.end(), body.begin() + kHostLengthBytes);
     if (size > 0) {
         std::memcpy(body.data() + kHostLengthBytes + host.size(), data, size);
     }
@@ -274,11 +276,14 @@ Ids::Ids(const bool odd)
 
 std::uint32_t Ids::next()
 {
-    if (next_ == 0) {
-        throw ProtocolError(Fault::eInternal, "identifier space exhausted");
-    }
-    const std::uint32_t id = next_;
-    next_ = (id > std::numeric_limits<std::uint32_t>::max() - kIdStep) ? 0 : id + kIdStep;
+    std::uint32_t id = next_.load();
+    std::uint32_t following = 0;
+    do {
+        if (id == 0) {
+            throw ProtocolError(Fault::eInternal, "identifier space exhausted");
+        }
+        following = (id > std::numeric_limits<std::uint32_t>::max() - kIdStep) ? 0 : id + kIdStep;
+    } while (!next_.compare_exchange_weak(id, following));
     return id;
 }
 

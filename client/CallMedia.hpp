@@ -13,6 +13,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -56,6 +57,7 @@ public:
 
     std::uint64_t packetsSent() const;
     std::uint64_t packetsReceived() const;
+    bool broken() const;
     void setOnConnected(std::function<void()> callback);
 
     float inputLevel() const;
@@ -64,6 +66,7 @@ public:
 private:
     void audioCaptureLoop();
     void receiveLoop();
+    void runGuarded(std::string_view loop, const std::function<void()>& body);
 
     void sealAndSend(std::uint8_t track, std::atomic<std::uint64_t>& counter, const Bytes& payload);
     void handleAudioPacket(
@@ -84,6 +87,7 @@ private:
     std::function<void()> onConnected_;
     std::atomic<bool> heardPeer_;
     std::atomic<bool> reportedConnected_;
+    std::atomic<bool> broken_;
     std::atomic<float> inputLevel_;
     std::atomic<float> outputLevel_;
 

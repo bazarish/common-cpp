@@ -2,6 +2,8 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
+#include <mutex>
 #include <string>
 
 namespace bazarish::service {
@@ -14,9 +16,14 @@ public:
 
     std::string verify(const std::string& token, std::int64_t now) const;
 
+    // Signing out ends the token itself, not just the browser's copy of it.
+    void revoke(const std::string& token, std::int64_t now);
+
 private:
     std::string secret_;
     std::int64_t ttlSeconds_;
+    mutable std::mutex revokedMutex_;
+    std::map<std::string, std::int64_t> revoked_;
 };
 
 }  // namespace bazarish::service

@@ -28,6 +28,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <iterator>
 #include <chrono>
 #include <cstdio>
@@ -76,6 +77,10 @@ http::Server::Options localOptions()
     return options;
 }
 
+constexpr int kServiceUnavailable = 503;
+constexpr std::size_t kSneakPassBytes = 32;
+constexpr std::array<std::uint8_t, 3> kJpegOpening{0xFF, 0xD8, 0xFF};
+
 void respondJson(http::Response& response, const nlohmann::json& body)
 {
     response.contentType = "application/json";
@@ -104,6 +109,7 @@ struct Mock {
     std::size_t largestContactRequest = 0;
     int nextId = 1;
     std::string refuseWith;
+    int failAcks = 0;
     std::map<std::string, std::string> aliasOwner;
     std::map<std::string, Descriptor> aliasDescriptor;
     std::set<std::string> aliasBindingWanted;
@@ -272,7 +278,8 @@ int main()
                   }
                   m.certFor[caller] = cardB64;
               }
-              respondJson(response, {{"quotaBytes", 100u * 1024 * 1024}});
+              respondJson(response, {{"quotaBytes", 100u * 1024 * 1024}, {"approval", "approved"},
+                  {"registrationMessage", ""}});
           };
     server.post("/v1/account/card", stub(handlePublishCard));
 
@@ -370,6 +377,13 @@ int main()
             const std::string caller = requireCaller(request);
             const nlohmann::json ids = nlohmann::json::parse(request.body).at("ids");
             std::lock_guard<std::mutex> lock(m.mu);
+            if (m.failAcks > 0) {
+                --m.failAcks;
+                response.status = kServiceUnavailable;
+                respondJson(response,
+                    {{"errorCode", "INTERNAL"}, {"errorMessage", "ack refused by the test"}});
+                return;
+            }
             std::vector<Mock::Item>& box = m.mailbox[caller];
             for (const nlohmann::json& id : ids) {
                 const std::string acked = id.get<std::string>();
@@ -672,6 +686,32 @@ int main()
             }
             bob.sync();
             CHECK(logHas(bob.connectionLog(), "text from", {}));
+
+            const std::size_t waiting = [&]() {
+                std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[bob.fingerprint()].size();
+            }();
+            alice.sendMessage(bob.fingerprint(), "outlives a failed ack");
+            CHECK(waitFor([&]() {
+                std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[bob.fingerprint()].size() > waiting;
+            }));
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.failAcks = 1;
+            }
+            const auto carries = [](const std::vector<IncomingMessage>& taken) {
+                return std::count_if(taken.begin(), taken.end(), [](const IncomingMessage& item) {
+                    return item.text == "outlives a failed ack";
+                });
+            };
+            CHECK(carries(bob.sync()) == 1);
+            CHECK(carries(bob.sync()) == 0);
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                CHECK(m.failAcks == 0);
+                CHECK(m.mailbox[bob.fingerprint()].size() == waiting);
+            }
             alice.setDisplayName("Alice of the log");
             CHECK(logHas(alice.connectionLog(),
                 "POST /v1/messaging/self (device.account-name)", "200"));
@@ -1028,7 +1068,7 @@ int main()
             counts.id = "group-counts-1";
             counts.reactions
                 = nlohmann::json::array({{{"ref", "group-post-1"}, {"counts", {{"+", 2}}}}});
-            CHECK(alice.relayFitting({post, hostPost, counts}) == 3);
+            CHECK(alice.relayFitter()({post, hostPost, counts}) == 3);
             alice.relayPosts(bob.fingerprint(), {post, hostPost, counts});
             alice.sendGroupState(bob.fingerprint());
             alice.sendMessage(bob.fingerprint(), "plain");
@@ -1075,11 +1115,11 @@ int main()
             oversized.media = Bytes(kMaxMessagePayloadBytes, 0);
             oversized.mediaName = "big.png";
             oversized.mime = "image/png";
-            CHECK(alice.relayFitting({oversized}) == 0);
-            CHECK(alice.relayFitting({post, oversized, hostPost}) == 1);
+            CHECK(alice.relayFitter()({oversized}) == 0);
+            CHECK(alice.relayFitter()({post, oversized, hostPost}) == 1);
             RelayedPost third = oversized;
             third.media = Bytes(kMaxMessagePayloadBytes / 3, 0);
-            CHECK(alice.relayFitting({third, third, third, post}) == 2);
+            CHECK(alice.relayFitter()({third, third, third, post}) == 2);
 
             RelayedPost again = post;
             again.id = "group-post-3";
@@ -1589,7 +1629,8 @@ int main()
             }
 
             {
-                const Bytes huge(200 * 1024, 0x41);
+                Bytes huge(200 * 1024, 0x41);
+                std::copy(kJpegOpening.begin(), kJpegOpening.end(), huge.begin());
                 bob.setAvatar(huge, "image/jpeg");
                 CHECK(waitFor([&]() {
                     alice.sync();
@@ -1652,12 +1693,20 @@ int main()
                     hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({notice}))),
                         Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
             };
+            std::int64_t noticeClock = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                                           .count();
+            const auto stamp = [&noticeClock]() { return ++noticeClock; };
             const auto notice = [&](const std::string& type, nlohmann::json extra) {
                 extra["v"] = 1;
                 extra["type"] = type;
-                extra["id"] = type;
+                if (!extra.contains("id")) {
+                    extra["id"] = type;
+                }
                 extra["from"] = alice.fingerprint();
-                extra["sentAt"] = 1;
+                if (!extra.contains("sentAt")) {
+                    extra["sentAt"] = stamp();
+                }
                 extra["device"] = "someotherdevice";
                 return extra;
             };
@@ -1693,6 +1742,21 @@ int main()
             CHECK(alice.isBlocked(stranger));
             fromAnotherDevice(notice("device.contact-block",
                 {{"peer", stranger}, {"blocked", false}}));
+            alice.sync();
+            CHECK(!alice.isBlocked(stranger));
+
+            const std::int64_t earlier = stamp();
+            const std::int64_t later = stamp();
+            fromAnotherDevice(notice("device.contact-block",
+                {{"peer", stranger}, {"blocked", true}, {"sentAt", later}, {"id", "block-later"}}));
+            alice.sync();
+            CHECK(alice.isBlocked(stranger));
+            fromAnotherDevice(notice("device.contact-block", {{"peer", stranger}, {"blocked", false},
+                {"sentAt", earlier}, {"id", "unblock-replayed"}}));
+            alice.sync();
+            CHECK(alice.isBlocked(stranger));
+            fromAnotherDevice(notice("device.contact-block",
+                {{"peer", stranger}, {"blocked", false}, {"id", "unblock-now"}}));
             alice.sync();
             CHECK(!alice.isBlocked(stranger));
 
@@ -1739,6 +1803,51 @@ int main()
                 CHECK(item.fromFingerprint != stranger);
             }
             CHECK(!alice.hasContact(stranger));
+        }
+
+        {
+            const Identity sneak = Identity::generate();
+            const nlohmann::json bootstrap = {{"kind", "user"},
+                {"sealing", toBase64(Key::generateSealing().publicDer())},
+                {"dest", std::string(52, 'q') + ".b32.i2p"},
+                {"servingKey", toBase64(Key::generateSealing().publicDer())},
+                {"pass", toBase64(randomBytes(kSneakPassBytes))},
+                {"presenceKey", toBase64(Key::generateX25519().publicDer())},
+                {"presenceDest", std::string(52, 'r') + ".b32.i2p"}};
+            nlohmann::json request = {{"v", 1}, {"type", "contact.request"}, {"id", "sneak-request"},
+                {"from", sneak.fingerprint()}, {"sentAt", 1}, {"text", "hello"}, {"dn", "Sneak"},
+                {"bootstrap", bootstrap}};
+            signAuthorship(request, sneak, /*withKeys=*/true);
+            nlohmann::json invite = {{"v", 1}, {"type", "call.invite"}, {"id", "sneak-call"},
+                {"from", sneak.fingerprint()}, {"sentAt", 1}, {"callId", "sneak-call-id"}};
+            signAuthorship(invite, sneak, /*withKeys=*/false);
+            const auto deliver = [&](const std::string& id, const std::string& cls,
+                                     const std::vector<nlohmann::json>& items) {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[alice.fingerprint()].push_back({id, cls,
+                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json(items))),
+                        Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
+            };
+            const auto fromSneak = [&]() {
+                std::size_t count = 0;
+                for (const IncomingMessage& item : alice.sync()) {
+                    count += item.fromFingerprint == sneak.fingerprint() ? 1 : 0;
+                }
+                return count;
+            };
+
+            deliver("sneak-both", kContactDeliveryClass, {request, invite});
+            CHECK(fromSneak() == 0);
+            CHECK(!alice.hasContact(sneak.fingerprint()));
+
+            deliver("sneak-asks", kContactDeliveryClass, {request});
+            CHECK(fromSneak() == 1);
+            CHECK(alice.contactIsPending(sneak.fingerprint()));
+            deliver("sneak-rings", "content", {invite});
+            CHECK(fromSneak() == 0);
+            CHECK(alice.currentCall().state == Session::CallState::eIdle);
+            CHECK(alice.contactIsPending(sneak.fingerprint()));
+            alice.removeContact(sneak.fingerprint());
         }
 
         {

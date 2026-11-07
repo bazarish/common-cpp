@@ -10,6 +10,7 @@
 #include <memory>
 
 #include <bazarish/Log.hpp>
+#include <bazarish/JsonRead.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -61,7 +62,7 @@ AccountInfo readInfo(const std::string& id, const fs::path& file, const std::str
         info.encrypted = true;
         return info;
     }
-    const nlohmann::json meta = nlohmann::json::parse(db->text("meta"));
+    const nlohmann::json meta = parseJson(db->text("meta"));
     info.name = meta.value("name", std::string{});
     if (info.name.find_first_not_of(" \t\r\n") == std::string::npos) {
         info.name.clear();

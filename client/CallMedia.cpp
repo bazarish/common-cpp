@@ -96,6 +96,7 @@ CallMedia::CallMedia(CallTransport& transport, std::unique_ptr<AudioSource> audi
     , packetsReceived_(0)
     , heardPeer_(false)
     , reportedConnected_(false)
+    , broken_(false)
     , inputLevel_(0.0F)
     , outputLevel_(0.0F)
 {
@@ -120,13 +121,15 @@ void CallMedia::start()
     } catch (const std::exception& error) {
         bazarish::log::error("call microphone unavailable: {}", error.what());
     }
-    audioCaptureThread_ = std::thread(&CallMedia::audioCaptureLoop, this);
-    receiveThread_ = std::thread(&CallMedia::receiveLoop, this);
+    audioCaptureThread_
+        = std::thread([this]() { runGuarded("capture", [this]() { audioCaptureLoop(); }); });
+    receiveThread_ = std::thread([this]() { runGuarded("receive", [this]() { receiveLoop(); }); });
 }
 
 void CallMedia::stop()
 {
-    if (!running_.exchange(false)) {
+    running_.store(false);
+    if (!audioCaptureThread_.joinable() && !receiveThread_.joinable()) {
         return;
     }
     audioSource_->stop();
@@ -167,6 +170,22 @@ float CallMedia::outputLevel() const
 std::uint64_t CallMedia::packetsReceived() const
 {
     return packetsReceived_.load(std::memory_order_relaxed);
+}
+
+bool CallMedia::broken() const
+{
+    return broken_.load();
+}
+
+void CallMedia::runGuarded(const std::string_view loop, const std::function<void()>& body)
+{
+    try {
+        body();
+    } catch (const std::exception& error) {
+        bazarish::log::warn("call media: the {} loop failed: {}", loop, error.what());
+        broken_.store(true);
+        running_.store(false);
+    }
 }
 
 void CallMedia::sealAndSend(
@@ -267,7 +286,14 @@ void CallMedia::handleAudioPacket(const std::uint64_t sequence, const Bytes& opu
             }
         }
     }
-    const std::vector<std::int16_t> decoded = decoder_.decode(opus);
+    std::vector<std::int16_t> decoded;
+    try {
+        decoded = decoder_.decode(opus);
+    } catch (const std::exception& error) {
+        bazarish::log::debug("call media: a packet that does not decode counts as lost: {}",
+            error.what());
+        return;
+    }
     outputLevel_.store(frameLevel(decoded));
     if (audible) {
         audioSink_->writeFrame(decoded);

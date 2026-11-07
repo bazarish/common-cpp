@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/ConfigFile.hpp"
+#include "bazarish/JsonRead.hpp"
 
 #include "bazarish/PrivateFile.hpp"
 
@@ -107,7 +108,7 @@ std::optional<Span> valueOfKey(
             throw std::runtime_error("config has something other than a key in an object");
         }
         const std::size_t nameEnd = endOfString(text, at);
-        const std::string name = nlohmann::json::parse(text.substr(at, nameEnd - at))
+        const std::string name = parseJson(text.substr(at, nameEnd - at))
                                      .get<std::string>();
         std::size_t colon = skipGaps(text, nameEnd);
         if (colon >= text.size() || text[colon] != ':') {
@@ -319,7 +320,7 @@ ConfigFile::ConfigFile(fs::path path)
 nlohmann::json ConfigFile::read() const
 {
     const std::string text = readFileText(path_);
-    return nlohmann::json::parse(text, nullptr, true, true);
+    return parseJsonWithComments(text);
 }
 
 void ConfigFile::set(const std::vector<std::string>& keys, const nlohmann::json& value)
@@ -330,7 +331,7 @@ void ConfigFile::set(const std::vector<std::string>& keys, const nlohmann::json&
 
 nlohmann::json readJsonFile(const std::filesystem::path& path)
 {
-    return nlohmann::json::parse(readFileText(path));
+    return parseJson(readFileText(path));
 }
 
 void readEndpointInto(

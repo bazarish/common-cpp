@@ -38,6 +38,7 @@ add_library(bazarish_common STATIC
     src/Certificates.cpp
     src/Pass.cpp
     src/Padding.cpp
+    src/JsonRead.cpp
     src/ConfigFile.cpp
     src/PrivateFile.cpp
     src/WebAssets.cpp
@@ -127,6 +128,11 @@ bazarish_add_test(TestReseedSu3)
 bazarish_add_test(TestCertificates)
 bazarish_add_test(TestPass)
 bazarish_add_test(TestPadding)
+bazarish_add_test(TestJsonRead)
+bazarish_add_test(TestFileName)
+bazarish_add_test(TestPortalSession)
+bazarish_add_test(TestHttpServer)
+bazarish_add_test(TestEmbeddedRouter)
 bazarish_add_test(TestErrors)
 bazarish_add_test(TestAddress)
 bazarish_add_test(TestResolvePuzzle)
@@ -225,6 +231,8 @@ if(BAZARISH_WITH_CLIENT)
     endfunction()
 
     bazarish_client_add_test(TestAccount)
+    bazarish_client_add_test(TestI2pTransportChoice)
+    bazarish_client_add_test(TestWarmDestPool)
 if(NOT WIN32)
     # Its fakes are a socketpair and SIGPIPE, which MinGW does not carry.
     bazarish_client_add_test(TestDevicePairing)

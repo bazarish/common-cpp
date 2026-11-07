@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/Tunnel.hpp"
+#include "bazarish/JsonRead.hpp"
 
 #include "bazarish/Padding.hpp"
 
@@ -32,7 +33,7 @@ Bytes toCbor(const nlohmann::json& value)
 
 nlohmann::json fromCbor(const Bytes& bytes)
 {
-    return nlohmann::json::from_cbor(bytes);
+    return parseCbor(bytes);
 }
 
 nlohmann::json::binary_t asBinary(const Bytes& bytes)

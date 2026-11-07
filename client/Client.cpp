@@ -9,11 +9,14 @@
 #include <bazarish/Limits.hpp>
 #include <bazarish/ResolvePuzzle.hpp>
 #include <bazarish/Resolve.hpp>
+#include <bazarish/JsonRead.hpp>
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <ctime>
+#include <string>
+#include <string_view>
 #include <thread>
 
 namespace bazarish::client {
@@ -30,6 +33,13 @@ std::int64_t nowSeconds()
 namespace {
 
 constexpr unsigned kMaxPuzzleThreads = 4;
+constexpr std::string_view kWebPageScheme = "https://";
+
+bool isWebPage(const std::string& link)
+{
+    return link.size() > kWebPageScheme.size() && link.rfind(kWebPageScheme, 0) == 0
+        && link.find_first_of("/?#", kWebPageScheme.size()) != kWebPageScheme.size();
+}
 
 unsigned puzzleThreads()
 {
@@ -130,9 +140,11 @@ PublishResult Client::publishCard(const ContactCard& content, const DestinationI
     signedCard.dest = serving.dest;
     signedCard.servingSealingKeyDer = serving.servingSealingKeyDer;
     const Bytes card = signedCard.issue(identity_);
-    (void)api_.postJson("/v1/account/card", {{"card", toBase64(card)}});
+    const nlohmann::json answer = api_.postJson("/v1/account/card", {{"card", toBase64(card)}}).json();
 
     PublishResult result;
+    result.approvalPending = answer.at("approval").get<std::string>() == kApprovalPending;
+    result.registrationMessage = answer.at("registrationMessage").get<std::string>();
     result.cardDer = card;
     result.dest = serving.dest;
     result.servingSealingKeyDer = serving.servingSealingKeyDer;
@@ -152,7 +164,7 @@ PortalInfo Client::fetchPortalInfo()
     info.message = body.value("message", std::string());
     if (const auto links = body.find("links"); links != body.end() && links->is_array()) {
         for (const nlohmann::json& link : *links) {
-            if (link.is_string()) {
+            if (link.is_string() && isWebPage(link.get<std::string>())) {
                 info.links.push_back(link.get<std::string>());
             }
         }
@@ -231,7 +243,7 @@ Descriptor Client::resolveAlias(const AliasQuery& alias, const ResolverCoordinat
     };
     FetchOutcome outcome = ask(query);
     if (!outcome.ok && outcome.errorCode == kProofRequiredCode) {
-        const nlohmann::json challenge = nlohmann::json::parse(outcome.refusal);
+        const nlohmann::json challenge = parseJson(outcome.refusal);
         const std::uint32_t bits = challenge.at("bits").get<std::uint32_t>();
         query.stamp = challenge.at("stamp").get<std::string>();
         log::info(
@@ -255,7 +267,7 @@ Descriptor Client::resolveAlias(const AliasQuery& alias, const ResolverCoordinat
                                        : "The alias registry refused to answer.");
     }
     const ResolveResponse fetched
-        = resolveResponseFromJson(nlohmann::json::parse(outcome.sealed));
+        = resolveResponseFromJson(parseJson(outcome.sealed));
 
     const ResolveRecord record = verifyResolveRecord(fetched.recordDer, fetched.delegationDer,
         fetched.aliasCertDer, resolver.rootFingerprint, now);
@@ -286,7 +298,7 @@ void Client::registerThisClient()
 std::vector<Client::DeviceEntry> Client::listClients()
 {
     const ApiResponse response = api_.get("/v1/messaging/clients");
-    const nlohmann::json body = nlohmann::json::parse(response.body.begin(), response.body.end());
+    const nlohmann::json body = parseJson(response.body);
     std::vector<DeviceEntry> devices;
     for (const nlohmann::json& entry : body.at("clients")) {
         devices.push_back(DeviceEntry{entry.at("clientId").get<std::string>(),
@@ -364,7 +376,7 @@ std::string deliveryIdFor(
 std::vector<FetchedItem> Client::fetch(const std::vector<std::string>& ids)
 {
     const nlohmann::json answer
-        = nlohmann::json::from_cbor(api_.postJson("/v1/messaging/fetch", {{"ids", ids}}).body);
+        = parseCbor(api_.postJson("/v1/messaging/fetch", {{"ids", ids}}).body);
     std::vector<FetchedItem> items;
     for (const nlohmann::json& item : answer.at("items")) {
         const nlohmann::json::binary_t& blob = item.at("blob").get_binary();

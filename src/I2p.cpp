@@ -34,37 +34,6 @@ namespace {
 constexpr auto kEndpointReadyPoll = std::chrono::milliseconds(200);
 constexpr auto kRouterReadyPoll = std::chrono::milliseconds(500);
 
-constexpr std::size_t kElGamalPrivateKeyBytes = 256;
-constexpr std::size_t kX25519PrivateKeyBytes = 32;
-constexpr std::size_t kEd25519PrivateKeyBytes = 32;
-// The key certificate after the 384-byte keys: type, length, signing type, crypto type.
-constexpr std::size_t kKeyCertificateAt = 384;
-constexpr std::uint8_t kKeyCertificateType = 5;
-constexpr std::size_t kCryptoTypeAt = kKeyCertificateAt + 5;
-constexpr unsigned kCryptoElGamal = 0;
-constexpr unsigned kCryptoX25519 = 4;
-
-// Where the signing private key starts: the encryption key before it is as long as its type says.
-std::size_t signingKeyOffset(const Bytes& blob)
-{
-    const std::size_t identity = i2pIdentityLength(blob);
-    if (blob[kKeyCertificateAt] != kKeyCertificateType) {
-        return identity + kElGamalPrivateKeyBytes;
-    }
-    const unsigned crypto
-        = (static_cast<unsigned>(blob[kCryptoTypeAt]) << 8) | blob[kCryptoTypeAt + 1];
-    if (crypto == kCryptoElGamal) {
-        return identity + kElGamalPrivateKeyBytes;
-    }
-    if (crypto == kCryptoX25519) {
-        return identity + kX25519PrivateKeyBytes;
-    }
-    throw std::runtime_error(
-        "bazarish::i2p: keys of encryption type " + std::to_string(crypto) + " are not read here");
-}
-// The expiry that opens an offline signature block, big-endian unix seconds.
-constexpr std::size_t kOfflineExpiresBytes = 4;
-
 std::atomic<bool> g_i2pLogging{false};
 std::atomic<std::uint64_t> g_carryReturns{0};
 std::mutex g_carryListenerMutex;
@@ -126,32 +95,45 @@ std::string Keys::publicBase64() const
 
 bool Keys::isOffline() const
 {
-    const std::size_t signingAt = signingKeyOffset(impl_->blob);
-    if (impl_->blob.size() < signingAt + kEd25519PrivateKeyBytes) {
-        throw std::runtime_error("bazarish::i2p: truncated private keys blob");
-    }
-    return std::all_of(impl_->blob.begin() + signingAt,
-        impl_->blob.begin() + signingAt + kEd25519PrivateKeyBytes,
-        [](const std::uint8_t byte) { return byte == 0; });
+    return backend::offlineExpires(impl_->blob).has_value();
 }
 
 std::int64_t Keys::transientExpires() const
 {
-    if (!isOffline()) { return 0; }
-    const std::size_t expiresAt = signingKeyOffset(impl_->blob) + kEd25519PrivateKeyBytes;
-    if (impl_->blob.size() < expiresAt + kOfflineExpiresBytes) {
-        throw std::runtime_error("bazarish::i2p: truncated private keys blob");
-    }
-    std::int64_t expires = 0;
-    for (std::size_t i = 0; i < kOfflineExpiresBytes; ++i) {
-        expires = (expires << 8) | impl_->blob[expiresAt + i];
-    }
-    return expires;
+    return backend::offlineExpires(impl_->blob).value_or(0);
 }
 
-int Keys::b33OfflineKeyDays() const
+bool Keys::b33OfflineKeysCover(const std::int64_t fromUnix, const std::int64_t untilUnix) const
 {
-    return backend::b33OfflineKeyDays(impl_->blob);
+    return backend::b33OfflineKeysCover(impl_->blob, fromUnix, untilUnix);
+}
+
+bool delegationLapsed(const std::int64_t expiresUnix, const std::int64_t now)
+{
+    return now + kDelegationLapseLeadSeconds >= expiresUnix;
+}
+
+void requireUsableDelegation(const Keys& keys, const std::int64_t now)
+{
+    if (!keys.isOffline()) {
+        throw std::invalid_argument("a delegation never carries the destination's own signing key");
+    }
+    const std::int64_t expires = keys.transientExpires();
+    if (delegationLapsed(expires, now)) {
+        throw std::invalid_argument("the delegation has run out");
+    }
+    if (!keys.b33OfflineKeysCover(now, expires)) {
+        throw std::invalid_argument("the delegation lacks a b33 key for a day of its term");
+    }
+}
+
+void requireDelegationEnds(const Keys& keys, const std::int64_t declaredExpires)
+{
+    const std::int64_t expires = keys.transientExpires();
+    if (expires != declaredExpires) {
+        throw std::invalid_argument("the delegation runs out at " + std::to_string(expires)
+            + ", not at the declared " + std::to_string(declaredExpires));
+    }
 }
 
 Keys Keys::issueTransient(const int days) const

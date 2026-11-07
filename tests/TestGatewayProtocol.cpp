@@ -5,6 +5,7 @@
 
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace bazarish;
@@ -136,6 +137,29 @@ int main()
         CHECK(mine != 0);
         CHECK(issued.insert(mine).second);
         CHECK(issued.insert(theirs).second);
+    }
+
+    {
+        constexpr int kCallers = 8;
+        constexpr int kPerCaller = 10000;
+        Ids shared(false);
+        std::vector<std::vector<std::uint32_t>> drawn(kCallers);
+        std::vector<std::thread> callers;
+        for (int caller = 0; caller < kCallers; ++caller) {
+            callers.emplace_back([&shared, &mine = drawn[caller]]() {
+                for (int i = 0; i < kPerCaller; ++i) {
+                    mine.push_back(shared.next());
+                }
+            });
+        }
+        for (std::thread& caller : callers) {
+            caller.join();
+        }
+        std::set<std::uint32_t> distinct;
+        for (const std::vector<std::uint32_t>& mine : drawn) {
+            distinct.insert(mine.begin(), mine.end());
+        }
+        CHECK(distinct.size() == static_cast<std::size_t>(kCallers) * kPerCaller);
     }
 
     std::printf("TestGatewayProtocol ok\n");

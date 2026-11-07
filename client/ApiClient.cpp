@@ -12,6 +12,7 @@
 #include <bazarish/Limits.hpp>
 
 #include <bazarish/HttpClient.hpp>
+#include <bazarish/JsonRead.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -81,7 +82,7 @@ const char* serviceName(const ServerCard::Service service)
 {
     const std::string text(body.begin(), body.end());
     try {
-        const nlohmann::json document = nlohmann::json::parse(text);
+        const nlohmann::json document = parseJson(text);
         const std::optional<ParsedError> parsed = parseErrorEnvelope(document);
         if (parsed.has_value()) {
             throw ApiError(parsed->code, status,
@@ -133,7 +134,7 @@ std::string facadeAddress(const Facade& facade)
 
 nlohmann::json ApiResponse::json() const
 {
-    return nlohmann::json::parse(body.begin(), body.end());
+    return parseJson(body);
 }
 
 ApiError::ApiError(

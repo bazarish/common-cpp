@@ -35,7 +35,10 @@ struct TunnelLength {
 // The same for the embedded router and for SAM.
 TunnelLength tunnelLengthFor(Privacy privacy);
 
+// Every destination a client holds, so none of them stands out by its lease set; calls excepted.
 inline constexpr int kDefaultTunnelQuantity = 3;
+// i2pd's DEFAULT_INBOUND_TUNNELS_QUANTITY: every destination a server holds looks the same.
+inline constexpr int kServerTunnelQuantity = 5;
 inline constexpr int kMaxTunnelQuantity = 16;
 // A call sends on the fastest of these tunnels crossed with the peer's.
 inline constexpr int kCallTunnelQuantity = 6;
@@ -59,7 +62,7 @@ public:
     std::string publicBase64() const;
     bool isOffline() const;
     std::int64_t transientExpires() const;
-    int b33OfflineKeyDays() const;
+    bool b33OfflineKeysCover(std::int64_t fromUnix, std::int64_t untilUnix) const;
 
     Keys issueTransient(int days) const;
 
@@ -70,6 +73,15 @@ private:
     friend class Router;
     friend class Endpoint;
 };
+
+// A destination goes down this long before its delegation runs out, while its keys still sign.
+inline constexpr std::int64_t kDelegationLapseLeadSeconds = 60;
+
+bool delegationLapsed(std::int64_t expiresUnix, std::int64_t now);
+
+void requireUsableDelegation(const Keys& keys, std::int64_t now);
+
+void requireDelegationEnds(const Keys& keys, std::int64_t declaredExpires);
 
 std::string routingHost(const std::string& publicBase64, bool blinded = true);
 
@@ -104,7 +116,7 @@ enum class Traffic { eStream, eRaw };
 struct EndpointConfig {
     std::optional<Keys> keys;
     Privacy privacy = Privacy::eMax;
-    int tunnelQuantity = 3;
+    int tunnelQuantity = kDefaultTunnelQuantity;
     bool published = true;
     std::string label = {};
     std::string owner = {};
@@ -183,6 +195,8 @@ struct Capabilities {
     bool warmPool = false;
     // Endpoint::setLeaseSetReaderKey works, so a warm destination can watch for an account.
     bool lateReaderKey = false;
+    // Stream bytes reach no one but the two ends: false when a gateway terminates the streams.
+    bool privateStreams = false;
 };
 
 inline constexpr int kDefaultSamControlPort = 7656;

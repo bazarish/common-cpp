@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/Portal.hpp"
+#include "bazarish/JsonRead.hpp"
 
 #include <bazarish/Auth.hpp>
 #include <bazarish/Bytes.hpp>
@@ -135,7 +136,7 @@ LoginConsumer readLoginConsumer(const std::string& challenge)
 {
     LoginConsumer consumer;
     try {
-        const nlohmann::json envelope = nlohmann::json::parse(decodeLoginChallenge(challenge));
+        const nlohmann::json envelope = parseJson(decodeLoginChallenge(challenge));
         if (!envelope.contains("v") || envelope.at("v").get<int>() != kLoginChallengeVersion) {
             throw std::runtime_error("it is of a version this client does not know");
         }
@@ -156,7 +157,7 @@ LoginConsumer readLoginConsumer(const std::string& challenge)
 
 std::optional<LoginCallback> readLoginCallback(const std::string& challenge)
 {
-    const nlohmann::json envelope = nlohmann::json::parse(decodeLoginChallenge(challenge));
+    const nlohmann::json envelope = parseJson(decodeLoginChallenge(challenge));
     if (!envelope.contains("callback")) {
         return std::nullopt;
     }
@@ -186,7 +187,7 @@ void requireChallengeReturnsTo(const std::string& challenge, const std::string& 
 
 std::int64_t loginChallengeExpiresAt(const std::string& challenge)
 {
-    const nlohmann::json envelope = nlohmann::json::parse(decodeLoginChallenge(challenge));
+    const nlohmann::json envelope = parseJson(decodeLoginChallenge(challenge));
     if (!envelope.contains("ts") || !envelope.at("ts").is_number_integer()) {
         throw std::runtime_error("this login challenge does not say when it was made");
     }
@@ -222,7 +223,7 @@ std::string verifyLoginBlob(
     nlohmann::json parsed;
     try {
         const Bytes raw = fromBase64(blob);
-        parsed = nlohmann::json::parse(raw.begin(), raw.end());
+        parsed = parseJson(raw);
     } catch (const std::exception&) {
         throw std::runtime_error(kNotASignature);
     }

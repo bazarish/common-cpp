@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/Auth.hpp"
+#include "bazarish/JsonRead.hpp"
 
 #include <bazarish/Hmac.hpp>
 
@@ -177,7 +178,7 @@ std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
     }
 
     const Bytes keysRaw = fromBase64(requireHeader(headers, kHeaderKeys));
-    const nlohmann::json keys = nlohmann::json::parse(keysRaw.begin(), keysRaw.end());
+    const nlohmann::json keys = parseJson(keysRaw);
     const Bytes classicalDer = fromBase64(keys.at("c").get<std::string>());
     const Bytes pqDer = fromBase64(keys.at("pq").get<std::string>());
 

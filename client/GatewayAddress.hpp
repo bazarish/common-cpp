@@ -11,7 +11,6 @@ struct GatewayAddress {
     int port = 443;
     std::string path;
     std::string token;
-    bool tls = true;
 
     static std::optional<GatewayAddress> parse(const std::string& text);
     std::string toString() const;

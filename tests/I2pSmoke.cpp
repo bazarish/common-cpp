@@ -36,8 +36,9 @@ int main(int argc, char** argv)
         bazarish::i2p::Keys::generate(), bazarish::i2p::Privacy::eMax, 3, true};
     auto server = router.createEndpoint(serverCfg);
     auto client = router.createEndpoint(clientCfg);
-    std::printf("[smoke] server addr=%s offline=%d b33days=%d sameAddr=%d\n",
-        server->routingHost().c_str(), transient.isOffline(), transient.b33OfflineKeyDays(),
+    std::printf("[smoke] server addr=%s offline=%d covered=%d sameAddr=%d\n",
+        server->routingHost().c_str(), transient.isOffline(),
+        transient.b33OfflineKeysCover(std::time(nullptr), transient.transientExpires()),
         server->routingHost() == bazarish::i2p::routingHost(master.publicBase64()));
 
     const bool sr = server->waitReady(seconds(300));

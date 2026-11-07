@@ -7,6 +7,8 @@
 
 #include "TestUtil.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -21,6 +23,8 @@ using namespace bazarish::client;
 namespace fs = std::filesystem;
 
 namespace {
+
+constexpr int kOverflowRounds = 4;
 
 void writeFile(const fs::path& path, const Bytes& bytes)
 {
@@ -142,6 +146,23 @@ int main()
         int attempts = 0;
         bool threw = false;
         try {
+            receiveFile([&attempts, &ciphertext](const std::uint64_t, TransferSink& sink) {
+                ++attempts;
+                sink.total(ciphertext.size());
+            }, offer, announced, fileTargetAt(dest));
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        CHECK(threw);
+        CHECK(attempts > 0 && attempts < 100);
+        CHECK(!fs::exists(dest));
+    }
+
+    {
+        const fs::path dest = root / "undeclared.bin";
+        int attempts = 0;
+        bool threw = false;
+        try {
             receiveFile([&attempts](const std::uint64_t, TransferSink& sink) {
                 ++attempts;
                 sink.total(0);
@@ -150,7 +171,33 @@ int main()
             threw = true;
         }
         CHECK(threw);
-        CHECK(attempts > 0 && attempts < 100);
+        CHECK(attempts == 1);
+        CHECK(!fs::exists(dest));
+    }
+
+    {
+        const fs::path dest = root / "overflowing.bin";
+        const fs::path part = dest.string() + ".part";
+        std::uintmax_t largestPart = 0;
+        int attempts = 0;
+        bool threw = false;
+        try {
+            receiveFile(
+                [&](const std::uint64_t, TransferSink& sink) {
+                    ++attempts;
+                    sink.total(ciphertext.size());
+                    for (int round = 0; round < kOverflowRounds; ++round) {
+                        sink.append(ciphertext.data(), ciphertext.size());
+                        largestPart = std::max(largestPart, fs::file_size(part));
+                    }
+                },
+                offer, announced, fileTargetAt(dest));
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        CHECK(threw);
+        CHECK(attempts == 1);
+        CHECK(largestPart <= ciphertext.size());
         CHECK(!fs::exists(dest));
     }
 

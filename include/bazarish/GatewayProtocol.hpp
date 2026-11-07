@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <atomic>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -31,6 +32,11 @@ inline constexpr std::chrono::seconds kKeepalive{30};
 inline constexpr std::chrono::seconds kPongTimeout{15};
 inline constexpr std::chrono::milliseconds kStatusPeriod{250};
 inline constexpr std::size_t kMaxSocketsPerSession = 16;
+// The longest dial a client makes: a file or a pairing.
+inline constexpr std::chrono::seconds kMaxDialDeadline{90};
+inline constexpr std::size_t kMaxDialsPerSession = 64;
+inline constexpr std::size_t kMaxEndpointsPerSession = 256;
+inline constexpr std::size_t kMaxStreamsPerSession = 1024;
 
 inline constexpr std::chrono::milliseconds kDecoyMinDelay{500};
 inline constexpr std::chrono::milliseconds kDecoyMaxDelay{300000};
@@ -128,7 +134,7 @@ public:
     std::uint32_t next();
 
 private:
-    std::uint32_t next_;
+    std::atomic<std::uint32_t> next_;
 };
 
 }  // namespace bazarish::gateway

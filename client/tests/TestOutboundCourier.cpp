@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <future>
 #include <mutex>
 #include <set>
 #include <string>
@@ -379,6 +380,32 @@ int main()
         courier.stop();
         CHECK(outcomes.at(0).find("did not answer in time") != std::string::npos);
         CHECK(outcomes.at(1) == "stored");
+    }
+
+    {
+        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
+            [](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                return nullptr;
+            },
+            quickSchedule(), {}, 1);
+        std::mutex held;
+        std::promise<std::thread::id> reportedOn;
+        {
+            const std::lock_guard<std::mutex> holding(held);
+            OutboundCourier::Outcome ready;
+            ready.stored = true;
+            courier.report(
+                [&held, &reportedOn](const OutboundCourier::Outcome& outcome) {
+                    const std::lock_guard<std::mutex> lock(held);
+                    CHECK(outcome.stored);
+                    reportedOn.set_value(std::this_thread::get_id());
+                },
+                ready);
+        }
+        CHECK(reportedOn.get_future().get() != std::this_thread::get_id());
+        courier.stop();
+        CHECK_THROWS(courier.submit(taskTo("late.b32.i2p", "d-late")));
+        CHECK_THROWS(courier.report([](const OutboundCourier::Outcome&) {}, {}));
     }
 
     {

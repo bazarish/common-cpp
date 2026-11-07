@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <stdexcept>
 
 namespace bazarish::client {
 
@@ -84,15 +85,20 @@ void OutboundCourier::submit(Task task)
 {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        if (running_) {
-            queue_.push_back(std::move(task));
-            cv_.notify_one();
-            return;
+        if (!running_) {
+            throw std::runtime_error("this device stopped sending before the message left");
         }
+        queue_.push_back(std::move(task));
     }
-    std::deque<Task> refused;
-    refused.push_back(std::move(task));
-    reportDropped(refused);
+    cv_.notify_one();
+}
+
+void OutboundCourier::report(OutcomeFn onOutcome, Outcome outcome)
+{
+    Task task;
+    task.onOutcome = std::move(onOutcome);
+    task.ready = std::move(outcome);
+    submit(std::move(task));
 }
 
 void OutboundCourier::reportDropped(const std::deque<Task>& tasks)
@@ -144,7 +150,7 @@ void OutboundCourier::workerLoop()
             }
         } release{*this, task.toDest};
 
-        const Outcome outcome = deliverNow(task);
+        const Outcome outcome = task.ready ? *task.ready : deliverNow(task);
         if (task.onOutcome) {
             task.onOutcome(outcome);
         }

@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include <bazarish/FederationFrame.hpp>
+#include <bazarish/JsonRead.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -17,7 +18,7 @@ std::string buildFederationDeliverHeader(const Bytes& sealed, const std::size_t 
 
 FederationDeliverResult parseFederationDeliverReply(const std::string& line)
 {
-    const nlohmann::json reply = nlohmann::json::parse(line);
+    const nlohmann::json reply = parseJson(line);
     FederationDeliverResult result;
     result.delivered = reply.at("delivered").get<bool>();
     if (reply.contains("errorCode")) {
@@ -46,7 +47,7 @@ std::string buildFederationFetchHeader(const std::string& op, const Bytes& seale
 
 FederationFetchResult parseFederationFetchReply(const std::string& line)
 {
-    const nlohmann::json reply = nlohmann::json::parse(line);
+    const nlohmann::json reply = parseJson(line);
     FederationFetchResult result;
     result.ok = reply.at("ok").get<bool>();
     if (reply.contains("sealed")) {

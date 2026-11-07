@@ -37,6 +37,7 @@
 #include <openssl/crypto.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <memory>
 #include <map>
@@ -53,6 +54,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace i2pd = ::i2p;
@@ -64,6 +66,8 @@ constexpr i2pd::data::SigningKeyType kSigType = i2pd::data::SIGNING_KEY_TYPE_EDD
 constexpr i2pd::data::SigningKeyType kB33SigType
     = i2pd::data::SIGNING_KEY_TYPE_REDDSA_SHA512_ED25519;
 constexpr int kMaxB33Days = 0xFFFF;
+// i2pd's GetDateString writes "YYYYMMDD" and its terminator.
+constexpr std::size_t kDateStringBytes = 9;
 constexpr std::size_t kB32SuffixLen = 8;
 constexpr int kReceivePollSeconds = 5;
 constexpr int kServerShareRatio = 100;
@@ -1037,6 +1041,7 @@ public:
 
     bool owns = false;
     bool inited = false;
+    mutable std::mutex lifecycleMutex;
     bool started = false;
     std::string builtInReseedUrls;
     std::shared_ptr<IoService> io;
@@ -1131,6 +1136,7 @@ EmbeddedRouter::EmbeddedRouter(const RouterConfig& config)
 
 void EmbeddedRouter::start()
 {
+    const std::lock_guard<std::mutex> lock(lifecycleMutex);
     if (started) { return; }
     i2pd::api::StartI2P();
     i2pd::log::Logger().SendTo([](LogLevel level, const std::string& text)
@@ -1188,13 +1194,18 @@ ProxyState EmbeddedRouter::proxyState() const
 
 void EmbeddedRouter::stop()
 {
+    const std::lock_guard<std::mutex> lock(lifecycleMutex);
     if (!started) { return; }
     io.reset();
     i2pd::api::StopI2P();
     started = false;
 }
 
-bool EmbeddedRouter::running() const { return started; }
+bool EmbeddedRouter::running() const
+{
+    const std::lock_guard<std::mutex> lock(lifecycleMutex);
+    return started;
+}
 
 bool EmbeddedRouter::ready() const
 {
@@ -1239,15 +1250,25 @@ std::vector<TransportPeer> EmbeddedRouter::transportPeers() const
             peers.push_back(std::move(peer));
         }
     };
-    if (const auto* const ntcp2 = i2pd::transport::transports.GetNTCP2Server()) {
-        const auto sessions = ntcp2->GetNTCP2Sessions();
-        collect(sessions, "NTCP2");
+    const auto patience = std::chrono::seconds(kSessionSnapshotSeconds);
+    // i2pd hands the server out const; the object is not, and its table lives on its service.
+    if (auto* const ntcp2 = const_cast<i2pd::transport::NTCP2Server*>(
+            i2pd::transport::transports.GetNTCP2Server())) {
+        using Sessions = std::decay_t<decltype(ntcp2->GetNTCP2Sessions())>;
+        const auto taken = std::make_shared<std::promise<Sessions>>();
+        std::future<Sessions> copy = taken->get_future();
+        boost::asio::post(
+            ntcp2->GetService(), [ntcp2, taken]() { taken->set_value(ntcp2->GetNTCP2Sessions()); });
+        if (copy.wait_for(patience) == std::future_status::ready) {
+            collect(copy.get(), "NTCP2");
+        }
     }
     if (auto* const ssu2 = i2pd::transport::transports.GetSSU2Server()) {
-        i2pd::transport::SSU2Server::SSU2Sessions sessions;
-        if (ssu2->GetSSU2Sessions(sessions).wait_for(std::chrono::seconds(kSessionSnapshotSeconds))
-            == std::future_status::ready) {
-            collect(sessions, "SSU2");
+        const auto sessions = std::make_shared<i2pd::transport::SSU2Server::SSU2Sessions>();
+        std::future<void> copied = ssu2->GetSSU2Sessions(*sessions);
+        boost::asio::post(ssu2->GetService(), [sessions]() {});
+        if (copied.wait_for(patience) == std::future_status::ready) {
+            collect(*sessions, "SSU2");
         }
     }
     return peers;
@@ -1330,7 +1351,13 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     params.Insert(i2pd::client::I2CP_PARAM_INBOUND_TUNNELS_QUANTITY, std::to_string(quantity));
     params.Insert(i2pd::client::I2CP_PARAM_OUTBOUND_TUNNELS_QUANTITY, std::to_string(quantity));
 
-    impl->io = io;
+    {
+        const std::lock_guard<std::mutex> lock(lifecycleMutex);
+        if (!started) {
+            throw std::runtime_error("bazarish::i2p: the engine is not running");
+        }
+        impl->io = io;
+    }
     impl->dest = std::make_shared<i2pd::client::ClientDestination>(
         config.realtime ? impl->io->reserved() : impl->io->next(),
         parseKeys(keys.blob()), config.published, &params);
@@ -1404,6 +1431,7 @@ Capabilities EmbeddedRouter::capabilities() const
     what.lateReaderKey = true;
     what.offlineKeys = true;
     what.reseed = true;
+    what.privateStreams = true;
     return what;
 }
 
@@ -1432,15 +1460,32 @@ Bytes issueTransientBlob(const Bytes& master, const int days)
     return blob;
 }
 
-int b33OfflineKeyDays(const Bytes& blob)
+std::optional<std::int64_t> offlineExpires(const Bytes& blob)
 {
     const i2pd::data::PrivateKeys keys = parseKeys(blob);
-    const i2pd::data::B33OfflineKeys& batch = keys.GetB33OfflineKeys();
-    if (batch.GetLen() < i2pd::data::B33_OFFLINE_KEYS_HEADER_LENGTH) { return 0; }
-    char today[9];
-    i2pd::util::GetDateString(currentMidnight(), today);
-    if (!i2pd::data::OfflinePrivateKeys(keys, today).IsOfflineSignature()) { return 0; }
-    return bufbe16toh(batch.GetBuffer() + i2pd::data::B33_OFFLINE_KEYS_HEADER_LENGTH - 2);
+    if (!keys.IsOfflineSignature()) {
+        return std::nullopt;
+    }
+    const std::vector<std::uint8_t>& signature = keys.GetOfflineSignature();
+    if (signature.size() < i2pd::data::OFFLINE_SIGNATURE_HEADER_LENGTH) {
+        throw std::runtime_error("bazarish::i2p: truncated offline signature");
+    }
+    return static_cast<std::int64_t>(bufbe32toh(signature.data()));
+}
+
+bool b33OfflineKeysCover(const Bytes& blob, const std::int64_t fromUnix, const std::int64_t untilUnix)
+{
+    const i2pd::data::PrivateKeys keys = parseKeys(blob);
+    const std::int64_t firstDay
+        = (fromUnix / i2pd::data::SECONDS_PER_DAY) * i2pd::data::SECONDS_PER_DAY;
+    for (std::int64_t day = firstDay; day < untilUnix; day += i2pd::data::SECONDS_PER_DAY) {
+        std::array<char, kDateStringBytes> date{};
+        i2pd::util::GetDateString(static_cast<std::uint64_t>(day), date.data());
+        if (!i2pd::data::OfflinePrivateKeys(keys, date.data()).IsOfflineSignature()) {
+            return false;
+        }
+    }
+    return true;
 }
 
 }  // namespace backend

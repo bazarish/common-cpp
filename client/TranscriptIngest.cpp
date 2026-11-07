@@ -7,6 +7,7 @@
 
 #include <bazarish/Clock.hpp>
 #include <bazarish/Log.hpp>
+#include <bazarish/JsonRead.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -373,7 +374,7 @@ bool TranscriptIngest::noteGroupBlock(const IncomingMessage& message)
 
 bool TranscriptIngest::applyGroupReactions(const std::string& peer, const std::string& json)
 {
-    const nlohmann::json entries = nlohmann::json::parse(json, nullptr, false);
+    const nlohmann::json entries = parseJsonOrDiscarded(json);
     if (entries.is_array()) {
         for (const nlohmann::json& entry : entries) {
             if (!entry.is_object()) {

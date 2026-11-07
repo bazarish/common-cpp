@@ -21,6 +21,8 @@
 
 namespace bazarish::client {
 
+inline constexpr char kApprovalPending[] = "pending";
+
 struct DestinationInfo {
     std::string dest;
     Bytes servingSealingKeyDer;
@@ -51,6 +53,8 @@ struct PublishResult {
     std::string dest;
     Bytes servingSealingKeyDer;
     Bytes cardDer;
+    bool approvalPending = false;
+    std::string registrationMessage;
 };
 
 struct ContactInfo {

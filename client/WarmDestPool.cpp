@@ -37,18 +37,18 @@ void WarmDestPool::stop()
     cv_.notify_all();
 }
 
-std::shared_ptr<bazarish::i2p::Endpoint> WarmDestPool::acquire()
+std::shared_ptr<bazarish::i2p::Endpoint> WarmDestPool::acquire(const bazarish::i2p::Privacy privacy)
 {
     std::shared_ptr<bazarish::i2p::Endpoint> dest;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         while (!ready_.empty()) {
-            dest = std::move(ready_.front());
+            Warm warm = std::move(ready_.front());
             ready_.pop_front();
-            if (!dest->lost()) {
+            if (warm.privacy == privacy && !warm.endpoint->lost()) {
+                dest = std::move(warm.endpoint);
                 break;
             }
-            dest.reset();
         }
         refillWanted_ = true;
     }
@@ -88,7 +88,7 @@ void WarmDestPool::warmerLoop()
     while (running_.load()) {
         std::size_t toCreate = 0;
         std::size_t generation = 0;
-        std::deque<std::shared_ptr<bazarish::i2p::Endpoint>> unwanted;
+        std::deque<Warm> unwanted;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             generation = generation_;
@@ -105,10 +105,11 @@ void WarmDestPool::warmerLoop()
 
         for (std::size_t i = 0; i < toCreate && running_.load(); ++i) {
             try {
-                auto endpoint = router_.createEndpoint(shape_());
+                const bazarish::i2p::EndpointConfig shape = shape_();
+                auto endpoint = router_.createEndpoint(shape);
                 if (endpoint) {
-                    building.push_back(
-                        {std::move(endpoint), std::chrono::steady_clock::now(), generation});
+                    building.push_back({std::move(endpoint), std::chrono::steady_clock::now(),
+                        generation, shape.privacy});
                 }
             } catch (const std::exception& error) {
                 bazarish::log::warn("warm-pool: createEndpoint failed: {}", error.what());
@@ -121,7 +122,9 @@ void WarmDestPool::warmerLoop()
                 std::size_t warm = 0;
                 {
                     const std::lock_guard<std::mutex> lock(mutex_);
-                    ready_.push_back(std::move(it->endpoint));
+                    if (it->generation == generation_) {
+                        ready_.push_back({std::move(it->endpoint), it->privacy});
+                    }
                     warm = ready_.size();
                 }
                 bazarish::log::info("warm-pool: {} ready ({} warm, target {})",

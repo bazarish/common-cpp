@@ -28,7 +28,8 @@ public:
     void flush();
     void setWanted(bool wanted);
 
-    std::shared_ptr<bazarish::i2p::Endpoint> acquire();
+    // Only a destination built with this privacy: one from before a change is not handed out.
+    std::shared_ptr<bazarish::i2p::Endpoint> acquire(bazarish::i2p::Privacy privacy);
 
 private:
     void warmerLoop();
@@ -36,6 +37,11 @@ private:
         std::shared_ptr<bazarish::i2p::Endpoint> endpoint;
         std::chrono::steady_clock::time_point startedAt;
         std::size_t generation = 0;
+        bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax;
+    };
+    struct Warm {
+        std::shared_ptr<bazarish::i2p::Endpoint> endpoint;
+        bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax;
     };
 
     bazarish::i2p::Router& router_;
@@ -47,7 +53,7 @@ private:
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;
-    std::deque<std::shared_ptr<bazarish::i2p::Endpoint>> ready_;
+    std::deque<Warm> ready_;
     std::size_t generation_ = 0;
     std::atomic<bool> running_{false};
     std::thread warmer_;

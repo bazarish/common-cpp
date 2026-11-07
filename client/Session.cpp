@@ -25,15 +25,18 @@
 #include <bazarish/PrivateFile.hpp>
 #include <bazarish/Padding.hpp>
 #include <bazarish/Pass.hpp>
+#include <bazarish/PlainText.hpp>
 #include <bazarish/Clock.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/Reactions.hpp>
 #include <bazarish/I2pAddress.hpp>
+#include <bazarish/JsonRead.hpp>
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -53,6 +56,28 @@ namespace {
 constexpr std::size_t kPassPrefixChars = 12;
 
 constexpr std::size_t kTransferAskBytes = 8;
+constexpr char kStateClockKey[] = "state-clock";
+
+std::string offeredName(const std::string& offered)
+{
+    return offered.empty() ? offered : safeFileName(offered);
+}
+
+// ISO/IEC 15948 file signature; a JPEG opens with its start-of-image marker.
+constexpr std::array<std::uint8_t, 8> kPngSignature{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+constexpr std::array<std::uint8_t, 3> kJpegSignature{0xFF, 0xD8, 0xFF};
+
+template <std::size_t N>
+bool opensWith(const Bytes& data, const std::array<std::uint8_t, N>& signature)
+{
+    return data.size() >= N && std::equal(signature.begin(), signature.end(), data.begin());
+}
+
+bool isAvatarPicture(const Bytes& data, const std::string& mime)
+{
+    return (mime == "image/png" && opensWith(data, kPngSignature))
+        || (mime == "image/jpeg" && opensWith(data, kJpegSignature));
+}
 
 }  // namespace
 
@@ -123,7 +148,7 @@ std::int64_t nowSeconds()
 
 nlohmann::json readBundle(const Bytes& plain)
 {
-    const nlohmann::json bundle = nlohmann::json::parse(plain.begin(), plain.end());
+    const nlohmann::json bundle = parseJson(plain);
     const int version = bundle.at("v").get<int>();
     if (version > kBundleFormatVersion) {
         throw std::runtime_error("this backup was written by a newer version of Bazarish");
@@ -256,9 +281,23 @@ Bytes encodedBody(const nlohmann::json& inner)
     return encodedBatch({inner});
 }
 
+nlohmann::json envelopeFrom(const std::string& from, const std::string& type,
+    const std::string& id, nlohmann::json payload)
+{
+    nlohmann::json inner = {
+        {"v", kMessageFormatVersion},
+        {"type", type},
+        {"id", id},
+        {"from", from},
+        {"sentAt", nowMillis()},
+    };
+    inner.update(std::move(payload));
+    return inner;
+}
+
 std::vector<nlohmann::json> decodedBody(const Bytes& bytes)
 {
-    nlohmann::json items = nlohmann::json::from_cbor(unpadFromLadder(bytes));
+    nlohmann::json items = parseCbor(unpadFromLadder(bytes));
     if (!items.is_array() || items.empty()) {
         throw std::runtime_error("a sealed body is not a list of messages");
     }
@@ -321,6 +360,64 @@ nlohmann::json groupBlockToJson(const GroupBlock& block)
         {"at", block.at},
     };
 }
+
+namespace {
+
+nlohmann::json relayedEnvelopeFrom(const std::string& from, const RelayedPost& post)
+{
+    switch (post.kind) {
+    case RelayKind::eEdit:
+        return envelopeFrom(from, "edit", post.id,
+            {{"ref", post.ref}, {"text", post.text}, {"keyboard", keyboardToJson({})}});
+    case RelayKind::eDelete:
+        return envelopeFrom(from, "delete", post.id, {{"ref", post.ref}});
+    case RelayKind::eReactions:
+        return envelopeFrom(from, kTypeGroupReactions, post.id, {{"reactions", post.reactions}});
+    case RelayKind::ePost:
+        break;
+    }
+    nlohmann::json inner;
+    if (post.type == kTypeImage) {
+        inner = envelopeFrom(from, kTypeImage, post.id,
+            {{"image", imageBody(post.mediaName, post.mime, post.media)}});
+    } else if (post.type == kTypeAudio) {
+        inner = envelopeFrom(
+            from, kTypeAudio, post.id, {{"audio", audioBody(post.durationMs, post.media)}});
+    } else if (post.type == "text") {
+        inner = envelopeFrom(from, "text", post.id, {{"text", post.text}});
+    } else {
+        throw std::runtime_error("a group relays text, pictures and voice, not " + post.type);
+    }
+    inner["sentAt"] = post.sentAt;
+    if (post.fromHost) {
+        inner["fromHost"] = true;
+    } else {
+        inner["author"] = post.author;
+        inner["contactable"] = post.contactable;
+    }
+    addReplyAndForward(inner, post.replyTo, false);
+    return inner;
+}
+
+std::size_t relayFittingFor(const Identity& identity, const std::vector<RelayedPost>& posts)
+{
+    const nlohmann::json widestBlock = groupBlockToJson(GroupBlock{GroupKind::eChannel,
+        std::numeric_limits<std::int64_t>::max(), true, true,
+        std::numeric_limits<std::int64_t>::max()});
+    std::vector<nlohmann::json> items;
+    for (const RelayedPost& post : posts) {
+        nlohmann::json inner = relayedEnvelopeFrom(identity.fingerprint(), post);
+        inner["group"] = widestBlock;
+        signAuthorship(inner, identity, /*withKeys=*/false);
+        items.push_back(std::move(inner));
+        if (encodedBatch(items).size() > kMessageCeiling) {
+            return items.size() - 1;
+        }
+    }
+    return items.size();
+}
+
+}  // namespace
 
 GroupBlock groupBlockFromJson(const nlohmann::json& body)
 {
@@ -482,7 +579,7 @@ std::vector<std::string> Session::facadeAddresses() const
 Session Session::open(const fs::path& accountFile, const std::string& passphrase)
 {
     auto db = std::make_unique<AccountDb>(accountFile, passphrase);
-    const nlohmann::json meta = nlohmann::json::parse(db->text("meta"));
+    const nlohmann::json meta = parseJson(db->text("meta"));
     ServerEndpoint endpoint;
     const nlohmann::json& endpointJson = meta.at("endpoint");
     endpoint.serverFingerprint = endpointJson.at("serverFingerprint").get<std::string>();
@@ -510,7 +607,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
 
     std::map<std::string, Contact> contacts;
     if (db->has("contacts")) {
-        const nlohmann::json stored = nlohmann::json::parse(db->text("contacts"));
+        const nlohmann::json stored = parseJson(db->text("contacts"));
         for (const auto& [fingerprint, entry] : stored.items()) {
             Contact contact;
             contact.kind = accountKindFromName(entry.at("kind").get<std::string>());
@@ -534,26 +631,31 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
 
     std::set<std::string> pendingRevokes;
     if (db->has("pass-revokes")) {
-        for (const nlohmann::json& entry : nlohmann::json::parse(db->text("pass-revokes"))) {
+        for (const nlohmann::json& entry : parseJson(db->text("pass-revokes"))) {
             pendingRevokes.insert(entry.get<std::string>());
         }
     }
 
     std::set<std::string> blocked;
     if (db->has("blocked")) {
-        for (const nlohmann::json& entry : nlohmann::json::parse(db->text("blocked"))) {
+        for (const nlohmann::json& entry : parseJson(db->text("blocked"))) {
             blocked.insert(entry.get<std::string>());
         }
     }
 
+    std::map<std::string, std::int64_t> stateClock;
+    if (db->has(kStateClockKey)) {
+        stateClock = parseJson(db->text(kStateClockKey)).get<std::map<std::string, std::int64_t>>();
+    }
+
     BotMenuMarks botMenus;
     if (db->has("bot-menus")) {
-        botMenus = BotMenuMarks::fromJson(nlohmann::json::parse(db->text("bot-menus")));
+        botMenus = BotMenuMarks::fromJson(parseJson(db->text("bot-menus")));
     }
 
     Session::RoutingFanout fanout;
     if (db->has("routing-fanout")) {
-        const nlohmann::json queued = nlohmann::json::parse(db->text("routing-fanout"));
+        const nlohmann::json queued = parseJson(db->text("routing-fanout"));
         fanout.contacts = queued.value("contacts", std::vector<std::string>());
         fanout.registry = queued.value("registry", false);
     }
@@ -564,6 +666,7 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
     session.db_ = std::move(db);
     session.blocked_ = std::move(blocked);
     session.botMenus_ = std::move(botMenus);
+    session.stateClock_ = std::move(stateClock);
     session.fanout_ = std::move(fanout);
     session.pendingPassRevokes_ = std::move(pendingRevokes);
     session.acceptCalls_ = meta.value("acceptCalls", true);
@@ -772,7 +875,7 @@ std::optional<AccountKind> Session::storedKind(
     const fs::path& accountFile, const std::string& passphrase)
 {
     const AccountDb db(accountFile, passphrase);
-    const nlohmann::json meta = nlohmann::json::parse(db.text("meta"));
+    const nlohmann::json meta = parseJson(db.text("meta"));
     if (!meta.contains("kind")) {
         return std::nullopt;
     }
@@ -785,7 +888,7 @@ void Session::assignHostedKind(const fs::path& accountFile, const AccountKind ki
         throw std::logic_error("a user account gets its kind when it is created");
     }
     AccountDb db(accountFile, std::string{});
-    nlohmann::json meta = nlohmann::json::parse(db.text("meta"));
+    nlohmann::json meta = parseJson(db.text("meta"));
     if (meta.contains("kind")) {
         if (accountKindFromName(meta.at("kind").get<std::string>()) != kind) {
             throw std::runtime_error("this account was created as another kind of account");
@@ -798,7 +901,7 @@ void Session::assignHostedKind(const fs::path& accountFile, const AccountKind ki
     if (!db.has("contacts")) {
         return;
     }
-    nlohmann::json contacts = nlohmann::json::parse(db.text("contacts"));
+    nlohmann::json contacts = parseJson(db.text("contacts"));
     for (auto& [contactFp, entry] : contacts.items()) {
         if (!entry.contains("kind")) {
             entry["kind"] = std::string(accountKindName(AccountKind::eUser));
@@ -931,8 +1034,13 @@ void Session::registerAccount()
         client_->registerHere();
         result = client_->publishCard(cardContent(), serving, currentCardIssuedAt());
     }
-    reportConnectProgress(70, "Registered; registering this device");
     const bool movedOnCard = storeCard(result);
+    approval_ = {result.approvalPending, result.registrationMessage};
+    if (approval_.pending) {
+        bazarish::log::info("account awaiting operator approval: no mailbox until then");
+        return;
+    }
+    reportConnectProgress(70, "Registered; registering this device");
     client_->registerThisClient();
     registerEveryPass();
 
@@ -942,17 +1050,7 @@ void Session::registerAccount()
         return;
     }
     reportConnectProgress(85, "Publishing your own destination");
-    bool movedOnRouting = false;
-    try {
-        movedOnRouting = delegateRouting();
-    } catch (const ApiError& error) {
-        if (error.code != ErrorCode::eAccountPendingApproval) {
-            throw;
-        }
-        approval_.pending = true;
-        bazarish::log::info("account awaiting operator approval: no routing published yet");
-        return;
-    }
+    const bool movedOnRouting = delegateRouting();
     if (movedOnCard || movedOnRouting) {
         announceNewRouting();
     }
@@ -1305,7 +1403,7 @@ void Session::storeOwnAvatar(const Bytes& data, const std::string& mime)
 void Session::storeContactAvatar(
     const std::string& peerFingerprint, const Bytes& data, const std::string& mime)
 {
-    if (data.size() > kAvatarMaxBytes) {
+    if (data.size() > kAvatarMaxBytes || (!data.empty() && !isAvatarPicture(data, mime))) {
         return;
     }
     const auto found = contacts_.find(peerFingerprint);
@@ -1442,6 +1540,18 @@ bool Session::isBlocked(const std::string& peerFingerprint) const
 std::vector<std::string> Session::blockedPeers() const
 {
     return {blocked_.begin(), blocked_.end()};
+}
+
+bool Session::newerState(const std::string& slot, const std::int64_t sentAt)
+{
+    const auto held = stateClock_.find(slot);
+    if (held != stateClock_.end() && sentAt < held->second) {
+        bazarish::log::info("sync: an older state message than the one applied, ignored");
+        return false;
+    }
+    stateClock_[slot] = sentAt;
+    db_->putText(kStateClockKey, nlohmann::json(stateClock_).dump());
+    return true;
 }
 
 void Session::persistBlocked()
@@ -1633,7 +1743,7 @@ void Session::removeContact(const std::string& peerFingerprint)
 I2pDestStatus Session::i2pDestStatus()
 {
     const I2pDestStatus status = client_->i2pStatus();
-    approval_ = {status.approval == "pending", status.registrationMessage};
+    approval_ = {status.approval == kApprovalPending, status.registrationMessage};
     return status;
 }
 
@@ -2107,7 +2217,7 @@ std::vector<Session::PendingContactAdd> Session::pendingContactAdds() const
         return {};
     }
     std::vector<PendingContactAdd> pending;
-    const nlohmann::json stored = nlohmann::json::parse(db_->text(kPendingAddsKey));
+    const nlohmann::json stored = parseJson(db_->text(kPendingAddsKey));
     for (const auto& [opId, entry] : stored.items()) {
         PendingContactAdd add;
         add.opId = opId;
@@ -2126,7 +2236,7 @@ void Session::noteChosenName(const std::string& peerFingerprint, const std::stri
         return;
     }
     nlohmann::json stored = db_->has(kChosenNamesKey)
-        ? nlohmann::json::parse(db_->text(kChosenNamesKey))
+        ? parseJson(db_->text(kChosenNamesKey))
         : nlohmann::json::object();
     stored[peerFingerprint] = name;
     db_->putText(kChosenNamesKey, stored.dump());
@@ -2137,7 +2247,7 @@ std::string Session::chosenName(const std::string& peerFingerprint) const
     if (!db_->has(kChosenNamesKey)) {
         return {};
     }
-    const nlohmann::json stored = nlohmann::json::parse(db_->text(kChosenNamesKey));
+    const nlohmann::json stored = parseJson(db_->text(kChosenNamesKey));
     return stored.value(peerFingerprint, std::string());
 }
 
@@ -2146,7 +2256,7 @@ void Session::forgetChosenName(const std::string& peerFingerprint)
     if (!db_->has(kChosenNamesKey)) {
         return;
     }
-    nlohmann::json stored = nlohmann::json::parse(db_->text(kChosenNamesKey));
+    nlohmann::json stored = parseJson(db_->text(kChosenNamesKey));
     if (stored.erase(peerFingerprint) > 0) {
         db_->putText(kChosenNamesKey, stored.dump());
     }
@@ -2155,7 +2265,7 @@ void Session::forgetChosenName(const std::string& peerFingerprint)
 void Session::notePendingContactAdd(const PendingContactAdd& pending)
 {
     nlohmann::json stored = db_->has(kPendingAddsKey)
-        ? nlohmann::json::parse(db_->text(kPendingAddsKey))
+        ? parseJson(db_->text(kPendingAddsKey))
         : nlohmann::json::object();
     stored[pending.opId] = {{"byAlias", pending.request.byAlias},
         {"uriOrAlias", pending.request.uriOrAlias}, {"intro", pending.request.introText},
@@ -2168,7 +2278,7 @@ void Session::forgetPendingContactAdd(const std::string& opId)
     if (!db_->has(kPendingAddsKey)) {
         return;
     }
-    nlohmann::json stored = nlohmann::json::parse(db_->text(kPendingAddsKey));
+    nlohmann::json stored = parseJson(db_->text(kPendingAddsKey));
     stored.erase(opId);
     db_->putText(kPendingAddsKey, stored.dump());
 }
@@ -2295,7 +2405,7 @@ void Session::acceptContactRequest(const std::string& peerFingerprint)
     nlohmann::json inner = envelope("contact.accept", newMessageId(), {
         {"dn", name_},
     });
-    sendContent(peerFingerprint, std::move(inner));
+    sendContent(peerFingerprint, std::move(inner), {}, /*establishOnFirstReply=*/true);
 }
 
 bool Session::sendMessage(const std::string& peerFingerprint, const std::string& text,
@@ -2306,7 +2416,7 @@ bool Session::sendMessage(const std::string& peerFingerprint, const std::string&
         {"text", text},
     });
     addReplyAndForward(inner, replyTo, forwarded);
-    return sendContent(peerFingerprint, std::move(inner), watch);
+    return sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
 }
 
 bool Session::sendFile(const std::string& peerFingerprint, const std::string& location,
@@ -2339,7 +2449,7 @@ bool Session::sendPicture(const std::string& peerFingerprint, const Bytes& bytes
 
     nlohmann::json inner = envelope(kTypeImage, id, {{"image", imageBody(name, mime, bytes)}});
     addReplyAndForward(inner, replyTo, forwarded);
-    return sendContent(peerFingerprint, std::move(inner), watch);
+    return sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
 }
 
 bool Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
@@ -2354,7 +2464,7 @@ bool Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
 
     nlohmann::json inner = envelope(kTypeAudio, id, {{"audio", audioBody(durationMs, opus)}});
     addReplyAndForward(inner, replyTo, forwarded);
-    return sendContent(peerFingerprint, std::move(inner), watch);
+    return sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
 }
 
 void Session::setGroupBlockSource(GroupBlockSource source)
@@ -2364,37 +2474,7 @@ void Session::setGroupBlockSource(GroupBlockSource source)
 
 nlohmann::json Session::relayedEnvelope(const RelayedPost& post) const
 {
-    switch (post.kind) {
-    case RelayKind::eEdit:
-        return envelope("edit", post.id,
-            {{"ref", post.ref}, {"text", post.text}, {"keyboard", keyboardToJson({})}});
-    case RelayKind::eDelete:
-        return envelope("delete", post.id, {{"ref", post.ref}});
-    case RelayKind::eReactions:
-        return envelope(kTypeGroupReactions, post.id, {{"reactions", post.reactions}});
-    case RelayKind::ePost:
-        break;
-    }
-    nlohmann::json inner;
-    if (post.type == kTypeImage) {
-        inner = envelope(kTypeImage, post.id,
-            {{"image", imageBody(post.mediaName, post.mime, post.media)}});
-    } else if (post.type == kTypeAudio) {
-        inner = envelope(kTypeAudio, post.id, {{"audio", audioBody(post.durationMs, post.media)}});
-    } else if (post.type == "text") {
-        inner = envelope("text", post.id, {{"text", post.text}});
-    } else {
-        throw std::runtime_error("a group relays text, pictures and voice, not " + post.type);
-    }
-    inner["sentAt"] = post.sentAt;
-    if (post.fromHost) {
-        inner["fromHost"] = true;
-    } else {
-        inner["author"] = post.author;
-        inner["contactable"] = post.contactable;
-    }
-    addReplyAndForward(inner, post.replyTo, false);
-    return inner;
+    return relayedEnvelopeFrom(fingerprint(), post);
 }
 
 bool Session::relayPosts(const std::string& peerFingerprint,
@@ -2410,22 +2490,13 @@ bool Session::relayPosts(const std::string& peerFingerprint,
     return sendContents(peerFingerprint, std::move(items), watch);
 }
 
-std::size_t Session::relayFitting(const std::vector<RelayedPost>& posts) const
+RelayFitter Session::relayFitter() const
 {
-    const nlohmann::json widestBlock = groupBlockToJson(GroupBlock{GroupKind::eChannel,
-        std::numeric_limits<std::int64_t>::max(), true, true,
-        std::numeric_limits<std::int64_t>::max()});
-    std::vector<nlohmann::json> items;
-    for (const RelayedPost& post : posts) {
-        nlohmann::json inner = relayedEnvelope(post);
-        inner["group"] = widestBlock;
-        signAuthorship(inner, client_->identity(), /*withKeys=*/false);
-        items.push_back(std::move(inner));
-        if (encodedBatch(items).size() > kMessageCeiling) {
-            return items.size() - 1;
-        }
-    }
-    return items.size();
+    const std::shared_ptr<const Identity> identity
+        = std::make_shared<const Identity>(Identity::fromPrivatePem(client_->identity().privatePem()));
+    return [identity](const std::vector<RelayedPost>& posts) {
+        return relayFittingFor(*identity, posts);
+    };
 }
 
 void Session::sendGroupState(const std::string& peerFingerprint, const DeliveryWatch& watch)
@@ -2462,7 +2533,7 @@ bool Session::announceTransfer(const std::string& type, const std::string& peerF
             }},
     });
     addReplyAndForward(inner, replyTo, forwarded);
-    return sendContent(peerFingerprint, std::move(inner), watch);
+    return sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
 }
 
 void Session::sendInteractive(const std::string& peerFingerprint, const std::string& text,
@@ -2484,7 +2555,7 @@ void Session::sendCommand(const std::string& peerFingerprint, const std::string&
         {"command", command},
         {"args", args},
     });
-    sendContent(peerFingerprint, std::move(inner), watch);
+    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
 }
 
 void Session::sendCallback(
@@ -2494,7 +2565,7 @@ void Session::sendCallback(
         {"data", data},
         {"ref", refMessageId},
     });
-    sendContent(peerFingerprint, std::move(inner));
+    sendContent(peerFingerprint, std::move(inner), {}, /*establishOnFirstReply=*/true);
 }
 
 void Session::sendMenu(
@@ -2566,7 +2637,7 @@ void Session::queueRoutingFanout()
 {
     fanout_.contacts.clear();
     for (const auto& [fingerprint, contact] : contacts_) {
-        if (!contact.sendPass.empty() && !contact.sealingPublicB64.empty()
+        if (contact.issuedToThem && !contact.sendPass.empty() && !contact.sealingPublicB64.empty()
             && !contact.servingSealingB64.empty()) {
             fanout_.contacts.push_back(fingerprint);
         }
@@ -2776,17 +2847,6 @@ void Session::dropServe(
     }
 }
 
-bool Session::awaitingAsk(const std::string& ask) const
-{
-    const std::lock_guard<std::mutex> lock(transfers_->mutex);
-    for (const auto& [fileId, pending] : transfers_->pending) {
-        if (pending.ask == ask) {
-            return true;
-        }
-    }
-    return false;
-}
-
 std::vector<Session::StoppedHalf> Session::stopTransfer(
     const std::string& fileId, const std::string& fromPeer, const std::string& forAsk)
 {
@@ -2896,6 +2956,14 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
     const std::shared_ptr<std::atomic<bool>> cancel = std::make_shared<std::atomic<bool>>(false);
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
+        std::erase_if(transfers_->serving, [&](const auto& entry) {
+            const ServingTransfer& earlier = entry.second;
+            if (earlier.fileId != fileId || earlier.peer != peerFingerprint) {
+                return false;
+            }
+            earlier.cancel->store(true);
+            return true;
+        });
         transfers_->serving[serveId]
             = ServingTransfer{cancel, fileId, peerFingerprint, forAsk};
     }
@@ -2909,7 +2977,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                 peerFingerprint);
             bazarish::i2p::EndpointConfig config;
             config.privacy = tunnelPrivacy();
-            config.tunnelQuantity = 2;
+            config.tunnelQuantity = bazarish::i2p::kDefaultTunnelQuantity;
             config.label = "File upload";
             config.bulk = true;
             config.owner = destinationOwner();
@@ -2982,7 +3050,8 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
     }).detach();
 }
 
-void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& peer)
+void Session::startAnnouncedFetch(
+    const FileOffer& offer, const std::string& peer, const std::string& forAsk)
 {
     FileTarget target;
     std::string announcedSha256;
@@ -2990,7 +3059,9 @@ void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& pee
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
         const auto found = transfers_->pending.find(offer.fileId);
-        if (found == transfers_->pending.end()) {
+        if (found == transfers_->pending.end() || found->second.peer != peer
+            || found->second.ask != forAsk) {
+            bazarish::log::info("a file offer nobody here asked that peer for: ignored");
             return;
         }
         if (found->second.fetching) {
@@ -3032,15 +3103,7 @@ void Session::startAnnouncedFetch(const FileOffer& offer, const std::string& pee
 nlohmann::json Session::envelope(
     const std::string& type, const std::string& id, nlohmann::json payload) const
 {
-    nlohmann::json inner = {
-        {"v", kMessageFormatVersion},
-        {"type", type},
-        {"id", id},
-        {"from", fingerprint()},
-        {"sentAt", nowMillis()},
-    };
-    inner.update(std::move(payload));
-    return inner;
+    return envelopeFrom(fingerprint(), type, id, std::move(payload));
 }
 
 bool Session::sendContent(const std::string& peerFingerprint, nlohmann::json inner,
@@ -3066,7 +3129,7 @@ bool Session::sendContents(const std::string& peerFingerprint, std::vector<nlohm
         if (watch.onOutcome) {
             OutboundCourier::Outcome outcome;
             outcome.stored = kept;
-            watch.onOutcome(outcome);
+            outboundCourier().report(watch.onOutcome, outcome);
         }
         return kept;
     }
@@ -3179,7 +3242,7 @@ void Session::loadSentFiles()
     if (!db_->has("sent-files")) {
         return;
     }
-    const nlohmann::json stored = nlohmann::json::parse(db_->text("sent-files"));
+    const nlohmann::json stored = parseJson(db_->text("sent-files"));
     for (const auto& [id, entry] : stored.items()) {
         sentFiles_[id] = SentFile{entry.at("path").get<std::string>(),
             entry.value("sha256", std::string()), entry.value("size", std::uint64_t{0}),
@@ -3234,11 +3297,20 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
     std::vector<IncomingMessage> result;
     for (std::size_t begin = 0; begin < taking.size();) {
         const std::size_t end = fetchBatchEnd(taking, begin);
-        std::vector<IncomingMessage> taken = takeIn(
-            fetchMailbox(*client_,
+        std::vector<MailboxItem> fetched;
+        try {
+            fetched = fetchMailbox(*client_,
                 std::vector<PendingEntry>(taking.begin() + static_cast<std::ptrdiff_t>(begin),
-                    taking.begin() + static_cast<std::ptrdiff_t>(end))),
-            autoAckSurfaced);
+                    taking.begin() + static_cast<std::ptrdiff_t>(end)));
+        } catch (const std::exception& error) {
+            if (begin == 0) {
+                throw;
+            }
+            bazarish::log::warn("sync: the rest of the mailbox waits for the next pass: {}",
+                error.what());
+            break;
+        }
+        std::vector<IncomingMessage> taken = takeIn(std::move(fetched), autoAckSurfaced);
         std::move(taken.begin(), taken.end(), std::back_inserter(result));
         begin = end;
     }
@@ -3262,8 +3334,17 @@ std::vector<IncomingMessage> Session::takeIn(
         try {
             const Bytes blob = std::move(item.blob);
             const Bytes plain = hybrid::unseal(blob, sealingKey_);
+            std::vector<nlohmann::json> bodies = decodedBody(plain);
+            if (entry.deliveryClass == kContactDeliveryClass
+                && (bodies.size() != 1
+                    || bodies.front().value("type", std::string()) != "contact.request")) {
+                bazarish::log::warn("sync: dropping a contact delivery that is not one request");
+                noteWire(false, "contact delivery that is not one request", "dropped", {});
+                releaseItem(entry.id);
+                continue;
+            }
             std::vector<IncomingMessage> surfaced;
-            for (nlohmann::json& body : decodedBody(plain)) {
+            for (nlohmann::json& body : bodies) {
                 try {
 
                     {
@@ -3318,14 +3399,23 @@ std::vector<IncomingMessage> Session::takeIn(
                     std::string type = body.value("type", std::string("text"));
 
                     const bool fromOurselves = message.fromFingerprint == fingerprint();
-                    const bool known = contacts_.find(message.fromFingerprint) != contacts_.end();
+                    const auto sender = contacts_.find(message.fromFingerprint);
+                    const bool known = sender != contacts_.end();
                     const bool asking = type == "contact.request";
                     if (!fromOurselves
                         && (isBlocked(message.fromFingerprint) || (!known && !asking))) {
                         continue;
                     }
+                    if (!fromOurselves && !message.sentByUs && known && !asking
+                        && !sender->second.issuedToThem && !sender->second.acceptInFlight) {
+                        bazarish::log::info("sync: {} from {}, whose request is not agreed to, dropped",
+                            type, bazarish::log::redact(message.fromFingerprint));
+                        noteWire(false, type + " from an unanswered request", "dropped", {});
+                        continue;
+                    }
 
-                    if (body.contains("routing")) {
+                    if (body.contains("routing")
+                        && newerState("routing:" + message.fromFingerprint, message.sentAt)) {
                         const nlohmann::json& routing = body.at("routing");
                         Contact& peer = contacts_[message.fromFingerprint];
                         const std::string dest = routing.value("dest", std::string());
@@ -3343,8 +3433,10 @@ std::vector<IncomingMessage> Session::takeIn(
 
                     if (body.contains("bootstrap")) {
                         Contact& peer = contacts_[message.fromFingerprint];
-                        rememberKeys(peer, keysIn(body));
-                        applyBootstrap(peer, body.at("bootstrap"));
+                        if (newerState("routing:" + message.fromFingerprint, message.sentAt)) {
+                            rememberKeys(peer, keysIn(body));
+                            applyBootstrap(peer, body.at("bootstrap"));
+                        }
                         message.establishedContact = true;
                         establishedPeers.insert(message.fromFingerprint);
                     }
@@ -3386,7 +3478,7 @@ std::vector<IncomingMessage> Session::takeIn(
                     } else if (type == kTypeImage) {
                         message.contentType = type;
                         const nlohmann::json& picture = body.at("image");
-                        message.attachmentName = picture.value("name", std::string());
+                        message.attachmentName = offeredName(picture.value("name", std::string()));
                         message.attachmentMime = picture.value("mime", std::string());
                         message.attachmentSize = picture.value("size", std::uint64_t{0});
                         const nlohmann::json::binary_t& data = picture.at("data").get_binary();
@@ -3403,7 +3495,7 @@ std::vector<IncomingMessage> Session::takeIn(
                         message.contentType = type;
                         const nlohmann::json& file = body.at("file");
                         message.attachmentRef = file.value("sha256", std::string());
-                        message.attachmentName = file.value("name", std::string());
+                        message.attachmentName = offeredName(file.value("name", std::string()));
                         message.attachmentMime = file.value("mime", std::string());
                         message.attachmentSize = file.value("size", std::uint64_t{0});
                     } else if (type == "file.request") {
@@ -3418,13 +3510,9 @@ std::vector<IncomingMessage> Session::takeIn(
                         }
                     } else if (type == "file.offer") {
                         message.contentType = type;
-                        const std::string offerFor = body.value("forAsk", std::string());
-                        if (!offerFor.empty() && !awaitingAsk(offerFor)) {
-                            continue;
-                        }
                         try {
-                            startAnnouncedFetch(
-                                fileOfferFromJson(body.at("offer")), message.fromFingerprint);
+                            startAnnouncedFetch(fileOfferFromJson(body.at("offer")),
+                                message.fromFingerprint, body.value("forAsk", std::string()));
                         } catch (const std::exception& error) {
                             bazarish::log::warn("file offer ignored: {}", error.what());
                         }
@@ -3435,12 +3523,20 @@ std::vector<IncomingMessage> Session::takeIn(
                     } else if (type == "file.unavailable") {
                         message.contentType = type;
                         const std::string fileId = body.value("fileId", std::string());
+                        bool asked = false;
                         {
                             const std::lock_guard<std::mutex> lock(transfers_->mutex);
-                            transfers_->pending.erase(fileId);
+                            const auto found = transfers_->pending.find(fileId);
+                            asked = found != transfers_->pending.end()
+                                && found->second.peer == message.fromFingerprint;
+                            if (asked) {
+                                transfers_->pending.erase(found);
+                            }
                         }
-                        emitTransfer(fileId, TransferState::eFailed, 0, 0,
-                            "the sender could not send this file", {}, message.fromFingerprint);
+                        if (asked) {
+                            emitTransfer(fileId, TransferState::eFailed, 0, 0,
+                                "the sender could not send this file", {}, message.fromFingerprint);
+                        }
                     } else if (type == "bot.command") {
                         message.contentType = type;
                         message.commandName = body.value("command", std::string());
@@ -3489,7 +3585,8 @@ std::vector<IncomingMessage> Session::takeIn(
                         continue;
                     } else if (type == "device.delegation-term") {
                         message.contentType = type;
-                        if (body.value("device", std::string()) != client_->clientId()) {
+                        if (body.value("device", std::string()) != client_->clientId()
+                            && newerState(type, message.sentAt)) {
                             const std::int64_t days = body.value("days", kDefaultDelegationDays);
                             if (days >= kMinDelegationDays && days <= kMaxDelegationDays
                                 && days != delegationDays_) {
@@ -3504,13 +3601,16 @@ std::vector<IncomingMessage> Session::takeIn(
                     } else if (type == "device.contact") {
                         message.contentType = type;
                         if (body.value("device", std::string()) != client_->clientId()
-                            && body.contains("contact")) {
+                            && body.contains("contact")
+                            && newerState(
+                                "contact:" + body.at("contact").value("peer", std::string()),
+                                message.sentAt)) {
                             applyContactBook(nlohmann::json::array({body.at("contact")}));
                         }
                     } else if (type == "device.contacts") {
                         message.contentType = type;
                         if (body.value("forDevice", std::string()) == client_->clientId()
-                            && body.contains("contacts")) {
+                            && body.contains("contacts") && newerState(type, message.sentAt)) {
                             applyContactBook(body.at("contacts"));
                         }
                     } else if (type == "device.i2p-master-request") {
@@ -3637,7 +3737,8 @@ std::vector<IncomingMessage> Session::takeIn(
                             message.text = name_;
                         }
                     } else if (type == "device.account-prefs") {
-                        if (message.fromFingerprint == fingerprint()) {
+                        if (message.fromFingerprint == fingerprint()
+                            && newerState(type, message.sentAt)) {
                             message.contentType = type;
                             const bool accept = body.value("acceptCalls", acceptCalls_);
                             const bool receipts = body.value("sendReceipts", sendReceipts_);
@@ -3661,7 +3762,9 @@ std::vector<IncomingMessage> Session::takeIn(
                         if (message.fromFingerprint == fingerprint()) {
                             message.contentType = type;
                             message.refId = body.value("peer", std::string());
-                            removeContact(message.refId);
+                            if (newerState("contact:" + message.refId, message.sentAt)) {
+                                removeContact(message.refId);
+                            }
                         }
                     } else if (type == "device.contact-block") {
                         if (message.fromFingerprint == fingerprint()) {
@@ -3669,7 +3772,8 @@ std::vector<IncomingMessage> Session::takeIn(
                             message.refId = body.value("peer", std::string());
                             const bool blocked = body.value("blocked", false);
                             message.text = blocked ? std::string("1") : std::string("0");
-                            if (!message.refId.empty()) {
+                            if (!message.refId.empty()
+                                && newerState(type + ":" + message.refId, message.sentAt)) {
                                 if (blocked) {
                                     blocked_.insert(message.refId);
                                 } else {
@@ -3693,7 +3797,8 @@ std::vector<IncomingMessage> Session::takeIn(
                             message.contentType = type;
                             message.refId = body.value("peer", std::string());
                             const auto known = contacts_.find(message.refId);
-                            if (known != contacts_.end()) {
+                            if (known != contacts_.end()
+                                && newerState(type + ":" + message.refId, message.sentAt)) {
                                 known->second.notifications = body.value("notifications", true);
                                 known->second.allowCalls = body.value("allowCalls", true);
                                 persistContacts();
@@ -3777,7 +3882,11 @@ std::vector<IncomingMessage> Session::takeIn(
             bazarish::log::warn("sync: could not ask for the address book: {}", error.what());
         }
     }
-    flushOwedAcks();
+    try {
+        flushOwedAcks();
+    } catch (const std::exception& error) {
+        bazarish::log::warn("sync: acks stay owed until the next pass: {}", error.what());
+    }
     return result;
 }
 
@@ -3881,6 +3990,9 @@ std::string voiceKey(const std::string& e2eId)
 
 void Session::putPicture(const std::string& e2eId, const Bytes& bytes)
 {
+    if (db_->has(pictureKey(e2eId))) {
+        return;
+    }
     db_->put(pictureKey(e2eId), bytes);
 }
 
@@ -3891,6 +4003,9 @@ std::optional<Bytes> Session::picture(const std::string& e2eId) const
 
 void Session::putVoice(const std::string& e2eId, const Bytes& bytes)
 {
+    if (db_->has(voiceKey(e2eId))) {
+        return;
+    }
     db_->put(voiceKey(e2eId), bytes);
 }
 
@@ -4319,7 +4434,7 @@ void Session::setPresenceOrder(const std::vector<std::string>& chatOrder)
     std::vector<PresenceContact> ordered;
     for (const std::string& peerFingerprint : chatOrder) {
         const auto found = contacts_.find(peerFingerprint);
-        if (found == contacts_.end() || isBlocked(peerFingerprint)
+        if (found == contacts_.end() || isBlocked(peerFingerprint) || !found->second.issuedToThem
             || found->second.kind != AccountKind::eUser || found->second.presenceKeyB64.empty()) {
             continue;
         }
@@ -4585,6 +4700,19 @@ void Session::tickCalls()
     if (call_.startedAtMs == 0) {
         return;
     }
+    if (call_.state == CallState::eActive && call_.media && call_.media->broken()) {
+        const std::string peer = call_.peerFingerprint;
+        const std::string callId = call_.callId;
+        logCompletedCall(CallOutcome::eAnswered);
+        clearCall();
+        bazarish::log::info("call with {} ended: its media failed", bazarish::log::redact(peer));
+        try {
+            sendCallSignal(peer, "call.end", {{"callId", callId}});
+        } catch (const std::exception& error) {
+            bazarish::log::warn("end signal not delivered: {}", error.what());
+        }
+        return;
+    }
     if (call_.state == CallState::eActive && call_.media) {
         const std::uint64_t received = call_.media->packetsReceived();
         if (received != call_.lastPacketsReceived) {
@@ -4733,7 +4861,7 @@ Session::AliasStatusAnswer askAliasStatus(const Session::AliasErrandContext& con
         throw std::runtime_error(known ? std::string(readable(*known))
                                        : "The alias registry did not answer.");
     }
-    const ResolveResponse answer = resolveResponseFromJson(nlohmann::json::parse(outcome.sealed));
+    const ResolveResponse answer = resolveResponseFromJson(parseJson(outcome.sealed));
     Session::AliasStatusAnswer out;
     out.status = verifyAliasStatus(
         answer.recordDer, answer.delegationDer, context.resolver.rootFingerprint, now);
@@ -5160,7 +5288,7 @@ void Session::stopPairing()
 
 Bytes Session::exportAccountBytes(const std::string& password)
 {
-    const nlohmann::json meta = nlohmann::json::parse(db_->text("meta"));
+    const nlohmann::json meta = parseJson(db_->text("meta"));
     nlohmann::json contacts = contactsToJson();
 
     nlohmann::json avatars = nlohmann::json::object();

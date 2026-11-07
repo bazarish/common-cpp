@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/Hybrid.hpp"
+#include "bazarish/JsonRead.hpp"
 
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
@@ -73,8 +74,7 @@ Bytes bytesOf(const nlohmann::json::binary_t& value)
 
 nlohmann::json parseFrame(const Bytes& frame)
 {
-    const nlohmann::json parsed = nlohmann::json::from_cbor(
-        frame, true, true, nlohmann::json::cbor_tag_handler_t::error);
+    const nlohmann::json parsed = bazarish::parseCbor(frame);
     if (!parsed.is_object()) {
         throw std::runtime_error("frame is not a CBOR map");
     }
@@ -314,7 +314,7 @@ VerifiedJson verifyJson(const Bytes& frame)
     }
 
     return VerifiedJson{
-        nlohmann::json::parse(bodyBytes.begin(), bodyBytes.end()),
+        parseJson(bodyBytes),
         hybridFingerprint(classicalPublicDer, pqPublicDer),
         classicalPublicDer,
         pqPublicDer,
