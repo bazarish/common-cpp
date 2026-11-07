@@ -10,65 +10,83 @@
 using namespace bazarish;
 using namespace bazarish::client;
 
+namespace {
+
+const std::string kFingerprint(52, 'a');
+
+std::optional<GatewayAddress> parsed(const std::string& base)
+{
+    return GatewayAddress::parse(base + "#" + kFingerprint);
+}
+
+}  // namespace
+
 int main()
 {
-    const std::optional<GatewayAddress> full
-        = GatewayAddress::parse("https://gate.example:8443/f3a9c2e1b7d4#a-static-token");
+    const std::optional<GatewayAddress> full = parsed("https://gate.example:8443/f3a9c2e1b7d4");
     CHECK(full.has_value());
     CHECK(full->host == "gate.example");
     CHECK(full->port == 8443);
     CHECK(full->path == "/f3a9c2e1b7d4");
-    CHECK(full->token == "a-static-token");
-    CHECK(full->toString() == "https://gate.example:8443/f3a9c2e1b7d4#a-static-token");
+    CHECK(full->tls);
+    CHECK(full->fingerprint == kFingerprint);
+    CHECK(full->toString() == "https://gate.example:8443/f3a9c2e1b7d4#" + kFingerprint);
 
-    const std::optional<GatewayAddress> plainPort
-        = GatewayAddress::parse("https://gate.example/secret#token");
-    CHECK(plainPort.has_value());
-    CHECK(plainPort->port == 443);
-    CHECK(plainPort->toString() == "https://gate.example/secret#token");
+    const std::optional<GatewayAddress> standard = parsed("https://gate.example/secret");
+    CHECK(standard.has_value() && standard->port == 443);
+    CHECK(standard->toString() == "https://gate.example/secret#" + kFingerprint);
 
-    CHECK(!GatewayAddress::parse("http://127.0.0.1:8431/secret#token").has_value());
+    const std::optional<GatewayAddress> plain = parsed("http://203.0.113.5/secret");
+    CHECK(plain.has_value() && !plain->tls && plain->port == 80);
+    CHECK(plain->host == "203.0.113.5");
+    CHECK(plain->toString() == "http://203.0.113.5/secret#" + kFingerprint);
 
-    const std::optional<GatewayAddress> deep
-        = GatewayAddress::parse("https://gate.example/one/two/three#token");
-    CHECK(deep.has_value());
-    CHECK(deep->path == "/one/two/three");
+    const std::optional<GatewayAddress> six = parsed("http://[2001:db8::5]:8080/secret");
+    CHECK(six.has_value() && six->host == "2001:db8::5" && six->port == 8080);
+    CHECK(six->toString() == "http://[2001:db8::5]:8080/secret#" + kFingerprint);
+    const std::optional<GatewayAddress> sixPlain = parsed("https://[::1]/secret");
+    CHECK(sixPlain.has_value() && sixPlain->host == "::1" && sixPlain->port == 443);
+
+    const std::optional<GatewayAddress> deep = parsed("https://gate.example/one/two/three");
+    CHECK(deep.has_value() && deep->path == "/one/two/three");
 
     CHECK(!GatewayAddress::parse("").has_value());
-    CHECK(!GatewayAddress::parse("gate.example/secret#token").has_value());
-    CHECK(!GatewayAddress::parse("ftp://gate.example/secret#token").has_value());
+    CHECK(!parsed("gate.example/secret").has_value());
+    CHECK(!parsed("ftp://gate.example/secret").has_value());
     CHECK(!GatewayAddress::parse("https://gate.example/secret").has_value());
     CHECK(!GatewayAddress::parse("https://gate.example/secret#").has_value());
-    CHECK(!GatewayAddress::parse("https://gate.example#token").has_value());
-    CHECK(!GatewayAddress::parse("https://gate.example/#token").has_value());
-    CHECK(!GatewayAddress::parse("https:///secret#token").has_value());
-    CHECK(!GatewayAddress::parse("https://gate.example:http/secret#token").has_value());
-    CHECK(!GatewayAddress::parse("https://gate.example:0/secret#token").has_value());
-    CHECK(!GatewayAddress::parse("https://gate.example:70000/secret#token").has_value());
+    CHECK(!GatewayAddress::parse("https://gate.example/secret#a-token").has_value());
+    CHECK(!parsed("https://gate.example").has_value());
+    CHECK(!parsed("https://gate.example/").has_value());
+    CHECK(!parsed("https:///secret").has_value());
+    CHECK(!parsed("https://gate.example:http/secret").has_value());
+    CHECK(!parsed("https://gate.example:0/secret").has_value());
+    CHECK(!parsed("https://gate.example:70000/secret").has_value());
+    CHECK(!parsed("http://[not-an-address]/secret").has_value());
+    CHECK(!parsed("http://[2001:db8::5/secret").has_value());
+    CHECK(!parsed("http://2001:db8::5/secret").has_value());
 
-    const std::optional<GatewayAddress> awkward
-        = GatewayAddress::parse("https://gate.example/p#a-b_c.d~e/f=g");
-    CHECK(awkward.has_value());
-    CHECK(awkward->token == "a-b_c.d~e/f=g");
-
-    const std::string handed = awkward->link();
-    CHECK(handed == "https://bazari.sh/#gateway?v=1&url=https://gate.example/p&token=a-b_c.d~e/f=g");
+    const std::string handed = six->link();
+    CHECK(handed
+        == "https://bazari.sh/#gateway?v=2&url=http://[2001:db8::5]:8080/secret&fp=" + kFingerprint);
     const std::optional<GatewayAddress> taken = GatewayAddress::fromLink(handed);
-    CHECK(taken.has_value() && taken->toString() == awkward->toString());
+    CHECK(taken.has_value() && taken->toString() == six->toString());
     const std::optional<GatewayAddress> scheme = GatewayAddress::fromLink(
-        "bazarish://gateway?v=1&url=https://127.0.0.1:8431/secret&token=t");
-    CHECK(scheme.has_value() && scheme->port == 8431 && scheme->token == "t");
-    CHECK(!GatewayAddress::fromLink("bazarish://gateway?v=1&url=http://127.0.0.1:8431/secret&token=t")
-            .has_value());
-    CHECK(!GatewayAddress::fromLink("https://gate.example/p#token").has_value());
-    CHECK(!GatewayAddress::fromLink("https://bazari.sh/#gateway?v=2&url=https://g.example/p&token=t")
-            .has_value());
-    CHECK(!GatewayAddress::fromLink("https://bazari.sh/#gateway?v=1&url=https://g.example/p")
+        "bazarish://gateway?v=2&url=https://127.0.0.1:8431/secret&fp=" + kFingerprint);
+    CHECK(scheme.has_value() && scheme->port == 8431);
+    CHECK(!GatewayAddress::fromLink("bazarish://gateway?v=1&url=https://127.0.0.1:8431/secret&fp="
+        + kFingerprint)
+               .has_value());
+    CHECK(!GatewayAddress::fromLink(
+        "https://bazari.sh/#gateway?v=2&url=https://g.example/p&token=t").has_value());
+    CHECK(!GatewayAddress::fromLink("https://bazari.sh/#gateway?v=2&url=https://g.example/p")
             .has_value());
     CHECK(!GatewayAddress::fromLink(
-        "https://bazari.sh/#gateway?v=1&url=https://g.example/p#x&token=t").has_value());
-    CHECK(!GatewayAddress::fromLink("https://bazari.sh/#invite?v=1&url=https://g.example/p&token=t")
-            .has_value());
+        "https://bazari.sh/#gateway?v=2&url=https://g.example/p#x&fp=" + kFingerprint)
+               .has_value());
+    CHECK(!GatewayAddress::fromLink(
+        "https://bazari.sh/#invite?v=2&url=https://g.example/p&fp=" + kFingerprint)
+               .has_value());
 
     std::printf("TestGatewayAddress ok\n");
     return 0;

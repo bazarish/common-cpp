@@ -8,9 +8,10 @@ namespace bazarish::client {
 
 struct GatewayAddress {
     std::string host;
-    int port = 443;
+    int port = 0;
     std::string path;
-    std::string token;
+    bool tls = true;
+    std::string fingerprint;
 
     static std::optional<GatewayAddress> parse(const std::string& text);
     std::string toString() const;
@@ -21,10 +22,10 @@ struct GatewayAddress {
 
 struct GatewayCheck {
     bool ok = false;
-    std::string pin;
+    bool wrongGateway = false;
     std::string error;
 };
 
-GatewayCheck checkGateway(const GatewayAddress& address, const std::string& pin);
+GatewayCheck checkGateway(const GatewayAddress& address);
 
 }  // namespace bazarish::client

@@ -16,10 +16,7 @@
 
 namespace bazarish::gateway {
 
-inline constexpr int kProtocolVersion = 1;
-inline constexpr const char* kSubprotocol = "bazarish-gateway/1";
-inline constexpr const char* kTokenHeader = "x-bazarish-gateway";
-inline constexpr const char* kSessionHeader = "x-bazarish-session";
+inline constexpr int kProtocolVersion = 2;
 
 inline constexpr std::chrono::seconds kSessionTtl{300};
 inline constexpr std::size_t kSessionCookieBytes = 32;
@@ -56,6 +53,7 @@ enum class FrameType : std::uint8_t {
     eError = 0x04,
     eResume = 0x05,
     eAttach = 0x06,
+    eTickets = 0x07,
     eEndpointCreate = 0x10,
     eEndpointStop = 0x11,
     eEndpointStatus = 0x12,

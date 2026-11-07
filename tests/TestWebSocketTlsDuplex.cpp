@@ -169,7 +169,6 @@ int main()
     dial.port = front.port();
     dial.path = kPath;
     dial.tls = true;
-    dial.pin = credential.pin;
     dial.subprotocol = kProtocol;
     dial.maxMessageBytes = 2 * kMessageBytes;
     const SocketDialResult dialled = openSocket(dial,

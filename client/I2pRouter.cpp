@@ -128,7 +128,6 @@ std::atomic<bazarish::i2p::Privacy> g_tunnelPrivacy{bazarish::i2p::Privacy::eMin
 std::string g_proxyHost;
 std::string g_samHost;
 std::optional<GatewayAddress> g_gateway;
-std::string g_gatewayPin;
 std::string g_transportRefusal;
 bool g_routerRetired = false;
 int g_samPort = 0;
@@ -250,11 +249,10 @@ void setRouterTransit(const bool transit)
     g_transit = transit;
 }
 
-void setGatewayTransport(const GatewayAddress& address, std::string pin)
+void setGatewayTransport(const GatewayAddress& address)
 {
     const std::lock_guard<std::mutex> lock(proxyMutex());
     g_gateway = address;
-    g_gatewayPin = std::move(pin);
     g_transportRefusal.clear();
 }
 
@@ -262,7 +260,6 @@ void clearGatewayTransport()
 {
     const std::lock_guard<std::mutex> lock(proxyMutex());
     g_gateway.reset();
-    g_gatewayPin.clear();
     g_transportRefusal.clear();
 }
 
@@ -270,7 +267,6 @@ void refuseI2pTransport(std::string reason)
 {
     const std::lock_guard<std::mutex> lock(proxyMutex());
     g_gateway.reset();
-    g_gatewayPin.clear();
     g_transportRefusal = std::move(reason);
 }
 
@@ -326,8 +322,8 @@ bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir
         config.gatewayHost = g_gateway->host;
         config.gatewayPort = g_gateway->port;
         config.gatewayPath = g_gateway->path;
-        config.gatewayToken = g_gateway->token;
-        config.gatewayPin = g_gatewayPin;
+        config.gatewayFingerprint = g_gateway->fingerprint;
+        config.gatewayTls = g_gateway->tls;
         return config;
     }
     if (usingSamTransport()) {

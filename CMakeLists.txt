@@ -64,6 +64,7 @@ add_library(bazarish_common STATIC
     src/ReseedSu3.cpp
     src/HttpClient.cpp
     src/GatewayProtocol.cpp
+    src/GatewayChannel.cpp
     src/GatewayStreamBook.cpp
     src/RawPathChooser.cpp
     src/HttpServer.cpp
@@ -131,6 +132,7 @@ bazarish_add_test(TestPadding)
 bazarish_add_test(TestJsonRead)
 bazarish_add_test(TestFileName)
 bazarish_add_test(TestPortalSession)
+bazarish_add_test(TestGatewayChannel)
 bazarish_add_test(TestHttpServer)
 bazarish_add_test(TestEmbeddedRouter)
 bazarish_add_test(TestErrors)

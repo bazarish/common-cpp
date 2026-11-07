@@ -1,8 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/WebSocketClient.hpp"
 
-#include "bazarish/Bytes.hpp"
-#include "bazarish/Crypto.hpp"
 #include "bazarish/Log.hpp"
 
 #include <utility>
@@ -18,7 +16,6 @@
 #include <boost/beast/websocket.hpp>
 #include <boost/beast/websocket/ssl.hpp>
 
-#include <openssl/x509.h>
 
 #include <atomic>
 #include <deque>
@@ -41,21 +38,19 @@ using TlsStream = beast::ssl_stream<beast::tcp_stream>;
 
 thread_local bool tOnSocketThread = false;
 
-std::string spkiFingerprint(SSL* const connection)
+bool isAddressLiteral(const std::string& host)
 {
-    X509* const certificate = SSL_get1_peer_certificate(connection);
-    if (certificate == nullptr) {
-        return {};
-    }
-    unsigned char* der = nullptr;
-    const int length = i2d_X509_PUBKEY(X509_get_X509_PUBKEY(certificate), &der);
-    std::string fingerprint;
-    if (length > 0 && der != nullptr) {
-        fingerprint = toHex(sha256(Bytes(der, der + length)));
-    }
-    OPENSSL_free(der);
-    X509_free(certificate);
-    return fingerprint;
+    boost::system::error_code error;
+    (void)asio::ip::make_address(host, error);
+    return !error;
+}
+
+// A literal IPv6 address names the host in brackets.
+std::string hostHeader(const std::string& host)
+{
+    boost::system::error_code error;
+    const asio::ip::address address = asio::ip::make_address(host, error);
+    return !error && address.is_v6() ? "[" + host + "]" : host;
 }
 
 // One thread owns the stream: no concurrent callers, and Beast pings only for async operations.
@@ -233,7 +228,6 @@ struct Connected {
     std::unique_ptr<ssl::context> tls;
     std::unique_ptr<TlsStream> secure;
     std::unique_ptr<beast::tcp_stream> plain;
-    std::string pin;
     std::string error;
 };
 
@@ -278,14 +272,11 @@ Connected connect(const SocketDial& dial)
     }
 
     out.tls = std::make_unique<ssl::context>(ssl::context::tls_client);
-    if (SSL_CTX_set_min_proto_version(out.tls->native_handle(), TLS1_3_VERSION) != 1) {
-        out.error = "TLS 1.3 is not available";
-        return out;
-    }
     out.tls->set_verify_mode(ssl::verify_none);
     out.secure = std::make_unique<TlsStream>(*out.loop, *out.tls);
 
-    if (SSL_set_tlsext_host_name(out.secure->native_handle(), dial.host.c_str()) != 1) {
+    if (!isAddressLiteral(dial.host)
+        && SSL_set_tlsext_host_name(out.secure->native_handle(), dial.host.c_str()) != 1) {
         out.error = "the name would not go in the handshake";
         return out;
     }
@@ -306,15 +297,6 @@ Connected connect(const SocketDial& dial)
         return out;
     }
 
-    out.pin = spkiFingerprint(out.secure->native_handle());
-    if (out.pin.empty()) {
-        out.error = "the peer presented no key";
-        return out;
-    }
-    if (!dial.pin.empty() && dial.pin != out.pin) {
-        out.error = "the peer's key is not the pinned one";
-        return out;
-    }
     beast::get_lowest_layer(*out.secure).expires_never();
     boost::system::error_code ignoredOption;
     beast::get_lowest_layer(*out.secure).socket().set_option(
@@ -342,7 +324,7 @@ std::string upgrade(
             }
         }));
     const boost::system::error_code error = awaited(loop, [&stream, &dial](auto&& handler) {
-        stream.async_handshake(dial.host, dial.path, std::move(handler));
+        stream.async_handshake(hostHeader(dial.host), dial.path, std::move(handler));
     });
     if (error) {
         return "the upgrade was refused: " + error.message();
@@ -359,7 +341,6 @@ SocketDialResult openSocket(const SocketDial& dial,
 {
     SocketDialResult result;
     Connected connected = connect(dial);
-    result.pin = connected.pin;
     if (!connected.error.empty()) {
         result.error = connected.error;
         return result;
@@ -399,7 +380,7 @@ void exchange(asio::io_context& loop, Stream& stream, const SocketDial& dial,
 {
     bhttp::request<bhttp::string_body> out{
         body.empty() ? bhttp::verb::get : bhttp::verb::post, dial.path, 11};
-    out.set(bhttp::field::host, dial.host);
+    out.set(bhttp::field::host, hostHeader(dial.host));
     for (const auto& [name, value] : dial.headers) {
         out.set(name, value);
     }
@@ -434,7 +415,6 @@ Probe probeHost(const SocketDial& dial, const std::string& body)
 {
     Probe probe;
     Connected connected = connect(dial);
-    probe.pin = connected.pin;
     if (!connected.error.empty()) {
         probe.error = connected.error;
         return probe;

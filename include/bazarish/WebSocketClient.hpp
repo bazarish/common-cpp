@@ -19,7 +19,6 @@ struct SocketDial {
     std::map<std::string, std::string> headers;
     std::string subprotocol;
     bool tls = true;
-    std::string pin;
     std::chrono::seconds connectTimeout{15};
     std::chrono::seconds idleTimeout{45};
     std::size_t maxMessageBytes = 64 * 1024;
@@ -27,7 +26,6 @@ struct SocketDial {
 
 struct SocketDialResult {
     SocketPtr socket;
-    std::string pin;
     std::string error;
 };
 
@@ -37,7 +35,6 @@ SocketDialResult openSocket(const SocketDial& dial,
 
 struct Probe {
     bool reached = false;
-    std::string pin;
     int status = 0;
     std::string error;
 };

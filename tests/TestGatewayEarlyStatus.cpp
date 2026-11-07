@@ -21,7 +21,8 @@ constexpr std::chrono::seconds kReadyWithin{10};
 int main()
 {
     http::Server server(http::Server::Options{});
-    const int port = test::startFakeGateway(server);
+    test::FakeGateway fake;
+    const int port = fake.start(server);
     CHECK(port > 0);
 
     i2p::RouterConfig config;
@@ -29,7 +30,7 @@ int main()
     config.gatewayHost = "127.0.0.1";
     config.gatewayPort = port;
     config.gatewayPath = test::kFakeGatewayPath;
-    config.gatewayToken = "any";
+    config.gatewayFingerprint = fake.fingerprint();
     config.gatewayTls = false;
     config.gatewayControlMinLife = kQuiet;
     config.gatewayControlMaxLife = kQuiet;

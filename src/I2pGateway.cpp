@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "I2pBackend.hpp"
 
+#include "bazarish/GatewayChannel.hpp"
 #include "bazarish/GatewayProtocol.hpp"
 #include "bazarish/GatewayStreamBook.hpp"
 #include "bazarish/Log.hpp"
@@ -118,7 +119,8 @@ public:
     std::mutex delivering;
     gateway::Ids ids_;
     http::SocketPtr control;
-    std::string cookie;
+    Bytes sessionKey;
+    std::deque<Bytes> tickets;
     std::map<std::uint32_t, std::shared_ptr<Pending>> awaited;
     std::map<std::uint32_t, std::weak_ptr<GatewayEndpoint>> endpoints;
     // A status can reach the control socket before the create's answer reaches the one it went on.
@@ -350,6 +352,8 @@ private:
     void deliver(const Frame& frame);
     std::vector<std::shared_ptr<GatewayEndpoint>> endpointsHeld() const;
     http::SocketDial dialFor() const;
+    gateway::ChannelOpened openChannelSocket(
+        gateway::ChannelMessageFn onMessage, gateway::ChannelClosedFn onClosed);
     void openControl();
     void closeControl();
     void coverLoop();
@@ -713,16 +717,32 @@ http::SocketDial GatewayRouter::dialFor() const
     dial.port = config_.gatewayPort;
     dial.path = config_.gatewayPath;
     dial.tls = config_.gatewayTls;
-    dial.pin = config_.gatewayPin;
-    dial.subprotocol = gateway::kSubprotocol;
-    dial.maxMessageBytes = gateway::kMaxFrameBytes;
+    dial.maxMessageBytes = gateway::kMaxRecordBytes;
     dial.idleTimeout = gateway::kKeepalive + gateway::kPongTimeout;
-    dial.headers[gateway::kTokenHeader] = config_.gatewayToken;
-    const std::lock_guard<std::mutex> lock(link_->mutex);
-    if (!link_->cookie.empty()) {
-        dial.headers[gateway::kSessionHeader] = link_->cookie;
-    }
     return dial;
+}
+
+gateway::ChannelOpened GatewayRouter::openChannelSocket(
+    gateway::ChannelMessageFn onMessage, gateway::ChannelClosedFn onClosed)
+{
+    std::optional<gateway::ChannelJoin> join;
+    {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        if (!link_->sessionKey.empty() && !link_->tickets.empty()) {
+            join = gateway::ChannelJoin{link_->sessionKey, link_->tickets.front()};
+            link_->tickets.pop_front();
+        }
+    }
+    gateway::ChannelOpened opened = gateway::openChannel(
+        dialFor(), config_.gatewayFingerprint, join, std::move(onMessage), std::move(onClosed));
+    const std::lock_guard<std::mutex> lock(link_->mutex);
+    if (opened.welcome.has_value()) {
+        link_->sessionKey = opened.welcome->sessionKey;
+        link_->tickets.assign(opened.welcome->tickets.begin(), opened.welcome->tickets.end());
+    } else if (join.has_value() && !opened.ticketSpent && link_->sessionKey == join->sessionKey) {
+        link_->tickets.push_front(join->ticket);
+    }
+    return opened;
 }
 
 void GatewayRouter::start()
@@ -778,7 +798,8 @@ void GatewayRouter::stop()
         link_->flows.clear();
         link_->orphaned.clear();
         link_->waiting.clear();
-        link_->cookie.clear();
+        link_->sessionKey.clear();
+        link_->tickets.clear();
     }
     for (const http::SocketPtr& held : flows) {
         held->close();
@@ -795,8 +816,7 @@ bool GatewayRouter::ready() const
 
 void GatewayRouter::openControl()
 {
-    const http::SocketDialResult opened = http::openSocket(
-        dialFor(),
+    const gateway::ChannelOpened opened = openChannelSocket(
         [this](const http::SocketPtr& socket, const std::vector<unsigned char>& message) {
             arrived(socket, message);
         },
@@ -808,6 +828,9 @@ void GatewayRouter::openControl()
             }
         });
     if (opened.socket == nullptr) {
+        if (opened.wrongGateway) {
+            throw WrongGateway("bazarish::i2p: " + opened.error);
+        }
         throw std::runtime_error("bazarish::i2p: the gateway would not open: " + opened.error);
     }
 
@@ -848,7 +871,6 @@ void GatewayRouter::openControl()
     std::vector<std::shared_ptr<GatewayEndpoint>> told;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
-        link_->cookie = body.value("session", std::string());
         link_->holding = true;
         for (auto at = link_->waiting.begin(); at != link_->waiting.end();) {
             const bool isData = !at->empty()
@@ -1126,8 +1148,7 @@ bool GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t receive
             return false;
         }
     }
-    const http::SocketDialResult opened = http::openSocket(
-        dialFor(),
+    const gateway::ChannelOpened opened = openChannelSocket(
         [this](const http::SocketPtr& socket, const std::vector<unsigned char>& message) {
             arrived(socket, message);
         },
@@ -1138,6 +1159,12 @@ bool GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t receive
         });
     if (opened.socket == nullptr) {
         bazarish::log::debug("i2p: no socket of its own for flow {}: {}", flow, opened.error);
+        return false;
+    }
+    if (opened.welcome.has_value()) {
+        bazarish::log::warn("i2p: the gateway's session was gone when flow {} asked for a socket",
+            flow);
+        opened.socket->close();
         return false;
     }
     {
@@ -1409,6 +1436,14 @@ void GatewayRouter::dispatch(const Frame& frame)
     }
 
     switch (frame.type) {
+        case FrameType::eTickets: {
+            const nlohmann::json body = gateway::bodyJson(frame);
+            const std::lock_guard<std::mutex> lock(link_->mutex);
+            for (const nlohmann::json& ticket : body.at("tickets")) {
+                link_->tickets.push_back(fromBase64(ticket.get<std::string>()));
+            }
+            return;
+        }
         case FrameType::eEndpointStatus: {
             if (endpoint == nullptr) {
                 const std::lock_guard<std::mutex> lock(link_->mutex);

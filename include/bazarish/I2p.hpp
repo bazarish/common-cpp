@@ -22,6 +22,12 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// The gateway at the link's address is not the one whose key the link names.
+class WrongGateway : public GatewayRefusal {
+public:
+    using GatewayRefusal::GatewayRefusal;
+};
+
 enum class Privacy { eMinimal, eMiddle, eMax };
 
 std::optional<Privacy> privacyFromString(std::string_view text);
@@ -215,8 +221,7 @@ struct RouterConfig {
     std::string gatewayHost;
     int gatewayPort = 0;
     std::string gatewayPath;
-    std::string gatewayToken;
-    std::string gatewayPin;
+    std::string gatewayFingerprint;
     bool gatewayTls = true;
     std::chrono::milliseconds gatewayDecoyMin{0};
     std::chrono::milliseconds gatewayDecoyMax{0};

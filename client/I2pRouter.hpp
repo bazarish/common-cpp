@@ -52,7 +52,7 @@ void setSamTransport(std::string host, int port);
 
 void setRouterTransit(bool transit);
 
-void setGatewayTransport(const GatewayAddress& address, std::string pin);
+void setGatewayTransport(const GatewayAddress& address);
 void clearGatewayTransport();
 // The chosen gateway cannot be used: no router starts until another choice is made.
 void refuseI2pTransport(std::string reason);

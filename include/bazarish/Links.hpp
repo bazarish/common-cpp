@@ -17,7 +17,7 @@ inline constexpr char kServerKind[] = "server?";
 inline constexpr char kPairKind[] = "pair?";
 inline constexpr char kSignKind[] = "sign?";
 inline constexpr char kGatewayKind[] = "gateway?";
-inline constexpr char kGatewayLinkVersion[] = "1";
+inline constexpr char kGatewayLinkVersion[] = "2";
 
 inline std::string linkTail(const std::string_view link)
 {
@@ -40,11 +40,11 @@ inline std::string schemeLink(const std::string_view tail)
     return std::string(kSchemeLinkPrefix) + std::string(tail);
 }
 
-// A gateway handed out: its URL up to the secret path, and the token every request carries.
-inline std::string gatewayLink(const std::string_view url, const std::string_view token)
+// A gateway handed out: its URL up to the secret path, and the fingerprint of its key.
+inline std::string gatewayLink(const std::string_view url, const std::string_view fingerprint)
 {
     return webLink(std::string(kGatewayKind) + "v=" + kGatewayLinkVersion + "&url="
-        + std::string(url) + "&token=" + std::string(token));
+        + std::string(url) + "&fp=" + std::string(fingerprint));
 }
 
 inline std::string canonicalLink(const std::string_view link)

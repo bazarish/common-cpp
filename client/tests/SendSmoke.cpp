@@ -53,7 +53,7 @@ void useConfiguredTransport(const fs::path& settingsFile, const fs::path& i2pDir
         if (!address.has_value()) {
             throw std::runtime_error("the gateway address in settings.json does not read");
         }
-        setGatewayTransport(*address, gateway.value("pin", std::string()));
+        setGatewayTransport(*address);
         say("transport: the private gateway at " + address->host);
     } else if (i2p.value("sam", nlohmann::json::object()).value("enabled", false)) {
         const nlohmann::json sam = i2p.at("sam");

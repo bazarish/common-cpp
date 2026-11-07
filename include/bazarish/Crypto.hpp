@@ -73,6 +73,11 @@ inline constexpr std::size_t kAeadNonceBytes = 12;
 inline constexpr std::size_t kAeadTagBytes = 16;
 Bytes aeadSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext);
 std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed);
+Bytes chachaSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext);
+std::optional<Bytes> chachaOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed);
+
+Bytes hkdfSha256(
+    const Bytes& secret, const Bytes& salt, const std::string& info, std::size_t size);
 
 Bytes sha256File(const std::filesystem::path& path);
 

@@ -6,7 +6,10 @@
 #include <nlohmann/json.hpp>
 
 #include <openssl/err.h>
+#include <openssl/core_names.h>
 #include <openssl/evp.h>
+#include <openssl/kdf.h>
+#include <openssl/params.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
@@ -16,6 +19,7 @@
 #include <fstream>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 
@@ -339,74 +343,138 @@ Bytes sha256(const Bytes& data)
     return digest;
 }
 
-Bytes aeadSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext)
+namespace {
+
+Bytes sealWith(const EVP_CIPHER* const cipher, const Bytes& key, const Bytes& nonce,
+    const Bytes& plaintext)
 {
     if (key.size() != kAeadKeyBytes || nonce.size() != kAeadNonceBytes) {
-        throw std::invalid_argument("aeadSeal: wrong key or nonce size");
+        throw std::invalid_argument("aead seal: wrong key or nonce size");
     }
     const CipherCtxPtr ctx(EVP_CIPHER_CTX_new());
-    if (ctx == nullptr
-        || EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1
-        || EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN,
+    if (ctx == nullptr || EVP_EncryptInit_ex(ctx.get(), cipher, nullptr, nullptr, nullptr) != 1
+        || EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_IVLEN,
                static_cast<int>(kAeadNonceBytes), nullptr)
             != 1
         || EVP_EncryptInit_ex(ctx.get(), nullptr, nullptr, key.data(), nonce.data()) != 1) {
-        throw std::runtime_error("aeadSeal: init failed");
+        throw std::runtime_error("aead seal: init failed");
     }
     Bytes out(plaintext.size() + kAeadTagBytes);
     int len = 0;
     if (EVP_EncryptUpdate(ctx.get(), out.data(), &len, plaintext.data(),
             static_cast<int>(plaintext.size()))
         != 1) {
-        throw std::runtime_error("aeadSeal: encrypt failed");
+        throw std::runtime_error("aead seal: encrypt failed");
     }
     int finalLen = 0;
     if (EVP_EncryptFinal_ex(ctx.get(), out.data() + len, &finalLen) != 1) {
-        throw std::runtime_error("aeadSeal: finalize failed");
+        throw std::runtime_error("aead seal: finalize failed");
     }
-    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, static_cast<int>(kAeadTagBytes),
+    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_GET_TAG, static_cast<int>(kAeadTagBytes),
             out.data() + plaintext.size())
         != 1) {
-        throw std::runtime_error("aeadSeal: get tag failed");
+        throw std::runtime_error("aead seal: get tag failed");
     }
     return out;
 }
 
-std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed)
+std::optional<Bytes> openWith(const EVP_CIPHER* const cipher, const Bytes& key,
+    const Bytes& nonce, const Bytes& sealed)
 {
     if (key.size() != kAeadKeyBytes || nonce.size() != kAeadNonceBytes) {
-        throw std::invalid_argument("aeadOpen: wrong key or nonce size");
+        throw std::invalid_argument("aead open: wrong key or nonce size");
     }
     if (sealed.size() < kAeadTagBytes) {
         return std::nullopt;
     }
     const std::size_t cipherLen = sealed.size() - kAeadTagBytes;
     const CipherCtxPtr ctx(EVP_CIPHER_CTX_new());
-    if (ctx == nullptr
-        || EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1
-        || EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN,
+    if (ctx == nullptr || EVP_DecryptInit_ex(ctx.get(), cipher, nullptr, nullptr, nullptr) != 1
+        || EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_IVLEN,
                static_cast<int>(kAeadNonceBytes), nullptr)
             != 1
         || EVP_DecryptInit_ex(ctx.get(), nullptr, nullptr, key.data(), nonce.data()) != 1) {
-        throw std::runtime_error("aeadOpen: init failed");
+        throw std::runtime_error("aead open: init failed");
     }
     Bytes out(cipherLen);
     int len = 0;
     if (EVP_DecryptUpdate(ctx.get(), out.data(), &len, sealed.data(),
             static_cast<int>(cipherLen))
         != 1) {
-        throw std::runtime_error("aeadOpen: decrypt failed");
+        throw std::runtime_error("aead open: decrypt failed");
     }
-    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, static_cast<int>(kAeadTagBytes),
+    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_TAG, static_cast<int>(kAeadTagBytes),
             const_cast<unsigned char*>(sealed.data() + cipherLen))
         != 1) {
-        throw std::runtime_error("aeadOpen: set tag failed");
+        throw std::runtime_error("aead open: set tag failed");
     }
     int finalLen = 0;
     if (EVP_DecryptFinal_ex(ctx.get(), out.data() + len, &finalLen) != 1) {
         return std::nullopt;
     }
     return out;
+}
+
+struct KdfDeleter {
+    void operator()(EVP_KDF_CTX* const ctx) const { EVP_KDF_CTX_free(ctx); }
+};
+
+}  // namespace
+
+Bytes aeadSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext)
+{
+    return sealWith(EVP_aes_256_gcm(), key, nonce, plaintext);
+}
+
+std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed)
+{
+    return openWith(EVP_aes_256_gcm(), key, nonce, sealed);
+}
+
+Bytes chachaSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext)
+{
+    return sealWith(EVP_chacha20_poly1305(), key, nonce, plaintext);
+}
+
+std::optional<Bytes> chachaOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed)
+{
+    return openWith(EVP_chacha20_poly1305(), key, nonce, sealed);
+}
+
+Bytes hkdfSha256(const Bytes& secret, const Bytes& salt, const std::string& info,
+    const std::size_t size)
+{
+    EVP_KDF* const kdf = EVP_KDF_fetch(nullptr, "HKDF", nullptr);
+    if (kdf == nullptr) {
+        throw std::runtime_error("HKDF unavailable");
+    }
+    const std::unique_ptr<EVP_KDF_CTX, KdfDeleter> ctx(EVP_KDF_CTX_new(kdf));
+    EVP_KDF_free(kdf);
+    if (ctx == nullptr) {
+        throw std::runtime_error("EVP_KDF_CTX_new failed");
+    }
+    Bytes secretCopy = secret;
+    Bytes saltCopy = salt;
+    std::string infoCopy = info;
+    char digest[] = "SHA256";
+    Bytes derived(size);
+    std::vector<OSSL_PARAM> params = {
+        OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, digest, 0),
+        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, secretCopy.data(), secretCopy.size()),
+        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, infoCopy.data(), infoCopy.size()),
+    };
+    // RFC 5869: no salt is a salt of zeros, which is what HKDF takes when none is given.
+    if (!saltCopy.empty()) {
+        params.push_back(OSSL_PARAM_construct_octet_string(
+            OSSL_KDF_PARAM_SALT, saltCopy.data(), saltCopy.size()));
+    }
+    params.push_back(OSSL_PARAM_construct_end());
+    const int ok = EVP_KDF_derive(ctx.get(), derived.data(), derived.size(), params.data());
+    OPENSSL_cleanse(secretCopy.data(), secretCopy.size());
+    if (ok != 1) {
+        throw std::runtime_error("HKDF derive failed");
+    }
+    return derived;
 }
 
 Bytes sha256File(const std::filesystem::path& path)

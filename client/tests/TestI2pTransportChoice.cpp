@@ -4,6 +4,8 @@
 
 #include "TestUtil.hpp"
 
+#include <bazarish/Crypto.hpp>
+
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -19,9 +21,10 @@ int main()
     CHECK(applyI2pTransport([]() { refuseI2pTransport("the saved gateway is not usable"); }));
     CHECK_THROWS((void)sharedI2pRouter(dataDir));
 
-    constexpr const char* kNobodyListening = "https://127.0.0.1:1/p#t";
-    const GatewayAddress gateway = GatewayAddress::parse(kNobodyListening).value();
-    CHECK(applyI2pTransport([&gateway]() { setGatewayTransport(gateway, "pin"); }));
+    const std::string nobodyListening
+        = "https://127.0.0.1:1/p#" + bazarish::Identity::generate().fingerprint();
+    const GatewayAddress gateway = GatewayAddress::parse(nobodyListening).value();
+    CHECK(applyI2pTransport([&gateway]() { setGatewayTransport(gateway); }));
     CHECK_THROWS((void)sharedI2pRouter(dataDir));
 
     bool set = false;

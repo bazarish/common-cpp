@@ -2,11 +2,8 @@
 #include "bazarish/Hybrid.hpp"
 #include "bazarish/JsonRead.hpp"
 
-#include <openssl/core_names.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
-#include <openssl/kdf.h>
-#include <openssl/params.h>
 
 #include <cstring>
 #include <memory>
@@ -21,8 +18,6 @@ using bazarish::Key;
 
 constexpr const char* kSignContext = "bazarish-composite-sig-v1";
 constexpr const char* kSealContext = "bazarish-composite-seal-v1";
-constexpr const char* kKdfName = "HKDF";
-constexpr const char* kKdfDigest = "SHA256";
 constexpr std::size_t kX25519SharedSecretBytes = 32;
 
 struct PkeyDeleter {
@@ -41,13 +36,6 @@ struct PkeyCtxDeleter {
 };
 using PkeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, PkeyCtxDeleter>;
 
-struct KdfCtxDeleter {
-    void operator()(EVP_KDF_CTX* ctx) const
-    {
-        EVP_KDF_CTX_free(ctx);
-    }
-};
-using KdfCtxPtr = std::unique_ptr<EVP_KDF_CTX, KdfCtxDeleter>;
 
 void append(Bytes& target, const Bytes& tail)
 {
@@ -217,33 +205,10 @@ Bytes decapsulate(EVP_PKEY* const recipientKem, const Bytes& ciphertext)
 
 Bytes deriveSealKey(const Bytes& pqSecret, const Bytes& classicalSecret, const Bytes& transcript)
 {
-    EVP_KDF* const kdf = EVP_KDF_fetch(nullptr, kKdfName, nullptr);
-    if (kdf == nullptr) {
-        throw std::runtime_error("HKDF unavailable");
-    }
-    const KdfCtxPtr ctx(EVP_KDF_CTX_new(kdf));
-    EVP_KDF_free(kdf);
-    if (ctx == nullptr) {
-        throw std::runtime_error("EVP_KDF_CTX_new failed");
-    }
     Bytes material = pqSecret;
     append(material, classicalSecret);
-    Bytes context = contextBytes(kSealContext);
-    Bytes transcriptCopy = transcript;
-    Bytes key(bazarish::kAeadKeyBytes);
-    const OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, const_cast<char*>(kKdfDigest), 0),
-        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, material.data(), material.size()),
-        OSSL_PARAM_construct_octet_string(
-            OSSL_KDF_PARAM_SALT, transcriptCopy.data(), transcriptCopy.size()),
-        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, context.data(), context.size()),
-        OSSL_PARAM_construct_end(),
-    };
-    const int ok = EVP_KDF_derive(ctx.get(), key.data(), key.size(), params);
+    Bytes key = bazarish::hkdfSha256(material, transcript, kSealContext, bazarish::kAeadKeyBytes);
     cleanse(material);
-    if (ok != 1) {
-        throw std::runtime_error("HKDF derive failed");
-    }
     return key;
 }
 

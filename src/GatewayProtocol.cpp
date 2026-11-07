@@ -85,6 +85,7 @@ std::string_view frameTypeName(const FrameType type)
         case FrameType::eError: return "error";
         case FrameType::eResume: return "resume";
         case FrameType::eAttach: return "attach";
+        case FrameType::eTickets: return "tickets";
         case FrameType::eEndpointCreate: return "endpoint-create";
         case FrameType::eEndpointStop: return "endpoint-stop";
         case FrameType::eEndpointStatus: return "endpoint-status";
@@ -113,6 +114,7 @@ std::optional<FrameType> frameTypeFromByte(const std::uint8_t value)
         case FrameType::eError:
         case FrameType::eResume:
         case FrameType::eAttach:
+        case FrameType::eTickets:
         case FrameType::eEndpointCreate:
         case FrameType::eEndpointStop:
         case FrameType::eEndpointStatus:

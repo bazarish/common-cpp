@@ -4,6 +4,8 @@
 
 #include "TestUtil.hpp"
 
+#include <bazarish/Crypto.hpp>
+
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -212,7 +214,7 @@ int main()
         throughGateway.backend = i2p::Backend::eGateway;
         throughGateway.gatewayHost = "127.0.0.1";
         throughGateway.gatewayPath = "/p";
-        throughGateway.gatewayToken = "t";
+        throughGateway.gatewayFingerprint = Identity::generate().fingerprint();
         i2p::Router router(throughGateway);
         bool refused = false;
         try {
