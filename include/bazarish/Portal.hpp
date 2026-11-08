@@ -75,4 +75,32 @@ std::string verifyLoginBlob(const std::string& blob, std::int64_t now, const std
 std::string signLoginBlob(
     const Identity& identity, std::int64_t timestamp, const std::string& challenge);
 
+// SignInWithKey.md, "The key": a link that hands a challenge over I2P ends in &key=, the key
+// its fetch and its callback are sealed under. It is not part of the challenge and not signed.
+inline constexpr char kLoginKeyField[] = "&key=";
+inline constexpr char kLoginChallengeLabel[] = "bazarish sign-in challenge v1";
+inline constexpr char kLoginAnswerLabel[] = "bazarish sign-in answer v1";
+
+struct KeyedLoginLink {
+    std::string link;
+    std::optional<Bytes> key;
+};
+
+KeyedLoginLink splitLoginKey(const std::string& link);
+std::string withLoginKey(const std::string& link, const Bytes& key);
+
+Bytes sealLoginChallenge(const Bytes& key, const std::string& challenge);
+std::string openLoginChallenge(const Bytes& key, const Bytes& sealed);
+
+struct LoginAnswer {
+    std::string challenge;
+    std::string blob;
+};
+
+// The callback's body: {"nonce": <the challenge's nonce>, "sealed": <base64 of the answer>}.
+std::string sealLoginAnswer(const Bytes& key, const LoginAnswer& answer);
+std::string loginAnswerNonce(const std::string& body);
+// None when the body does not open under the key or answers another challenge than its nonce.
+std::optional<LoginAnswer> openLoginAnswer(const Bytes& key, const std::string& body);
+
 }  // namespace bazarish::service

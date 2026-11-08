@@ -2,6 +2,7 @@
 #include "Session.hpp"
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/KeyedSeal.hpp>
 #include <bazarish/Links.hpp>
 #include <bazarish/LoginChallenge.hpp>
 #include <bazarish/Portal.hpp>
@@ -166,12 +167,54 @@ void testChallengeLinks()
         encodedChallenge(envelopeWith(siteConsumer())), kSiteHost));
 }
 
+void testKeyedLinks()
+{
+    const Bytes key = newLinkKey();
+    const std::string at = std::string(kSchemeLinkPrefix) + kSignKind + service::kLoginLinkField
+        + kSiteHost + "/login/c/5f3c";
+    const service::KeyedLoginLink keyedAt = service::splitLoginKey(service::withLoginKey(at, key));
+    CHECK(keyedAt.link == at && keyedAt.key == key);
+    const std::optional<service::LoginCallback> place
+        = service::readLoginChallengeLink(service::withLoginKey(at, key));
+    CHECK(place.has_value() && place->path == "/login/c/5f3c");
+    CHECK(!service::splitLoginKey(at).key.has_value());
+    CHECK_THROWS(service::splitLoginKey(at + service::kLoginKeyField + "short"));
+
+    service::LoginChallenge site("site-secret", siteConsumer());
+    const std::string challenge = site.issue(now(), "http://" + kSiteHost + "/login/callback");
+    const std::string keyed = service::withLoginKey(challenge, key);
+    CHECK(service::readLoginConsumer(keyed) == siteConsumer());
+    CHECK(service::readLoginCallback(keyed)->host == kSiteHost);
+    const Identity signer = Identity::generate();
+    CHECK(service::verifyLoginBlob(service::signLoginBlob(signer, now(), keyed), now(), challenge)
+        == signer.fingerprint());
+
+    CHECK(service::openLoginChallenge(key, service::sealLoginChallenge(key, challenge)) == challenge);
+    CHECK_THROWS(service::openLoginChallenge(newLinkKey(), service::sealLoginChallenge(key, challenge)));
+
+    const service::LoginAnswer answer{challenge, service::signLoginBlob(signer, now(), challenge)};
+    const std::string body = service::sealLoginAnswer(key, answer);
+    CHECK(body.find(answer.blob) == std::string::npos);
+    const std::optional<service::LoginAnswer> opened = service::openLoginAnswer(key, body);
+    CHECK(opened.has_value() && opened->challenge == challenge && opened->blob == answer.blob);
+    CHECK(!service::openLoginAnswer(newLinkKey(), body).has_value());
+    nlohmann::json renamed = nlohmann::json::parse(body);
+    renamed["nonce"] = toHex(randomBytes(16));
+    CHECK(!service::openLoginAnswer(key, renamed.dump()).has_value());
+    CHECK(service::loginAnswerNonce(body)
+        == nlohmann::json::parse(service::decodeLoginChallenge(challenge))
+               .at("nonce")
+               .get<std::string>());
+}
+
 }  // namespace
 
 int main()
 {
     namespace fs = std::filesystem;
     const fs::path dir = fs::temp_directory_path() / ("bazarish-login-" + toHex(randomBytes(8)));
+
+    testKeyedLinks();
 
     {
         const std::unique_ptr<Session> session = Session::create(dir, AccountKind::eUser, "pw", "alice");

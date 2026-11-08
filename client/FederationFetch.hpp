@@ -34,11 +34,11 @@ FetchOutcome resolverFetchOverI2p(bazarish::i2p::Router& router, const std::stri
 
 // The HTTP status the site answered with; empty when the site could not be reached.
 std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
-    const service::LoginCallback& callback, const std::string& challenge, const std::string& blob,
+    const service::LoginCallback& callback, const std::string& sealedAnswer,
     bazarish::i2p::Privacy privacy, const std::string& owner);
 
-// Empty when the site could not be reached or the asker gave up.
-std::optional<std::string> getLoginChallengeOverI2p(bazarish::i2p::Router& router,
+// The challenge as it came, sealed; empty when the site could not be reached or the asker gave up.
+std::optional<Bytes> getLoginChallengeOverI2p(bazarish::i2p::Router& router,
     const service::LoginCallback& address, bazarish::i2p::Privacy privacy,
     const std::string& owner, const std::atomic<bool>& cancelled);
 

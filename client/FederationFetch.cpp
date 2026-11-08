@@ -216,7 +216,7 @@ FetchOutcome resolverFetchOverI2p(bazarish::i2p::Router& router, const std::stri
 }
 
 std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
-    const service::LoginCallback& callback, const std::string& challenge, const std::string& blob,
+    const service::LoginCallback& callback, const std::string& sealedAnswer,
     const bazarish::i2p::Privacy privacy, const std::string& owner)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
@@ -227,13 +227,12 @@ std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
         return std::nullopt;
     }
     sendI2pHttpRequest(*stream, "POST", callback.host, callback.path,
-        {{"Content-Type", "application/json"}},
-        nlohmann::json{{"challenge", challenge}, {"blob", blob}}.dump());
+        {{"Content-Type", "application/json"}}, sealedAnswer);
     sayStage(FetchStage::eWaiting);
     return readI2pHttpHead(*stream).status;
 }
 
-std::optional<std::string> getLoginChallengeOverI2p(bazarish::i2p::Router& router,
+std::optional<Bytes> getLoginChallengeOverI2p(bazarish::i2p::Router& router,
     const service::LoginCallback& address, const bazarish::i2p::Privacy privacy,
     const std::string& owner, const std::atomic<bool>& cancelled)
 {
@@ -249,11 +248,12 @@ std::optional<std::string> getLoginChallengeOverI2p(bazarish::i2p::Router& route
     }
     sendI2pHttpRequest(*stream, "GET", address.host, address.path, {}, {});
     sayStage(FetchStage::eWaiting);
-    const I2pHttpResponse response = readI2pHttpResponse(*stream, service::kLoginChallengeMax);
+    const I2pHttpResponse response
+        = readI2pHttpResponse(*stream, service::kLoginChallengeMax + kAeadNonceBytes + kAeadTagBytes);
     if (response.status != kI2pHttpOk) {
         throw std::runtime_error("the site answered HTTP " + std::to_string(response.status));
     }
-    return response.body;
+    return Bytes(response.body.begin(), response.body.end());
 }
 
 FetchTransport resolverHeldDest(

@@ -44,11 +44,16 @@ std::optional<int> LoginSigner::send(const std::string& challenge) const
     if (!callback) {
         throw std::runtime_error("this challenge names no address to send the signature to");
     }
+    const service::KeyedLoginLink keyed = service::splitLoginKey(challenge);
+    if (!keyed.key.has_value()) {
+        throw std::runtime_error("this link names no key to send the signature under");
+    }
     bazarish::i2p::Router& router = readySharedI2pRouter();
     const std::string blob = sign(challenge);
     log::info("sending a login signature to {}", log::redact(callback->host));
-    return postLoginOverI2p(
-        router, *callback, canonicalLink(challenge), blob, tunnelPrivacy(), owner_);
+    return postLoginOverI2p(router, *callback,
+        service::sealLoginAnswer(*keyed.key, {canonicalLink(keyed.link), blob}), tunnelPrivacy(),
+        owner_);
 }
 
 std::optional<std::string> LoginSigner::fetch(
@@ -58,14 +63,23 @@ std::optional<std::string> LoginSigner::fetch(
     if (!address) {
         throw std::runtime_error("this is not a link to a challenge");
     }
+    const std::optional<Bytes> key = service::splitLoginKey(link).key;
+    if (!key.has_value()) {
+        throw std::runtime_error("this link names no key to fetch the challenge under");
+    }
     bazarish::i2p::Router& router = readySharedI2pRouter();
     log::info("fetching a login challenge from {}", log::redact(address->host));
-    const std::optional<std::string> challenge
+    const std::optional<Bytes> sealed
         = getLoginChallengeOverI2p(router, *address, tunnelPrivacy(), owner_, cancelled);
-    if (challenge) {
-        service::requireChallengeReturnsTo(*challenge, address->host);
+    if (!sealed) {
+        return std::nullopt;
     }
-    return challenge;
+    const std::string challenge = service::openLoginChallenge(*key, *sealed);
+    service::requireChallengeReturnsTo(challenge, address->host);
+    if (service::splitLoginKey(challenge).key.has_value()) {
+        throw std::runtime_error("the fetched challenge carries a key of its own");
+    }
+    return service::withLoginKey(challenge, *key);
 }
 
 }  // namespace bazarish::client

@@ -5,6 +5,7 @@
 #include <bazarish/Auth.hpp>
 #include <bazarish/Bytes.hpp>
 #include <bazarish/I2pAddress.hpp>
+#include <bazarish/KeyedSeal.hpp>
 #include <bazarish/Links.hpp>
 #include <bazarish/PlainText.hpp>
 
@@ -19,6 +20,11 @@
 namespace bazarish::service {
 
 namespace {
+
+std::string challengeNonceOf(const std::string& challenge)
+{
+    return parseJson(decodeLoginChallenge(challenge)).at("nonce").get<std::string>();
+}
 
 void requireField(const std::string& value, const std::size_t limit, const std::string& what)
 {
@@ -84,7 +90,7 @@ std::string encodeLoginChallenge(const std::string& envelope)
 
 std::string decodeLoginChallenge(const std::string& challenge)
 {
-    const std::string query = linkQuery(challenge, kSignKind);
+    const std::string query = linkQuery(splitLoginKey(challenge).link, kSignKind);
     if (!query.starts_with(kLoginChallengeField)) {
         throw std::runtime_error("it is not a sign link");
     }
@@ -169,7 +175,7 @@ std::optional<LoginCallback> readLoginCallback(const std::string& challenge)
 
 std::optional<LoginCallback> readLoginChallengeLink(const std::string& link)
 {
-    const std::string query = linkQuery(link, kSignKind);
+    const std::string query = linkQuery(splitLoginKey(link).link, kSignKind);
     if (!query.starts_with(kLoginLinkField)) {
         return std::nullopt;
     }
@@ -197,7 +203,7 @@ std::int64_t loginChallengeExpiresAt(const std::string& challenge)
 std::string signLoginBlob(
     const Identity& identity, const std::int64_t timestamp, const std::string& challenge)
 {
-    const std::string issued = canonicalLink(challenge);
+    const std::string issued = canonicalLink(splitLoginKey(challenge).link);
     const auth::Headers headers = auth::signRequest(
         identity, timestamp, kLoginMethod, kLoginPath, Bytes(issued.begin(), issued.end()));
     const nlohmann::json blob = {
@@ -237,9 +243,69 @@ std::string verifyLoginBlob(
     } catch (const nlohmann::json::exception&) {
         throw std::runtime_error(kNotASignature);
     }
-    const std::string issued = canonicalLink(challenge);
+    const std::string issued = canonicalLink(splitLoginKey(challenge).link);
     return auth::verifyRequest(
         headers, now, kLoginMethod, kLoginPath, Bytes(issued.begin(), issued.end()));
+}
+
+KeyedLoginLink splitLoginKey(const std::string& link)
+{
+    const std::size_t at = link.rfind(kLoginKeyField);
+    if (at == std::string::npos) {
+        return KeyedLoginLink{link, std::nullopt};
+    }
+    return KeyedLoginLink{link.substr(0, at),
+        linkKeyFromText(link.substr(at + std::string_view(kLoginKeyField).size()))};
+}
+
+std::string withLoginKey(const std::string& link, const Bytes& key)
+{
+    return link + kLoginKeyField + linkKeyText(key);
+}
+
+Bytes sealLoginChallenge(const Bytes& key, const std::string& challenge)
+{
+    return KeyedSeal(key, kLoginChallengeLabel).seal(Bytes(challenge.begin(), challenge.end()));
+}
+
+std::string openLoginChallenge(const Bytes& key, const Bytes& sealed)
+{
+    const std::optional<Bytes> opened = KeyedSeal(key, kLoginChallengeLabel).open(sealed);
+    if (!opened.has_value()) {
+        throw std::runtime_error("the challenge came sealed under another key than the link's");
+    }
+    return std::string(opened->begin(), opened->end());
+}
+
+std::string sealLoginAnswer(const Bytes& key, const LoginAnswer& answer)
+{
+    const std::string plain
+        = nlohmann::json{{"challenge", answer.challenge}, {"blob", answer.blob}}.dump();
+    const Bytes sealed = KeyedSeal(key, kLoginAnswerLabel).seal(Bytes(plain.begin(), plain.end()));
+    return nlohmann::json{{"nonce", challengeNonceOf(answer.challenge)}, {"sealed", toBase64(sealed)}}
+        .dump();
+}
+
+std::string loginAnswerNonce(const std::string& body)
+{
+    return parseJson(body).at("nonce").get<std::string>();
+}
+
+std::optional<LoginAnswer> openLoginAnswer(const Bytes& key, const std::string& body)
+{
+    const nlohmann::json outer = parseJson(body);
+    const std::optional<Bytes> opened = KeyedSeal(key, kLoginAnswerLabel)
+                                            .open(fromBase64(outer.at("sealed").get<std::string>()));
+    if (!opened.has_value()) {
+        return std::nullopt;
+    }
+    const nlohmann::json inner = parseJson(std::string(opened->begin(), opened->end()));
+    LoginAnswer answer{
+        inner.at("challenge").get<std::string>(), inner.at("blob").get<std::string>()};
+    if (challengeNonceOf(answer.challenge) != outer.at("nonce").get<std::string>()) {
+        return std::nullopt;
+    }
+    return answer;
 }
 
 }  // namespace bazarish::service

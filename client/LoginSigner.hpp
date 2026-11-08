@@ -21,7 +21,7 @@ public:
     // The HTTP status; empty if unreached.
     std::optional<int> send(const std::string& challenge) const;
 
-    // Checked to return where it came from; empty if unreached.
+    // Checked to return where it came from, and carrying the link's key on; empty if unreached.
     std::optional<std::string> fetch(
         const std::string& link, const std::atomic<bool>& cancelled) const;
 
