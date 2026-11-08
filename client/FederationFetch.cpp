@@ -3,14 +3,16 @@
 
 #include "AttemptBudget.hpp"
 #include "I2pRouter.hpp"
+#include "ResolverAsk.hpp"
 
 #include <bazarish/Address.hpp>
 #include <bazarish/FederationFrame.hpp>
 #include <bazarish/I2pHttp.hpp>
+#include <bazarish/JsonRead.hpp>
 #include <bazarish/Limits.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/Resolve.hpp>
-#include <bazarish/JsonRead.hpp>
+#include <bazarish/ResolverChannel.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -26,7 +28,6 @@ namespace bazarish::client {
 
 constexpr int kReplySeconds = 90;
 constexpr int kFetchAttempts = 3;
-constexpr const char* kResolveOp = "resolve";
 constexpr int kLeastDialSeconds = 10;
 constexpr int kLeastReplySeconds = 20;
 constexpr int kFetchRetryGapSeconds[kFetchAttempts - 1] = {2, 6};
@@ -94,20 +95,21 @@ std::unique_ptr<bazarish::i2p::Stream> dialI2pHttp(bazarish::i2p::Endpoint& endp
     return stream;
 }
 
-FetchOutcome askResolver(bazarish::i2p::Stream& stream, const std::string& host,
+FetchOutcome askResolverHttp(bazarish::i2p::Stream& stream, const std::string& host,
     const std::string& op, const Bytes& body)
 {
-    std::string method = "POST";
-    std::string path = "/v1/op/" + op;
+    std::string method;
+    std::string path;
     std::string payload(body.begin(), body.end());
-    if (op == kResolveOp) {
-        const ResolveQuery query = resolveQueryFromJson(parseJson(payload));
+    if (op == kChannelOp) {
         method = "GET";
-        path = "/v1/alias/" + aliasQueryText({query.alias, query.word});
-        if (!query.stamp.empty()) {
-            path += "?stamp=" + query.stamp + "&nonce=" + std::to_string(query.nonce);
-        }
+        path = kResolverChannelPath;
         payload.clear();
+    } else if (op == kSealedOp) {
+        method = "POST";
+        path = kResolverSealedPath;
+    } else {
+        throw std::logic_error("the alias registry is asked only through its channel, not " + op);
     }
     const std::map<std::string, std::string> headers
         = payload.empty() ? std::map<std::string, std::string>{}
@@ -150,7 +152,7 @@ FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& des
 
     sayStage(FetchStage::eWaiting);
     if (face == Face::eResolverHttp) {
-        return askResolver(*stream, dest, op, sealed);
+        return askResolverHttp(*stream, dest, op, sealed);
     }
     const FederationFetchResult reply = federationSendFetch(*stream, op, sealed);
     FetchOutcome outcome;

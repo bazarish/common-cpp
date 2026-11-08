@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "Client.hpp"
 
+#include "ResolverStub.hpp"
 #include "TunnelStub.hpp"
 
 #include <bazarish/Auth.hpp>
@@ -132,7 +133,7 @@ int main()
             respondJson(response, {{"dest", aliceDest}});
         }));
 
-    const FetchTransport directDial = [&](const std::string& toDest, const std::string& op,
+    const FetchTransport plainDial = [&](const std::string& toDest, const std::string& op,
                                           const Bytes& sealed) {
         FetchOutcome outcome;
         if (op == "card") {
@@ -190,6 +191,20 @@ int main()
         outcome.sealed = Bytes(respJson.begin(), respJson.end());
         return outcome;
     };
+
+    ResolverStub resolverChannel(resolverDelegated, resolverDelegationDer);
+    const FetchTransport directDial
+        = [&](const std::string& toDest, const std::string& op, const Bytes& body) {
+              if (ResolverStub::asks(op)) {
+                  CHECK(toDest == resolverDest);
+                  return resolverChannel.answer(op, body,
+                      [&](const std::string& inner, const Bytes& asked) {
+                          return plainDial(toDest, inner, asked);
+                      },
+                      now);
+              }
+              return plainDial(toDest, op, body);
+          };
 
     server.post("/v1/messaging/clients",
         stub([&](const http::Request& request, http::Response& response) {
@@ -316,6 +331,9 @@ int main()
         CHECK(descriptor.fingerprint == bob.fingerprint());
         CHECK(descriptor.dest == bobDest);
         CHECK(descriptor.cardKey == bobCardKey);
+        resolverChannel.restart();
+        CHECK(client.resolveAlias({"bob"}, resolver, now, directDial).fingerprint
+            == bob.fingerprint());
 
         CHECK(unknown(
             [&]() { (void)client.resolveAlias({"guarded"}, resolver, now, directDial); }));

@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "GatewayAddress.hpp"
+#include "ResolverStub.hpp"
 #include "I2pKeys.hpp"
 #include "I2pRouter.hpp"
 #include "Client.hpp"
@@ -489,7 +490,7 @@ int main()
         CHECK(alice->inviteUri().find(m.destFor[alice->fingerprint()]) != std::string::npos);
         CHECK(!bob->inviteUri().empty());
 
-        const auto directDial = [&m, &resolverRoot, &resolverDelegated, &resolverDelegationDer](
+        const auto plainDial = [&m, &resolverRoot, &resolverDelegated, &resolverDelegationDer](
                                     const std::string& toDest, const std::string& op,
                                     const Bytes& query) {
             if (op == kAliasStatusOp || op == kAliasUpdateOp) {
@@ -567,6 +568,18 @@ int main()
             }
             return outcome;
         };
+        ResolverStub resolverChannel(resolverDelegated, resolverDelegationDer);
+        const FetchTransport directDial
+            = [&](const std::string& toDest, const std::string& op, const Bytes& body) {
+                  if (ResolverStub::asks(op)) {
+                      return resolverChannel.answer(op, body,
+                          [&](const std::string& inner, const Bytes& asked) {
+                              return plainDial(toDest, inner, asked);
+                          },
+                          static_cast<std::int64_t>(std::time(nullptr)));
+                  }
+                  return plainDial(toDest, op, body);
+              };
         alice->setFetchTransport(directDial);
         bob->setFetchTransport(directDial);
 

@@ -10,6 +10,7 @@
 #include "Authorship.hpp"
 #include "DevicePairing.hpp"
 #include "FederationFetch.hpp"
+#include "ResolverAsk.hpp"
 #include "I2pKeys.hpp"
 #include "I2pRouter.hpp"
 
@@ -4826,7 +4827,7 @@ Session::AliasStatusAnswer askAliasStatus(const Session::AliasErrandContext& con
     asking.op = kAliasStatusOp;
     asking.issuedAt = now;
     const Bytes request = signAliasMaintenanceRequest(asking, identity);
-    const FetchOutcome outcome = over(context.resolver.dest, kAliasStatusOp, request);
+    const FetchOutcome outcome = askResolver(context.resolver, over, kAliasStatusOp, request, now);
     if (!outcome.ok) {
         log::info("the alias registry refused a status ask: {}",
             outcome.errorCode.empty() ? std::string("no answer") : outcome.errorCode);
@@ -4872,7 +4873,7 @@ bool tellAliasesWhereWeAre(const Session::AliasErrandContext& context, const Ide
         asking.issuedAt = now;
         const Bytes request = signAliasMaintenanceRequest(asking, identity);
         try {
-            const FetchOutcome outcome = over(context.resolver.dest, kAliasUpdateOp, request);
+            const FetchOutcome outcome = askResolver(context.resolver, over, kAliasUpdateOp, request, now);
             if (!outcome.ok) {
                 log::info("name {} not repointed yet: {}", holding.alias,
                     outcome.errorCode.empty() ? std::string("no answer") : outcome.errorCode);
@@ -4918,7 +4919,7 @@ void Session::setAliasBinding(const std::string& alias, const bool on)
     asking.issuedAt = nowSeconds();
     const Bytes request = signAliasMaintenanceRequest(asking, client_->identity());
     const FetchOutcome outcome
-        = heldTransport()(resolverCoordinate_.dest, kAliasBindingOp, request);
+        = askResolver(resolverCoordinate_, heldTransport(), kAliasBindingOp, request, nowSeconds());
     if (!outcome.ok) {
         const std::optional<ErrorCode> known = errorCodeFromString(outcome.errorCode);
         throw std::runtime_error(known ? std::string(readable(*known))
@@ -4948,7 +4949,7 @@ void Session::setAliasWord(const std::string& alias, const std::string& word)
     asking.word = normalizeAliasWord(word);
     asking.issuedAt = nowSeconds();
     const Bytes request = signAliasMaintenanceRequest(asking, client_->identity());
-    const FetchOutcome outcome = heldTransport()(resolverCoordinate_.dest, kAliasWordOp, request);
+    const FetchOutcome outcome = askResolver(resolverCoordinate_, heldTransport(), kAliasWordOp, request, nowSeconds());
     if (!outcome.ok) {
         const std::optional<ErrorCode> known = errorCodeFromString(outcome.errorCode);
         throw std::runtime_error(known ? std::string(readable(*known))

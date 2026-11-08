@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "Client.hpp"
 
+#include "ResolverAsk.hpp"
+
 #include <bazarish/Clock.hpp>
 #include <bazarish/Errors.hpp>
 #include <bazarish/Hmac.hpp>
@@ -11,6 +13,7 @@
 #include <bazarish/Log.hpp>
 #include <bazarish/Resolve.hpp>
 #include <bazarish/ResolvePuzzle.hpp>
+#include <bazarish/ResolverChannel.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -226,9 +229,10 @@ Descriptor Client::resolveAlias(const AliasQuery& alias, const ResolverCoordinat
     const std::int64_t now, const FetchTransport& transport, const std::function<void()>& solving)
 {
     ResolveQuery query{alias.name, alias.word, {}, 0};
-    const auto ask = [&resolver, &transport](const ResolveQuery& asked) {
+    const auto ask = [&resolver, &transport, now](const ResolveQuery& asked) {
         const std::string queryJson = toJson(asked).dump();
-        return transport(resolver.dest, "resolve", Bytes(queryJson.begin(), queryJson.end()));
+        return askResolver(
+            resolver, transport, kResolveOp, Bytes(queryJson.begin(), queryJson.end()), now);
     };
     FetchOutcome outcome = ask(query);
     if (!outcome.ok && outcome.errorCode == kProofRequiredCode) {

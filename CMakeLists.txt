@@ -43,6 +43,7 @@ add_library(bazarish_common STATIC
     src/Errors.cpp
     src/FederationFrame.cpp
     src/KeyedSeal.cpp
+    src/ResolverChannel.cpp
     src/Address.cpp
     src/Argon2.cpp
     src/I2pAddress.cpp
@@ -189,6 +190,7 @@ if(BAZARISH_WITH_CLIENT)
         client/CallMedia.cpp
         client/Client.cpp
         client/FederationFetch.cpp
+        client/ResolverAsk.cpp
         client/FileTransfer.cpp
         client/DevicePairing.cpp
         client/I2pKeys.cpp
