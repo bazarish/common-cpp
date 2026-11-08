@@ -86,7 +86,7 @@ struct PresenceTimings {
     std::chrono::milliseconds onlineTail{60000};
     std::chrono::milliseconds typingPulse{5000};
     std::chrono::milliseconds readersSettle{10000};
-    // How long a gone holder's lease set can still be found: i2pd's TUNNEL_EXPIRATION_TIMEOUT.
+    // i2pd's TUNNEL_EXPIRATION_TIMEOUT: how long a gone holder's lease set can still be found.
     std::chrono::milliseconds leaseSetLife{660000};
     std::chrono::milliseconds tick{250};
 };
@@ -103,7 +103,7 @@ public:
     void setShown(bool shown);
     // In chat-list order: the first kMaxPresenceReaders may read this account's presence.
     void setContacts(std::vector<PresenceContact> ordered);
-    // The contacts on screen: the open conversation and the visible rows of the chat list.
+    // The open conversation and the visible chat-list rows.
     void watch(std::vector<std::string> peers);
     void typed(const std::string& peer);
     void stoppedTyping(const std::string& peer);

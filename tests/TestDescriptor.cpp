@@ -14,7 +14,6 @@ using namespace bazarish;
 
 int main()
 {
-    // A 52-char base32 fingerprint and a valid .b32.i2p serving host.
     const std::string fp = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq";
     const std::string srv = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
 

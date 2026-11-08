@@ -1,6 +1,5 @@
 #!/bin/sh
 # Bazarish project (c) 2026
-# Hiding an error or owning memory by hand is a defect here, so a commit that adds one is refused.
 # Enable once per clone:  git config core.hooksPath common/tools/git-hooks
 set -e
 for audit in common/tools/audit-error-hiding.py common/tools/audit-ownership.py; do

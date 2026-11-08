@@ -27,7 +27,7 @@ namespace {
 namespace fs = std::filesystem;
 
 
-// What the auto-delete timer takes away: what people wrote and sent, never a service note.
+// What people wrote and sent; never a service note.
 constexpr std::array<const char*, 4> kExpiringTypes{kTypeText, kTypeImage, kTypeAudio, kTypeFile};
 
 bool expires(const std::string& type)
@@ -471,14 +471,6 @@ std::optional<bool> TranscriptStore::advanceStatus(const std::int64_t id, const 
     return query.changes() > 0;
 }
 
-std::vector<StoredMessage> TranscriptReader::messagesFor(const std::string& peer) const
-{
-    Query query(db_);
-    query.prepare("SELECT " + kMessageColumns + " FROM messages WHERE peer = ? ORDER BY id");
-    query.bind(peer);
-    return readMessageRows(query);
-}
-
 std::vector<StoredMessage> TranscriptReader::latestMessages(
     const std::string& peer, const int limit) const
 {
@@ -660,30 +652,6 @@ bool TranscriptStore::setHasPicture(const std::int64_t id, const bool has)
     query.bind(has ? 1 : 0);
     query.bind(id);
     return query.exec() || failed();
-}
-
-std::int64_t TranscriptReader::idForE2e(const std::string& e2eId) const
-{
-    if (e2eId.empty()) {
-        return 0;
-    }
-    Query query(db_);
-    query.prepare("SELECT id FROM messages WHERE e2eId = ? AND outgoing = 1 LIMIT 1");
-    query.bind(e2eId);
-    return readNumber(query);
-}
-
-std::int64_t TranscriptReader::idForIncomingE2e(
-    const std::string& e2eId, const std::string& peer) const
-{
-    if (e2eId.empty()) {
-        return 0;
-    }
-    Query query(db_);
-    query.prepare("SELECT id FROM messages WHERE e2eId = ? AND peer = ? AND outgoing = 0 LIMIT 1");
-    query.bind(e2eId);
-    query.bind(peer);
-    return readNumber(query);
 }
 
 std::int64_t TranscriptReader::oldestOfType(

@@ -47,6 +47,8 @@ using asio::ip::tcp;
 
 constexpr int kForbidden = 403;
 constexpr int kMisdirected = 421;
+// RFC 9110, 15.5.15.
+constexpr int kUriTooLong = 414;
 
 std::string valueFrom(const std::string& encoded, const std::string& key)
 {
@@ -457,6 +459,9 @@ std::optional<Resolved> Server::Impl::resolve(const Request& request) const
                         },
             {}};
     };
+    if (request.target.size() > options.maxTargetBytes) {
+        return refusal(kUriTooLong, "the request target is too long");
+    }
     if (!options.hosts.empty()
         && std::find(options.hosts.begin(), options.hosts.end(), hostName(request.header("Host")))
             == options.hosts.end()) {

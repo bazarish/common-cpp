@@ -141,8 +141,7 @@ void testEveryPlaceIsSigned()
     const std::string blob = signLoginBlob(identity, t, challenge);
     CHECK(portal.verify(challenge, blob, t) == identity.fingerprint());
 
-    // The list is what the tag covers, so dropping or reordering it is a
-    // different consumer and the signature stops verifying.
+    // The tag covers the list, so dropping or reordering it breaks the signature.
     LoginConsumer fewer = both;
     fewer.place = {"https://alias.example"};
     CHECK_THROWS(LoginChallenge("portal-secret", fewer).verify(challenge, blob, t));
@@ -193,7 +192,6 @@ void testChallengePastedAsBlob()
     }
     CHECK(complaint.find("this is the challenge, not the signature") != std::string::npos);
 
-    // And something that is not base64 of JSON at all says so in words too.
     std::string other;
     try {
         (void)portal.verify(challenge, "paste-went-wrong", t);

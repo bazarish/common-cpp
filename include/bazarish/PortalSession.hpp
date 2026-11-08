@@ -16,7 +16,6 @@ public:
 
     std::string verify(const std::string& token, std::int64_t now) const;
 
-    // Signing out ends the token itself, not just the browser's copy of it.
     void revoke(const std::string& token, std::int64_t now);
 
 private:

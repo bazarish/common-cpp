@@ -14,7 +14,7 @@ namespace bazarish::cms {
 Bytes sealWithPassword(const Bytes& plaintext, const std::string& password);
 Bytes unsealWithPassword(const Bytes& der, const std::string& password);
 
-// The decoder reads an attached envelope whole into memory, so the file forms are detached.
+// The decoder reads an attached envelope whole into memory.
 using PlainReadFn = std::function<std::size_t(ByteBuffer buffer)>;
 Bytes sealWithPasswordDetached(const PlainReadFn& read, const std::filesystem::path& contentPath,
     const std::string& password);

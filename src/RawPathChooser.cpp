@@ -120,7 +120,6 @@ void RawPathChooser::expire(const Clock::time_point now)
             continue;
         }
         const auto found = scores_.find(it->second.path);
-        // Only a path that has answered can be chosen: a loss alone measures nothing.
         if (found != scores_.end() && found->second.measured) {
             measure(it->second.path, kProbeTimeout);
         }

@@ -102,8 +102,7 @@ enum class RelayKind {
     eReactions,
 };
 
-// One entry of a group's log, as a member is handed it: a post, or an edit, delete or reaction
-// counts about one; `ref` names the post the last three are about.
+// A post, or an edit, delete or reaction; `ref` names the post the last three are about.
 struct RelayedPost {
     RelayKind kind = RelayKind::ePost;
     std::string ref;
@@ -123,18 +122,17 @@ struct RelayedPost {
 };
 
 inline constexpr std::int64_t kDaysPerWeek = 7;
-// A month for the auto-delete timer.
 inline constexpr std::int64_t kDaysPerMonth = 30;
 inline constexpr std::int64_t kChatTimerOff = 0;
-// The auto-delete timers a chat can carry, in seconds.
+// Seconds.
 inline constexpr std::array<std::int64_t, 5> kChatTimerChoices{kChatTimerOff, kSecondsPerHour,
     kSecondsPerDay, kDaysPerWeek * kSecondsPerDay, kDaysPerMonth * kSecondsPerDay};
 
 bool isChatTimerChoice(std::int64_t seconds);
 
-// An invitation is answered within this of its sentAt, or not at all (docs-main api/Calls.md).
+// docs-main api/Calls.md: answered within this of its sentAt, or not at all.
 inline constexpr std::int64_t kCallAnswerWindowMs = 60000;
-// When an invitation stops ringing; none for one that came too late to ring at all.
+// None for an invitation that came too late to ring at all.
 std::optional<std::int64_t> callAnswerDeadline(std::int64_t sentAtMs, std::int64_t arrivedAtMs);
 
 inline constexpr std::size_t kMessageIdBytes = 8;
@@ -237,10 +235,8 @@ public:
         AccountKind kind, const ServerEndpoint& endpoint, const std::string& passphrase);
     static std::unique_ptr<Session> open(
         const std::filesystem::path& accountFile, const std::string& passphrase = {});
-    static std::optional<AccountKind> storedKind(
+    static AccountKind storedKind(
         const std::filesystem::path& accountFile, const std::string& passphrase);
-    // Gives an unencrypted bot or chat account its kind, so it opens; a different kind throws.
-    static void assignHostedKind(const std::filesystem::path& accountFile, AccountKind kind);
 
     void connectServer(const ServerEndpoint& endpoint);
     bool isConnected() const;
@@ -349,7 +345,7 @@ public:
 
     void publishRouting();
 
-    bool sendVoice(const std::string& peerFingerprint, const Bytes& opus, std::int64_t durationMs,
+    void sendVoice(const std::string& peerFingerprint, const Bytes& opus, std::int64_t durationMs,
         const std::string& e2eId = {},
         const DeliveryWatch& watch = {},
         const std::string& replyTo = {}, bool forwarded = false);
@@ -368,7 +364,6 @@ public:
     std::string ensureI2pDestination();
     // A master from outside the account gets address keys of its own.
     std::string loadI2pDestination(const Bytes& privateKeysDat);
-    // The keys the account issues with its address; whichever server operates it is handed them.
     AddressKeys addressKeys();
     void issueAddressKeys();
     bool hasI2pDestination() const;
@@ -388,8 +383,6 @@ public:
 
     bool refreshI2pTransientIfDue(std::int64_t now, std::int64_t leadSeconds);
     std::int64_t renewI2pTransient(int days);
-    Bytes i2pTransient() const;
-    // The active transient as base64 (the form the server feeds its I2P router).
     std::string i2pTransientBase64() const;
 
     using AddressDecisionFn
@@ -412,15 +405,11 @@ public:
     std::string contactInviteUri(const std::string& peerFingerprint) const;
     bool hasOwnRouting() const;
     DestinationInfo serverDestination();
-    // True when contacts hold another routing than the card just published.
+    // True when contacts hold another routing than the one just published.
     bool refreshOwnCard();
     std::string destinationOwner() const;
 
     void acceptContactRequest(const std::string& peerFingerprint);
-
-    std::string addByInvite(const std::string& inviteUri, const std::string& text);
-
-    std::string addByAlias(const std::string& alias, const std::string& text);
 
     struct ContactFetchContext {
         std::string identityPem;
@@ -430,6 +419,7 @@ public:
         ResolverCoordinate resolver;
         bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax;
         std::string destinationOwner;
+        FetchTransport transport;
     };
     struct AliasErrandContext {
         std::string identityPem;
@@ -491,27 +481,26 @@ public:
         const ContactCardRequest& request, const std::function<void(CardStep)>& onStep);
     std::string commitContactAdd(const ContactCardResolved& resolved, const DeliveryWatch& watch);
     void sendContactRequest(const std::string& peerFingerprint, const std::string& requestId,
-        const std::string& text, const DeliveryWatch& watch, bool waitForOutcome);
+        const std::string& text, const DeliveryWatch& watch);
     bool contactAwaitsAnswer(const std::string& peerFingerprint) const;
-    // A definite refusal takes back the contact the request recorded; an unreachable server
-    // leaves it, since the request may still be answered.
+    // A definite refusal takes back the recorded contact; an unreachable server leaves it.
     void settleContactRequest(
         const std::string& peerFingerprint, const OutboundCourier::Outcome& outcome);
     void forgetUnansweredContact(const std::string& peerFingerprint);
 
     void setResolverCoordinate(ResolverCoordinate coordinate);
 
-    bool sendMessage(const std::string& peerFingerprint, const std::string& text,
+    void sendMessage(const std::string& peerFingerprint, const std::string& text,
         const std::string& e2eId = {},
         const DeliveryWatch& watch = {}, const std::string& replyTo = {},
         bool forwarded = false);
 
-    bool sendFile(const std::string& peerFingerprint, const std::string& location,
+    void sendFile(const std::string& peerFingerprint, const std::string& location,
         const std::string& e2eId = {},
         const DeliveryWatch& watch = {}, const std::string& replyTo = {},
         bool forwarded = false);
 
-    bool sendPicture(const std::string& peerFingerprint, const Bytes& bytes,
+    void sendPicture(const std::string& peerFingerprint, const Bytes& bytes,
         const std::string& name, const std::string& mime, const std::string& e2eId = {},
         const DeliveryWatch& watch = {},
         const std::string& replyTo = {}, bool forwarded = false);
@@ -525,12 +514,12 @@ public:
         const DeliveryWatch& watch = {});
 
     void sendCallback(const std::string& peerFingerprint, const std::string& data,
-        const std::string& refMessageId = {});
+        const std::string& refMessageId, const DeliveryWatch& watch);
 
     void sendMenu(
         const std::string& peerFingerprint, const BotMenu& menu, const DeliveryWatch& watch = {});
 
-    bool sendEdit(const std::string& peerFingerprint, const std::string& refMessageId,
+    void sendEdit(const std::string& peerFingerprint, const std::string& refMessageId,
         const std::string& text, const InlineKeyboard& keyboard = {},
         const DeliveryWatch& watch = {});
 
@@ -540,9 +529,8 @@ public:
     using GroupBlockSource = std::function<GroupBlock(const std::string& peerFingerprint)>;
     void setGroupBlockSource(GroupBlockSource source);
 
-    bool relayPosts(const std::string& peerFingerprint, const std::vector<RelayedPost>& posts,
+    void relayPosts(const std::string& peerFingerprint, const std::vector<RelayedPost>& posts,
         const DeliveryWatch& watch = {});
-    // How many of the posts, from the first, one envelope holds.
     RelayFitter relayFitter() const;
     void sendGroupState(const std::string& peerFingerprint, const DeliveryWatch& watch = {});
 
@@ -559,20 +547,18 @@ public:
     std::vector<AliasHolding> aliasNames() const { return aliasNames_; }
 
     void setAliasBinding(const std::string& alias, bool on);
-    // An empty word takes it off; a set one becomes part of the name's every lookup.
+    // An empty word takes it off; a set one becomes part of every lookup of the name.
     void setAliasWord(const std::string& alias, const std::string& word);
 
-    bool refreshAliasStatus(const FetchTransport& over = {});
 
-    void serviceAliases();
 
-    bool pushAliasDescriptor(const FetchTransport& over = {});
 
     AliasErrandContext aliasErrandContext() const;
     static AliasErrandResult runAliasErrand(const AliasErrandContext& context);
     void applyAliasErrand(const AliasErrandResult& result);
 
     bool aliasUpdatePending() const;
+    bool pushAliasDescriptor();
 
     bool aliasServicingDue() const;
 
@@ -620,7 +606,7 @@ public:
 
     void setTransferHandler(TransferEventFn handler);
 
-    // Where sent files are read from; set before the first file is sent.
+    // Set before the first file is sent.
     void setFileSource(std::shared_ptr<const FileSource> files);
 
     void forgetSentFilesFor(const std::string& peerFingerprint);
@@ -724,10 +710,10 @@ public:
         PendingEntry entry;
         Bytes blob;
     };
-    // One request for the batch; an item the server no longer holds is left out.
+    // An item the server no longer holds is left out.
     static std::vector<MailboxItem> fetchMailbox(
         Client& client, const std::vector<PendingEntry>& batch);
-    // Items in mailbox order; with none it does only what follows every pass.
+    // Items in mailbox order; with none it still does the end-of-pass work.
     std::vector<IncomingMessage> takeIn(std::vector<MailboxItem> items, bool autoAckSurfaced);
 
     bool hasContact(const std::string& peerFingerprint) const;
@@ -741,9 +727,8 @@ public:
 
 private:
 
-    // True when the routing contacts hold (address or serving key) is not the one just published.
     bool storeCard(const PublishResult& result);
-    // Delegates the address with its keys and publishes the card; true when contacts must be told.
+    // True when contacts must be told.
     bool delegateRouting();
     void redelegate();
     void ensureAddressKeys();
@@ -757,7 +742,7 @@ private:
     DestinationInfo servedOrOwnDestination();
 
     void sendSelf(nlohmann::json inner);
-    bool saveToSelf(nlohmann::json message);
+    void saveToSelf(nlohmann::json message);
     bool newerState(const std::string& slot, std::int64_t sentAt);
     void persistBlocked();
     void persistPendingRevokes();
@@ -770,12 +755,9 @@ private:
     std::string chosenName(const std::string& peerFingerprint) const;
     void forgetChosenName(const std::string& peerFingerprint);
 
-    void requestWithInfo(const std::string& requestId, const std::string& peerFingerprint,
-        const std::string& text, const ContactInfo& info, const std::string& displayName = {});
     void recordRequestedContact(const std::string& peerFingerprint, const ContactInfo& info,
         const std::string& text, const std::string& displayName);
 
-    FetchTransport fetchTransport() const;
 
     nlohmann::json contactBookEntry(
         const std::string& peerFingerprint, const Contact& contact) const;
@@ -796,9 +778,9 @@ private:
     nlohmann::json envelope(const std::string& type, const std::string& id,
         nlohmann::json payload = nlohmann::json::object()) const;
 
-    bool sendContent(const std::string& peerFingerprint, nlohmann::json inner,
+    void sendContent(const std::string& peerFingerprint, nlohmann::json inner,
         const DeliveryWatch& watch = {}, bool establishOnFirstReply = false);
-    bool sendContents(const std::string& peerFingerprint, std::vector<nlohmann::json> items,
+    void sendContents(const std::string& peerFingerprint, std::vector<nlohmann::json> items,
         const DeliveryWatch& watch = {}, bool establishOnFirstReply = false);
 
     void syncI2pMasterToSelf();
@@ -822,20 +804,19 @@ private:
 
     std::shared_ptr<bazarish::i2p::Endpoint> openCallMediaSession();
     void startCall(const std::string& peerFingerprint);
+    void requireAudioBackend() const;
     void startCallMedia();
     void clearCall();
     void announceCallTaken(const std::string& callId);
-    bool sendCallSignal(
+    void sendCallSignal(
         const std::string& peerFingerprint, const std::string& type, nlohmann::json extra);
     void handleCallSignal(const std::string& type, const std::string& from,
         const nlohmann::json& body, IncomingMessage& message);
     void logCompletedCall(CallOutcome outcome);
 
-    bool deliver(const std::string& toDest, const Key& servingSealingKey,
-        const std::string& deliveryClass, const std::string& mailbox,
-        const Bytes& pass, const Bytes& payload,
-        const DeliveryWatch& watch = {}, bool waitForOutcome = true,
-        const std::string& e2eId = {});
+    void deliver(const std::string& toDest, const Key& servingSealingKey,
+        const std::string& deliveryClass, const std::string& mailbox, const Bytes& pass,
+        const Bytes& payload, const DeliveryWatch& watch, const std::string& e2eId);
     OutboundCourier& outboundCourier();
     void persistContacts() const;
     void persistMeta() const;
@@ -862,7 +843,7 @@ private:
     std::shared_ptr<Outbound> outbound_ = std::make_shared<Outbound>();
     bool deviceSync_ = true;
     GroupBlockSource groupBlockSource_;
-    bool announceTransfer(const std::string& type, const std::string& peerFingerprint,
+    void announceTransfer(const std::string& type, const std::string& peerFingerprint,
         const std::string& location, const std::string& e2eId, const DeliveryWatch& watch,
         const std::string& replyTo, bool forwarded);
 
@@ -951,7 +932,7 @@ private:
         std::string peer;
         std::string forAsk;
     };
-    // What a transfer's thread leaves for the owner to send; no offer means the file is unavailable.
+    // No offer means the file is unavailable.
     struct TransferMail {
         std::string peer;
         std::string fileId;

@@ -42,7 +42,6 @@ BotMenu botMenuFromJson(const nlohmann::json& body);
 
 nlohmann::json botMenuItemsJson(const std::vector<BotMenuItem>& items);
 
-// The messages a person writes, which a bot answers and which name the menu they hold.
 bool carriesMenuId(const std::string& type);
 
 class BotMenuMarks {

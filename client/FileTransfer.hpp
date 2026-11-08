@@ -18,7 +18,6 @@
 
 namespace bazarish::client {
 
-// The plaintext of a file being sent, read from its start.
 class FileInput {
 public:
     virtual ~FileInput() = default;
@@ -26,8 +25,7 @@ public:
     virtual std::size_t read(ByteBuffer buffer) = 0;
 };
 
-// Where sent files are read from. A location is a path on this device, or something
-// only the platform can open, such as an Android document.
+// A location is a path on this device, or one only the platform opens (an Android document).
 class FileSource {
 public:
     virtual ~FileSource() = default;
@@ -38,8 +36,7 @@ public:
 
 std::shared_ptr<const FileSource> localFiles();
 
-// Ends a transfer from another thread. The destinations it watches are stopped too, which ends
-// whatever wait an attempt is in on them.
+// Ends a transfer from another thread, and stops the destinations it watches.
 class TransferStop {
 public:
     void request();
@@ -86,7 +83,7 @@ using FetchAttemptFn = std::function<void(std::uint64_t offset, TransferSink& si
 
 using TransferProgressFn = std::function<void(std::uint64_t, std::uint64_t)>;
 
-// The plaintext of a received file, written once its ciphertext is whole and verified.
+// The plaintext, written once the ciphertext is whole and verified.
 class FileOutput {
 public:
     virtual ~FileOutput() = default;
@@ -96,7 +93,7 @@ public:
     virtual void discard() noexcept = 0;
 };
 
-// Where a received file lands: the ciphertext gathers in part, the plaintext goes to open().
+// The ciphertext gathers in part; the plaintext goes to open().
 struct FileTarget {
     std::filesystem::path part;
     std::function<std::unique_ptr<FileOutput>()> open;

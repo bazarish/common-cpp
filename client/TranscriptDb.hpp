@@ -15,7 +15,7 @@
 
 namespace bazarish::client {
 
-// What a row's status column holds; both front-ends read the same numbers from the file.
+// Both front-ends read these numbers from the file.
 enum class DeliveryState : int {
     ePreparing = 0,
     eDelivering = 1,
@@ -95,7 +95,6 @@ struct LastMessage {
     std::string author;
 };
 
-// The conversations of one account, in the same database file Session keeps the account in.
 class TranscriptReader {
 public:
     TranscriptReader();
@@ -109,13 +108,10 @@ public:
     bool open(const std::filesystem::path& file, const Bytes& key);
 
     Bytes media(const std::string& key) const;
-    std::int64_t idForE2e(const std::string& e2eId) const;
     std::int64_t idForKey(const std::string& peer, const std::string& e2eId, bool outgoing) const;
-    std::int64_t idForIncomingE2e(const std::string& e2eId, const std::string& peer) const;
     std::int64_t oldestOfType(const std::string& peer, const std::string& type, bool outgoing) const;
     StoredMessage messageByE2e(const std::string& e2eId, const std::string& peer) const;
     StoredMessage messageById(std::int64_t id) const;
-    std::vector<StoredMessage> messagesFor(const std::string& peer) const;
     std::vector<StoredMessage> latestMessages(const std::string& peer, int limit) const;
     std::vector<StoredMessage> olderMessages(
         const std::string& peer, std::int64_t beforeId, int limit) const;
@@ -127,11 +123,11 @@ public:
     StoredMessage pictureBeside(const std::string& peer, std::int64_t id, bool later) const;
     bool hasMessagesBefore(const std::string& peer, std::int64_t id) const;
     bool hasMessagesAfter(const std::string& peer, std::int64_t id) const;
-    // Newest first, the rows a search can match: those with text or a file name.
+    // Newest first; only rows with text or a file name.
     std::vector<SearchableRow> searchableRows(const std::string& peer) const;
     // Seconds, 0 when the chat has none.
     std::int64_t chatTimer(const std::string& peer) const;
-    // The items JSON of the menu the peer's bot shows, empty when it shows none.
+    // Empty when the bot shows no menu.
     std::string botMenu(const std::string& peer) const;
     // Oldest first.
     std::vector<std::pair<std::string, std::int64_t>> expiredBy(std::int64_t nowMs) const;
@@ -166,8 +162,7 @@ public:
 
     [[nodiscard]] std::int64_t append(const StoredMessage& message);
     [[nodiscard]] bool updateStatus(std::int64_t id, int status);
-    // A status only moves forward, and a failure may come at any point. Nothing when the store
-    // failed, false when the row keeps the status it has.
+    // Forward only, except to failure; nothing when the store failed, false when unchanged.
     [[nodiscard]] std::optional<bool> advanceStatus(std::int64_t id, int status);
     [[nodiscard]] std::optional<int> failUnsentOnLoad(
         int preparingStatus, int deliveringStatus, int failedStatus);

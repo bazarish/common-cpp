@@ -18,7 +18,6 @@
 
 namespace bazarish::http {
 
-// One HTTP engine for the whole fleet: Boost.Beast on an asio loop with C++20 coroutines.
 struct Request {
     std::string method;
     std::string path;
@@ -57,7 +56,6 @@ Handler filled(Filler handler);
 
 class Server {
 public:
-    // What one websocket may hold unsent before it is taken for a reader that has stopped.
     static constexpr std::size_t kMaxSocketQueueBytes = 64 * 1024 * 1024;
 
     struct Options {
@@ -65,12 +63,13 @@ public:
         int port = 0;
         int threads = 4;
         std::size_t maxHeadBytes = 64 * 1024;
+        std::size_t maxTargetBytes = 8 * 1024;
         std::size_t maxBodyBytes = kMaxRequestBodyBytes;
         std::chrono::seconds readTimeout{120};
         std::string certificate;
         std::string key;
         std::vector<std::string> clientPins;
-        // Host names, no port. When set, Host must name one of them: a rebound name does not.
+        // No port; when set, Host must name one of them.
         std::vector<std::string> hosts;
     };
 

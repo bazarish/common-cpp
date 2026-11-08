@@ -54,7 +54,7 @@ int loopbackSocket(const int port, const bool listening)
     return handle;
 }
 
-// What sits in front of a gateway in a deployment: TLS on the outside, plain behind.
+// TLS on the outside, plain behind, as in front of a deployed gateway.
 class TlsFront {
 public:
     TlsFront(const tls::Credential& credential, const int to)

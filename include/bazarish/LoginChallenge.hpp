@@ -13,7 +13,7 @@ namespace bazarish::service {
 
 class LoginChallenge {
 public:
-    // Asked on every challenge and every check, so a changed setting is taken at once.
+    // Called on every challenge and check, so a changed setting applies at once.
     using ConsumerFn = std::function<LoginConsumer()>;
 
     LoginChallenge(std::string secret, ConsumerFn consumer,

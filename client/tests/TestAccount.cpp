@@ -301,16 +301,10 @@ int main()
             meta.erase("kind");
             db.putText("meta", meta.dump());
         };
+        CHECK(Session::storedKind(kinds / "bot-copy.db", std::string{}) == AccountKind::eBot);
         dropKind(kinds / "user-copy.db");
         CHECK_THROWS(Session::open(kinds / "user-copy.db"));
-        CHECK_THROWS(Session::assignHostedKind(kinds / "user-copy.db", AccountKind::eUser));
-
-        dropKind(kinds / "bot-copy.db");
-        CHECK_THROWS(Session::open(kinds / "bot-copy.db"));
-        Session::assignHostedKind(kinds / "bot-copy.db", AccountKind::eBot);
-        CHECK(Session::open(kinds / "bot-copy.db")->kind() == AccountKind::eBot);
-        Session::assignHostedKind(kinds / "bot-copy.db", AccountKind::eBot);
-        CHECK_THROWS(Session::assignHostedKind(kinds / "bot-copy.db", AccountKind::eChat));
+        CHECK_THROWS(Session::storedKind(kinds / "user-copy.db", std::string{}));
 
         {
             AccountDb db(kinds / "user.db", std::string{});

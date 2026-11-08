@@ -29,7 +29,6 @@ int main()
     CHECK(book.sent() == 0);
     CHECK(book.pending() == 0);
     CHECK(!book.finishedSending());
-    CHECK(!book.peerHasFinished());
 
     write(book, "alpha");
     write(book, "beta");
@@ -92,9 +91,6 @@ int main()
     StreamBook ending;
     ending.finishSending();
     CHECK(ending.finishedSending());
-    CHECK(!ending.peerHasFinished());
-    ending.peerFinished();
-    CHECK(ending.peerHasFinished());
 
     std::printf("TestGatewayStreamBook ok\n");
     return 0;

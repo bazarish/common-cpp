@@ -21,6 +21,7 @@ constexpr int kOk = 200;
 constexpr int kForbidden = 403;
 constexpr int kMissing = 404;
 constexpr int kMisdirected = 421;
+constexpr int kUriTooLong = 414;
 constexpr std::size_t kHostilePathBytes = 60000;
 constexpr int kStopRounds = 50;
 constexpr std::chrono::milliseconds kParkPoll{10};
@@ -98,11 +99,18 @@ int main()
     CHECK(ask(server, "PUT", "/any/path?x=1").status == kOk);
     CHECK(captured == std::vector<std::string>{"/any/path?x=1"});
 
+    const std::size_t longest = http::Server::Options{}.maxTargetBytes;
+    const std::string longPath = "/" + std::string(longest - 1, 'z');
+    CHECK(ask(server, "PUT", longPath).status == kOk);
+    CHECK(captured.at(0) == longPath);
+    CHECK(ask(server, "GET", "/lang/" + std::string(longest - 6, 'z')).status == kOk);
+    CHECK(ask(server, "GET", "/v1/transfers/" + std::string(longest - 14, 'z')).status == kMissing);
+
+    captured.clear();
     const std::string hostile(kHostilePathBytes, 'z');
-    CHECK(ask(server, "PUT", "/" + hostile).status == kOk);
-    CHECK(captured.at(0).size() == kHostilePathBytes + 1);
-    CHECK(ask(server, "GET", "/lang/" + hostile).status == kOk);
-    CHECK(ask(server, "GET", "/v1/transfers/" + hostile).status == kMissing);
+    CHECK(ask(server, "PUT", "/" + hostile).status == kUriTooLong);
+    CHECK(ask(server, "PUT", longPath + "z").status == kUriTooLong);
+    CHECK(captured.empty());
 
     CHECK_THROWS(server.get("/v1/{nonsense}", echo(captured)));
     CHECK_THROWS(server.get("/price/(.+)", echo(captured)));

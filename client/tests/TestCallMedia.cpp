@@ -1,6 +1,6 @@
 // Bazarish project (c) 2026
 #include "AudioCodec.hpp"
-#include "AudioIo.hpp"
+#include "AudioDoubles.hpp"
 #include "CallMedia.hpp"
 
 #include <bazarish/Bytes.hpp>
@@ -373,8 +373,6 @@ int main()
 
         caller.start();
         callee.start();
-        // Waited for rather than slept through: on a loaded machine the media
-        // threads take longer to get there, and the count is what matters.
         for (int waited = 0; waited < kWaitMs; waited += kPollMs) {
             if (caller.packetsSent() >= kWantedFrames && callee.packetsSent() >= kWantedFrames
                 && caller.packetsReceived() >= kWantedFrames
@@ -414,8 +412,6 @@ int main()
 
         caller.start();
         callee.start();
-        // Waited for, not slept through: what is asserted is that the caller
-        // sent and that the callee, holding another key, heard none of it.
         for (int waited = 0; waited < kWaitMs; waited += kPollMs) {
             if (caller.packetsSent() >= kWantedFrames) {
                 break;

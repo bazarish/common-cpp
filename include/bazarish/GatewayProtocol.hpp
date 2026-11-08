@@ -29,7 +29,6 @@ inline constexpr std::chrono::seconds kKeepalive{30};
 inline constexpr std::chrono::seconds kPongTimeout{15};
 inline constexpr std::chrono::milliseconds kStatusPeriod{250};
 inline constexpr std::size_t kMaxSocketsPerSession = 16;
-// The longest dial a client makes: a file or a pairing.
 inline constexpr std::chrono::seconds kMaxDialDeadline{90};
 inline constexpr std::size_t kMaxDialsPerSession = 64;
 inline constexpr std::size_t kMaxEndpointsPerSession = 256;

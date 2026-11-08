@@ -27,7 +27,7 @@ std::string i2pRoutingHost(const Bytes& privateKeys)
 
 std::string i2pPrivateKeysBase64(const Bytes& privateKeys)
 {
-    // The serving server consumes this as standard base64 of the raw key blob.
+    // The serving server reads standard base64 of the raw blob.
     return toBase64(privateKeys);
 }
 

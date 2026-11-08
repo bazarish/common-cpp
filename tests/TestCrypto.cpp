@@ -25,7 +25,6 @@ int main()
     badSignature[0] ^= 0x01;
     CHECK(!verify(signing, message, badSignature));
 
-    // A different key must not verify.
     const Key other = Key::generateSigning();
     CHECK(!verify(other, message, signature));
 
@@ -35,13 +34,11 @@ int main()
     CHECK(!publicOnly.hasPrivate());
     CHECK(publicOnly.fingerprint() == fingerprint);
 
-    // Private PEM round trip preserves the identity.
     const Key restored = Key::fromPrivatePem(signing.privatePem());
     CHECK(restored.hasPrivate());
     CHECK(restored.fingerprint() == fingerprint);
     CHECK(verify(restored, message, signature));
 
-    // A public-only key cannot sign or export a private PEM.
     CHECK_THROWS(sign(publicOnly, message));
     CHECK_THROWS(publicOnly.privatePem());
 
@@ -69,7 +66,6 @@ int main()
     const Key pqRestored = Key::fromPrivatePem(pq.privatePem());
     CHECK(pqRestored.fingerprint() == pq.fingerprint());
 
-    // Hybrid identity: fingerprint covers both keys and survives the private PEM round trip.
     const Identity identity = Identity::generate();
     CHECK(identity.fingerprint().size() == kFingerprintTextLength);
     CHECK(identity.fingerprint()
@@ -86,7 +82,6 @@ int main()
     const Key fromEncrypted = Key::fromPrivatePem(encryptedPem, passphrase);
     CHECK(fromEncrypted.fingerprint() == fingerprint);
     CHECK_THROWS(Key::fromPrivatePem(encryptedPem, "wrong"));
-    // An encrypted PEM read with no passphrase must not silently succeed.
     CHECK_THROWS(Key::fromPrivatePem(encryptedPem));
 
     const std::string encryptedIdentityPem = identity.privatePem(passphrase);

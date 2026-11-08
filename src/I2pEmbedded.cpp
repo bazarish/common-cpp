@@ -529,7 +529,6 @@ public:
     bool lost() const override { return stopped->load(); }
     std::string publicBase64() const override;
     std::string routingHost() const override;
-    Bytes privateBlob() const override;
     void refreshOfflineSignature(const Keys& newTransient) override;
     void setLeaseSetReaderKey(const Bytes& rawPrivate) override;
     std::unique_ptr<backend::StreamBackend> connect(
@@ -551,7 +550,6 @@ public:
     std::shared_ptr<DestTag> tag;
     std::string publicDestination;
     std::string hostAddress;
-    Bytes keysBlob;
 
     std::mutex acceptMutex;
     std::condition_variable acceptCv;
@@ -629,7 +627,6 @@ bool EmbeddedEndpoint::ready() const { return dest->IsReady(); }
 
 std::string EmbeddedEndpoint::publicBase64() const { return publicDestination; }
 std::string EmbeddedEndpoint::routingHost() const { return hostAddress; }
-Bytes EmbeddedEndpoint::privateBlob() const { return keysBlob; }
 
 void EmbeddedEndpoint::stop()
 {
@@ -653,7 +650,6 @@ void EmbeddedEndpoint::setLeaseSetReaderKey(const Bytes& rawPrivate)
 void EmbeddedEndpoint::refreshOfflineSignature(const Keys& newTransient)
 {
     dest->UpdateOfflineSignature(parseKeys(newTransient.blob()));
-    keysBlob = newTransient.blob();
 }
 
 std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::connect(
@@ -1289,7 +1285,6 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     impl->tag = std::make_shared<DestTag>(config.label, config.owner);
     impl->publicDestination = keys.publicBase64();
     impl->hostAddress = bazarish::i2p::routingHost(impl->publicDestination, config.blinded);
-    impl->keysBlob = keys.blob();
 
     i2pd::util::Mapping params;
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_TYPE,

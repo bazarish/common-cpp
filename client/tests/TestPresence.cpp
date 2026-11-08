@@ -112,8 +112,7 @@ public:
         std::erase(live_, box);
     }
 
-    // The netdb answers with the newest lease set published, the holder alive or not, and a
-    // sender keeps what it found, as libi2pd does, until it looks again from a new destination.
+    // As libi2pd: a sender keeps the lease set it found until it looks again from a new destination.
     void send(const Box& from, const std::string& host, const Bytes& datagram)
     {
         std::shared_ptr<Box> target;

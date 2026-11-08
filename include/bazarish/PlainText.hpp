@@ -11,15 +11,15 @@ namespace bazarish {
 // SignInWithKey.md, "The consumer": C0, DEL, C1, the line and paragraph separators, bidi controls.
 bool isForbiddenCodePoint(unsigned long codePoint);
 
-// The code points of UTF-8 text that carries no forbidden one; none for anything else.
+// The code point count; none for invalid UTF-8 or a forbidden code point.
 std::optional<std::size_t> plainCodePoints(std::string_view text);
 
 inline constexpr std::size_t kMaxFileNameBytes = 255;
 
-// A file name a peer offered, as one plain name that stays in the folder it is saved to.
+// One plain name that stays in the folder it is saved to.
 std::string safeFileName(std::string_view offered);
 
-// Only A-Z change, whatever the locale: header names, hosts and other protocol words.
+// Only A-Z change, whatever the locale.
 std::string asciiLower(std::string text);
 
 }  // namespace bazarish

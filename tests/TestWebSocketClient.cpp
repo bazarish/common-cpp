@@ -29,7 +29,6 @@ constexpr const char* kProtocol = "test/1";
 constexpr int kDeadlineSeconds = 1;
 constexpr int kPatienceSeconds = 10;
 
-// Accepts and then says nothing: what a silent peer looks like to a dial.
 class MuteListener {
 public:
     MuteListener()

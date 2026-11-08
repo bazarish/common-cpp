@@ -40,7 +40,6 @@ inline std::string schemeLink(const std::string_view tail)
     return std::string(kSchemeLinkPrefix) + std::string(tail);
 }
 
-// A gateway handed out: its URL up to the secret path, and the fingerprint of its key.
 inline std::string gatewayLink(const std::string_view url, const std::string_view fingerprint)
 {
     return webLink(std::string(kGatewayKind) + "v=" + kGatewayLinkVersion + "&url="

@@ -36,7 +36,6 @@ sam::RouterAddress addressOf(const RouterConfig& config)
     sam::RouterAddress address;
     address.host = config.samHost;
     address.controlPort = static_cast<std::uint16_t>(config.samControlPort);
-    address.datagramPort = static_cast<std::uint16_t>(config.samDatagramPort);
     return address;
 }
 
@@ -82,7 +81,6 @@ public:
         , config_(config)
         , publicDestination_(config.keys.value().publicBase64())
         , hostAddress_(i2p::routingHost(publicDestination_, config.blinded))
-        , keysBlob_(config.keys.value().blob())
         , tag_(config.label, config.owner)
     {
         builder_ = std::thread([this]() { build(); });
@@ -107,7 +105,6 @@ public:
     bool lost() const override { return stopped_.load(); }
     std::string publicBase64() const override { return publicDestination_; }
     std::string routingHost() const override { return hostAddress_; }
-    Bytes privateBlob() const override { return keysBlob_; }
 
     void refreshOfflineSignature(const Keys&) override
     {
@@ -266,7 +263,6 @@ private:
     const EndpointConfig config_;
     const std::string publicDestination_;
     const std::string hostAddress_;
-    const Bytes keysBlob_;
 
     std::atomic<bool> stopped_{false};
 

@@ -18,7 +18,7 @@ struct QueryField {
     std::string key;
     std::string value;
 };
-// The fields of a query in order, values as written; nothing when one of them has no '='.
+// Values as written; nothing when a field has no '='.
 std::optional<std::vector<QueryField>> queryFields(const std::string& query);
 
 }  // namespace bazarish

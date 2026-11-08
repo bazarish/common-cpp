@@ -5,8 +5,7 @@
 
 namespace bazarish::client {
 
-// One run of tries against a deadline: another try starts only when the time left pays for its
-// wait and for the dial it makes.
+// Another try starts only when the time left pays for its wait and its dial.
 class AttemptBudget {
 public:
     explicit AttemptBudget(const std::chrono::steady_clock::duration run)

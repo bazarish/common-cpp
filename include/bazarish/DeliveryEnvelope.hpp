@@ -9,7 +9,6 @@
 
 namespace bazarish {
 
-// What a delivery tells the server that holds the mailbox, sealed to that server's key.
 struct DeliveryEnvelope {
     std::string deliveryClass;
     std::string mailbox;

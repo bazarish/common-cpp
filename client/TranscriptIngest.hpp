@@ -12,7 +12,6 @@
 
 namespace bazarish::client {
 
-// The words of the rows this side writes about what happened; each front-end says them its own way.
 class IngestNotes {
 public:
     virtual ~IngestNotes() = default;
@@ -41,13 +40,11 @@ public:
     virtual void accountRenamed(const std::string&) {}
     virtual void contactsRevised() {}
     virtual void settingsAsked() {}
-    // throughMs is the send time of the newest message another device read.
-    virtual void readElsewhere(const std::string&, std::int64_t) {}
+    virtual void readElsewhere(const std::string&, [[maybe_unused]] std::int64_t throughMs) {}
     virtual void editArrived(const std::string&, std::int64_t, const std::string&) {}
     virtual void messageArrived(const std::string&) {}
 };
 
-// Applies what the mailbox brought to the account's conversations.
 class TranscriptIngest {
 public:
     using OwnFingerprintFn = std::function<std::string()>;

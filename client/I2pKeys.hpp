@@ -9,7 +9,7 @@
 namespace bazarish::client {
 
 struct I2pMasterKey {
-    // Serialized i2pd PrivateKeys for the master destination.
+    // Serialized i2pd PrivateKeys.
     Bytes privateKeys;
     std::string host;
 };

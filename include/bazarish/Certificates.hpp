@@ -27,7 +27,7 @@ struct ContactCard {
     // Only a user card carries these two; a bot or chat card carries neither.
     Bytes presenceKeyDer;
     std::string presenceDest;
-    // The identity keys that signed this card (SPKI DER).
+    // SPKI DER.
     Bytes identityClassicalDer;
     Bytes identityPqDer;
 
@@ -48,12 +48,10 @@ struct AliasCertificate {
 
     static Bytes issue(
         const Identity& userIdentity, const std::string& alias, std::int64_t issuedAt);
-    // Verifies both signatures and that the signer is body.user.
     static AliasCertificate verify(const Bytes& der);
 };
 
 struct ServerCard {
-    // A facade carries a tunnel to each, and each opens it under its own sealing key.
     enum class Service { eMessaging, eServiceNode };
 
     std::string server;
@@ -62,7 +60,6 @@ struct ServerCard {
 
     static Bytes issue(const Identity& serverRootIdentity, Service service,
         const Key& sealingPublicKey, std::int64_t issuedAt);
-    // Verifies both signatures, that the card is that service's and that the signer is body.server.
     static ServerCard verify(const Bytes& der, Service service);
 
     Key sealingKey() const;
@@ -77,7 +74,6 @@ struct DelegationCertificate {
 
     static Bytes issue(const Identity& rootIdentity, const Identity& delegatedIdentity,
         std::int64_t issuedAt, std::int64_t notAfter);
-    // Verifies both signatures and that the signer is body.root.
     static DelegationCertificate verify(const Bytes& der);
 
     std::string delegatedFingerprint() const;

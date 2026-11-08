@@ -62,9 +62,7 @@ void I2pCallTransport::sendDatagram(const ByteView data)
 
 std::vector<std::uint8_t> I2pCallTransport::receiveDatagram(const int timeoutMs)
 {
-    const auto wait = timeoutMs < 0 ? std::chrono::milliseconds(1000)
-                                     : std::chrono::milliseconds(timeoutMs);
-    return endpoint_.receiveRawDatagram(wait);
+    return endpoint_.receiveRawDatagram(std::chrono::milliseconds(timeoutMs));
 }
 
 CallMedia::CallMedia(CallTransport& transport, std::unique_ptr<AudioSource> audioSource,

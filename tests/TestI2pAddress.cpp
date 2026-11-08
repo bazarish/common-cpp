@@ -37,7 +37,7 @@ int main()
     const std::string plainB32 = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
     CHECK(isB32I2pHost(expectedB33));
     CHECK(isB32I2pHost(plainB32));
-    CHECK(!isB32I2pHost(destination));  // raw base64 destination
+    CHECK(!isB32I2pHost(destination));
     CHECK(!isB32I2pHost("stats.i2p"));
     CHECK(!isB32I2pHost("abc.b32.i2p"));
     CHECK(!isB32I2pHost(std::string(51, 'a') + ".b32.i2p"));

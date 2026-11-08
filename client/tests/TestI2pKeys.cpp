@@ -131,15 +131,15 @@ void testSessionPersistsAndDelegates()
         CHECK(session->hasI2pDestination());
         CHECK(session->i2pAddress() == address);
         const std::int64_t expires = session->renewI2pTransient(kTermDays);
-        CHECK(!session->i2pTransient().empty());
-        CHECK(i2pRoutingHost(session->i2pTransient()) == address);
-        CHECK(i2pDelegationExpires(session->i2pTransient()) == expires);
+        CHECK(!fromBase64(session->i2pTransientBase64()).empty());
+        CHECK(i2pRoutingHost(fromBase64(session->i2pTransientBase64())) == address);
+        CHECK(i2pDelegationExpires(fromBase64(session->i2pTransientBase64())) == expires);
     }
     {
         const std::unique_ptr<Session> session = Session::open(profile, "pw");
         CHECK(session->hasI2pDestination());
         CHECK(session->i2pAddress() == address);
-        CHECK(i2pRoutingHost(session->i2pTransient()) == address);
+        CHECK(i2pRoutingHost(fromBase64(session->i2pTransientBase64())) == address);
     }
     fs::remove_all(dir);
 }

@@ -33,7 +33,7 @@ int main()
     CHECK_THROWS(fromHex("abc"));
     CHECK_THROWS(fromHex("zz"));
 
-    // RFC 4648 vectors, lowercase and unpadded.
+    // RFC 4648 vectors.
     const Bytes foobar = {'f', 'o', 'o', 'b', 'a', 'r'};
     CHECK(toBase32(foobar) == "mzxw6ytboi");
     CHECK(toBase32(Bytes{'f'}) == "my");
@@ -41,7 +41,6 @@ int main()
 
     CHECK(toBase32(Bytes(32, 0x42)).size() == 52);
 
-    // Base64 round trip.
     const Bytes hello = {'h', 'e', 'l', 'l', 'o'};
     CHECK(toBase64(hello) == "aGVsbG8=");
     CHECK(fromBase64("aGVsbG8=") == hello);

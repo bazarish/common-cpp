@@ -43,6 +43,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -225,6 +226,34 @@ private:
     std::string reply_;
     std::size_t sent_ = 0;
 };
+
+void addByInvite(Session& session, const std::string& invite, const std::string& text)
+{
+    Session::ContactCardRequest request;
+    request.uriOrAlias = invite;
+    request.introText = text;
+    const Session::ContactCardResolved resolved = Session::resolveContactCard(
+        session.contactFetchContext(), request, [](Session::CardStep) {});
+    if (!resolved.ok) {
+        throw std::runtime_error(resolved.error);
+    }
+    std::mutex mutex;
+    std::optional<OutboundCourier::Outcome> settled;
+    DeliveryWatch watch;
+    watch.onOutcome = [&mutex, &settled](const OutboundCourier::Outcome& outcome) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        settled = outcome;
+    };
+    session.commitContactAdd(resolved, watch);
+    CHECK(testutil::waitFor([&mutex, &settled]() {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return settled.has_value();
+    }));
+    session.settleContactRequest(resolved.fingerprint, *settled);
+    if (!settled->stored) {
+        throw std::runtime_error(settled->errorMessage);
+    }
+}
 
 }  // namespace
 
@@ -539,7 +568,7 @@ int main()
         alice->setOutboundCourier(courierFor());
         bob->setOutboundCourier(courierFor());
 
-        alice->addByInvite(bob->inviteUri(), "hi bob");
+        addByInvite(*alice, bob->inviteUri(), "hi bob");
         bob->sync();
         bob->acceptContactRequest(alice->fingerprint());
         alice->sync();
@@ -552,25 +581,22 @@ int main()
         }));
 
         CHECK(alice->aliasNames().empty());
-        alice->serviceAliases();
-        {
-            std::lock_guard<std::mutex> lock(m.mu);
-            CHECK(m.resolverStatusCalls == 0);
-            CHECK(m.resolverUpdateCalls == 0);
-        }
+        const auto runErrand = [](Session& session) {
+            session.applyAliasErrand(Session::runAliasErrand(session.aliasErrandContext()));
+        };
 
         {
             std::lock_guard<std::mutex> lock(m.mu);
             m.aliasOwner["alice"] = alice->fingerprint();
         }
-        CHECK(alice->refreshAliasStatus());
+        runErrand(*alice);
         CHECK(alice->aliasNames().size() == 1);
         CHECK(alice->aliasNames().front().alias == "alice");
 
         CHECK(!alice->aliasNames().front().bindingWanted);
         CHECK(!alice->aliasUpdatePending());
         const int updatesBeforeAsking = m.resolverUpdateCalls;
-        alice->serviceAliases();
+        runErrand(*alice);
         {
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.resolverUpdateCalls == updatesBeforeAsking);
@@ -581,17 +607,11 @@ int main()
             std::lock_guard<std::mutex> lock(m.mu);
             m.aliasBindingWanted.insert("alice");
         }
-        CHECK(alice->refreshAliasStatus());
+        runErrand(*alice);
         CHECK(alice->aliasNames().front().bindingWanted);
-        CHECK(alice->aliasUpdatePending());
-        {
-            std::lock_guard<std::mutex> lock(m.mu);
-            CHECK(m.aliasDescriptor.count("alice") == 0);
-        }
-        CHECK(alice->pushAliasDescriptor());
         CHECK(!alice->aliasUpdatePending());
         const int updatesBeforePressingAgain = m.resolverUpdateCalls;
-        CHECK(!alice->pushAliasDescriptor());
+        runErrand(*alice);
         {
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.resolverUpdateCalls == updatesBeforePressingAgain);
@@ -603,32 +623,28 @@ int main()
             m.aliasBindingWanted.erase("alice");
             m.aliasDescriptor.erase("alice");
         }
-        CHECK(alice->refreshAliasStatus());
+        runErrand(*alice);
         CHECK(!alice->aliasNames().front().bindingWanted);
         CHECK(!alice->aliasUpdatePending());
         {
             const std::lock_guard<std::mutex> lock(m.mu);
             m.aliasBindingWanted.insert("alice");
         }
-        CHECK(alice->refreshAliasStatus());
+        runErrand(*alice);
         CHECK(alice->aliasNames().front().bindingWanted);
-        CHECK(!alice->aliasNames().front().bound);
-        CHECK(alice->aliasUpdatePending());
-        CHECK(alice->pushAliasDescriptor());
         CHECK(!alice->aliasUpdatePending());
         {
             const std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.aliasDescriptor.at("alice").fingerprint == alice->fingerprint());
         }
 
-        // A name somebody else owns is not repointed by asking nicely.
         {
             std::lock_guard<std::mutex> lock(m.mu);
             m.aliasOwner["bob"] = bob->fingerprint();
         }
         CHECK(bob->aliasNames().empty());
         const int statusBefore = m.resolverStatusCalls;
-        CHECK(bob->refreshAliasStatus());
+        runErrand(*bob);
         CHECK(m.resolverStatusCalls == statusBefore + 1);
         CHECK(bob->aliasNames().size() == 1);
         {
@@ -1390,7 +1406,7 @@ int main()
             alice->setDisplayName(longestName);
             CHECK(alice->displayName() == longestName);
             const std::string longestGreeting(kMaxContactGreetingBytes, 'g');
-            alice->addByInvite(carol->inviteUri(), longestGreeting);
+            addByInvite(*alice, carol->inviteUri(), longestGreeting);
 
             const std::size_t largest = [&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
@@ -1419,10 +1435,10 @@ int main()
                 return m.mailbox[alice->fingerprint()].size();
             };
             const std::size_t beforeAdding = heldForAlice();
-            alice->addByInvite(dana->inviteUri(), "let me in");
+            addByInvite(*alice, dana->inviteUri(), "let me in");
             bool askedTwice = true;
             try {
-                alice->addByInvite(dana->inviteUri(), "let me in again");
+                addByInvite(*alice, dana->inviteUri(), "let me in again");
             } catch (const std::exception&) {
                 askedTwice = false;
             }
@@ -1456,7 +1472,7 @@ int main()
             alice->removeContact(dana->fingerprint());
             CHECK(!alice->hasContact(dana->fingerprint()));
             const std::size_t beforeReturn = heldForAlice();
-            alice->addByInvite(dana->inviteUri(), "me again");
+            addByInvite(*alice, dana->inviteUri(), "me again");
             CHECK(testutil::waitFor([&]() {
                 dana->sync();
                 return dana->contactAcceptInFlight(alice->fingerprint());
@@ -1490,7 +1506,7 @@ int main()
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.refuseWith = "CONTACT_RATE_LIMITED";
             }
-            CHECK_THROWS(alice->addByInvite(erin->inviteUri(), "refused"));
+            CHECK_THROWS(addByInvite(*alice, erin->inviteUri(), "refused"));
             CHECK(!alice->hasContact(erin->fingerprint()));
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
@@ -1507,12 +1523,12 @@ int main()
                     return nullptr;
                 },
                 once));
-            CHECK_THROWS(alice->addByInvite(erin->inviteUri(), "are you there"));
+            CHECK_THROWS(addByInvite(*alice, erin->inviteUri(), "are you there"));
             CHECK(alice->contactAwaitsAnswer(erin->fingerprint()));
 
             alice->setOutboundCourier(courierFor());
-            alice->sendContactRequest(erin->fingerprint(), "resent-request", "are you there",
-                DeliveryWatch{}, /*waitForOutcome=*/true);
+            alice->sendContactRequest(
+                erin->fingerprint(), "resent-request", "are you there", DeliveryWatch{});
             CHECK(testutil::waitFor([&]() {
                 erin->sync();
                 return erin->hasContact(alice->fingerprint());
@@ -1602,7 +1618,7 @@ int main()
                 finn->setFetchTransport(directDial);
                 finn->setOutboundCourier(courierFor());
 
-                alice->addByInvite(finn->inviteUri(), "added on one device");
+                addByInvite(*alice, finn->inviteUri(), "added on one device");
                 alice->renameContact(finn->fingerprint(), "Finn of the phone");
                 CHECK(testutil::waitFor([&]() {
                     second->sync();
@@ -1894,7 +1910,7 @@ int main()
             gail->registerAccount();
             gail->setFetchTransport(directDial);
             gail->setOutboundCourier(courierFor());
-            gail->addByInvite(bob->inviteUri(), "a file for you");
+            addByInvite(*gail, bob->inviteUri(), "a file for you");
             bob->sync();
             bob->acceptContactRequest(gail->fingerprint());
             CHECK(testutil::waitFor([&]() {

@@ -16,7 +16,6 @@ struct ZipEntry {
     unsigned mode = kOwnerOnlyMode;
 };
 
-// Entries are stored, not deflated: what goes in is ciphertext or already compact.
 Bytes zipStored(const std::vector<ZipEntry>& entries);
 std::vector<ZipEntry> unzipStored(const Bytes& archive);
 

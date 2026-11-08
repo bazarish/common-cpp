@@ -25,11 +25,11 @@ using StatementHandle = std::unique_ptr<sqlite3_stmt, SqliteFinalize>;
 // Null when the file cannot be opened or the key does not read it.
 SqliteHandle openKeyed(const std::filesystem::path& file, const Bytes& key);
 
-// A whole copy under the same key while other connections keep writing to the source.
+// Safe while other connections keep writing to the source.
 void copyKeyedDatabase(
     const std::filesystem::path& from, const std::filesystem::path& to, const Bytes& key);
 
-// One connection; whatever goes wrong in it is thrown with the label in front.
+// Whatever goes wrong is thrown with the label in front.
 class Database {
 public:
     Database(SqliteHandle db, std::string label);

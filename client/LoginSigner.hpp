@@ -18,10 +18,10 @@ public:
 
     std::string sign(const std::string& challenge) const;
 
-    // Signs and hands both to the challenge's callback; the HTTP status, empty if unreached.
+    // The HTTP status; empty if unreached.
     std::optional<int> send(const std::string& challenge) const;
 
-    // The challenge a link points at, checked to return where it came from; empty if unreached.
+    // Checked to return where it came from; empty if unreached.
     std::optional<std::string> fetch(
         const std::string& link, const std::atomic<bool>& cancelled) const;
 

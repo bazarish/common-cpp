@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include "AudioCodec.hpp"
 #include "AudioIo.hpp"
 
 #include <bazarish/Bytes.hpp>
@@ -58,7 +59,7 @@ public:
     std::uint64_t packetsSent() const;
     std::uint64_t packetsReceived() const;
     bool broken() const;
-    // When the peer first said it hears us; 0 until then.
+    // 0 until the peer first says it hears us.
     std::int64_t connectedAtMs() const;
 
     float inputLevel() const;

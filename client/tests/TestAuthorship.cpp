@@ -18,6 +18,9 @@ using namespace bazarish::client;
 
 namespace {
 
+constexpr std::size_t kAuthorshipBytes = 5120;
+constexpr std::size_t kAuthorshipWithKeysBytes = 8192;
+
 nlohmann::json message(const std::string& from, const std::string& text)
 {
     return nlohmann::json{

@@ -21,7 +21,7 @@ public:
     std::string text(const std::string& name) const;
     void put(const std::string& name, const Bytes& value);
     void putText(const std::string& name, const std::string& value);
-    // A document kept under a name; an empty object while nothing is.
+    // An empty object while nothing is kept under the name.
     nlohmann::json document(const std::string& name) const;
     void putDocument(const std::string& name, const nlohmann::json& value);
     void erase(const std::string& name);

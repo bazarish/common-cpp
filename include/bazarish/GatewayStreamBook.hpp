@@ -59,17 +59,6 @@ public:
         return consumed_;
     }
 
-    void peerFinished()
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        peerFinished_ = true;
-    }
-    bool peerHasFinished() const
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        return peerFinished_;
-    }
-
 private:
     mutable std::mutex mutex_;
     std::uint64_t sent_ = 0;
@@ -80,7 +69,6 @@ private:
 
     std::uint64_t received_ = 0;
     std::uint64_t consumed_ = 0;
-    bool peerFinished_ = false;
 };
 
 }  // namespace bazarish::gateway

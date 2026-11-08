@@ -17,7 +17,7 @@
 
 namespace bazarish::i2p::backend {
 
-// What a destination is called and whose it is; a running destination can be renamed.
+// A running destination can be renamed.
 class DestTag {
 public:
     DestTag(std::string label, std::string owner)
@@ -35,7 +35,6 @@ public:
         const std::lock_guard<std::mutex> lock(mutex_);
         return owner_;
     }
-    // The label, or a word for a destination that has none.
     std::string named() const
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -73,7 +72,6 @@ public:
     virtual bool lost() const { return false; }
     virtual std::string publicBase64() const = 0;
     virtual std::string routingHost() const = 0;
-    virtual Bytes privateBlob() const = 0;
     virtual void refreshOfflineSignature(const Keys& newTransient) = 0;
     virtual void setLeaseSetReaderKey(const Bytes& rawPrivate) = 0;
 
@@ -132,7 +130,7 @@ std::unique_ptr<RouterBackend> makeEmbeddedRouter(const RouterConfig& config);
 std::string embeddedRouterVersion();
 std::vector<Bytes> embeddedSampleRouterInfos(std::size_t count);
 Bytes generateKeysBlob();
-// A raw 32-byte X25519 key in the I2P base64 an I2CP lease-set option expects.
+// I2CP lease-set options take the raw X25519 key in I2P base64.
 inline constexpr std::size_t kLeaseSetKeyBytes = 32;
 std::string leaseSetKeyBase64(const Bytes& raw);
 Bytes issueTransientBlob(const Bytes& master, int days);

@@ -20,7 +20,7 @@ inline constexpr const char* kPqSigningAlgorithm = "ML-DSA-65";
 inline constexpr const char* kPqKemAlgorithm = "ML-KEM-768";
 
 inline constexpr std::size_t kFingerprintBytes = 32;
-// Text length of a fingerprint: base32 of 32 bytes, no padding.
+// Base32 of kFingerprintBytes, no padding.
 inline constexpr std::size_t kFingerprintTextLength = 52;
 
 struct EvpPkeyDeleter {
@@ -33,7 +33,6 @@ public:
     static Key generateSigning();
     static Key generateSigningPq();
     static Key generateSealing();
-    // A bare X25519 key, for what an I2P router needs as a raw key rather than a sealing pair.
     static Key generateX25519();
     static Key fromRawX25519Private(const Bytes& rawPrivate);
 
@@ -81,7 +80,6 @@ Bytes hkdfSha256(
 
 Bytes sha256File(const std::filesystem::path& path);
 
-// A SHA-256 fed in pieces, for what is read in pieces.
 class Sha256 {
 public:
     Sha256();
@@ -98,7 +96,7 @@ private:
 class Identity {
 public:
     static Identity generate();
-    // Reads two PEM blocks: the Ed25519 key first, the ML-DSA key second.
+    // Two PEM blocks: Ed25519 first, ML-DSA second.
     static Identity fromPrivatePem(const std::string& pem, const std::string& passphrase = {});
     Identity(Key classical, Key pq);
 

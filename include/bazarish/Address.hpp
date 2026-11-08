@@ -21,7 +21,7 @@ inline constexpr char kAliasSigil = '!';
 
 std::string normalizeAlias(const std::string& typed);
 
-// "name" or "name-word", the sigil optional; the word is the owner's and may be absent.
+// "name" or "name-word", the sigil optional.
 struct AliasQuery {
     std::string name;
     std::string word{};
@@ -30,10 +30,9 @@ struct AliasQuery {
 };
 
 AliasQuery parseAliasQuery(const std::string& typed);
-// An empty word is allowed and means none.
+// An empty word means none.
 std::string normalizeAliasWord(const std::string& typed);
 
-// Why typed text is not an alias query, so a caller can say it in its own words.
 enum class AliasProblem { eNameLength, eNameChars, eWordLength, eWordChars, eWordEmpty };
 std::optional<AliasProblem> aliasQueryProblem(std::string_view typed);
 std::optional<AliasProblem> aliasWordProblem(std::string_view word);

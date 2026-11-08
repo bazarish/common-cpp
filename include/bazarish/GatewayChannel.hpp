@@ -28,17 +28,15 @@ inline constexpr std::size_t kHandshakePadMax = 4096;
 inline constexpr std::chrono::seconds kHandshakeTimeout{30};
 inline constexpr std::size_t kMaxRecordBytes = kMaxFrameBytes + kAeadTagBytes;
 
-// The card names a key that is not the one the link names: this is not that gateway.
 class WrongGateway : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
-// The gateway's sealing key, signed by the identity whose fingerprint the link carries.
 Bytes issueCard(const Identity& identity, const Key& sealing);
 Key cardSealingKey(const Bytes& card, const std::string& fingerprint);
 
-// What travels before a session key exists, sealed under a key only a holder of the link has.
+// Sealed under a key only a holder of the link has.
 class Cover {
 public:
     explicit Cover(const std::string& fingerprint);
@@ -74,7 +72,7 @@ std::optional<Welcome> openWelcome(const Cover& cover, const Bytes& message,
 
 enum class Side { eClient, eGateway };
 
-// One socket's records: a key and a counter per direction, the counter being the nonce.
+// A key and a counter per direction; the counter is the nonce.
 class Records {
 public:
     Records(const Bytes& sessionKey, const Bytes& salt, Side side);
@@ -95,10 +93,9 @@ Bytes ticketOf(const Bytes& join);
 Bytes joinRecordOf(const Bytes& join);
 Bytes makeJoined(Records& records);
 bool isJoined(const Bytes& opened);
-// What a gateway answers for a ticket it does not hold: as long as a join's answer, and noise.
+// As long as a join's answer, and noise.
 Bytes refusedJoin();
 
-// A socket whose every message is a record of its channel.
 class ChannelSocket : public http::Socket {
 public:
     ChannelSocket(http::SocketPtr raw, std::shared_ptr<Records> records);
@@ -127,14 +124,14 @@ struct ChannelOpened {
     std::optional<Welcome> welcome;
     std::string error;
     bool wrongGateway = false;
-    // The join went out: its ticket is spent whatever came back.
+    // Spent whatever came back.
     bool ticketSpent = false;
 };
 
 using ChannelMessageFn = std::function<void(const http::SocketPtr&, const std::vector<unsigned char>&)>;
 using ChannelClosedFn = std::function<void(const http::SocketPtr&)>;
 
-// Joins a live session with a ticket, or makes a new one; `welcome` is set only for a new one.
+// `welcome` is set only for a new session.
 ChannelOpened openChannel(const http::SocketDial& dial, const std::string& fingerprint,
     const std::optional<ChannelJoin>& join, ChannelMessageFn onMessage, ChannelClosedFn onClosed);
 

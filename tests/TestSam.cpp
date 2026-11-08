@@ -186,7 +186,7 @@ public:
         return packet;
     }
 
-    // One datagram forwarded to the client, exactly as i2pd forwards it.
+    // Forwarded exactly as i2pd forwards it.
     void forwardDatagram(const std::string& payload)
     {
         const std::uint16_t port = clientUdpPort_;
@@ -283,8 +283,6 @@ private:
                 writeAll(fd, "SESSION STATUS RESULT=OK DESTINATION=" + kPrivateKeys + "\n");
             } else if (line.starts_with("NAMING LOOKUP")) {
                 writeAll(fd, "NAMING REPLY RESULT=OK NAME=ME VALUE=" + kDestination + "\n");
-            } else if (line.starts_with("DEST GENERATE")) {
-                writeAll(fd, "DEST REPLY PUB=" + kDestination + " PRIV=" + kPrivateKeys + "\n");
             } else if (line.starts_with("STREAM FORWARD")) {
                 forwardPort_ = static_cast<std::uint16_t>(std::stoi(valueOf(line, "PORT")));
                 writeAll(fd, "STREAM STATUS RESULT=OK\n");
@@ -368,13 +366,14 @@ void testProbe()
     CHECK(refused);
 }
 
-void testGenerateDestination()
+void readFully(sam::Stream& stream, const bazarish::ByteBuffer buffer)
 {
-    FakeRouter router;
-    const sam::Destination destination = sam::generateDestination(router.address());
-    CHECK(destination.publicBase64 == kDestination);
-    CHECK(destination.privateBase64 == kPrivateKeys);
-    CHECK(contains(router.waitForCommand("DEST GENERATE"), "SIGNATURE_TYPE=7"));
+    std::size_t read = 0;
+    while (read < buffer.size()) {
+        const std::size_t got = stream.readSome(buffer.subspan(read));
+        CHECK(got > 0);
+        read += got;
+    }
 }
 
 void testSessionCreate()
@@ -427,7 +426,7 @@ void testConnectAndEcho()
     const std::string sent = "the frame";
     stream->writeAll(bazarish::viewOf(sent));
     std::string back(sent.size(), '\0');
-    stream->readExact(bazarish::bufferOf(back));
+    readFully(*stream, bazarish::bufferOf(back));
     CHECK(back == sent);
 }
 
@@ -473,13 +472,12 @@ void testForwardedAccept()
     CHECK(stream != nullptr);
     CHECK(peer == kDestination);
     std::string body(payload.size(), '\0');
-    stream->readExact(bazarish::bufferOf(body));
+    readFully(*stream, bazarish::bufferOf(body));
     CHECK(body == payload);
 
     std::string nobody;
     CHECK(session.accept(nobody, std::chrono::milliseconds(100)) == nullptr);
 
-    // Two threads wait on one session and one stream comes: both return, one holds it.
     std::atomic<int> taken{0};
     const auto wait = [&session, &taken]() {
         std::string from;
@@ -600,7 +598,7 @@ void testRefusesWhatIsNotLoopback()
     elsewhere.host = "10.0.0.1";
     bool refused = false;
     try {
-        (void)sam::generateDestination(elsewhere);
+        (void)sam::probe(elsewhere);
     } catch (const sam::Error&) {
         refused = true;
     }
@@ -641,7 +639,7 @@ void testRefusesAnEndlessReply()
     flooding.controlPort = port;
     bool refused = false;
     try {
-        (void)sam::generateDestination(flooding);
+        (void)sam::probe(flooding);
     } catch (const sam::Error&) {
         refused = true;
     }
@@ -655,11 +653,9 @@ void testRefusesAnEndlessReply()
 
 int main()
 {
-    // The fake router here hangs up on the client under test; on the BSDs that
-    // write would otherwise signal this process rather than return an error.
+    // On the BSDs a write to a hung-up socket signals rather than fails.
     ::signal(SIGPIPE, SIG_IGN);
     testProbe();
-    testGenerateDestination();
     testSessionCreate();
     testPlainSessionCreate();
     testConnectAndEcho();

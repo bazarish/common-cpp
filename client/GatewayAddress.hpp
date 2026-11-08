@@ -15,7 +15,7 @@ struct GatewayAddress {
 
     static std::optional<GatewayAddress> parse(const std::string& text);
     std::string toString() const;
-    // The form a gateway is handed out in: a Bazarish link of kind "gateway".
+    // A Bazarish link of kind "gateway".
     static std::optional<GatewayAddress> fromLink(const std::string& link);
     std::string link() const;
 };

@@ -321,11 +321,6 @@ std::string Endpoint::routingHost() const
     return impl_->transport->routingHost();
 }
 
-Bytes Endpoint::privateBlob() const
-{
-    return impl_->transport->privateBlob();
-}
-
 void Endpoint::stop()
 {
     impl_->transport->stop();

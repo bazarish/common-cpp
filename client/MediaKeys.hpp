@@ -3,7 +3,7 @@
 
 namespace bazarish::client {
 
-// Where a message's picture and voice note sit in the account database: the prefix and its e2e id.
+// A prefix, then the message's e2e id.
 inline constexpr const char* kPictureKeyPrefix = "picture:";
 inline constexpr const char* kVoiceKeyPrefix = "voice:";
 

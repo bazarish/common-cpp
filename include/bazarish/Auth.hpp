@@ -20,7 +20,6 @@ extern const char* const kHeaderTimestamp;
 extern const char* const kHeaderSignatureClassical;
 extern const char* const kHeaderSignaturePq;
 extern const char* const kHeaderNonce;
-// The client id that the signed and the MAC'd canonical strings carry.
 extern const char* const kHeaderClient;
 
 // Ed25519 is deterministic: without a nonce a retry is indistinguishable from a replay.

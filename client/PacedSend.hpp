@@ -12,13 +12,11 @@
 
 namespace bazarish::client {
 
-// How a long stream is written over I2P: a chunk at a time, never more than a cap left unsent.
 inline constexpr std::size_t kPacedChunkBytes = 64 * 1024;
 inline constexpr std::size_t kPacedQueueCap = 128 * 1024;
 inline constexpr std::chrono::milliseconds kPacedQueuePoll{100};
 inline constexpr std::size_t kDrainProbeBytes = 64;
 
-// What has left this end: written less what still waits in the stream.
 inline std::uint64_t onTheWire(const std::uint64_t written, const std::size_t queued)
 {
     return written > queued ? written - queued : 0;

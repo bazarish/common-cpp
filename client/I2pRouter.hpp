@@ -18,7 +18,6 @@ namespace bazarish::client {
 
 bazarish::i2p::Router& sharedI2pRouter(const std::filesystem::path& dataDir);
 
-// How long a fresh destination may take to build its tunnels, and a dial to another one.
 inline constexpr int kOwnTunnelsSeconds = 180;
 inline constexpr int kDialSeconds = 90;
 
@@ -27,7 +26,7 @@ std::optional<std::reference_wrapper<bazarish::i2p::Router>> sharedI2pRouterIfRu
 bazarish::i2p::Router& readySharedI2pRouter();
 
 std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest(bazarish::i2p::Privacy privacy);
-// A published datagram destination for presence watching; it gets its reader key when taken.
+// Published; it gets its reader key when taken.
 std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmWatcher(bazarish::i2p::Privacy privacy);
 
 std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
@@ -50,7 +49,7 @@ enum class I2pBootstrap {
 I2pBootstrap bootstrapI2pRouter(const std::filesystem::path& dataDir);
 std::size_t knownRouterCount(const std::filesystem::path& dataDir);
 
-// In the order a first connection passes them; the interface words each one itself.
+// In the order a first connection passes them.
 enum class ConnectMilestone {
     eRouterStarting,
     eBuiltInReseeds,
@@ -69,10 +68,9 @@ enum class ConnectMilestone {
 int connectPercent(ConnectMilestone milestone);
 
 using ConnectProgressFn = std::function<void(ConnectMilestone milestone)>;
-// Keyed by the owner the account's destinations carry: each account sees its own progress.
+// Keyed by the owner the account's destinations carry.
 void setConnectProgressSink(const std::string& owner, ConnectProgressFn sink);
 void reportConnectProgress(const std::string& owner, ConnectMilestone milestone);
-// For the router itself, which every account connecting through it waits on.
 void reportConnectProgressToAll(ConnectMilestone milestone);
 
 void setSamTransport(std::string host, int port);
@@ -81,17 +79,16 @@ void setRouterTransit(bool transit);
 
 void setGatewayTransport(const GatewayAddress& address);
 void clearGatewayTransport();
-// The chosen gateway cannot be used: no router starts until another choice is made.
+// No router starts until another choice is made.
 void refuseI2pTransport(std::string reason);
 
-// The transport holds from this process's first router on: false, and nothing set, once one exists.
+// False, and nothing set, once this process's first router exists.
 bool applyI2pTransport(const std::function<void()>& set);
-// A changed transport takes the router down for good; the process has to start again.
+// For good: the process has to start again.
 void retireI2pRouter();
 
 void setI2pSocksProxy(std::string host, int port);
 void restartI2pRouter();
-std::optional<bazarish::i2p::ProxyState> i2pProxyState();
 
 void setTunnelPrivacy(bazarish::i2p::Privacy privacy);
 bazarish::i2p::Privacy tunnelPrivacy();

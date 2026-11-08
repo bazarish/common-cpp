@@ -114,9 +114,7 @@ private:
 
 std::vector<int> g_peerFds;
 
-// A bundle weighs more than a socketpair holds by default - 8 KiB on the BSDs -
-// and these cases write one before the code under test reads it, so the pair is
-// given room for the whole of it.
+// A bundle outgrows a socketpair's default buffer (8 KiB on the BSDs).
 constexpr int kPairedPipeBytes = 1024 * 1024;
 
 int wireInto(FakeEndpoint& endpoint, std::atomic<std::size_t>* const pending = nullptr)
@@ -136,8 +134,7 @@ int wireInto(FakeEndpoint& endpoint, std::atomic<std::size_t>* const pending = n
     return fds[1];
 }
 
-// Beside the reader, not before it: what these cases hand over is larger than a
-// socketpair holds on the BSDs, and a write that fills it waits for a reader.
+// A write that fills a socketpair waits for a reader (8 KiB on the BSDs).
 void writeTo(const int fd, const std::string& text)
 {
     std::size_t done = 0;

@@ -29,7 +29,7 @@ public:
     static std::filesystem::path defaultRoot();
 
     explicit AccountManager(std::filesystem::path root);
-    // What an import left when the process stopped under it; called once, before any import.
+    // Called once, before any import.
     void discardInterruptedImports();
 
     std::vector<AccountInfo> list() const;

@@ -19,17 +19,15 @@ import pathlib
 import re
 import sys
 
-# A handled catch reports, propagates, or converts into an inspectable value.
 kHandledMarkers = (
     "log::", "respondError", "throw", "emit ", "actionFailed", "op.fail", "printf",
     "std::cerr", "sendHtml", "ok = false", ".ok =", "outcome", "errorCode", "error =", "err =",
     "status =", "failed", "Failed", "= false", "reason",
-    # Carrying the exception's message somewhere is reporting it, wherever it lands.
+    # Carrying the message anywhere counts as reporting it.
     ".what()",
 )
 kSourceSuffixes = (".cpp", ".hpp")
-# Tests are where an exception IS the expected result, so a catch that only
-# records "it threw" is the assertion, not a hidden error.
+# In tests a catch that only records "it threw" is the assertion.
 kSkipDirs = ("third_party", "build", ".git", "tests")
 kTestFilePrefix = "Test"
 kMaxBlockLines = 60
@@ -87,7 +85,7 @@ def main(argv):
                 if match is None:
                     continue
                 if '"' in line[:match.start()]:
-                    continue  # a catch inside a string literal (embedded JS, a message)
+                    continue  # a catch inside a string literal
                 body = block_at(lines, index)
                 if body is None:
                     continue
@@ -95,15 +93,13 @@ def main(argv):
                 code = "\n".join(l.split("//")[0] for l in inner).strip()
                 if any(marker in code for marker in kHandledMarkers):
                     continue
-                # Returning a value hands the failure to the caller to inspect; a
-                # bare "return;" hands over nothing and is the classic swallow.
+                # A returned value hands the failure over; a bare "return;" swallows it.
                 if re.search(r"\breturn\s+[^;\s]", code):
                     continue
                 site = f"{path.as_posix()}:{index + 1}"
                 if site in allow:
                     continue
-                # A marker inside the block travels with the code, unlike a
-                # file:line entry, which every edit above it invalidates.
+                # A marker inside the block travels with the code, unlike a file:line entry.
                 if "error-hiding: allowed" in "\n".join(inner):
                     continue
                 findings.append((site, code.replace("\n", " ")[:70] or "(discards it)"))

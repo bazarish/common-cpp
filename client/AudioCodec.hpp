@@ -18,10 +18,9 @@ inline constexpr int kCallSampleRate = 48000;
 inline constexpr int kCallChannels = 1;
 inline constexpr int kCallFrameMs = 20;
 inline constexpr int kCallSamplesPerFrame = kCallSampleRate / 1000 * kCallFrameMs;
-// A 16-bit sample's magnitude at full scale.
 inline constexpr double kPcmFullScale = 32768.0;
 
-// The root mean square of the samples as a share of full scale; 0 when there are none.
+// A share of full scale; 0 when there are no samples.
 double pcmRms(std::span<const std::int16_t> pcm);
 
 class AudioEncoder {
@@ -63,7 +62,7 @@ inline constexpr int kWaveformLevels = 16;
 inline constexpr double kWaveformSilence = 0.01;
 std::vector<std::uint8_t> voiceWaveform(const Bytes& packed, int bars);
 inline constexpr int kVoiceWaveBars = 40;
-// One hex digit per bar, kVoiceWaveBars of them.
+// One hex digit per bar.
 std::string voiceWaveformHex(const Bytes& packed);
 
 class TimeStretch {

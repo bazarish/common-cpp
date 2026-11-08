@@ -31,7 +31,7 @@ using gateway::Frame;
 using gateway::FrameType;
 
 constexpr std::chrono::seconds kCallTimeout{60};
-// A presence address reaches a gateway as a delegation: to the end of today, and on renewal of the next day.
+// A delegation runs to the end of today; a renewal also covers the next day.
 constexpr int kFirstDelegationDays = 1;
 constexpr int kRenewedDelegationDays = 2;
 constexpr std::chrono::milliseconds kCoverTick{200};
@@ -42,7 +42,6 @@ constexpr std::chrono::milliseconds kSlowestRetry{15000};
 constexpr std::chrono::milliseconds kFarewellWait{2000};
 constexpr std::chrono::milliseconds kFarewellPoll{20};
 
-// What a request is answered with; anything else under the same id is news about it.
 bool answers(const FrameType type)
 {
     return type == FrameType::eOk || type == FrameType::eError || type == FrameType::eReady
@@ -100,7 +99,6 @@ public:
     std::uint32_t nextId() { return ids_.next(); }
     void send(const Bytes& frame);
     http::SocketPtr socketFor(std::uint32_t flow) const;
-    http::SocketPtr socketFor(std::uint32_t stream, std::uint32_t endpoint) const;
     std::optional<Frame> call(const Bytes& frame, std::uint32_t ref, std::chrono::seconds timeout);
     std::shared_ptr<Pending> expect(const Bytes& frame, std::uint32_t ref);
     std::optional<Frame> await(
@@ -109,7 +107,6 @@ public:
     void remember(std::uint32_t id, const std::shared_ptr<StreamState>& stream);
     void release(std::uint32_t id);
     void endStreamsOf(std::uint32_t endpoint);
-    // Answers every call still waiting with nothing, as when the gateway is not there.
     void abandonCalls();
 
     mutable std::mutex mutex;
@@ -119,7 +116,7 @@ public:
     std::deque<Bytes> tickets;
     std::map<std::uint32_t, std::shared_ptr<Pending>> awaited;
     std::map<std::uint32_t, std::weak_ptr<GatewayEndpoint>> endpoints;
-    // A status can reach the control socket before the create's answer reaches the one it went on.
+    // A status may arrive before the create's answer.
     std::map<std::uint32_t, std::optional<Frame>> creating;
     std::map<std::uint32_t, std::weak_ptr<StreamState>> streams;
     // Frames reach the streams one at a time, whichever socket they came on.
@@ -145,7 +142,6 @@ public:
 
 class GatewayRouter;
 
-// What the router hands frames to while the stream it belongs to may be going away.
 class StreamState {
 public:
     StreamState(std::shared_ptr<Link> link, std::uint32_t id, std::uint32_t endpoint);
@@ -165,7 +161,6 @@ public:
     std::vector<Bytes> replayFrames(std::uint64_t peerReceived);
     void farSideFinished();
     void reset();
-    bool givenUp() const;
 
 private:
     void drain();
@@ -219,10 +214,6 @@ public:
         notWithAGateway("the base64 of a destination the gateway minted");
     }
     std::string routingHost() const override { return host_; }
-    Bytes privateBlob() const override
-    {
-        notWithAGateway("the private key of a destination the gateway holds");
-    }
     void refreshOfflineSignature(const Keys&) override
     {
         notWithAGateway("swapping an offline transient");
@@ -351,7 +342,7 @@ public:
     void retagEndpoint(
         const EndpointBackend& endpoint, std::string label, std::string owner) override;
 
-    bool attach(std::uint32_t flow, std::uint64_t received);
+    bool attach(std::uint32_t flow);
     void reattachOrphans();
 
 private:
@@ -416,14 +407,7 @@ void StreamState::farSideFinished()
         const std::lock_guard<std::mutex> lock(mutex_);
         finished_ = true;
     }
-    book_.peerFinished();
     arrived_.notify_all();
-}
-
-bool StreamState::givenUp() const
-{
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return closed_;
 }
 
 void StreamState::reset()
@@ -456,7 +440,7 @@ std::size_t StreamState::readSome(const ByteBuffer buffer)
 
     book_.consumed(got);
     const Bytes credit = gateway::encodeCredit(id_, book_.consumedTotal());
-    if (const http::SocketPtr own = link_->socketFor(id_, endpoint_)) {
+    if (const http::SocketPtr own = link_->socketFor(endpoint_)) {
         own->send(std::vector<unsigned char>(credit.begin(), credit.end()));
     } else {
         link_->send(credit);
@@ -514,7 +498,7 @@ void StreamState::drain()
             frames.push_back(gateway::encode(FrameType::eStreamClose, id_));
         }
     }
-    const http::SocketPtr own = link_->socketFor(id_, endpoint_);
+    const http::SocketPtr own = link_->socketFor(endpoint_);
     for (const Bytes& frame : frames) {
         if (own) {
             own->send(std::vector<unsigned char>(frame.begin(), frame.end()));
@@ -904,7 +888,7 @@ void GatewayRouter::openControl()
     std::vector<Bytes> replay;
     std::vector<Bytes> credits;
     std::vector<std::shared_ptr<GatewayEndpoint>> gone;
-    // Let go only once the link's mutex is released.
+    // Released only after the link's mutex is.
     std::vector<std::shared_ptr<GatewayEndpoint>> told;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
@@ -1098,7 +1082,6 @@ void GatewayRouter::coverLoop()
         }
         const auto now = std::chrono::steady_clock::now();
         reattachOrphans();
-        // A wait earned on the old network is over once the device moves to another.
         if (const std::uint64_t carry = carryReturns(); carry != carrySeen) {
             carrySeen = carry;
             openAt = now;
@@ -1172,14 +1155,7 @@ http::SocketPtr Link::socketFor(const std::uint32_t flow) const
     return found == flows.end() ? nullptr : found->second;
 }
 
-http::SocketPtr Link::socketFor(
-    const std::uint32_t stream, const std::uint32_t endpoint) const
-{
-    const http::SocketPtr own = socketFor(stream);
-    return own ? own : socketFor(endpoint);
-}
-
-bool GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t received)
+bool GatewayRouter::attach(const std::uint32_t flow)
 {
     if (flow == 0) {
         return false;
@@ -1214,38 +1190,27 @@ bool GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t receive
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->flows[flow] = opened.socket;
     }
-    opened.socket->send(gateway::encodeJson(FrameType::eAttach, flow, {{"received", received}}));
+    opened.socket->send(gateway::encodeJson(FrameType::eAttach, flow, nlohmann::json::object()));
     return true;
 }
 
 void GatewayRouter::reattachOrphans()
 {
-    std::vector<std::pair<std::uint32_t, std::uint64_t>> again;
+    std::vector<std::uint32_t> again;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         for (auto at = link_->orphaned.begin(); at != link_->orphaned.end();) {
-            const auto found = link_->streams.find(*at);
-            if (found != link_->streams.end()) {
-                const std::shared_ptr<StreamState> stream = found->second.lock();
-                if (stream == nullptr || stream->givenUp()) {
-                    at = link_->orphaned.erase(at);
-                    continue;
-                }
-                again.emplace_back(*at, stream->received());
-                ++at;
-                continue;
-            }
             const auto endpoint = link_->endpoints.find(*at);
             if (endpoint == link_->endpoints.end() || endpoint->second.expired()) {
                 at = link_->orphaned.erase(at);
                 continue;
             }
-            again.emplace_back(*at, 0);
+            again.push_back(*at);
             ++at;
         }
     }
-    for (const auto& [flow, received] : again) {
-        if (attach(flow, received)) {
+    for (const std::uint32_t flow : again) {
+        if (attach(flow)) {
             const std::lock_guard<std::mutex> lock(link_->mutex);
             link_->orphaned.erase(flow);
         }
@@ -1436,7 +1401,7 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         link_->creating.erase(early);
     }
     if (raw || config.bulk) {
-        if (!attach(id, 0)) {
+        if (!attach(id)) {
             const std::lock_guard<std::mutex> lock(link_->mutex);
             link_->orphaned.insert(id);
         }

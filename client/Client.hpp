@@ -29,7 +29,6 @@ struct DestinationInfo {
     std::string state;
 };
 
-// The keys an account issues with its address and hands to whichever server operates it.
 struct AddressKeys {
     std::string sealingPem;
     std::string signingPem;
@@ -72,7 +71,7 @@ struct FetchedItem {
     Bytes blob;
 };
 
-// One past the last of the entries from begin that one fetch carries; always takes begin.
+// One past the last entry one fetch carries; always takes begin.
 std::size_t fetchBatchEnd(const std::vector<PendingEntry>& entries, std::size_t begin);
 
 struct PortalInfo {
@@ -84,7 +83,7 @@ struct FetchOutcome {
     bool ok = false;
     Bytes sealed;
     std::string errorCode;
-    // What a refusal said beyond its code; a resolver's puzzle rides here.
+    // A resolver's puzzle rides here.
     Bytes refusal;
 };
 
@@ -128,7 +127,7 @@ public:
     I2pDestStatus i2pStatus();
     StorageUsage storageUsage();
     ContactInfo fetchCard(const Descriptor& descriptor, const FetchTransport& transport);
-    // solving is told when the resolver asks for work first, before the work starts.
+    // `solving` is called before the work starts when the resolver asks for work first.
     static Descriptor resolveAlias(const AliasQuery& alias, const ResolverCoordinate& resolver,
         std::int64_t now, const FetchTransport& transport,
         const std::function<void()>& solving = {});

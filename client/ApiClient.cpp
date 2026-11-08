@@ -268,14 +268,14 @@ bool ApiClient::ensureSessionLocked(Tunnel& tunnel)
         bazarish::log::info("no tunnel to the {}: {}", serviceName(tunnel.service), error.what());
         return false;
     } catch (const bazarish::i2p::GatewayRefusal& error) {
-        // No facade was asked, so there is nothing to stand off from: the next request asks again.
+        // No facade was asked, so there is nothing to stand off from.
         tunnel.sessionId.clear();
         tunnel.lastError = error.what();
         bazarish::log::warn("no tunnel to the {}: {}", serviceName(tunnel.service), error.what());
         return false;
     } catch (const std::exception& error) {
         tunnel.sessionId.clear();
-        // An answer that does not open is a broken carry, not a refusal: try again as after silence.
+        // Any other failure is waited out as silence, not as a refusal.
         standOffLocked(tunnel, sessionBackoffSeconds(0));
         tunnel.lastError = error.what();
         bazarish::log::info("no tunnel to the {}: {}", serviceName(tunnel.service), error.what());

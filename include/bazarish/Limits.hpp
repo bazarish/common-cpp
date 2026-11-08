@@ -29,7 +29,7 @@ inline constexpr double kDelegationRenewAtFraction = 0.5;
 inline constexpr std::size_t kMaxPassesPerRequest = 256;
 inline constexpr std::size_t kMaxPassesPerMailbox = 4096;
 
-// Any one stored item fits: every delivery and self copy is capped at kMaxMessagePayloadBytes.
+// Any one stored item fits.
 inline constexpr std::size_t kMaxFetchBytes = 2 * kMaxMessagePayloadBytes;
 inline constexpr std::size_t kMaxAckIdsPerRequest = 256;
 

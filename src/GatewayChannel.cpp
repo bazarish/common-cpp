@@ -283,7 +283,6 @@ std::optional<Bytes> ChannelSocket::openRecord(const Bytes& record)
 
 namespace {
 
-// Holds what arrives until the channel stands, then hands records on opened.
 struct Opening {
     std::mutex mutex;
     std::condition_variable arrived;

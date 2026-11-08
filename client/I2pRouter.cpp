@@ -73,7 +73,7 @@ bazarish::i2p::EndpointConfig warmWatcherShape()
     return config;
 }
 
-// Answers whether there was any pool to visit.
+// True when there was a pool to visit.
 bool forEachWarmPool(const std::function<void(WarmDestPool&)>& visit)
 {
     bool any = false;
@@ -469,19 +469,6 @@ void setI2pSocksProxy(std::string host, const int port)
     router->setSocksProxy(i2pSocksProxyHost(), i2pSocksProxyPort());
 }
 
-std::optional<bazarish::i2p::ProxyState> i2pProxyState()
-{
-    const std::lock_guard<std::mutex> lock(routerMutex());
-    const std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
-    if (!router || !router->running()) {
-        return std::nullopt;
-    }
-    if (!router->capabilities().proxy) {
-        return std::nullopt;
-    }
-    return router->proxyState();
-}
-
 void restartI2pRouter()
 {
     const std::lock_guard<std::mutex> lifecycle(lifecycleMutex());
@@ -507,7 +494,7 @@ void restartI2pRouter()
 
 namespace {
 
-// What i2pd itself spends on a reseed before it gives up (RESEED_GIVEUP_TIMEOUT).
+// i2pd's RESEED_GIVEUP_TIMEOUT.
 constexpr int kReseedWaitSeconds = 180;
 constexpr int kReseedPollSeconds = 3;
 

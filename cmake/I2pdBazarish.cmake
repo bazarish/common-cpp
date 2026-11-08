@@ -1,5 +1,5 @@
 # Bazarish project (c) 2026
-# libi2pd_bazarish: only the i2pd router core and i18n, from the pristine upstream submodule.
+# Only the i2pd router core and i18n, from the pristine upstream submodule.
 
 set(I2PD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/i2pd)
 set(I2PD_PATCH_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/i2pd-patches)
@@ -63,7 +63,6 @@ file(GLOB I2PD_LANG_SRC CONFIGURE_DEPENDS ${I2PD_DIR}/i18n/*.cpp)
 add_library(i2pd_bazarish STATIC ${I2PD_CORE_SRC} ${I2PD_LANG_SRC})
 add_library(Bazarish::I2pd ALIAS i2pd_bazarish)
 
-# SYSTEM keeps the upstream headers' warnings out of our -Werror builds.
 target_include_directories(i2pd_bazarish SYSTEM PUBLIC
     ${I2PD_DIR}/libi2pd
     ${I2PD_DIR}/libi2pd_client
@@ -78,7 +77,6 @@ target_compile_options(i2pd_bazarish PRIVATE -w -include utility)
 
 target_link_libraries(i2pd_bazarish PUBLIC
     OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB ${I2PD_BOOST_PO} Threads::Threads)
-# libatomic is GNU's runtime; Windows needs the sockets and adapter interfaces instead.
 if(WIN32)
     # On MinGW the engine takes its paths through Boost.Filesystem by its own choice.
     find_package(Boost REQUIRED CONFIG COMPONENTS filesystem)

@@ -15,11 +15,10 @@ struct ResolverCoordinate {
     bool configured() const { return !rootFingerprint.empty() && !dest.empty(); }
 };
 
-// The address a build is shipped with: the i2pd server tunnel the deployed daemon answers behind.
+// The i2pd server tunnel the deployed daemon answers behind.
 inline constexpr const char* kResolverDest
     = "alias3huye47ahu2as5grktyc75w5wqr45elavek52t72vcooy3a.b32.i2p";
 
-// Where an alias is bought: the registry's bot and its site, on the web and inside I2P.
 inline constexpr const char* kRegistryBotAlias = "alias";
 inline constexpr const char* kRegistrySite = "https://alias.bazarish.org";
 inline constexpr const char* kRegistrySiteI2p

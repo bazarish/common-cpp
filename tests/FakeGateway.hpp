@@ -20,8 +20,7 @@ inline constexpr const char* kFakeGatewayPath = "/3b9e1f07c2d5";
 inline constexpr const char* kFakeGatewayHost
     = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
 
-// A gateway that welcomes every client into a session of its own and makes every destination
-// ready at once; a destination's status comes before the answer to its create.
+// A destination's status comes before the answer to its create.
 class FakeGateway {
 public:
     FakeGateway()

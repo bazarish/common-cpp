@@ -601,21 +601,6 @@ std::string probe(const RouterAddress& router)
     return handshake(control.get());
 }
 
-Destination generateDestination(const RouterAddress& router)
-{
-    const Held control(openControlSocket(router.host, router.controlPort));
-    (void)handshake(control.get());
-    const std::map<std::string, std::string> reply = commandSocket(control.get(),
-        "DEST GENERATE SIGNATURE_TYPE=" + std::to_string(kEd25519SignatureType) + "\n",
-        "DEST REPLY");
-    const auto pub = reply.find("PUB");
-    const auto priv = reply.find("PRIV");
-    if (pub == reply.end() || priv == reply.end()) {
-        throw Error(Result::eUnknown, "SAM: DEST REPLY carried no keys");
-    }
-    return Destination{pub->second, priv->second};
-}
-
 Stream::Stream(const Socket socket)
     : socket_(socket)
 {
@@ -646,18 +631,6 @@ std::size_t Stream::readSome(const ByteBuffer buffer)
         throw Error(Result::eI2pError, "SAM: stream read failed");
     }
     return static_cast<std::size_t>(got);
-}
-
-void Stream::readExact(const ByteBuffer buffer)
-{
-    std::size_t read = 0;
-    while (read < buffer.size()) {
-        const std::size_t got = readSome(buffer.subspan(read));
-        if (got == 0) {
-            throw Error(Result::eI2pError, "SAM: stream closed before the read completed");
-        }
-        read += got;
-    }
 }
 
 void Stream::writeAll(const ByteView data)

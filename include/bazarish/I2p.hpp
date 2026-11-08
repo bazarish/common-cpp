@@ -22,7 +22,6 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-// The gateway at the link's address is not the one whose key the link names.
 class WrongGateway : public GatewayRefusal {
 public:
     using GatewayRefusal::GatewayRefusal;
@@ -38,15 +37,13 @@ struct TunnelLength {
     int hops = 0;
     int variance = 0;
 };
-// The same for the embedded router and for SAM.
 TunnelLength tunnelLengthFor(Privacy privacy);
 
-// Every destination a client holds, so none of them stands out by its lease set; calls excepted.
+// Shared by every client destination so none stands out; calls excepted.
 inline constexpr int kDefaultTunnelQuantity = 3;
-// i2pd's DEFAULT_INBOUND_TUNNELS_QUANTITY: every destination a server holds looks the same.
+// i2pd's DEFAULT_INBOUND_TUNNELS_QUANTITY.
 inline constexpr int kServerTunnelQuantity = 5;
 inline constexpr int kMaxTunnelQuantity = 16;
-// A call sends on the fastest of these tunnels crossed with the peer's.
 inline constexpr int kCallTunnelQuantity = 6;
 inline constexpr std::size_t kMaxLeaseSetReaders = 100;
 
@@ -80,7 +77,7 @@ private:
     friend class Endpoint;
 };
 
-// A destination goes down this long before its delegation runs out, while its keys still sign.
+// Down this long before the delegation expires, while its keys still sign.
 inline constexpr std::int64_t kDelegationLapseLeadSeconds = 60;
 
 bool delegationLapsed(std::int64_t expiresUnix, std::int64_t now);
@@ -120,7 +117,7 @@ private:
 enum class Traffic { eStream, eRaw };
 
 struct Datagram {
-    // Base64 of the sender; empty for a raw datagram.
+    // Base64; empty for a raw datagram.
     std::string from;
     Bytes data;
 };
@@ -135,13 +132,13 @@ struct EndpointConfig {
     Traffic traffic = Traffic::eStream;
     bool realtime = false;
     bool bulk = false;
-    // The one host an unpublished stream destination will dial; empty when it dials several.
+    // Empty when an unpublished stream destination dials several hosts.
     std::string target = {};
-    // Raw X25519 public keys of who may read this lease set; empty leaves it readable by anyone.
+    // Raw X25519 public keys; empty leaves the lease set readable by anyone.
     std::vector<Bytes> leaseSetReaders = {};
-    // Raw X25519 private key for reading lease sets that list it as a reader.
+    // Raw X25519 private key.
     Bytes leaseSetReaderKey = {};
-    // False publishes a plain lease set, reached at the b32 of the destination itself.
+    // False publishes a plain lease set, reached at the destination's own b32.
     bool blinded = true;
 };
 
@@ -157,16 +154,14 @@ public:
 
     std::string publicBase64() const;
     std::string routingHost() const;
-    Bytes privateBlob() const;
 
     void refreshOfflineSignature(const Keys& newTransient);
-    // EndpointConfig::leaseSetReaderKey for a destination already made, such as a warm one.
     void setLeaseSetReaderKey(const Bytes& rawPrivate);
 
     std::unique_ptr<Stream> connect(const std::string& host, std::chrono::seconds timeout);
     std::unique_ptr<Stream> accept(std::string& peerBase64, std::chrono::seconds timeout);
 
-    // Send one repliable datagram to a host (".b32.i2p" or base64).
+    // host is ".b32.i2p" or base64.
     void sendDatagram(const std::string& host, ByteView data);
     Datagram receiveDatagram(std::chrono::milliseconds timeout);
 
@@ -204,9 +199,9 @@ struct Capabilities {
     bool offlineKeys = false;
     bool reseed = false;
     bool warmPool = false;
-    // Endpoint::setLeaseSetReaderKey works, so a warm destination can watch for an account.
+    // Endpoint::setLeaseSetReaderKey is supported.
     bool lateReaderKey = false;
-    // Stream bytes reach no one but the two ends: false when a gateway terminates the streams.
+    // False when a gateway terminates the streams.
     bool privateStreams = false;
 };
 
@@ -222,7 +217,6 @@ struct RouterConfig {
     Backend backend = Backend::eEmbedded;
     std::string samHost = "127.0.0.1";
     int samControlPort = kDefaultSamControlPort;
-    int samDatagramPort = 0;
     std::string gatewayHost;
     int gatewayPort = 0;
     std::string gatewayPath;
@@ -265,10 +259,10 @@ struct TransportPeer {
 void setI2pLogging(bool enabled);
 bool i2pLogging();
 
-// Grows each time the network may be back: the link returned, or the device moved network.
+// Grows when the link returns or the device moves network.
 std::uint64_t carryReturns();
 void networkChanged();
-// Told on whichever thread grows carryReturns(); an empty function stops the telling.
+// Called on whichever thread grows carryReturns(); an empty function unsubscribes.
 void onCarryReturned(std::function<void()> listener);
 
 class Router {

@@ -28,7 +28,7 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr const char* kFileSuffix = ".db";
-// An import in progress: a name of its own each, and one list() never takes for an account.
+// Names list() never takes for an account.
 constexpr const char* kImportPrefix = ".import-";
 constexpr const char* kImportSuffix = ".part";
 constexpr std::size_t kImportNameBytes = 8;

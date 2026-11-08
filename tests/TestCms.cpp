@@ -33,7 +33,7 @@ int main()
     }
 
     {
-        constexpr std::size_t kAesBlock = 16;  // AES block, PKCS#7 padding adds 1..16 bytes
+        constexpr std::size_t kAesBlock = 16;  // PKCS#7 padding adds 1..16 bytes
         Bytes bigPlain;
         for (int i = 0; i < 100000; ++i) {
             bigPlain.push_back(static_cast<unsigned char>(i * 11 + 5));

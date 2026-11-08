@@ -40,7 +40,7 @@ namespace testutil {
 
 inline constexpr std::size_t kDirSuffixBytes = 8;
 inline constexpr std::chrono::milliseconds kPollStep{10};
-// Long enough for anything a test waits on in-process; only a failing wait spends it whole.
+// Only a failing wait spends it whole.
 inline constexpr std::chrono::milliseconds kWaitLimit{30000};
 
 // Empty and named apart, so test trees that run at once never share it.
