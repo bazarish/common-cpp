@@ -37,6 +37,8 @@ constexpr auto kRouterReadyPoll = std::chrono::milliseconds(500);
 std::atomic<bool> g_i2pLogging{false};
 std::atomic<std::uint64_t> g_carryReturns{0};
 std::mutex g_carryListenerMutex;
+// Held while the listener runs, so replacing it waits out a call already under way.
+std::mutex g_carryCalling;
 std::function<void()> g_carryListener;
 
 }  // namespace
@@ -212,13 +214,17 @@ void networkChanged()
 
 void onCarryReturned(std::function<void()> listener)
 {
-    const std::lock_guard<std::mutex> lock(g_carryListenerMutex);
-    g_carryListener = std::move(listener);
+    {
+        const std::lock_guard<std::mutex> lock(g_carryListenerMutex);
+        g_carryListener = std::move(listener);
+    }
+    const std::lock_guard<std::mutex> waited(g_carryCalling);
 }
 
 void backend::noteCarryReturned()
 {
     ++g_carryReturns;
+    const std::lock_guard<std::mutex> calling(g_carryCalling);
     std::function<void()> listener;
     {
         const std::lock_guard<std::mutex> lock(g_carryListenerMutex);

@@ -83,20 +83,20 @@ int main(int argc, char** argv)
         useConfiguredTransport(root / "settings.json", root / "i2p");
 
         say("opening the account");
-        Session session = Session::open(account, {});
-        say("account open: " + session.fingerprint());
-        say(session.isConnected() ? "the account says it is connected"
+        const std::unique_ptr<Session> session = Session::open(account, {});
+        say("account open: " + session->fingerprint());
+        say(session->isConnected() ? "the account says it is connected"
                                   : "the account says it is NOT connected");
 
         if (peer == "list") {
-            for (const std::string& known : session.contactFingerprints()) {
-                say("  contact " + known + "  " + session.contactDisplayName(known));
+            for (const std::string& known : session->contactFingerprints()) {
+                say("  contact " + known + "  " + session->contactDisplayName(known));
             }
             return 0;
         }
 
         say("first mailbox pass");
-        const std::vector<IncomingMessage> mail = session.sync(false, 5);
+        const std::vector<IncomingMessage> mail = session->sync(false, 5);
         say("mailbox pass done, " + std::to_string(mail.size()) + " item(s)");
 
         DeliveryWatch watch;
@@ -108,7 +108,7 @@ int main(int argc, char** argv)
 
         for (int round = 1; round <= 2; ++round) {
             say("sending " + std::to_string(round));
-            session.sendMessage(peer, text + " (" + std::to_string(round) + ")", {}, watch);
+            session->sendMessage(peer, text + " (" + std::to_string(round) + ")", {}, watch);
             say("sendMessage " + std::to_string(round) + " returned");
             if (round == 1) {
                 std::this_thread::sleep_for(std::chrono::seconds(20));

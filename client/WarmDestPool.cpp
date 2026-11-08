@@ -8,6 +8,13 @@
 
 namespace bazarish::client {
 
+namespace {
+
+constexpr std::chrono::milliseconds kIdlePoll{1000};
+constexpr std::chrono::milliseconds kBuildingPoll{300};
+
+}  // namespace
+
 WarmDestPool::WarmDestPool(bazarish::i2p::Router& router, std::size_t size, Shape shape)
     : router_(router)
     , size_(size)
@@ -15,26 +22,17 @@ WarmDestPool::WarmDestPool(bazarish::i2p::Router& router, std::size_t size, Shap
 {
 }
 
-WarmDestPool::~WarmDestPool()
-{
-    stop();
-    if (warmer_.joinable()) {
-        warmer_.join();
-    }
-}
-
 void WarmDestPool::start()
 {
-    if (running_.exchange(true)) {
+    if (warmer_.joinable()) {
         return;
     }
-    warmer_ = std::thread([this]() { warmerLoop(); });
+    warmer_ = std::jthread([this](const std::stop_token& stop) { warmerLoop(stop); });
 }
 
 void WarmDestPool::stop()
 {
-    running_ = false;
-    cv_.notify_all();
+    warmer_.request_stop();
 }
 
 std::shared_ptr<bazarish::i2p::Endpoint> WarmDestPool::acquire(const bazarish::i2p::Privacy privacy)
@@ -81,11 +79,11 @@ void WarmDestPool::setWanted(const bool wanted)
     cv_.notify_all();
 }
 
-void WarmDestPool::warmerLoop()
+void WarmDestPool::warmerLoop(const std::stop_token& stop)
 {
     std::vector<Building> building;
 
-    while (running_.load()) {
+    while (!stop.stop_requested()) {
         std::size_t toCreate = 0;
         std::size_t generation = 0;
         std::deque<Warm> unwanted;
@@ -103,7 +101,7 @@ void WarmDestPool::warmerLoop()
         }
         unwanted.clear();
 
-        for (std::size_t i = 0; i < toCreate && running_.load(); ++i) {
+        for (std::size_t i = 0; i < toCreate && !stop.stop_requested(); ++i) {
             try {
                 const bazarish::i2p::EndpointConfig shape = shape_();
                 auto endpoint = router_.createEndpoint(shape);
@@ -139,8 +137,8 @@ void WarmDestPool::warmerLoop()
         }
 
         std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait_for(lock, std::chrono::milliseconds(building.empty() ? 1000 : 300),
-            [this]() { return !running_.load() || refillWanted_; });
+        (void)cv_.wait_for(lock, stop, building.empty() ? kIdlePoll : kBuildingPoll,
+            [this]() { return refillWanted_; });
         refillWanted_ = false;
     }
 }

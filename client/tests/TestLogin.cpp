@@ -174,12 +174,12 @@ int main()
     const fs::path dir = fs::temp_directory_path() / ("bazarish-login-" + toHex(randomBytes(8)));
 
     {
-        const Session session = Session::create(dir, AccountKind::eUser, "pw", "alice");
-        const std::string fingerprint = session.fingerprint();
+        const std::unique_ptr<Session> session = Session::create(dir, AccountKind::eUser, "pw", "alice");
+        const std::string fingerprint = session->fingerprint();
         service::LoginChallenge portal("portal-secret", portalConsumer());
         const std::string challenge = portal.issue(now());
 
-        const std::string blob = session.signLogin(challenge);
+        const std::string blob = session->signLogin(challenge);
         CHECK(!blob.empty());
 
         CHECK(service::verifyLoginBlob(blob, now(), challenge) == fingerprint);
@@ -190,47 +190,47 @@ int main()
 
         CHECK_THROWS(service::verifyLoginBlob(blob, now() + 100000, challenge));
 
-        CHECK_THROWS(session.signLogin("portal-challenge-" + toHex(randomBytes(16))));
+        CHECK_THROWS(session->signLogin("portal-challenge-" + toHex(randomBytes(16))));
         const std::string text = envelopeWith(portalConsumer()).dump();
-        CHECK_THROWS(session.signLogin(toBase64(Bytes(text.begin(), text.end()))));
-        CHECK_THROWS(session.signLogin(challenge + "&c=x"));
-        CHECK_THROWS(session.signLogin(
+        CHECK_THROWS(session->signLogin(toBase64(Bytes(text.begin(), text.end()))));
+        CHECK_THROWS(session->signLogin(challenge + "&c=x"));
+        CHECK_THROWS(session->signLogin(
             webLink(kInviteKind) + challenge.substr(schemeLink(kSignKind).size())));
-        CHECK_THROWS(session.signLogin(encodedChallenge(
+        CHECK_THROWS(session->signLogin(encodedChallenge(
             {{"v", service::kLoginChallengeVersion}, {"nonce", "abc"}, {"ts", now()}})));
 
         service::LoginConsumer partial = portalConsumer();
         partial.role.clear();
-        CHECK_THROWS(session.signLogin(encodedChallenge(envelopeWith(partial))));
+        CHECK_THROWS(session->signLogin(encodedChallenge(envelopeWith(partial))));
 
         service::LoginConsumer overlong = portalConsumer();
         overlong.name = std::string(service::kConsumerNameMax + 1, 'a');
-        CHECK_THROWS(session.signLogin(encodedChallenge(envelopeWith(overlong))));
+        CHECK_THROWS(session->signLogin(encodedChallenge(envelopeWith(overlong))));
         service::LoginConsumer painted = portalConsumer();
         painted.name = "Your server\nplace: somewhere-else.i2p";
-        CHECK_THROWS(session.signLogin(encodedChallenge(envelopeWith(painted))));
+        CHECK_THROWS(session->signLogin(encodedChallenge(envelopeWith(painted))));
         service::LoginConsumer separated = portalConsumer();
         separated.name = "Your server\u2028place: somewhere-else.i2p";
-        CHECK_THROWS(session.signLogin(encodedChallenge(envelopeWith(separated))));
+        CHECK_THROWS(session->signLogin(encodedChallenge(envelopeWith(separated))));
         service::LoginConsumer paintedPlace = portalConsumer();
         paintedPlace.place = {"http://node.example\nsomewhere-else.i2p"};
-        CHECK_THROWS(session.signLogin(encodedChallenge(envelopeWith(paintedPlace))));
+        CHECK_THROWS(session->signLogin(encodedChallenge(envelopeWith(paintedPlace))));
         service::LoginConsumer crowded = portalConsumer();
         crowded.place.clear();
         for (std::size_t i = 0; i <= service::kConsumerPlacesMax; ++i) {
             crowded.place.push_back("http://node" + std::to_string(i) + ".example");
         }
-        CHECK_THROWS(session.signLogin(encodedChallenge(envelopeWith(crowded))));
+        CHECK_THROWS(session->signLogin(encodedChallenge(envelopeWith(crowded))));
 
         service::LoginConsumer both = portalConsumer();
         both.place = {"https://node.example", "http://node.b32.i2p"};
-        CHECK(!session.signLogin(encodedChallenge(envelopeWith(both))).empty());
+        CHECK(!session->signLogin(encodedChallenge(envelopeWith(both))).empty());
 
         nlohmann::json future = envelopeWith(portalConsumer());
         future["v"] = service::kLoginChallengeVersion + 1;
-        CHECK_THROWS(session.signLogin(encodedChallenge(future)));
+        CHECK_THROWS(session->signLogin(encodedChallenge(future)));
 
-        testCallbacks(session);
+        testCallbacks(*session);
         testChallengeLinks();
     }
 

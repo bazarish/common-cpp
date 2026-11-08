@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "CallMedia.hpp"
 
+#include <bazarish/Clock.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Log.hpp>
 
@@ -96,6 +97,7 @@ CallMedia::CallMedia(CallTransport& transport, std::unique_ptr<AudioSource> audi
     , packetsReceived_(0)
     , heardPeer_(false)
     , reportedConnected_(false)
+    , connectedAtMs_(0)
     , broken_(false)
     , inputLevel_(0.0F)
     , outputLevel_(0.0F)
@@ -152,9 +154,9 @@ std::uint64_t CallMedia::packetsSent() const
     return packetsSent_.load(std::memory_order_relaxed);
 }
 
-void CallMedia::setOnConnected(std::function<void()> callback)
+std::int64_t CallMedia::connectedAtMs() const
 {
-    onConnected_ = std::move(callback);
+    return connectedAtMs_.load();
 }
 
 float CallMedia::inputLevel() const
@@ -263,9 +265,8 @@ void CallMedia::receiveLoop()
                 sequenceFromNonce(nonce), opened.value(), audioHavePlayed, audioLastPlayed);
         }
         heardPeer_.store(true);
-        if (nonce[kHeardFlagOffset] != 0 && !reportedConnected_.exchange(true)
-            && onConnected_) {
-            onConnected_();
+        if (nonce[kHeardFlagOffset] != 0 && !reportedConnected_.exchange(true)) {
+            connectedAtMs_.store(nowMillis());
         }
     }
 }

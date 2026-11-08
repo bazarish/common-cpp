@@ -58,7 +58,8 @@ public:
     std::uint64_t packetsSent() const;
     std::uint64_t packetsReceived() const;
     bool broken() const;
-    void setOnConnected(std::function<void()> callback);
+    // When the peer first said it hears us; 0 until then.
+    std::int64_t connectedAtMs() const;
 
     float inputLevel() const;
     float outputLevel() const;
@@ -84,9 +85,9 @@ private:
     std::atomic<std::uint64_t> sendSeqAudio_;
     std::atomic<std::uint64_t> packetsSent_;
     std::atomic<std::uint64_t> packetsReceived_;
-    std::function<void()> onConnected_;
     std::atomic<bool> heardPeer_;
     std::atomic<bool> reportedConnected_;
+    std::atomic<std::int64_t> connectedAtMs_;
     std::atomic<bool> broken_;
     std::atomic<float> inputLevel_;
     std::atomic<float> outputLevel_;

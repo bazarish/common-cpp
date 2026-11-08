@@ -12,7 +12,9 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace bazarish::client {
 
@@ -36,6 +38,20 @@ public:
 
 std::shared_ptr<const FileSource> localFiles();
 
+// Ends a transfer from another thread. The destinations it watches are stopped too, which ends
+// whatever wait an attempt is in on them.
+class TransferStop {
+public:
+    void request();
+    bool requested() const;
+    void watch(const std::shared_ptr<bazarish::i2p::Endpoint>& endpoint);
+
+private:
+    std::atomic<bool> requested_{false};
+    std::mutex mutex_;
+    std::vector<std::weak_ptr<bazarish::i2p::Endpoint>> watched_;
+};
+
 struct PreparedFile {
     std::filesystem::path ciphertextPath;
     Bytes header;
@@ -44,7 +60,8 @@ struct PreparedFile {
     std::uint64_t size = 0;
 };
 
-PreparedFile prepareFile(FileInput& input, const std::filesystem::path& ciphertextPath);
+PreparedFile prepareFile(
+    FileInput& input, const std::filesystem::path& ciphertextPath, TransferStop& stop);
 
 struct FileOffer {
     std::string fileId;
@@ -88,17 +105,14 @@ struct FileTarget {
 FileTarget fileTargetAt(const std::filesystem::path& dest);
 
 void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer,
-    const std::string& announcedSha256, const FileTarget& target,
-    const TransferProgressFn& onProgress = {}, const std::atomic<bool>* cancel = nullptr);
+    const std::string& announcedSha256, const FileTarget& target, TransferStop& stop,
+    const TransferProgressFn& onProgress = {});
 
 bool serveFile(bazarish::i2p::Endpoint& endpoint, const std::filesystem::path& ciphertextPath,
-    std::chrono::seconds window, const TransferProgressFn& onProgress = {},
-    const std::atomic<bool>* cancel = nullptr);
+    std::chrono::seconds window, TransferStop& stop, const TransferProgressFn& onProgress = {});
 
 void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
-    const std::string& announcedSha256, const FileTarget& target,
-    bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax,
-    const TransferProgressFn& onProgress = {}, const std::atomic<bool>* cancel = nullptr,
-    const std::string& owner = {});
+    const std::string& announcedSha256, const FileTarget& target, bazarish::i2p::Privacy privacy,
+    TransferStop& stop, const TransferProgressFn& onProgress, const std::string& owner);
 
 }  // namespace bazarish::client

@@ -108,6 +108,7 @@ public:
         return streams_ != nullptr && streams_->alive();
     }
 
+    bool lost() const override { return stopped_.load(); }
     std::string publicBase64() const override { return publicDestination_; }
     std::string routingHost() const override { return hostAddress_; }
     Bytes privateBlob() const override { return keysBlob_; }
@@ -124,7 +125,10 @@ public:
 
     void stop() override
     {
-        stopped_.store(true);
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            stopped_.store(true);
+        }
         ready_.notify_all();
     }
 
@@ -162,9 +166,8 @@ public:
             return nullptr;
         }
         session->listen();
-        std::unique_ptr<sam::Stream> stream = session->accept(peerBase64,
-            timeout.count() == 0 ? std::chrono::milliseconds::max()
-                                 : std::chrono::duration_cast<std::chrono::milliseconds>(timeout));
+        std::unique_ptr<sam::Stream> stream = session->accept(
+            peerBase64, std::chrono::duration_cast<std::chrono::milliseconds>(timeout));
         if (stream == nullptr) {
             return nullptr;
         }
@@ -258,9 +261,7 @@ private:
         const auto arrived = [this] {
             return streams_ != nullptr || !failure_.empty() || stopped_;
         };
-        if (timeout.count() == 0) {
-            ready_.wait(lock, arrived);
-        } else if (!ready_.wait_for(lock, timeout, arrived)) {
+        if (!ready_.wait_for(lock, timeout, arrived)) {
             return nullptr;
         }
         return stopped_ ? nullptr : streams_;

@@ -58,27 +58,27 @@ int main()
 
     const fs::path fileA = uniqueAccountFile("a");
     const std::string passphrase = "at-rest secret";
-    const std::string fingerprintA = Session::create(fileA, AccountKind::eUser, endpoint, passphrase).fingerprint();
+    const std::string fingerprintA = Session::create(fileA, AccountKind::eUser, endpoint, passphrase)->fingerprint();
 
     CHECK_THROWS(Session::open(fileA));
     CHECK_THROWS(Session::open(fileA, "wrong"));
-    CHECK(Session::open(fileA, passphrase).fingerprint() == fingerprintA);
+    CHECK(Session::open(fileA, passphrase)->fingerprint() == fingerprintA);
 
     const fs::path bundle = uniqueAccountFile("bundle").parent_path() / "session.baz";
     const std::string exportPw = "export password";
-    Session::open(fileA, passphrase).exportAccount(bundle, exportPw);
+    Session::open(fileA, passphrase)->exportAccount(bundle, exportPw);
 
     const fs::path fileB = uniqueAccountFile("b");
     CHECK_THROWS(Session::importAccount(bundle, fileB, "bad password"));
     Session::importAccount(bundle, fileB, exportPw);
-    CHECK(Session::open(fileB).fingerprint() == fingerprintA);
-    CHECK(Session::open(fileB).deliveryIdFor("some-message", "some-mailbox")
-        == Session::open(fileA, passphrase).deliveryIdFor("some-message", "some-mailbox"));
+    CHECK(Session::open(fileB)->fingerprint() == fingerprintA);
+    CHECK(Session::open(fileB)->deliveryIdFor("some-message", "some-mailbox")
+        == Session::open(fileA, passphrase)->deliveryIdFor("some-message", "some-mailbox"));
 
     const fs::path fileC = uniqueAccountFile("c");
     Session::importAccount(bundle, fileC, exportPw, "new at-rest");
     CHECK_THROWS(Session::open(fileC));
-    CHECK(Session::open(fileC, "new at-rest").fingerprint() == fingerprintA);
+    CHECK(Session::open(fileC, "new at-rest")->fingerprint() == fingerprintA);
 
     fs::remove_all(fileA);
     fs::remove_all(fileB);

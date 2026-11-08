@@ -296,6 +296,38 @@ int main()
 
     {
         int dials = 0;
+        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
+            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                if (++dials == 1) {
+                    throw std::runtime_error("the gateway closed the stream");
+                }
+                return std::make_shared<ScriptedStream>(
+                    signedDeliveredReply(signingKey, "d-dial-threw"), true);
+            },
+            quickSchedule());
+        CHECK(courier.deliverNow(taskTo(dest, "d-dial-threw")).stored);
+        CHECK(dials == 2);
+    }
+
+    {
+        std::promise<OutboundCourier::Outcome> told;
+        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
+            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                return std::make_shared<ScriptedStream>(std::string{}, false);
+            },
+            quickSchedule(),
+            [](const std::string&) { throw std::runtime_error("the address would not go"); });
+        OutboundCourier::Task task = taskTo(dest, "d-retire-threw");
+        task.onOutcome
+            = [&told](const OutboundCourier::Outcome& outcome) { told.set_value(outcome); };
+        courier.submit(std::move(task));
+        const OutboundCourier::Outcome outcome = told.get_future().get();
+        CHECK(!outcome.stored);
+        CHECK(outcome.errorMessage.find("would not go") != std::string::npos);
+    }
+
+    {
+        int dials = 0;
         OutboundCourier courier([](const std::string&, const std::string&) { return false; },
             [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
                 ++dials;

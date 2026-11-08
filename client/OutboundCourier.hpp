@@ -13,6 +13,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <utility>
@@ -99,7 +100,7 @@ public:
 
 private:
     void workerLoop();
-    void watchdogLoop();
+    void watchdogLoop(const std::stop_token& stop);
     void reportDropped(const std::deque<Task>& tasks);
     std::optional<std::string> unprepared(const Task& task);
     Outcome attempt(const Task& task, std::chrono::steady_clock::time_point deadline,
@@ -120,10 +121,10 @@ private:
     std::vector<std::thread> workers_;
 
     std::mutex watchMutex_;
-    std::condition_variable watchCv_;
+    std::condition_variable_any watchCv_;
     std::vector<std::pair<std::weak_ptr<DeliveryStream>, std::chrono::steady_clock::time_point>>
         watched_;
-    std::thread watchdog_;
+    std::jthread watchdog_;
 };
 
 }  // namespace bazarish::client

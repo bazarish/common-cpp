@@ -451,7 +451,7 @@ std::string Request::param(const std::string& key) const
     return valueFrom(body, key);
 }
 
-struct Server::Impl {
+struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Options options;
     asio::io_context io;
     std::unique_ptr<tcp::acceptor> acceptor;
@@ -624,11 +624,19 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                     const std::shared_ptr<Response> answer = std::make_shared<Response>();
                     const std::shared_ptr<std::atomic<bool>> answered
                         = std::make_shared<std::atomic<bool>>(false);
-                    Responder respond = [parked, answer, executor, answered](Response response) {
+                    const std::weak_ptr<Impl> alive = weak_from_this();
+                    const std::weak_ptr<asio::steady_timer> waiting = parked;
+                    // Weak: an answer that comes after the server is gone has nobody to go to.
+                    Responder respond = [waiting, answer, executor, answered, alive](
+                                            Response response) {
                         *answer = std::move(response);
                         answered->store(true);
-                        asio::post(executor,
-                            [parked]() { parked->expires_at(std::chrono::steady_clock::now()); });
+                        const std::shared_ptr<Impl> server = alive.lock();
+                        const std::shared_ptr<asio::steady_timer> timer = waiting.lock();
+                        if (server && timer) {
+                            asio::post(executor,
+                                [timer]() { timer->expires_at(std::chrono::steady_clock::now()); });
+                        }
                     };
                     std::optional<Response> immediate;
                     try {
@@ -742,7 +750,7 @@ asio::awaitable<void> Server::Impl::accept()
 }
 
 Server::Server(Options options)
-    : impl_(std::make_unique<Impl>(std::move(options)))
+    : impl_(std::make_shared<Impl>(std::move(options)))
 {
 }
 

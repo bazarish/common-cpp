@@ -67,7 +67,7 @@ OutboundLeases::OutboundLeases(bazarish::i2p::Router& router, std::string owner)
     : router_(router)
     , owner_(std::move(owner))
 {
-    sweeper_ = std::thread(&OutboundLeases::sweeperLoop, this);
+    sweeper_ = std::jthread([this](const std::stop_token& stop) { sweeperLoop(stop); });
 }
 
 std::string OutboundLeases::labelFor(const std::string& peerName)
@@ -75,12 +75,20 @@ std::string OutboundLeases::labelFor(const std::string& peerName)
     return peerName.empty() ? std::string(kLeaseLabel) : kLeaseLabelPrefix + peerName;
 }
 
-OutboundLeases::~OutboundLeases()
+void OutboundLeases::stop()
 {
-    running_ = false;
-    cv_.notify_all();
-    if (sweeper_.joinable()) {
-        sweeper_.join();
+    std::vector<std::shared_ptr<bazarish::i2p::Endpoint>> standing;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        stopped_ = true;
+        for (const auto& [key, lease] : leases_) {
+            standing.push_back(lease.endpoint);
+        }
+        leases_.clear();
+    }
+    prepared_.notify_all();
+    for (const std::shared_ptr<bazarish::i2p::Endpoint>& endpoint : standing) {
+        endpoint->stop();
     }
 }
 
@@ -128,7 +136,10 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
     {
         std::unique_lock<std::mutex> lock(mutex_);
         key = keyForLocked(toDest);
-        prepared_.wait(lock, [this, &key]() { return preparing_.count(key) == 0; });
+        prepared_.wait(lock, [this, &key]() { return preparing_.count(key) == 0 || stopped_; });
+        if (stopped_) {
+            return false;
+        }
         endpoint = heldLocked(key);
         if (!endpoint) {
             preparing_.insert(key);
@@ -164,19 +175,27 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
             prepared_.notify_all();
             throw;
         }
+        bool late = false;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            const auto now = std::chrono::steady_clock::now();
-            const auto found = leases_.find(key);
-            if (found != leases_.end()
-                && !leaseSpent(found->second.created, found->second.lastUsed, now)) {
-                endpoint = found->second.endpoint;
-            } else {
-                leases_[key] = Lease{endpoint, now, now, privacy};
+            late = stopped_;
+            if (!late) {
+                const auto now = std::chrono::steady_clock::now();
+                const auto found = leases_.find(key);
+                if (found != leases_.end()
+                    && !leaseSpent(found->second.created, found->second.lastUsed, now)) {
+                    endpoint = found->second.endpoint;
+                } else {
+                    leases_[key] = Lease{endpoint, now, now, privacy};
+                }
             }
             preparing_.erase(key);
         }
         prepared_.notify_all();
+        if (late) {
+            endpoint->stop();
+            return false;
+        }
     }
     const bool ready = endpoint->waitReady(std::chrono::seconds(kOutboundDestReadySeconds));
     if (!ready) {
@@ -229,13 +248,11 @@ void OutboundLeases::keepOwn(const std::string& toDest)
     own_.insert(toDest);
 }
 
-void OutboundLeases::sweeperLoop()
+void OutboundLeases::sweeperLoop(const std::stop_token& stop)
 {
-    while (running_) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        if (cv_.wait_for(lock, kSweepInterval, [this]() { return !running_.load(); })) {
-            return;
-        }
+    std::unique_lock<std::mutex> lock(mutex_);
+    const auto stopping = [&stop]() { return stop.stop_requested(); };
+    while (!sweep_.wait_for(lock, stop, kSweepInterval, stopping)) {
         try {
             dropExpired(std::chrono::steady_clock::now());
         } catch (const std::exception& error) {

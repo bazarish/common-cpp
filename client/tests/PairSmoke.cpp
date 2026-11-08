@@ -74,11 +74,11 @@ int main()
     const AccountInfo made = first.create("Pair Smoke", AccountKind::eUser);
     say("account " + made.id + " fingerprint " + made.fingerprint);
 
-    Session session = first.open(made.id);
+    const std::unique_ptr<Session> session = first.open(made.id);
     std::atomic<bool> finished{false};
     std::atomic<bool> failed{false};
     const Session::PairingOffer offer
-        = session.startPairing([&finished, &failed](const Session::PairingEvent& event) {
+        = session->startPairing([&finished, &failed](const Session::PairingEvent& event) {
               switch (event.stage) {
               case Session::PairingStage::ePublishing: say("device 1: publishing"); break;
               case Session::PairingStage::eWaiting: say("device 1: waiting"); break;
@@ -161,7 +161,7 @@ int main()
     for (int wait = 0; wait < kOfferWaitSeconds && !finished.load() && !failed.load(); ++wait) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-    session.stopPairing();
+    session->stopPairing();
     if (!finished.load()) {
         say("device 1 never reported the hand-over");
         return 1;
@@ -173,10 +173,10 @@ int main()
     sayDestinations("after both sides let go");
 
     const Session::PairingOffer again
-        = session.startPairing([](const Session::PairingEvent&) {});
+        = session->startPairing([](const Session::PairingEvent&) {});
     say("second offer " + again.code);
     sayDestinations("a window nobody fetches from");
-    session.stopPairing();
+    session->stopPairing();
     std::this_thread::sleep_for(std::chrono::seconds(kTeardownWaitSeconds));
     sayDestinations("that window closed");
     return 0;

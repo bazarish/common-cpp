@@ -82,12 +82,13 @@ public:
 
     void send(std::vector<unsigned char> message) override
     {
-        if (!open_.load()) {
-            return;
-        }
         bool start = false;
         {
+            // Under the lock ended() takes: a write is never posted to a loop that has stopped.
             const std::lock_guard<std::mutex> lock(mutex_);
+            if (!open_.load()) {
+                return;
+            }
             queued_ += message.size();
             queue_.push_back(std::move(message));
             start = !writing_;
@@ -106,7 +107,12 @@ public:
 
     void close() override
     {
-        if (open_.exchange(false)) {
+        bool wasOpen = false;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            wasOpen = open_.exchange(false);
+        }
+        if (wasOpen) {
             asio::post(*loop_, [self = this->shared_from_this()]() {
                 boost::system::error_code ignored;
                 beast::get_lowest_layer(*self->stream_).socket().shutdown(
@@ -168,7 +174,10 @@ private:
 
     void ended()
     {
-        open_.store(false);
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            open_.store(false);
+        }
         boost::system::error_code ignored;
         beast::get_lowest_layer(*stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
         websocket::stream_base::timeout off{};

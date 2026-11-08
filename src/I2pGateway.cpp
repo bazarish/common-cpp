@@ -110,9 +110,14 @@ public:
     http::SocketPtr socketFor(std::uint32_t flow) const;
     http::SocketPtr socketFor(std::uint32_t stream, std::uint32_t endpoint) const;
     std::optional<Frame> call(const Bytes& frame, std::uint32_t ref, std::chrono::seconds timeout);
+    std::shared_ptr<Pending> expect(const Bytes& frame, std::uint32_t ref);
+    std::optional<Frame> await(
+        const std::shared_ptr<Pending>& pending, std::uint32_t ref, std::chrono::seconds timeout);
     void forget(std::uint32_t id);
     void remember(std::uint32_t id, GatewayStream* stream);
     void endStreamsOf(std::uint32_t endpoint);
+    // Answers every call still waiting with nothing, as when the gateway is not there.
+    void abandonCalls();
 
     mutable std::mutex mutex;
     // Held while a frame is handed to a stream: a stream is erased from `streams` only under it.
@@ -132,6 +137,7 @@ public:
     bool holding = false;
     std::atomic<std::int64_t> lastUse{0};
     std::atomic<std::int64_t> lastArrival{0};
+    std::atomic<std::int64_t> aloneSince{0};
 
     std::string describe() const
     {
@@ -366,7 +372,7 @@ private:
     std::shared_ptr<Link> link_;
     std::thread cover_;
     std::atomic<bool> live_{false};
-    std::atomic<std::int64_t> aloneSince_{0};
+    std::atomic<bool> stopping_{false};
     std::atomic<bool> openFailing_{false};
 };
 
@@ -617,14 +623,22 @@ std::unique_ptr<StreamBackend> GatewayEndpoint::connect(
     const std::string& host, const std::chrono::seconds timeout)
 {
     mustCarryStreams();
-    if (stopped_.load()) {
-        return nullptr;
-    }
     const std::uint32_t id = link_->nextId();
-    auto stream = std::make_unique<GatewayStream>(link_, id, id_);
     const Bytes ask = gateway::encodeJson(FrameType::eStreamOpen, id,
         {{"endpoint", id_}, {"host", host}, {"deadline", timeout.count()}});
-    const std::optional<Frame> answer = link_->call(ask, id, timeout + kCallTimeout);
+    std::unique_ptr<GatewayStream> stream;
+    std::shared_ptr<Pending> dial;
+    {
+        // Under the lock stop() takes, so a stop either comes first or finds this dial.
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (stopped_.load()) {
+            return nullptr;
+        }
+        stream = std::make_unique<GatewayStream>(link_, id, id_);
+        dial = link_->expect(ask, id);
+    }
+    link_->send(ask);
+    const std::optional<Frame> answer = link_->await(dial, id, timeout + kCallTimeout);
     if (!answer || answer->type != FrameType::eStreamOpened) {
         return nullptr;
     }
@@ -689,8 +703,11 @@ std::vector<std::uint8_t> GatewayEndpoint::receiveRawDatagram(
 
 void GatewayEndpoint::stop()
 {
-    if (stopped_.exchange(true)) {
-        return;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (stopped_.exchange(true)) {
+            return;
+        }
     }
     link_->send(gateway::encode(FrameType::eEndpointStop, id_));
     link_->endStreamsOf(id_);
@@ -700,8 +717,11 @@ void GatewayEndpoint::stop()
 
 void GatewayEndpoint::lost()
 {
-    if (stopped_.exchange(true)) {
-        return;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (stopped_.exchange(true)) {
+            return;
+        }
     }
     ready_.store(false);
     link_->endStreamsOf(id_);
@@ -750,6 +770,7 @@ void GatewayRouter::start()
     if (live_.load()) {
         return;
     }
+    stopping_.store(false);
     openControl();
     live_.store(true);
     cover_ = std::thread([this]() { coverLoop(); });
@@ -757,7 +778,9 @@ void GatewayRouter::start()
 
 void GatewayRouter::stop()
 {
+    stopping_.store(true);
     if (live_.exchange(false) && cover_.joinable()) {
+        link_->abandonCalls();
         cover_.join();
     }
     std::vector<std::shared_ptr<GatewayEndpoint>> standing;
@@ -820,11 +843,11 @@ void GatewayRouter::openControl()
         [this](const http::SocketPtr& socket, const std::vector<unsigned char>& message) {
             arrived(socket, message);
         },
-        [this](const http::SocketPtr& gone) {
-            const std::lock_guard<std::mutex> lock(link_->mutex);
-            if (link_->control == gone) {
-                link_->control.reset();
-                aloneSince_.store(millisNow());
+        [link = link_](const http::SocketPtr& gone) {
+            const std::lock_guard<std::mutex> lock(link->mutex);
+            if (link->control == gone) {
+                link->control.reset();
+                link->aloneSince.store(millisNow());
             }
         });
     if (opened.socket == nullptr) {
@@ -839,6 +862,15 @@ void GatewayRouter::openControl()
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->awaited[id] = pending;
+    }
+    // stop() says so before it abandons the calls: one made after that sees it here.
+    if (stopping_.load()) {
+        {
+            const std::lock_guard<std::mutex> lock(link_->mutex);
+            link_->awaited.erase(id);
+        }
+        opened.socket->close();
+        throw std::runtime_error("bazarish::i2p: the router is stopping");
     }
     const Bytes hello
         = gateway::encodeJson(FrameType::eHello, id, {{"version", gateway::kProtocolVersion}});
@@ -969,7 +1001,7 @@ void GatewayRouter::closeControl()
         link_->control.reset();
     }
     if (socket) {
-        aloneSince_.store(millisNow());
+        link_->aloneSince.store(millisNow());
         socket->close();
     }
 }
@@ -1079,7 +1111,7 @@ void GatewayRouter::coverLoop()
                     "i2p: the gateway would not take a socket: {}", error.what());
                 openAt = std::chrono::steady_clock::now() + backoff;
                 backoff = std::min(backoff * 2, kSlowestRetry);
-                if (millisNow() - aloneSince_.load()
+                if (millisNow() - link_->aloneSince.load()
                     > std::chrono::milliseconds(gateway::kSessionTtl).count()) {
                     abandon();
                 }
@@ -1152,10 +1184,10 @@ bool GatewayRouter::attach(const std::uint32_t flow, const std::uint64_t receive
         [this](const http::SocketPtr& socket, const std::vector<unsigned char>& message) {
             arrived(socket, message);
         },
-        [this, flow](const http::SocketPtr&) {
-            const std::lock_guard<std::mutex> lock(link_->mutex);
-            link_->flows.erase(flow);
-            link_->orphaned.insert(flow);
+        [link = link_, flow](const http::SocketPtr&) {
+            const std::lock_guard<std::mutex> lock(link->mutex);
+            link->flows.erase(flow);
+            link->orphaned.insert(flow);
         });
     if (opened.socket == nullptr) {
         bazarish::log::debug("i2p: no socket of its own for flow {}: {}", flow, opened.error);
@@ -1211,15 +1243,29 @@ void GatewayRouter::reattachOrphans()
 std::optional<Frame> Link::call(
     const Bytes& frame, const std::uint32_t ref, const std::chrono::seconds timeout)
 {
+    const std::shared_ptr<Pending> pending = expect(frame, ref);
+    send(frame);
+    return await(pending, ref, timeout);
+}
+
+std::shared_ptr<Pending> Link::expect(const Bytes& frame, const std::uint32_t ref)
+{
     const std::shared_ptr<Pending> pending = std::make_shared<Pending>();
     pending->request = frame;
+    const std::lock_guard<std::mutex> lock(mutex);
+    awaited[ref] = pending;
+    return pending;
+}
+
+std::optional<Frame> Link::await(const std::shared_ptr<Pending>& pending,
+    const std::uint32_t ref, const std::chrono::seconds timeout)
+{
     bool live = false;
     {
         const std::lock_guard<std::mutex> lock(mutex);
-        awaited[ref] = pending;
         live = control != nullptr && control->open();
     }
-    send(frame);
+    const Bytes& frame = pending->request;
 
     std::unique_lock<std::mutex> lock(pending->mutex);
     const bool answered = pending->answered.wait_for(lock, timeout, [&]() {
@@ -1254,12 +1300,44 @@ void Link::remember(const std::uint32_t id, GatewayStream* const stream)
 
 void Link::endStreamsOf(const std::uint32_t endpoint)
 {
-    const std::lock_guard<std::mutex> lock(mutex);
-    for (const auto& [id, stream] : streams) {
-        (void)id;
-        if (stream->endpoint() == endpoint) {
+    std::vector<std::shared_ptr<Pending>> dials;
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        for (const auto& [id, stream] : streams) {
+            if (stream->endpoint() != endpoint) {
+                continue;
+            }
             stream->reset();
+            const auto dialling = awaited.find(id);
+            if (dialling != awaited.end()) {
+                dials.push_back(dialling->second);
+            }
         }
+    }
+    for (const std::shared_ptr<Pending>& dial : dials) {
+        {
+            const std::lock_guard<std::mutex> lock(dial->mutex);
+            dial->done = true;
+        }
+        dial->answered.notify_all();
+    }
+}
+
+void Link::abandonCalls()
+{
+    std::vector<std::shared_ptr<Pending>> calls;
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        for (const auto& [ref, pending] : awaited) {
+            calls.push_back(pending);
+        }
+    }
+    for (const std::shared_ptr<Pending>& call : calls) {
+        {
+            const std::lock_guard<std::mutex> lock(call->mutex);
+            call->done = true;
+        }
+        call->answered.notify_all();
     }
 }
 

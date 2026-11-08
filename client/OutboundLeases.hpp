@@ -5,7 +5,6 @@
 
 #include <bazarish/I2p.hpp>
 
-#include <atomic>
 #include <chrono>
 #include <functional>
 #include <condition_variable>
@@ -13,8 +12,10 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <stop_token>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace bazarish::client {
 
@@ -32,8 +33,9 @@ std::string leaseKeyFor(OutboundAddressing addressing, bool ownAddress, const st
 class OutboundLeases {
 public:
     OutboundLeases(bazarish::i2p::Router& router, std::string owner);
-    ~OutboundLeases();
 
+    // Stops every leased address, so a send waiting on one gives up; nothing is leased after.
+    void stop();
     bool prepare(const std::string& toDest, const std::string& peerName);
     std::shared_ptr<DeliveryStream> openStream(
         const std::string& toDest, std::chrono::seconds timeout);
@@ -46,7 +48,7 @@ public:
 private:
     static std::string labelFor(const std::string& peerName);
 
-    void sweeperLoop();
+    void sweeperLoop(const std::stop_token& stop);
     void dropExpired(std::chrono::steady_clock::time_point now);
     std::shared_ptr<bazarish::i2p::Endpoint> held(const std::string& toDest);
     std::shared_ptr<bazarish::i2p::Endpoint> heldLocked(const std::string& key);
@@ -62,14 +64,14 @@ private:
     bazarish::i2p::Router& router_;
     const std::string owner_;
     std::mutex mutex_;
-    std::condition_variable cv_;
+    std::condition_variable_any sweep_;
     std::map<std::string, Lease> leases_;
     std::set<std::string> preparing_;
     OutboundAddressing addressing_ = OutboundAddressing::eOnePerCorrespondent;
     std::set<std::string> own_;
     std::condition_variable prepared_;
-    std::atomic<bool> running_{true};
-    std::thread sweeper_;
+    bool stopped_ = false;
+    std::jthread sweeper_;
 };
 
 }  // namespace bazarish::client

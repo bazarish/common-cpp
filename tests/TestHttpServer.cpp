@@ -3,6 +3,12 @@
 
 #include "TestUtil.hpp"
 
+#include <boost/asio/connect.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/write.hpp>
+
+#include <atomic>
+#include <chrono>
 #include <string>
 #include <thread>
 #include <vector>
@@ -17,6 +23,8 @@ constexpr int kMissing = 404;
 constexpr int kMisdirected = 421;
 constexpr std::size_t kHostilePathBytes = 60000;
 constexpr int kStopRounds = 50;
+constexpr std::chrono::milliseconds kParkPoll{10};
+constexpr std::chrono::seconds kParkWithin{10};
 
 struct Answer {
     int status = 0;
@@ -139,6 +147,35 @@ int main()
         served.stop();
         other.join();
         served.stop();
+    }
+
+    {
+        http::Responder kept;
+        std::atomic<bool> parked{false};
+        boost::asio::io_context io;
+        boost::asio::ip::tcp::socket asking(io);
+        {
+            http::Server served(http::Server::Options{});
+            served.routeAsync("GET", "/later",
+                [&kept, &parked](const http::Request&,
+                    http::Responder respond) -> std::optional<http::Response> {
+                    kept = std::move(respond);
+                    parked.store(true);
+                    return std::nullopt;
+                });
+            const int port = served.start();
+            CHECK(port > 0);
+            asking.connect(boost::asio::ip::tcp::endpoint(
+                boost::asio::ip::make_address("127.0.0.1"), static_cast<unsigned short>(port)));
+            const std::string held = "GET /later HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+            boost::asio::write(asking, boost::asio::buffer(held));
+            const auto parkedBy = std::chrono::steady_clock::now() + kParkWithin;
+            while (!parked.load() && std::chrono::steady_clock::now() < parkedBy) {
+                std::this_thread::sleep_for(kParkPoll);
+            }
+            CHECK(parked.load());
+        }
+        kept(http::Response{});
     }
     return 0;
 }

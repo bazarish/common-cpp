@@ -74,17 +74,17 @@ int main()
 
     CHECK_THROWS(manager.open(a.id));
     {
-        Session sa = manager.open(a.id, "secret");
-        CHECK(sa.fingerprint() == a.fingerprint);
-        CHECK(sa.displayName() == "Acetone");
-        CHECK(!sa.isConnected());
+        const std::unique_ptr<Session> sa = manager.open(a.id, "secret");
+        CHECK(sa->fingerprint() == a.fingerprint);
+        CHECK(sa->displayName() == "Acetone");
+        CHECK(!sa->isConnected());
 
         ServerEndpoint endpoint;
         endpoint.serverFingerprint = "serverfp";
         endpoint.facades = {Facade{"127.0.0.1", 18000}};
-        sa.connectServer(endpoint);
-        CHECK(sa.isConnected());
-        CHECK(sa.endpoint().facades.at(0).port == 18000);
+        sa->connectServer(endpoint);
+        CHECK(sa->isConnected());
+        CHECK(sa->endpoint().facades.at(0).port == 18000);
 
         bool foundLocked = false;
         for (const AccountInfo& info : manager.list()) {
@@ -96,16 +96,16 @@ int main()
         }
         CHECK(foundLocked);
 
-        CHECK(sa.acceptCalls());
-        CHECK(sa.sendReceipts());
-        sa.setSendReceipts(false);
-        sa.setAcceptCalls(false);
+        CHECK(sa->acceptCalls());
+        CHECK(sa->sendReceipts());
+        sa->setSendReceipts(false);
+        sa->setAcceptCalls(false);
 
-        const Session reopened = manager.open(a.id, "secret");
-        CHECK(reopened.isConnected());
-        CHECK(reopened.endpoint().serverFingerprint == "serverfp");
-        CHECK(!reopened.sendReceipts());
-        CHECK(!reopened.acceptCalls());
+        const std::unique_ptr<Session> reopened = manager.open(a.id, "secret");
+        CHECK(reopened->isConnected());
+        CHECK(reopened->endpoint().serverFingerprint == "serverfp");
+        CHECK(!reopened->sendReceipts());
+        CHECK(!reopened->acceptCalls());
 
         {
             AccountDb db(a.file, "secret");
@@ -114,14 +114,14 @@ int main()
             db.putText("meta", meta.dump());
         }
         {
-            Session unusable = manager.open(a.id, "secret");
-            CHECK(!unusable.isConnected());
-            CHECK(unusable.endpoint().serverFingerprint == "serverfp");
-            CHECK(!unusable.sendReceipts());
-            unusable.connectServer(endpoint);
-            CHECK(unusable.isConnected());
+            const std::unique_ptr<Session> unusable = manager.open(a.id, "secret");
+            CHECK(!unusable->isConnected());
+            CHECK(unusable->endpoint().serverFingerprint == "serverfp");
+            CHECK(!unusable->sendReceipts());
+            unusable->connectServer(endpoint);
+            CHECK(unusable->isConnected());
         }
-        CHECK(manager.open(a.id, "secret").endpoint().facades.at(0).port == 18000);
+        CHECK(manager.open(a.id, "secret")->endpoint().facades.at(0).port == 18000);
 
         const auto onlyTheDatabase = [](const fs::path& file) {
             CHECK(fs::is_regular_file(file));
@@ -137,22 +137,22 @@ int main()
         fs::create_directories(scratch);
         const fs::path bundle = scratch / "acetone.bundle";
         const Bytes face = {'P', 'N', 'G', 0x01, 0x02, 0x03};
-        sa.setAvatar(face, "image/png");
-        sa.exportAccount(bundle, "bundle-pw");
+        sa->setAvatar(face, "image/png");
+        sa->exportAccount(bundle, "bundle-pw");
 
         {
             Session::importAccount(bundle, scratch / "imported-enc.db", "bundle-pw", "atrest-pw");
             onlyTheDatabase(scratch / "imported-enc.db");
-            const Session importedEnc = Session::open(scratch / "imported-enc.db", "atrest-pw");
-            CHECK(importedEnc.fingerprint() == a.fingerprint);
-            CHECK(importedEnc.avatarMime() == "image/png");
-            CHECK(importedEnc.avatar() == face);
+            const std::unique_ptr<Session> importedEnc = Session::open(scratch / "imported-enc.db", "atrest-pw");
+            CHECK(importedEnc->fingerprint() == a.fingerprint);
+            CHECK(importedEnc->avatarMime() == "image/png");
+            CHECK(importedEnc->avatar() == face);
             CHECK_THROWS(Session::open(scratch / "imported-enc.db"));
 
             Session::importAccount(bundle, scratch / "imported-plain.db", "bundle-pw");
             onlyTheDatabase(scratch / "imported-plain.db");
-            const Session importedPlain = Session::open(scratch / "imported-plain.db");
-            CHECK(importedPlain.fingerprint() == a.fingerprint);
+            const std::unique_ptr<Session> importedPlain = Session::open(scratch / "imported-plain.db");
+            CHECK(importedPlain->fingerprint() == a.fingerprint);
 
             const fs::path root2
                 = fs::temp_directory_path() / ("bazarish-accounts-" + toHex(randomBytes(8)));
@@ -167,20 +167,20 @@ int main()
             CHECK(manager2.list().size() == 2);
             CHECK(!fs::exists(root2 / ".import-tmp.db"));
 
-            sa.ensureI2pDestination();
-            const AddressKeys addressKeys = sa.addressKeys();
-            const Bytes sealed = sa.exportAccountBytes("bundle-pw");
+            sa->ensureI2pDestination();
+            const AddressKeys addressKeys = sa->addressKeys();
+            const Bytes sealed = sa->exportAccountBytes("bundle-pw");
             CHECK(!sealed.empty());
             Session::importAccountBytes(sealed, scratch / "imported-mem.db", "bundle-pw",
                 "atrest-pw");
             onlyTheDatabase(scratch / "imported-mem.db");
-            Session importedMem = Session::open(scratch / "imported-mem.db", "atrest-pw");
-            CHECK(importedMem.fingerprint() == a.fingerprint);
-            CHECK(importedMem.i2pAddress() == sa.i2pAddress());
-            CHECK(importedMem.addressKeys().sealingPem == addressKeys.sealingPem);
-            CHECK(importedMem.addressKeys().signingPem == addressKeys.signingPem);
-            CHECK(importedMem.avatarMime() == "image/png");
-            CHECK(importedMem.avatar() == face);
+            const std::unique_ptr<Session> importedMem = Session::open(scratch / "imported-mem.db", "atrest-pw");
+            CHECK(importedMem->fingerprint() == a.fingerprint);
+            CHECK(importedMem->i2pAddress() == sa->i2pAddress());
+            CHECK(importedMem->addressKeys().sealingPem == addressKeys.sealingPem);
+            CHECK(importedMem->addressKeys().signingPem == addressKeys.signingPem);
+            CHECK(importedMem->avatarMime() == "image/png");
+            CHECK(importedMem->avatar() == face);
             CHECK_THROWS(
                 Session::importAccountBytes(sealed, scratch / "refused.db", "wrong-pw"));
             CHECK(!fs::exists(scratch / "refused.db"));
@@ -253,27 +253,27 @@ int main()
         const fs::path kinds = root / "kinds";
         fs::create_directories(kinds);
 
-        Session user = Session::create(kinds / "user.db", AccountKind::eUser);
-        CHECK(user.kind() == AccountKind::eUser);
-        CHECK(user.presenceKey().rawPrivate().size() == 32);
-        CHECK(!user.presenceDest().empty());
-        const std::string userPresence = user.presenceDest();
-        const Bytes userBundle = user.exportAccountBytes("pw");
+        const std::unique_ptr<Session> user = Session::create(kinds / "user.db", AccountKind::eUser);
+        CHECK(user->kind() == AccountKind::eUser);
+        CHECK(user->presenceKey().rawPrivate().size() == 32);
+        CHECK(!user->presenceDest().empty());
+        const std::string userPresence = user->presenceDest();
+        const Bytes userBundle = user->exportAccountBytes("pw");
         CHECK(Session::bundleKind(userBundle, "pw") == AccountKind::eUser);
         Session::importAccountBytes(userBundle, kinds / "user-copy.db", "pw");
-        const Session userCopy = Session::open(kinds / "user-copy.db");
-        CHECK(userCopy.kind() == AccountKind::eUser);
-        CHECK(userCopy.presenceDest() == userPresence);
-        CHECK(userCopy.presenceKey().rawPrivate() == user.presenceKey().rawPrivate());
+        const std::unique_ptr<Session> userCopy = Session::open(kinds / "user-copy.db");
+        CHECK(userCopy->kind() == AccountKind::eUser);
+        CHECK(userCopy->presenceDest() == userPresence);
+        CHECK(userCopy->presenceKey().rawPrivate() == user->presenceKey().rawPrivate());
 
-        Session bot = Session::create(kinds / "bot.db", AccountKind::eBot);
-        CHECK(bot.kind() == AccountKind::eBot);
-        CHECK(bot.presenceDest().empty());
-        CHECK_THROWS(bot.presenceKey());
-        const Bytes botBundle = bot.exportAccountBytes("pw");
+        const std::unique_ptr<Session> bot = Session::create(kinds / "bot.db", AccountKind::eBot);
+        CHECK(bot->kind() == AccountKind::eBot);
+        CHECK(bot->presenceDest().empty());
+        CHECK_THROWS(bot->presenceKey());
+        const Bytes botBundle = bot->exportAccountBytes("pw");
         CHECK(Session::bundleKind(botBundle, "pw") == AccountKind::eBot);
         Session::importAccountBytes(botBundle, kinds / "bot-copy.db", "pw");
-        CHECK(Session::open(kinds / "bot-copy.db").kind() == AccountKind::eBot);
+        CHECK(Session::open(kinds / "bot-copy.db")->kind() == AccountKind::eBot);
 
         const auto dropKind = [](const fs::path& file) {
             AccountDb db(file, std::string{});
@@ -288,7 +288,7 @@ int main()
         dropKind(kinds / "bot-copy.db");
         CHECK_THROWS(Session::open(kinds / "bot-copy.db"));
         Session::assignHostedKind(kinds / "bot-copy.db", AccountKind::eBot);
-        CHECK(Session::open(kinds / "bot-copy.db").kind() == AccountKind::eBot);
+        CHECK(Session::open(kinds / "bot-copy.db")->kind() == AccountKind::eBot);
         Session::assignHostedKind(kinds / "bot-copy.db", AccountKind::eBot);
         CHECK_THROWS(Session::assignHostedKind(kinds / "bot-copy.db", AccountKind::eChat));
 

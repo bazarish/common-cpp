@@ -94,23 +94,23 @@ void testSessionLoadsDat()
     const I2pMasterKey existing = generateI2pMaster();
 
     {
-        Session session = Session::create(dir, AccountKind::eUser, "pw", "carol");
-        CHECK(!session.hasI2pDestination());
-        const std::string address = session.loadI2pDestination(existing.privateKeys);
+        const std::unique_ptr<Session> session = Session::create(dir, AccountKind::eUser, "pw", "carol");
+        CHECK(!session->hasI2pDestination());
+        const std::string address = session->loadI2pDestination(existing.privateKeys);
         CHECK(address == existing.host);
-        CHECK(session.hasI2pDestination());
+        CHECK(session->hasI2pDestination());
 
         bool threw = false;
         try {
-            (void)session.loadI2pDestination(generateI2pMaster().privateKeys);
+            (void)session->loadI2pDestination(generateI2pMaster().privateKeys);
         } catch (const std::exception&) {
             threw = true;
         }
         CHECK(threw);
     }
     {
-        const Session session = Session::open(dir, "pw");
-        CHECK(session.i2pAddress() == existing.host);
+        const std::unique_ptr<Session> session = Session::open(dir, "pw");
+        CHECK(session->i2pAddress() == existing.host);
     }
     fs::remove_all(dir);
 }
@@ -122,22 +122,22 @@ void testSessionPersistsAndDelegates()
 
     std::string address;
     {
-        Session session = Session::create(dir, AccountKind::eUser, "pw", "alice");
-        CHECK(!session.hasI2pDestination());
-        address = session.ensureI2pDestination();
+        const std::unique_ptr<Session> session = Session::create(dir, AccountKind::eUser, "pw", "alice");
+        CHECK(!session->hasI2pDestination());
+        address = session->ensureI2pDestination();
         CHECK(address.size() == kB33HostLen);
-        CHECK(session.hasI2pDestination());
-        CHECK(session.i2pAddress() == address);
-        const std::int64_t expires = session.renewI2pTransient(kTermDays);
-        CHECK(!session.i2pTransient().empty());
-        CHECK(i2pRoutingHost(session.i2pTransient()) == address);
-        CHECK(i2pDelegationExpires(session.i2pTransient()) == expires);
+        CHECK(session->hasI2pDestination());
+        CHECK(session->i2pAddress() == address);
+        const std::int64_t expires = session->renewI2pTransient(kTermDays);
+        CHECK(!session->i2pTransient().empty());
+        CHECK(i2pRoutingHost(session->i2pTransient()) == address);
+        CHECK(i2pDelegationExpires(session->i2pTransient()) == expires);
     }
     {
-        const Session session = Session::open(dir, "pw");
-        CHECK(session.hasI2pDestination());
-        CHECK(session.i2pAddress() == address);
-        CHECK(i2pRoutingHost(session.i2pTransient()) == address);
+        const std::unique_ptr<Session> session = Session::open(dir, "pw");
+        CHECK(session->hasI2pDestination());
+        CHECK(session->i2pAddress() == address);
+        CHECK(i2pRoutingHost(session->i2pTransient()) == address);
     }
     fs::remove_all(dir);
 }

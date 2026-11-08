@@ -1,5 +1,7 @@
 // Bazarish project (c) 2026
+#include "GatewayAddress.hpp"
 #include "I2pKeys.hpp"
+#include "I2pRouter.hpp"
 #include "Client.hpp"
 #include "OutboundCourier.hpp"
 #include "AccountDb.hpp"
@@ -7,6 +9,7 @@
 #include "Session.hpp"
 #include "WireLog.hpp"
 
+#include "FakeGateway.hpp"
 #include "TunnelStub.hpp"
 
 #include <bazarish/AliasMaintenance.hpp>
@@ -28,6 +31,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <iterator>
 #include <chrono>
@@ -37,6 +41,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -241,6 +246,15 @@ private:
 int main()
 {
     bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
+    http::Server gatewayServer(http::Server::Options{});
+    test::FakeGateway gateway;
+    const int gatewayPort = gateway.start(gatewayServer);
+    CHECK(gatewayPort > 0);
+    const std::optional<GatewayAddress> gatewayAt
+        = GatewayAddress::parse("http://127.0.0.1:" + std::to_string(gatewayPort)
+            + test::kFakeGatewayPath + "#" + gateway.fingerprint());
+    CHECK(gatewayAt.has_value());
+    CHECK(applyI2pTransport([&gatewayAt]() { setGatewayTransport(*gatewayAt); }));
     Mock m;
 
     http::Server server(localOptions());
@@ -424,38 +438,38 @@ int main()
     int aliceSent = 0;
 
     {
-        Session alice = Session::create(aDir, AccountKind::eUser, endpoint, std::string{});
-        Session bob = Session::create(bDir, AccountKind::eUser, endpoint, std::string{});
+        const std::unique_ptr<Session> alice = Session::create(aDir, AccountKind::eUser, endpoint, std::string{});
+        const std::unique_ptr<Session> bob = Session::create(bDir, AccountKind::eUser, endpoint, std::string{});
         const ResolverCoordinate resolver{resolverRoot.fingerprint(), kTestResolverDest};
-        alice.setResolverCoordinate(resolver);
-        bob.setResolverCoordinate(resolver);
+        alice->setResolverCoordinate(resolver);
+        bob->setResolverCoordinate(resolver);
         const Identity aliceIdentity
             = Identity::fromPrivatePem(AccountDb(aDir, std::string{}).text("identity.pem"));
         const fs::path earlyBundle = fs::temp_directory_path() / "bz-pass-early.bundle";
         fs::remove(earlyBundle);
-        alice.exportAccount(earlyBundle, "bundle-password");
+        alice->exportAccount(earlyBundle, "bundle-password");
         {
             std::lock_guard<std::mutex> lock(m.mu);
-            m.destFor[alice.fingerprint()] = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
-            m.destFor[bob.fingerprint()] = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+            m.destFor[alice->fingerprint()] = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+            m.destFor[bob->fingerprint()] = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
         }
 
-        alice.setSwitchedOff(true);
+        alice->setSwitchedOff(true);
         bool announceRefused = false;
         try {
-            alice.registerAccount();
+            alice->registerAccount();
         } catch (const std::exception&) {
             announceRefused = true;
         }
         CHECK(announceRefused);
-        alice.setSwitchedOff(false);
+        alice->setSwitchedOff(false);
 
-        alice.registerAccount();
-        bob.registerAccount();
+        alice->registerAccount();
+        bob->registerAccount();
 
-        CHECK(!alice.inviteUri().empty());
-        CHECK(alice.inviteUri().find(m.destFor[alice.fingerprint()]) != std::string::npos);
-        CHECK(!bob.inviteUri().empty());
+        CHECK(!alice->inviteUri().empty());
+        CHECK(alice->inviteUri().find(m.destFor[alice->fingerprint()]) != std::string::npos);
+        CHECK(!bob->inviteUri().empty());
 
         const auto directDial = [&m, &resolverRoot, &resolverDelegated, &resolverDelegationDer](
                                     const std::string& toDest, const std::string& op,
@@ -527,8 +541,8 @@ int main()
             outcome.sealed = fromBase64(found->second);
             return outcome;
         };
-        alice.setFetchTransport(directDial);
-        bob.setFetchTransport(directDial);
+        alice->setFetchTransport(directDial);
+        bob->setFetchTransport(directDial);
 
         const Key ackSigning = Key::generateSigning();
         const auto courierFor = [&m, &ackSigning]() {
@@ -538,23 +552,23 @@ int main()
                     return std::make_shared<MockServerStream>(m, ackSigning);
                 });
         };
-        alice.setOutboundCourier(courierFor());
-        bob.setOutboundCourier(courierFor());
+        alice->setOutboundCourier(courierFor());
+        bob->setOutboundCourier(courierFor());
 
-        alice.addByInvite(bob.inviteUri(), "hi bob");
-        bob.sync();
-        bob.acceptContactRequest(alice.fingerprint());
-        alice.sync();
-        CHECK(alice.hasContact(bob.fingerprint()));
-        CHECK(bob.hasContact(alice.fingerprint()));
+        alice->addByInvite(bob->inviteUri(), "hi bob");
+        bob->sync();
+        bob->acceptContactRequest(alice->fingerprint());
+        alice->sync();
+        CHECK(alice->hasContact(bob->fingerprint()));
+        CHECK(bob->hasContact(alice->fingerprint()));
 
         CHECK(waitFor([&]() {
-            alice.sync();
-            return alice.canWriteTo(bob.fingerprint());
+            alice->sync();
+            return alice->canWriteTo(bob->fingerprint());
         }));
 
-        CHECK(alice.aliasNames().empty());
-        alice.serviceAliases();
+        CHECK(alice->aliasNames().empty());
+        alice->serviceAliases();
         {
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.resolverStatusCalls == 0);
@@ -563,16 +577,16 @@ int main()
 
         {
             std::lock_guard<std::mutex> lock(m.mu);
-            m.aliasOwner["alice"] = alice.fingerprint();
+            m.aliasOwner["alice"] = alice->fingerprint();
         }
-        CHECK(alice.refreshAliasStatus());
-        CHECK(alice.aliasNames().size() == 1);
-        CHECK(alice.aliasNames().front().alias == "alice");
+        CHECK(alice->refreshAliasStatus());
+        CHECK(alice->aliasNames().size() == 1);
+        CHECK(alice->aliasNames().front().alias == "alice");
 
-        CHECK(!alice.aliasNames().front().bindingWanted);
-        CHECK(!alice.aliasUpdatePending());
+        CHECK(!alice->aliasNames().front().bindingWanted);
+        CHECK(!alice->aliasUpdatePending());
         const int updatesBeforeAsking = m.resolverUpdateCalls;
-        alice.serviceAliases();
+        alice->serviceAliases();
         {
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.resolverUpdateCalls == updatesBeforeAsking);
@@ -583,21 +597,21 @@ int main()
             std::lock_guard<std::mutex> lock(m.mu);
             m.aliasBindingWanted.insert("alice");
         }
-        CHECK(alice.refreshAliasStatus());
-        CHECK(alice.aliasNames().front().bindingWanted);
-        CHECK(alice.aliasUpdatePending());
+        CHECK(alice->refreshAliasStatus());
+        CHECK(alice->aliasNames().front().bindingWanted);
+        CHECK(alice->aliasUpdatePending());
         {
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.aliasDescriptor.count("alice") == 0);
         }
-        CHECK(alice.pushAliasDescriptor());
-        CHECK(!alice.aliasUpdatePending());
+        CHECK(alice->pushAliasDescriptor());
+        CHECK(!alice->aliasUpdatePending());
         const int updatesBeforePressingAgain = m.resolverUpdateCalls;
-        CHECK(!alice.pushAliasDescriptor());
+        CHECK(!alice->pushAliasDescriptor());
         {
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.resolverUpdateCalls == updatesBeforePressingAgain);
-            CHECK(m.aliasDescriptor.at("alice").fingerprint == alice.fingerprint());
+            CHECK(m.aliasDescriptor.at("alice").fingerprint == alice->fingerprint());
         }
 
         {
@@ -605,38 +619,38 @@ int main()
             m.aliasBindingWanted.erase("alice");
             m.aliasDescriptor.erase("alice");
         }
-        CHECK(alice.refreshAliasStatus());
-        CHECK(!alice.aliasNames().front().bindingWanted);
-        CHECK(!alice.aliasUpdatePending());
+        CHECK(alice->refreshAliasStatus());
+        CHECK(!alice->aliasNames().front().bindingWanted);
+        CHECK(!alice->aliasUpdatePending());
         {
             const std::lock_guard<std::mutex> lock(m.mu);
             m.aliasBindingWanted.insert("alice");
         }
-        CHECK(alice.refreshAliasStatus());
-        CHECK(alice.aliasNames().front().bindingWanted);
-        CHECK(!alice.aliasNames().front().bound);
-        CHECK(alice.aliasUpdatePending());
-        CHECK(alice.pushAliasDescriptor());
-        CHECK(!alice.aliasUpdatePending());
+        CHECK(alice->refreshAliasStatus());
+        CHECK(alice->aliasNames().front().bindingWanted);
+        CHECK(!alice->aliasNames().front().bound);
+        CHECK(alice->aliasUpdatePending());
+        CHECK(alice->pushAliasDescriptor());
+        CHECK(!alice->aliasUpdatePending());
         {
             const std::lock_guard<std::mutex> lock(m.mu);
-            CHECK(m.aliasDescriptor.at("alice").fingerprint == alice.fingerprint());
+            CHECK(m.aliasDescriptor.at("alice").fingerprint == alice->fingerprint());
         }
 
         // A name somebody else owns is not repointed by asking nicely.
         {
             std::lock_guard<std::mutex> lock(m.mu);
-            m.aliasOwner["bob"] = bob.fingerprint();
+            m.aliasOwner["bob"] = bob->fingerprint();
         }
-        CHECK(bob.aliasNames().empty());
+        CHECK(bob->aliasNames().empty());
         const int statusBefore = m.resolverStatusCalls;
-        CHECK(bob.refreshAliasStatus());
+        CHECK(bob->refreshAliasStatus());
         CHECK(m.resolverStatusCalls == statusBefore + 1);
-        CHECK(bob.aliasNames().size() == 1);
+        CHECK(bob->aliasNames().size() == 1);
         {
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.aliasDescriptor.count("bob") == 0);
-            CHECK(m.aliasDescriptor.at("alice").fingerprint == alice.fingerprint());
+            CHECK(m.aliasDescriptor.at("alice").fingerprint == alice->fingerprint());
         }
 
         {
@@ -645,23 +659,23 @@ int main()
         }
         const int bobStatusBefore = m.resolverStatusCalls;
         const Session::AliasErrandResult errand
-            = Session::runAliasErrand(bob.aliasErrandContext());
+            = Session::runAliasErrand(bob->aliasErrandContext());
         CHECK(errand.ok);
         CHECK(errand.haveStatus);
         CHECK(errand.pointed);
         CHECK(m.resolverStatusCalls == bobStatusBefore + 1);
-        bob.applyAliasErrand(errand);
-        CHECK(bob.aliasNames().size() == 1);
-        CHECK(!bob.aliasUpdatePending());
+        bob->applyAliasErrand(errand);
+        CHECK(bob->aliasNames().size() == 1);
+        CHECK(!bob->aliasUpdatePending());
         {
             std::lock_guard<std::mutex> lock(m.mu);
-            CHECK(m.aliasDescriptor.at("bob").fingerprint == bob.fingerprint());
+            CHECK(m.aliasDescriptor.at("bob").fingerprint == bob->fingerprint());
         }
-        CHECK(bob.canWriteTo(alice.fingerprint()));
+        CHECK(bob->canWriteTo(alice->fingerprint()));
         {
             std::lock_guard<std::mutex> lock(m.mu);
-            CHECK(m.registered[alice.fingerprint()].size() == 1);
-            CHECK(m.registered[bob.fingerprint()].size() == 1);
+            CHECK(m.registered[alice->fingerprint()].size() == 1);
+            CHECK(m.registered[bob->fingerprint()].size() == 1);
         }
 
         {
@@ -675,26 +689,26 @@ int main()
                 }
                 return false;
             };
-            alice.sendMessage(bob.fingerprint(), "logged");
-            CHECK(waitFor([&]() { return logHas(alice.connectionLog(), "text to", "stored"); }));
-            const std::vector<WireEvent> aliceLog = alice.connectionLog();
+            alice->sendMessage(bob->fingerprint(), "logged");
+            CHECK(waitFor([&]() { return logHas(alice->connectionLog(), "text to", "stored"); }));
+            const std::vector<WireEvent> aliceLog = alice->connectionLog();
             CHECK(logHas(aliceLog, "text to", "sending"));
             CHECK(logHas(aliceLog, "POST /v1/messaging/", "200"));
             for (const WireEvent& event : aliceLog) {
                 CHECK(event.what.find("logged") == std::string::npos);
                 CHECK(event.detail.find("logged") == std::string::npos);
             }
-            bob.sync();
-            CHECK(logHas(bob.connectionLog(), "text from", {}));
+            bob->sync();
+            CHECK(logHas(bob->connectionLog(), "text from", {}));
 
             const std::size_t waiting = [&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
-                return m.mailbox[bob.fingerprint()].size();
+                return m.mailbox[bob->fingerprint()].size();
             }();
-            alice.sendMessage(bob.fingerprint(), "outlives a failed ack");
+            alice->sendMessage(bob->fingerprint(), "outlives a failed ack");
             CHECK(waitFor([&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
-                return m.mailbox[bob.fingerprint()].size() > waiting;
+                return m.mailbox[bob->fingerprint()].size() > waiting;
             }));
             {
                 std::lock_guard<std::mutex> lock(m.mu);
@@ -705,24 +719,24 @@ int main()
                     return item.text == "outlives a failed ack";
                 });
             };
-            CHECK(carries(bob.sync()) == 1);
-            CHECK(carries(bob.sync()) == 0);
+            CHECK(carries(bob->sync()) == 1);
+            CHECK(carries(bob->sync()) == 0);
             {
                 std::lock_guard<std::mutex> lock(m.mu);
                 CHECK(m.failAcks == 0);
-                CHECK(m.mailbox[bob.fingerprint()].size() == waiting);
+                CHECK(m.mailbox[bob->fingerprint()].size() == waiting);
             }
-            alice.setDisplayName("Alice of the log");
-            CHECK(logHas(alice.connectionLog(),
+            alice->setDisplayName("Alice of the log");
+            CHECK(logHas(alice->connectionLog(),
                 "POST /v1/messaging/self (device.account-name)", "200"));
         }
 
         {
             const Bytes opus{'O', 'p', 'u', 's'};
-            alice.sendVoice(bob.fingerprint(), opus, 2500);
+            alice->sendVoice(bob->fingerprint(), opus, 2500);
             bool heard = false;
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : bob.sync()) {
+                for (const IncomingMessage& item : bob->sync()) {
                     if (item.contentType == "audio") {
                         heard = true;
                         CHECK(item.attachmentMime == "audio/opus");
@@ -738,13 +752,13 @@ int main()
         {
             const fs::path forwardedFile = fs::temp_directory_path() / "bz-pass-forwarded.txt";
             std::ofstream(forwardedFile) << "fwd";
-            alice.sendPicture(
-                bob.fingerprint(), Bytes{'P', 'N', 'G'}, "p.png", "image/png", {}, {}, {}, true);
-            alice.sendFile(bob.fingerprint(), forwardedFile.string(), {}, {}, {}, true);
-            alice.sendPicture(bob.fingerprint(), Bytes{'J', 'P', 'G'}, "own.jpg", "image/jpeg");
+            alice->sendPicture(
+                bob->fingerprint(), Bytes{'P', 'N', 'G'}, "p.png", "image/png", {}, {}, {}, true);
+            alice->sendFile(bob->fingerprint(), forwardedFile.string(), {}, {}, {}, true);
+            alice->sendPicture(bob->fingerprint(), Bytes{'J', 'P', 'G'}, "own.jpg", "image/jpeg");
             std::map<std::string, bool> marks;
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : bob.sync()) {
+                for (const IncomingMessage& item : bob->sync()) {
                     if (item.contentType == "image" || item.contentType == "file") {
                         marks[item.attachmentName] = item.forwarded;
                     }
@@ -762,7 +776,7 @@ int main()
             constexpr std::int64_t kPastTheAnswerWindowMs = 6 * 60 * 1000;
             std::mutex seenMutex;
             std::vector<TransferEvent> seen;
-            bob.setTransferHandler([&](const TransferEvent& event) {
+            bob->setTransferHandler([&](const TransferEvent& event) {
                 const std::lock_guard<std::mutex> lock(seenMutex);
                 seen.push_back(event);
             });
@@ -774,39 +788,39 @@ int main()
             };
             const std::size_t before = [&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
-                return m.mailbox[alice.fingerprint()].size();
+                return m.mailbox[alice->fingerprint()].size();
             }();
             const std::int64_t askedAtMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch())
                                                .count();
-            bob.requestFile(alice.fingerprint(), "never-announced", toHex(sha256(Bytes{'u'})),
+            bob->requestFile(alice->fingerprint(), "never-announced", toHex(sha256(Bytes{'u'})),
                 fileTargetAt(fs::temp_directory_path() / "bz-pass-unanswered.bin"));
-            bob.expireFileRequests(askedAtMs);
+            bob->expireFileRequests(askedAtMs);
             CHECK(failures() == 0);
-            bob.expireFileRequests(askedAtMs + kPastTheAnswerWindowMs);
+            bob->expireFileRequests(askedAtMs + kPastTheAnswerWindowMs);
             CHECK(failures() == 1);
-            bob.expireFileRequests(askedAtMs + kPastTheAnswerWindowMs);
+            bob->expireFileRequests(askedAtMs + kPastTheAnswerWindowMs);
             CHECK(failures() == 1);
             CHECK(waitFor([&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
-                return m.mailbox[alice.fingerprint()].size() >= before + 2;
+                return m.mailbox[alice->fingerprint()].size() >= before + 2;
             }));
-            bob.setTransferHandler({});
-            alice.sync();
+            bob->setTransferHandler({});
+            alice->sync();
         }
 
         {
             constexpr std::size_t kBelowTheLimitBytes = 1024;
             const Bytes nearTheLimit(kMaxMessagePayloadBytes - kBelowTheLimitBytes, 'x');
-            CHECK_THROWS(alice.sendPicture(
-                bob.fingerprint(), nearTheLimit, "near.png", "image/png"));
+            CHECK_THROWS(alice->sendPicture(
+                bob->fingerprint(), nearTheLimit, "near.png", "image/png"));
         }
 
         {
-            alice.setAvatar(Bytes(kAvatarMaxBytes, 'a'), "image/jpeg");
+            alice->setAvatar(Bytes(kAvatarMaxBytes, 'a'), "image/jpeg");
             std::size_t received = 0;
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : bob.sync()) {
+                for (const IncomingMessage& item : bob->sync()) {
                     if (item.contentType == "avatar") {
                         received = item.avatarData.size();
                     }
@@ -821,10 +835,10 @@ int main()
                 {{"Ping", "ping", {}}, {"Time", "time", {}}},
                 {{"Help", {}, "help"}},
             };
-            alice.sendInteractive(bob.fingerprint(), "pick one", keyboard);
+            alice->sendInteractive(bob->fingerprint(), "pick one", keyboard);
             std::string received;
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : bob.sync()) {
+                for (const IncomingMessage& item : bob->sync()) {
                     if (item.contentType == "text" && item.text == "pick one") {
                         received = item.keyboardJson;
                     }
@@ -843,33 +857,33 @@ int main()
         {
             constexpr int kFarPastABatch = 400;
             for (int i = 0; i < kFarPastABatch; ++i) {
-                alice.sendMessage(bob.fingerprint(), "a->b " + std::to_string(aliceSent));
+                alice->sendMessage(bob->fingerprint(), "a->b " + std::to_string(aliceSent));
                 ++aliceSent;
-                bob.sendMessage(alice.fingerprint(), "b->a " + std::to_string(bobSent));
+                bob->sendMessage(alice->fingerprint(), "b->a " + std::to_string(bobSent));
                 ++bobSent;
             }
-            CHECK(alice.canWriteTo(bob.fingerprint()));
-            CHECK(bob.canWriteTo(alice.fingerprint()));
+            CHECK(alice->canWriteTo(bob->fingerprint()));
+            CHECK(bob->canWriteTo(alice->fingerprint()));
             std::lock_guard<std::mutex> lock(m.mu);
-            CHECK(m.registered[alice.fingerprint()].size() == 1);
-            CHECK(m.registered[bob.fingerprint()].size() == 1);
+            CHECK(m.registered[alice->fingerprint()].size() == 1);
+            CHECK(m.registered[bob->fingerprint()].size() == 1);
         }
-        alice.sync();
-        bob.sync();
+        alice->sync();
+        bob->sync();
 
         {
             const auto weighOf = [&](const std::string& text) {
                 const std::size_t before = [&]() {
                     std::lock_guard<std::mutex> lock(m.mu);
-                    return m.mailbox[bob.fingerprint()].size();
+                    return m.mailbox[bob->fingerprint()].size();
                 }();
-                alice.sendMessage(bob.fingerprint(), text);
+                alice->sendMessage(bob->fingerprint(), text);
                 CHECK(waitFor([&]() {
                     std::lock_guard<std::mutex> lock(m.mu);
-                    return m.mailbox[bob.fingerprint()].size() > before;
+                    return m.mailbox[bob->fingerprint()].size() > before;
                 }));
                 std::lock_guard<std::mutex> lock(m.mu);
-                return m.mailbox[bob.fingerprint()].back().payload.size();
+                return m.mailbox[bob->fingerprint()].back().payload.size();
             };
             constexpr std::size_t kSealFramingWobble = 8;
             const std::size_t brief = weighOf("hi");
@@ -881,17 +895,17 @@ int main()
             CHECK(withinWobble(brief, again));
             CHECK(withinWobble(brief, lengthy));
         }
-        bob.sync();
+        bob->sync();
 
         {
-            alice.replaceOwnAddress();
+            alice->replaceOwnAddress();
             CHECK(waitFor([&]() {
-                alice.flushPendingEchoes();
-                return alice.routingFanout().contacts.empty();
+                alice->flushPendingEchoes();
+                return alice->routingFanout().contacts.empty();
             }));
             bool sawRouting = false;
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : bob.sync()) {
+                for (const IncomingMessage& item : bob->sync()) {
                     CHECK(item.contentType != "unsupported");
                     if (item.contentType == "contact.routing") {
                         sawRouting = true;
@@ -903,56 +917,56 @@ int main()
 
         {
             ContactCard cardBeforeMove;
-            const AddressKeys keysBefore = alice.addressKeys();
+            const AddressKeys keysBefore = alice->addressKeys();
             {
                 std::lock_guard<std::mutex> lock(m.mu);
-                cardBeforeMove = ContactCard::verify(fromBase64(m.certFor.at(alice.fingerprint())));
-                m.registered.erase(alice.fingerprint());
-                m.delegated.erase(alice.fingerprint());
-                m.sealingFor.erase(alice.fingerprint());
-                m.certFor.erase(alice.fingerprint());
+                cardBeforeMove = ContactCard::verify(fromBase64(m.certFor.at(alice->fingerprint())));
+                m.registered.erase(alice->fingerprint());
+                m.delegated.erase(alice->fingerprint());
+                m.sealingFor.erase(alice->fingerprint());
+                m.certFor.erase(alice->fingerprint());
             }
-            alice.registerAccount();
+            alice->registerAccount();
             {
                 std::lock_guard<std::mutex> lock(m.mu);
-                CHECK(m.sealingFor.at(alice.fingerprint()) == keysBefore.sealingPem);
-                CHECK(m.registered.at(alice.fingerprint()).size() == 1);
+                CHECK(m.sealingFor.at(alice->fingerprint()) == keysBefore.sealingPem);
+                CHECK(m.registered.at(alice->fingerprint()).size() == 1);
                 const ContactCard moved
-                    = ContactCard::verify(fromBase64(m.certFor.at(alice.fingerprint())));
+                    = ContactCard::verify(fromBase64(m.certFor.at(alice->fingerprint())));
                 CHECK(moved.dest == cardBeforeMove.dest);
                 CHECK(moved.servingSealingKeyDer == cardBeforeMove.servingSealingKeyDer);
                 CHECK(moved.servingSealingKeyDer
                     == Key::fromPrivatePem(keysBefore.sealingPem).publicDer());
             }
-            CHECK(alice.routingFanout().contacts.empty());
-            bob.sendMessage(alice.fingerprint(), "on the new server");
+            CHECK(alice->routingFanout().contacts.empty());
+            bob->sendMessage(alice->fingerprint(), "on the new server");
             bool arrived = false;
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : alice.sync()) {
+                for (const IncomingMessage& item : alice->sync()) {
                     arrived = arrived || item.text == "on the new server";
                 }
                 return arrived;
             }));
-            for (const IncomingMessage& item : bob.sync()) {
+            for (const IncomingMessage& item : bob->sync()) {
                 CHECK(item.contentType != "contact.routing");
             }
         }
 
         {
             const std::string ref = toHex(randomBytes(8));
-            alice.sendReaction(bob.fingerprint(), ref, "\xf0\x9f\x91\x8d");
-            alice.sendReceipt(bob.fingerprint(), ref);
-            alice.sendDelete(bob.fingerprint(), ref);
-            bob.sync();
-            CHECK(alice.canWriteTo(bob.fingerprint()));
+            alice->sendReaction(bob->fingerprint(), ref, "\xf0\x9f\x91\x8d");
+            alice->sendReceipt(bob->fingerprint(), ref);
+            alice->sendDelete(bob->fingerprint(), ref);
+            bob->sync();
+            CHECK(alice->canWriteTo(bob->fingerprint()));
         }
 
         {
-            CHECK_THROWS(alice.sendChatTimer(bob.fingerprint(), kSecondsPerHour + 1));
-            alice.sendChatTimer(bob.fingerprint(), kDaysPerWeek * kSecondsPerDay);
+            CHECK_THROWS(alice->sendChatTimer(bob->fingerprint(), kSecondsPerHour + 1));
+            alice->sendChatTimer(bob->fingerprint(), kDaysPerWeek * kSecondsPerDay);
             bool sawTimer = false;
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : bob.sync()) {
+                for (const IncomingMessage& item : bob->sync()) {
                     if (item.contentType == "chat.timer") {
                         sawTimer = true;
                         CHECK(item.timerSeconds == kDaysPerWeek * kSecondsPerDay);
@@ -965,49 +979,49 @@ int main()
 
         {
             const Bytes face = {0xFF, 0xD8, 0xFF, 0xE0, 'j', 'p', 'g'};
-            alice.setAvatar(face, "image/jpeg");
-            bob.sync();
-            CHECK(bob.contactAvatar(alice.fingerprint()) == face);
+            alice->setAvatar(face, "image/jpeg");
+            bob->sync();
+            CHECK(bob->contactAvatar(alice->fingerprint()) == face);
 
-            alice.setAvatar({}, {});
-            CHECK(alice.avatar().empty());
-            bob.sync();
-            CHECK(bob.contactAvatar(alice.fingerprint()).empty());
+            alice->setAvatar({}, {});
+            CHECK(alice->avatar().empty());
+            bob->sync();
+            CHECK(bob->contactAvatar(alice->fingerprint()).empty());
         }
 
         {
             constexpr std::size_t kBacklog = 12;
             const std::string kBacklogText = "backlog ";
             for (std::size_t i = 0; i < kBacklog; ++i) {
-                bob.sendMessage(alice.fingerprint(), kBacklogText + std::to_string(i));
+                bob->sendMessage(alice->fingerprint(), kBacklogText + std::to_string(i));
             }
             CHECK(waitFor([&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
-                return m.mailbox[alice.fingerprint()].size() >= kBacklog;
+                return m.mailbox[alice->fingerprint()].size() >= kBacklog;
             }));
             std::size_t fetchesBefore = 0;
             std::size_t acksBefore = 0;
             {
                 std::lock_guard<std::mutex> lock(m.mu);
-                fetchesBefore = m.fetches[alice.fingerprint()];
-                acksBefore = m.acks[alice.fingerprint()];
+                fetchesBefore = m.fetches[alice->fingerprint()];
+                acksBefore = m.acks[alice->fingerprint()];
             }
             std::size_t taken = 0;
-            for (const IncomingMessage& item : alice.sync()) {
+            for (const IncomingMessage& item : alice->sync()) {
                 taken += item.text.rfind(kBacklogText, 0) == 0 ? 1 : 0;
             }
             CHECK(taken == kBacklog);
             std::lock_guard<std::mutex> lock(m.mu);
-            CHECK(m.fetches[alice.fingerprint()] == fetchesBefore + 1);
-            CHECK(m.acks[alice.fingerprint()] == acksBefore + 1);
-            CHECK(m.mailbox[alice.fingerprint()].empty());
+            CHECK(m.fetches[alice->fingerprint()] == fetchesBefore + 1);
+            CHECK(m.acks[alice->fingerprint()] == acksBefore + 1);
+            CHECK(m.mailbox[alice->fingerprint()].empty());
         }
 
         {
             const auto deviceItems = [&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
                 std::size_t count = 0;
-                for (const Mock::Item& item : m.mailbox[alice.fingerprint()]) {
+                for (const Mock::Item& item : m.mailbox[alice->fingerprint()]) {
                     count += item.cls == "device" ? 1 : 0;
                 }
                 return count;
@@ -1015,38 +1029,38 @@ int main()
             const auto sendToBob = [&](const std::string& text) {
                 const std::size_t before = [&]() {
                     std::lock_guard<std::mutex> lock(m.mu);
-                    return m.mailbox[bob.fingerprint()].size();
+                    return m.mailbox[bob->fingerprint()].size();
                 }();
-                alice.sendMessage(bob.fingerprint(), text);
+                alice->sendMessage(bob->fingerprint(), text);
                 CHECK(waitFor([&]() {
                     std::lock_guard<std::mutex> lock(m.mu);
-                    return m.mailbox[bob.fingerprint()].size() > before;
+                    return m.mailbox[bob->fingerprint()].size() > before;
                 }));
-                alice.flushPendingEchoes();
+                alice->flushPendingEchoes();
             };
 
-            alice.setDeviceSync(false);
+            alice->setDeviceSync(false);
             const std::size_t quiet = deviceItems();
             sendToBob("nobody else to tell");
-            alice.syncChatPinToSelf(bob.fingerprint(), true);
-            alice.syncReadToSelf(bob.fingerprint(), 1);
+            alice->syncChatPinToSelf(bob->fingerprint(), true);
+            alice->syncReadToSelf(bob->fingerprint(), 1);
             CHECK(deviceItems() == quiet);
 
-            alice.setDeviceSync(true);
+            alice->setDeviceSync(true);
             sendToBob("told to the other devices");
             CHECK(waitFor([&]() {
-                alice.flushPendingEchoes();
+                alice->flushPendingEchoes();
                 return deviceItems() > quiet;
             }));
-            bob.sync();
+            bob->sync();
         }
 
         {
             constexpr std::int64_t kMembers = 7;
             constexpr std::int64_t kBlockAt = 1234;
             constexpr std::int64_t kPostSentAt = 1111;
-            alice.setGroupBlockSource([&](const std::string& peer) {
-                CHECK(peer == bob.fingerprint());
+            alice->setGroupBlockSource([&](const std::string& peer) {
+                CHECK(peer == bob->fingerprint());
                 return GroupBlock{GroupKind::eChannel, kMembers, false, true, kBlockAt};
             });
             RelayedPost post;
@@ -1068,15 +1082,15 @@ int main()
             counts.id = "group-counts-1";
             counts.reactions
                 = nlohmann::json::array({{{"ref", "group-post-1"}, {"counts", {{"+", 2}}}}});
-            CHECK(alice.relayFitter()({post, hostPost, counts}) == 3);
-            alice.relayPosts(bob.fingerprint(), {post, hostPost, counts});
-            alice.sendGroupState(bob.fingerprint());
-            alice.sendMessage(bob.fingerprint(), "plain");
+            CHECK(alice->relayFitter()({post, hostPost, counts}) == 3);
+            alice->relayPosts(bob->fingerprint(), {post, hostPost, counts});
+            alice->sendGroupState(bob->fingerprint());
+            alice->sendMessage(bob->fingerprint(), "plain");
 
             std::map<std::string, IncomingMessage> seen;
             std::vector<std::string> order;
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : bob.sync()) {
+                for (const IncomingMessage& item : bob->sync()) {
                     const std::string key = item.contentType == "text" ? item.text : item.contentType;
                     seen[key] = item;
                     order.push_back(key);
@@ -1115,11 +1129,11 @@ int main()
             oversized.media = Bytes(kMaxMessagePayloadBytes, 0);
             oversized.mediaName = "big.png";
             oversized.mime = "image/png";
-            CHECK(alice.relayFitter()({oversized}) == 0);
-            CHECK(alice.relayFitter()({post, oversized, hostPost}) == 1);
+            CHECK(alice->relayFitter()({oversized}) == 0);
+            CHECK(alice->relayFitter()({post, oversized, hostPost}) == 1);
             RelayedPost third = oversized;
             third.media = Bytes(kMaxMessagePayloadBytes / 3, 0);
-            CHECK(alice.relayFitter()({third, third, third, post}) == 2);
+            CHECK(alice->relayFitter()({third, third, third, post}) == 2);
 
             RelayedPost again = post;
             again.id = "group-post-3";
@@ -1127,22 +1141,22 @@ int main()
             RelayedPost later = post;
             later.id = "group-post-4";
             later.text = "only in the longer one";
-            alice.relayPosts(bob.fingerprint(), {post, again});
-            alice.relayPosts(bob.fingerprint(), {post, again, later});
+            alice->relayPosts(bob->fingerprint(), {post, again});
+            alice->relayPosts(bob->fingerprint(), {post, again, later});
             bool sawLater = false;
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : bob.sync()) {
+                for (const IncomingMessage& item : bob->sync()) {
                     sawLater = sawLater || item.text == "only in the longer one";
                 }
                 return sawLater;
             }));
             CHECK(sawLater);
 
-            alice.setGroupBlockSource({});
-            alice.sendMessage(bob.fingerprint(), "no longer a group");
+            alice->setGroupBlockSource({});
+            alice->sendMessage(bob->fingerprint(), "no longer a group");
             bool plain = false;
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : bob.sync()) {
+                for (const IncomingMessage& item : bob->sync()) {
                     if (item.text == "no longer a group") {
                         plain = true;
                         CHECK(!item.group.has_value());
@@ -1154,12 +1168,12 @@ int main()
         }
 
         {
-            alice.sendMessage(alice.fingerprint(), "note to self");
+            alice->sendMessage(alice->fingerprint(), "note to self");
 
             std::size_t deviceItems = 0;
             {
                 std::lock_guard<std::mutex> lock(m.mu);
-                for (const Mock::Item& item : m.mailbox[alice.fingerprint()]) {
+                for (const Mock::Item& item : m.mailbox[alice->fingerprint()]) {
                     deviceItems += item.cls == "device" ? 1 : 0;
                 }
             }
@@ -1169,7 +1183,7 @@ int main()
                 {"v", 1},
                 {"type", "device.saved"},
                 {"id", "saved-1"},
-                {"from", alice.fingerprint()},
+                {"from", alice->fingerprint()},
                 {"sentAt", 1},
                 {"device", "someotherdevice"},
                 {"message",
@@ -1177,7 +1191,7 @@ int main()
                         {"v", 1},
                         {"type", "text"},
                         {"id", "kept-1"},
-                        {"from", alice.fingerprint()},
+                        {"from", alice->fingerprint()},
                         {"sentAt", 1},
                         {"text", "note to self"},
                     }},
@@ -1185,13 +1199,13 @@ int main()
             {
                 signAuthorship(saved, aliceIdentity, /*withKeys=*/false);
                 std::lock_guard<std::mutex> lock(m.mu);
-                m.mailbox[alice.fingerprint()].push_back({"saved-echo", "device",
+                m.mailbox[alice->fingerprint()].push_back({"saved-echo", "device",
                     hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({saved}))),
-                        Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
+                        Key::fromPublicDer(fromBase64(alice->sealingPublicB64())))});
             }
             bool sawSaved = false;
-            for (const IncomingMessage& item : alice.sync()) {
-                if (item.fromFingerprint == alice.fingerprint() && item.text == "note to self") {
+            for (const IncomingMessage& item : alice->sync()) {
+                if (item.fromFingerprint == alice->fingerprint() && item.text == "note to self") {
                     sawSaved = true;
                     CHECK(item.sentByUs);
                 }
@@ -1200,7 +1214,7 @@ int main()
 
             bool refused = false;
             try {
-                alice.sendFile(alice.fingerprint(), (aDir / "meta").string(), "", {}, "");
+                alice->sendFile(alice->fingerprint(), (aDir / "meta").string(), "", {}, "");
             } catch (const std::exception&) {
                 refused = true;
             }
@@ -1208,34 +1222,34 @@ int main()
         }
 
         {
-            alice.renameContact(bob.fingerprint(), "Saved messages");
-            CHECK(alice.contactDisplayName(bob.fingerprint()) == "(Contact) Saved messages");
-            alice.renameContact(bob.fingerprint(), "  saved MESSAGES  ");
-            CHECK(alice.contactDisplayName(bob.fingerprint()) == "(Contact)   saved MESSAGES  ");
-            alice.renameContact(bob.fingerprint(), "Bob");
-            CHECK(alice.contactDisplayName(bob.fingerprint()) == "Bob");
+            alice->renameContact(bob->fingerprint(), "Saved messages");
+            CHECK(alice->contactDisplayName(bob->fingerprint()) == "(Contact) Saved messages");
+            alice->renameContact(bob->fingerprint(), "  saved MESSAGES  ");
+            CHECK(alice->contactDisplayName(bob->fingerprint()) == "(Contact)   saved MESSAGES  ");
+            alice->renameContact(bob->fingerprint(), "Bob");
+            CHECK(alice->contactDisplayName(bob->fingerprint()) == "Bob");
         }
 
         {
-            CHECK(alice.contactCalls(bob.fingerprint()));
-            CHECK(alice.contactNotifications(bob.fingerprint()));
-            alice.setContactCalls(bob.fingerprint(), false);
-            alice.setContactNotifications(bob.fingerprint(), false);
-            CHECK(!alice.contactCalls(bob.fingerprint()));
-            CHECK(!alice.contactNotifications(bob.fingerprint()));
-            alice.setContactCalls(bob.fingerprint(), true);
-            alice.setContactNotifications(bob.fingerprint(), true);
+            CHECK(alice->contactCalls(bob->fingerprint()));
+            CHECK(alice->contactNotifications(bob->fingerprint()));
+            alice->setContactCalls(bob->fingerprint(), false);
+            alice->setContactNotifications(bob->fingerprint(), false);
+            CHECK(!alice->contactCalls(bob->fingerprint()));
+            CHECK(!alice->contactNotifications(bob->fingerprint()));
+            alice->setContactCalls(bob->fingerprint(), true);
+            alice->setContactNotifications(bob->fingerprint(), true);
         }
 
         {
-            bob.sendMessage(alice.fingerprint(), "before the block");
-            alice.setBlocked(bob.fingerprint(), true);
-            CHECK(alice.isBlocked(bob.fingerprint()));
-            CHECK(alice.blockedPeers().size() == 1);
+            bob->sendMessage(alice->fingerprint(), "before the block");
+            alice->setBlocked(bob->fingerprint(), true);
+            CHECK(alice->isBlocked(bob->fingerprint()));
+            CHECK(alice->blockedPeers().size() == 1);
 
-            bob.sendMessage(alice.fingerprint(), "after the block");
+            bob->sendMessage(alice->fingerprint(), "after the block");
             bool heardBlocked = false;
-            for (const IncomingMessage& item : alice.sync()) {
+            for (const IncomingMessage& item : alice->sync()) {
                 if (item.text == "after the block") {
                     heardBlocked = true;
                 }
@@ -1243,12 +1257,12 @@ int main()
             CHECK(!heardBlocked);
             {
                 std::lock_guard<std::mutex> lock(m.mu);
-                CHECK(m.mailbox[alice.fingerprint()].empty());
+                CHECK(m.mailbox[alice->fingerprint()].empty());
             }
 
             bool sendRefused = false;
             try {
-                alice.sendMessage(bob.fingerprint(), "still there?");
+                alice->sendMessage(bob->fingerprint(), "still there?");
             } catch (const std::exception&) {
                 sendRefused = true;
             }
@@ -1256,14 +1270,14 @@ int main()
 
             const auto held = [&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
-                return m.registered[alice.fingerprint()].size();
+                return m.registered[alice->fingerprint()].size();
             };
             CHECK(held() == 0);
 
-            alice.setBlocked(bob.fingerprint(), false);
-            CHECK(!alice.isBlocked(bob.fingerprint()));
+            alice->setBlocked(bob->fingerprint(), false);
+            CHECK(!alice->isBlocked(bob->fingerprint()));
             CHECK(held() == 1);
-            CHECK(bob.canWriteTo(alice.fingerprint()));
+            CHECK(bob->canWriteTo(alice->fingerprint()));
 
             {
                 const auto refuseOnce = [&](const std::string& code) {
@@ -1272,7 +1286,7 @@ int main()
                         m.refuseWith = code;
                     }
                     try {
-                        alice.sendMessage(bob.fingerprint(), "into a refusal");
+                        alice->sendMessage(bob->fingerprint(), "into a refusal");
                     } catch (const std::exception&) {
                     }
                     std::lock_guard<std::mutex> lock(m.mu);
@@ -1281,15 +1295,15 @@ int main()
                 for (const char* code :
                     {"STORAGE_FULL", "RECIPIENT_SERVER_UNREACHABLE", "DELIVERY_REJECTED"}) {
                     refuseOnce(code);
-                    alice.sync();
-                    CHECK(alice.canWriteTo(bob.fingerprint()));
+                    alice->sync();
+                    CHECK(alice->canWriteTo(bob->fingerprint()));
                 }
-                alice.sendMessage(bob.fingerprint(), "and this one goes");
+                alice->sendMessage(bob->fingerprint(), "and this one goes");
             }
 
-            bob.sendMessage(alice.fingerprint(), "after the unblock");
+            bob->sendMessage(alice->fingerprint(), "after the unblock");
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : alice.sync()) {
+                for (const IncomingMessage& item : alice->sync()) {
                     if (item.text == "after the unblock") {
                         return true;
                     }
@@ -1304,9 +1318,9 @@ int main()
             const std::string strangerFingerprint = Identity::generate().fingerprint();
             const auto intoAliceMailbox = [&](const std::string& id, nlohmann::json content) {
                 std::lock_guard<std::mutex> lock(m.mu);
-                m.mailbox[alice.fingerprint()].push_back({id, "content",
+                m.mailbox[alice->fingerprint()].push_back({id, "content",
                     hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({content}))),
-                        Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
+                        Key::fromPublicDer(fromBase64(alice->sealingPublicB64())))});
             };
             const auto text = [](const std::string& from, const std::string& id,
                                   const std::string& body) {
@@ -1317,33 +1331,33 @@ int main()
             nlohmann::json forged = text(strangerFingerprint, "forged-1", "trust me, I am them");
             signAuthorship(forged, bobIdentity, /*withKeys=*/true);
             intoAliceMailbox("forged-1", forged);
-            intoAliceMailbox("unsigned-1", text(bob.fingerprint(), "unsigned-1", "no signature"));
-            nlohmann::json honest = text(bob.fingerprint(), "honest-1", "this one is mine");
+            intoAliceMailbox("unsigned-1", text(bob->fingerprint(), "unsigned-1", "no signature"));
+            nlohmann::json honest = text(bob->fingerprint(), "honest-1", "this one is mine");
             signAuthorship(honest, bobIdentity, /*withKeys=*/false);
             intoAliceMailbox("honest-1", honest);
             nlohmann::json forgedInBatch = text(strangerFingerprint, "forged-2", "slipped in first");
             signAuthorship(forgedInBatch, bobIdentity, /*withKeys=*/true);
-            nlohmann::json honestInBatch = text(bob.fingerprint(), "honest-2", "after a forged one");
+            nlohmann::json honestInBatch = text(bob->fingerprint(), "honest-2", "after a forged one");
             signAuthorship(honestInBatch, bobIdentity, /*withKeys=*/false);
             {
                 std::lock_guard<std::mutex> lock(m.mu);
-                m.mailbox[alice.fingerprint()].push_back({"mixed-1", "content",
+                m.mailbox[alice->fingerprint()].push_back({"mixed-1", "content",
                     hybrid::seal(padToLadder(nlohmann::json::to_cbor(
                                      nlohmann::json::array({forgedInBatch, honestInBatch}))),
-                        Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
+                        Key::fromPublicDer(fromBase64(alice->sealingPublicB64())))});
             }
 
             const std::string plantedPeer = Identity::generate().fingerprint();
             const auto deviceNotice = [&](const std::string& id, nlohmann::json extra) {
                 extra["v"] = 1;
                 extra["id"] = id;
-                extra["from"] = bob.fingerprint();
+                extra["from"] = bob->fingerprint();
                 extra["sentAt"] = 1;
                 extra["device"] = "not-a-device-of-hers";
                 signAuthorship(extra, bobIdentity, /*withKeys=*/false);
                 intoAliceMailbox(id, extra);
             };
-            const std::int64_t termBefore = alice.delegationDays();
+            const std::int64_t termBefore = alice->delegationDays();
             deviceNotice("bob-term", {{"type", "device.delegation-term"},
                                          {"days", termBefore == 7 ? 30 : 7}});
             deviceNotice("bob-book",
@@ -1359,7 +1373,7 @@ int main()
             bool sawHonest = false;
             bool sawForgedInBatch = false;
             bool sawHonestInBatch = false;
-            for (const IncomingMessage& item : alice.sync()) {
+            for (const IncomingMessage& item : alice->sync()) {
                 sawForged = sawForged || item.text == "trust me, I am them";
                 sawUnsigned = sawUnsigned || item.text == "no signature";
                 sawHonest = sawHonest || item.text == "this one is mine";
@@ -1369,8 +1383,8 @@ int main()
             CHECK(!sawForgedInBatch);
             CHECK(sawHonestInBatch);
             CHECK(!sawForged);
-            CHECK(alice.delegationDays() == termBefore);
-            CHECK(!alice.hasContact(plantedPeer));
+            CHECK(alice->delegationDays() == termBefore);
+            CHECK(!alice->hasContact(plantedPeer));
             CHECK(!sawUnsigned);
             CHECK(sawHonest);
         }
@@ -1378,21 +1392,21 @@ int main()
         {
             const fs::path cDir = fs::temp_directory_path() / "bz-pass-c";
             fs::remove(cDir);
-            Session carol = Session::create(cDir, AccountKind::eUser, endpoint, std::string{});
+            const std::unique_ptr<Session> carol = Session::create(cDir, AccountKind::eUser, endpoint, std::string{});
             {
                 std::lock_guard<std::mutex> lock(m.mu);
-                m.destFor[carol.fingerprint()]
+                m.destFor[carol->fingerprint()]
                     = "flkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
             }
-            carol.registerAccount();
-            carol.setFetchTransport(directDial);
-            carol.setOutboundCourier(courierFor());
+            carol->registerAccount();
+            carol->setFetchTransport(directDial);
+            carol->setOutboundCourier(courierFor());
 
             const std::string longestName(kMaxAccountNameBytes, 'n');
-            alice.setDisplayName(longestName);
-            CHECK(alice.displayName() == longestName);
+            alice->setDisplayName(longestName);
+            CHECK(alice->displayName() == longestName);
             const std::string longestGreeting(kMaxContactGreetingBytes, 'g');
-            alice.addByInvite(carol.inviteUri(), longestGreeting);
+            alice->addByInvite(carol->inviteUri(), longestGreeting);
 
             const std::size_t largest = [&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
@@ -1406,94 +1420,94 @@ int main()
         {
             const fs::path dDir = fs::temp_directory_path() / "bz-pass-d";
             fs::remove(dDir);
-            Session dana = Session::create(dDir, AccountKind::eUser, endpoint, std::string{});
+            const std::unique_ptr<Session> dana = Session::create(dDir, AccountKind::eUser, endpoint, std::string{});
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
-                m.destFor[dana.fingerprint()]
+                m.destFor[dana->fingerprint()]
                     = "glkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
             }
-            dana.registerAccount();
-            dana.setFetchTransport(directDial);
-            dana.setOutboundCourier(courierFor());
+            dana->registerAccount();
+            dana->setFetchTransport(directDial);
+            dana->setOutboundCourier(courierFor());
 
             const auto heldForAlice = [&]() {
                 const std::lock_guard<std::mutex> lock(m.mu);
-                return m.mailbox[alice.fingerprint()].size();
+                return m.mailbox[alice->fingerprint()].size();
             };
             const std::size_t beforeAdding = heldForAlice();
-            alice.addByInvite(dana.inviteUri(), "let me in");
+            alice->addByInvite(dana->inviteUri(), "let me in");
             bool askedTwice = true;
             try {
-                alice.addByInvite(dana.inviteUri(), "let me in again");
+                alice->addByInvite(dana->inviteUri(), "let me in again");
             } catch (const std::exception&) {
                 askedTwice = false;
             }
             CHECK(!askedTwice);
             const std::size_t beforeRequests = heldForAlice();
             CHECK(beforeRequests == beforeAdding + 1);
-            CHECK(alice.hasContact(dana.fingerprint()));
+            CHECK(alice->hasContact(dana->fingerprint()));
             CHECK(waitFor([&]() {
-                dana.sync();
-                return dana.contactIsPending(alice.fingerprint());
+                dana->sync();
+                return dana->contactIsPending(alice->fingerprint());
             }));
-            CHECK(dana.hasContact(alice.fingerprint()));
-            CHECK(dana.contactIsPending(alice.fingerprint()));
+            CHECK(dana->hasContact(alice->fingerprint()));
+            CHECK(dana->contactIsPending(alice->fingerprint()));
             CHECK(heldForAlice() == beforeRequests);
 
-            dana.sendReceipt(alice.fingerprint(), "whatever-they-sent");
+            dana->sendReceipt(alice->fingerprint(), "whatever-they-sent");
             CHECK(heldForAlice() == beforeRequests);
 
-            dana.acceptContactRequest(alice.fingerprint());
-            CHECK(dana.contactIsPending(alice.fingerprint()));
-            CHECK(dana.contactAcceptInFlight(alice.fingerprint()));
-            dana.acceptContactRequest(alice.fingerprint());
+            dana->acceptContactRequest(alice->fingerprint());
+            CHECK(dana->contactIsPending(alice->fingerprint()));
+            CHECK(dana->contactAcceptInFlight(alice->fingerprint()));
+            dana->acceptContactRequest(alice->fingerprint());
             CHECK(waitFor([&]() { return heldForAlice() > beforeRequests; }));
             CHECK(waitFor([&]() {
-                dana.sync();
-                return !dana.contactIsPending(alice.fingerprint());
+                dana->sync();
+                return !dana->contactIsPending(alice->fingerprint());
             }));
-            CHECK(!dana.contactIsPending(alice.fingerprint()));
-            CHECK(!dana.contactAcceptInFlight(alice.fingerprint()));
+            CHECK(!dana->contactIsPending(alice->fingerprint()));
+            CHECK(!dana->contactAcceptInFlight(alice->fingerprint()));
 
-            alice.removeContact(dana.fingerprint());
-            CHECK(!alice.hasContact(dana.fingerprint()));
+            alice->removeContact(dana->fingerprint());
+            CHECK(!alice->hasContact(dana->fingerprint()));
             const std::size_t beforeReturn = heldForAlice();
-            alice.addByInvite(dana.inviteUri(), "me again");
+            alice->addByInvite(dana->inviteUri(), "me again");
             CHECK(waitFor([&]() {
-                dana.sync();
-                return dana.contactAcceptInFlight(alice.fingerprint());
+                dana->sync();
+                return dana->contactAcceptInFlight(alice->fingerprint());
             }));
             CHECK(waitFor([&]() { return heldForAlice() > beforeReturn; }));
             CHECK(waitFor([&]() {
-                dana.sync();
-                return !dana.contactIsPending(alice.fingerprint());
+                dana->sync();
+                return !dana->contactIsPending(alice->fingerprint());
             }));
-            CHECK(!dana.contactIsPending(alice.fingerprint()));
+            CHECK(!dana->contactIsPending(alice->fingerprint()));
             CHECK(waitFor([&]() {
-                alice.sync();
-                return alice.canWriteTo(dana.fingerprint());
+                alice->sync();
+                return alice->canWriteTo(dana->fingerprint());
             }));
         }
 
         {
             const fs::path eDir = fs::temp_directory_path() / "bz-pass-e";
             fs::remove(eDir);
-            Session erin = Session::create(eDir, AccountKind::eUser, endpoint, std::string{});
+            const std::unique_ptr<Session> erin = Session::create(eDir, AccountKind::eUser, endpoint, std::string{});
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
-                m.destFor[erin.fingerprint()]
+                m.destFor[erin->fingerprint()]
                     = "hlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
             }
-            erin.registerAccount();
-            erin.setFetchTransport(directDial);
-            erin.setOutboundCourier(courierFor());
+            erin->registerAccount();
+            erin->setFetchTransport(directDial);
+            erin->setOutboundCourier(courierFor());
 
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.refuseWith = "CONTACT_RATE_LIMITED";
             }
-            CHECK_THROWS(alice.addByInvite(erin.inviteUri(), "refused"));
-            CHECK(!alice.hasContact(erin.fingerprint()));
+            CHECK_THROWS(alice->addByInvite(erin->inviteUri(), "refused"));
+            CHECK(!alice->hasContact(erin->fingerprint()));
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.refuseWith.clear();
@@ -1503,88 +1517,88 @@ int main()
             once.attempts = 1;
             once.dial = std::chrono::seconds(1);
             once.run = std::chrono::seconds(2);
-            alice.setOutboundCourier(std::make_unique<OutboundCourier>(
+            alice->setOutboundCourier(std::make_unique<OutboundCourier>(
                 [](const std::string&, const std::string&) { return true; },
                 [](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
                     return nullptr;
                 },
                 once));
-            CHECK_THROWS(alice.addByInvite(erin.inviteUri(), "are you there"));
-            CHECK(alice.contactAwaitsAnswer(erin.fingerprint()));
+            CHECK_THROWS(alice->addByInvite(erin->inviteUri(), "are you there"));
+            CHECK(alice->contactAwaitsAnswer(erin->fingerprint()));
 
-            alice.setOutboundCourier(courierFor());
-            alice.sendContactRequest(erin.fingerprint(), "resent-request", "are you there",
+            alice->setOutboundCourier(courierFor());
+            alice->sendContactRequest(erin->fingerprint(), "resent-request", "are you there",
                 DeliveryWatch{}, /*waitForOutcome=*/true);
             CHECK(waitFor([&]() {
-                erin.sync();
-                return erin.hasContact(alice.fingerprint());
+                erin->sync();
+                return erin->hasContact(alice->fingerprint());
             }));
-            CHECK(erin.contactIsPending(alice.fingerprint()));
-            erin.acceptContactRequest(alice.fingerprint());
+            CHECK(erin->contactIsPending(alice->fingerprint()));
+            erin->acceptContactRequest(alice->fingerprint());
             CHECK(waitFor([&]() {
-                alice.sync();
-                return alice.canWriteTo(erin.fingerprint());
+                alice->sync();
+                return alice->canWriteTo(erin->fingerprint());
             }));
-            CHECK(!alice.contactAwaitsAnswer(erin.fingerprint()));
+            CHECK(!alice->contactAwaitsAnswer(erin->fingerprint()));
         }
 
         {
             const Bytes face = {0xFF, 0xD8, 0xFF, 0xE0, 'b', 'o', 'b'};
-            bob.setAvatar(face, "image/jpeg");
+            bob->setAvatar(face, "image/jpeg");
             CHECK(waitFor([&]() {
-                alice.sync();
-                return !alice.contactAvatar(bob.fingerprint()).empty();
+                alice->sync();
+                return !alice->contactAvatar(bob->fingerprint()).empty();
             }));
-            CHECK(alice.contactAvatar(bob.fingerprint()) == face);
-            alice.renameContact(bob.fingerprint(), "Bob of the book");
+            CHECK(alice->contactAvatar(bob->fingerprint()) == face);
+            alice->renameContact(bob->fingerprint(), "Bob of the book");
 
             const fs::path secondDir = fs::temp_directory_path() / "bz-pass-a-second.db";
             fs::remove(secondDir);
             Session::importAccount(earlyBundle, secondDir, "bundle-password");
-            Session second = Session::open(secondDir, std::string{});
-            CHECK(second.fingerprint() == alice.fingerprint());
-            CHECK(!second.hasContact(bob.fingerprint()));
+            const std::unique_ptr<Session> second = Session::open(secondDir, std::string{});
+            CHECK(second->fingerprint() == alice->fingerprint());
+            CHECK(!second->hasContact(bob->fingerprint()));
 
-            second.sync();
-            alice.sync();
+            second->sync();
+            alice->sync();
             CHECK(waitFor([&]() {
-                second.sync();
-                return second.hasContact(bob.fingerprint());
+                second->sync();
+                return second->hasContact(bob->fingerprint());
             }));
-            CHECK(second.hasContact(bob.fingerprint()));
-            CHECK(second.contactDisplayName(bob.fingerprint()) == "Bob of the book");
-            CHECK(second.contactAvatar(bob.fingerprint()) == face);
-            CHECK(second.canWriteTo(bob.fingerprint()));
-            alice.publishRouting();
+            CHECK(second->hasContact(bob->fingerprint()));
+            CHECK(second->contactDisplayName(bob->fingerprint()) == "Bob of the book");
+            CHECK(second->contactAvatar(bob->fingerprint()) == face);
+            CHECK(second->canWriteTo(bob->fingerprint()));
+            alice->publishRouting();
             CHECK(waitFor([&]() {
-                second.sync();
-                return second.hasI2pDestination();
+                second->sync();
+                return second->hasI2pDestination();
             }));
-            CHECK(second.i2pAddress() == alice.i2pAddress());
-            CHECK(second.addressKeys().sealingPem == alice.addressKeys().sealingPem);
-            CHECK(second.addressKeys().signingPem == alice.addressKeys().signingPem);
-            alice.issueAddressKeys();
-            alice.publishRouting();
+            CHECK(second->i2pAddress() == alice->i2pAddress());
+            CHECK(second->addressKeys().sealingPem == alice->addressKeys().sealingPem);
+            CHECK(second->addressKeys().signingPem == alice->addressKeys().signingPem);
+            alice->issueAddressKeys();
+            alice->publishRouting();
             CHECK(waitFor([&]() {
-                second.sync();
-                return second.addressKeys().sealingPem == alice.addressKeys().sealingPem;
+                second->sync();
+                return second->addressKeys().sealingPem == alice->addressKeys().sealingPem;
             }));
-            CHECK(second.addressKeys().signingPem == alice.addressKeys().signingPem);
+            CHECK(second->addressKeys().signingPem == alice->addressKeys().signingPem);
             CHECK(waitFor([&]() {
-                alice.flushPendingEchoes();
-                return alice.routingFanout().contacts.empty();
+                alice->flushPendingEchoes();
+                return alice->routingFanout().contacts.empty();
             }));
             bool bobHeardKeys = false;
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : bob.sync()) {
+                for (const IncomingMessage& item : bob->sync()) {
                     bobHeardKeys = bobHeardKeys || item.contentType == "contact.routing";
                 }
                 return bobHeardKeys;
             }));
-            bob.sendMessage(alice.fingerprint(), "hello, second device");
+            bob->sendMessage(alice->fingerprint(), "hello, second device");
             bool sawBob = false;
             CHECK(waitFor([&]() {
-                for (const IncomingMessage& item : second.sync()) {
+                for (const IncomingMessage& item : second->sync()) {
                     sawBob = sawBob || item.text == "hello, second device";
                 }
                 return sawBob;
@@ -1594,104 +1608,104 @@ int main()
             {
                 const fs::path fDir = fs::temp_directory_path() / "bz-pass-f";
                 fs::remove(fDir);
-                Session finn = Session::create(fDir, AccountKind::eUser, endpoint, std::string{});
+                const std::unique_ptr<Session> finn = Session::create(fDir, AccountKind::eUser, endpoint, std::string{});
                 {
                     const std::lock_guard<std::mutex> lock(m.mu);
-                    m.destFor[finn.fingerprint()]
+                    m.destFor[finn->fingerprint()]
                         = "hlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
                 }
-                finn.registerAccount();
-                finn.setFetchTransport(directDial);
-                finn.setOutboundCourier(courierFor());
+                finn->registerAccount();
+                finn->setFetchTransport(directDial);
+                finn->setOutboundCourier(courierFor());
 
-                alice.addByInvite(finn.inviteUri(), "added on one device");
-                alice.renameContact(finn.fingerprint(), "Finn of the phone");
+                alice->addByInvite(finn->inviteUri(), "added on one device");
+                alice->renameContact(finn->fingerprint(), "Finn of the phone");
                 CHECK(waitFor([&]() {
-                    second.sync();
-                    return second.hasContact(finn.fingerprint());
+                    second->sync();
+                    return second->hasContact(finn->fingerprint());
                 }));
-                CHECK(second.hasContact(finn.fingerprint()));
+                CHECK(second->hasContact(finn->fingerprint()));
                 CHECK(waitFor([&]() {
-                    finn.sync();
-                    return finn.contactIsPending(alice.fingerprint());
+                    finn->sync();
+                    return finn->contactIsPending(alice->fingerprint());
                 }));
-                finn.acceptContactRequest(alice.fingerprint());
-                finn.sendMessage(alice.fingerprint(), "seen on the other device too");
+                finn->acceptContactRequest(alice->fingerprint());
+                finn->sendMessage(alice->fingerprint(), "seen on the other device too");
                 bool sawFinn = false;
                 CHECK(waitFor([&]() {
-                    for (const IncomingMessage& item : second.sync()) {
+                    for (const IncomingMessage& item : second->sync()) {
                         sawFinn = sawFinn || item.text == "seen on the other device too";
                     }
                     return sawFinn;
                 }));
                 CHECK(sawFinn);
-                CHECK(second.contactDisplayName(finn.fingerprint()) == "Finn of the phone");
+                CHECK(second->contactDisplayName(finn->fingerprint()) == "Finn of the phone");
             }
 
             {
                 Bytes huge(200 * 1024, 0x41);
                 std::copy(kJpegOpening.begin(), kJpegOpening.end(), huge.begin());
-                bob.setAvatar(huge, "image/jpeg");
+                bob->setAvatar(huge, "image/jpeg");
                 CHECK(waitFor([&]() {
-                    alice.sync();
-                    return alice.contactAvatar(bob.fingerprint()) == huge;
+                    alice->sync();
+                    return alice->contactAvatar(bob->fingerprint()) == huge;
                 }));
-                CHECK(alice.contactAvatar(bob.fingerprint()) == huge);
+                CHECK(alice->contactAvatar(bob->fingerprint()) == huge);
 
                 const fs::path thirdDir = fs::temp_directory_path() / "bz-pass-a-third.db";
                 fs::remove(thirdDir);
                 Session::importAccount(earlyBundle, thirdDir, "bundle-password");
-                Session third = Session::open(thirdDir, std::string{});
-                third.sync();
-                alice.sync();
+                const std::unique_ptr<Session> third = Session::open(thirdDir, std::string{});
+                third->sync();
+                alice->sync();
                 CHECK(waitFor([&]() {
-                    third.sync();
-                    return third.hasContact(bob.fingerprint());
+                    third->sync();
+                    return third->hasContact(bob->fingerprint());
                 }));
-                CHECK(third.hasContact(bob.fingerprint()));
-                CHECK(third.contactAvatar(bob.fingerprint()).empty());
-                CHECK(third.contactDisplayName(bob.fingerprint()) == "Bob of the book");
+                CHECK(third->hasContact(bob->fingerprint()));
+                CHECK(third->contactAvatar(bob->fingerprint()).empty());
+                CHECK(third->contactDisplayName(bob->fingerprint()) == "Bob of the book");
             }
 
             const std::size_t before = [&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
-                return m.mailbox[alice.fingerprint()].size();
+                return m.mailbox[alice->fingerprint()].size();
             }();
-            second.sync();
+            second->sync();
             const std::size_t after = [&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
-                return m.mailbox[alice.fingerprint()].size();
+                return m.mailbox[alice->fingerprint()].size();
             }();
             CHECK(after <= before);
-            alice.sync();
-            second.sync();
-            CHECK(second.hasContact(bob.fingerprint()));
-            CHECK(second.contactDisplayName(bob.fingerprint()) == "Bob of the book");
+            alice->sync();
+            second->sync();
+            CHECK(second->hasContact(bob->fingerprint()));
+            CHECK(second->contactDisplayName(bob->fingerprint()) == "Bob of the book");
 
-            CHECK(alice.canWriteTo(bob.fingerprint()));
+            CHECK(alice->canWriteTo(bob->fingerprint()));
             const fs::path laterBundle = fs::temp_directory_path() / "bz-pass-later.bundle";
             fs::remove(laterBundle);
-            alice.exportAccount(laterBundle, "bundle-password");
-            CHECK(alice.canWriteTo(bob.fingerprint()));
+            alice->exportAccount(laterBundle, "bundle-password");
+            CHECK(alice->canWriteTo(bob->fingerprint()));
 
             const fs::path fourthDir = fs::temp_directory_path() / "bz-pass-a-fourth.db";
             fs::remove(fourthDir);
             Session::importAccount(laterBundle, fourthDir, "bundle-password");
-            Session fourth = Session::open(fourthDir, std::string{});
-            CHECK(fourth.hasContact(bob.fingerprint()));
-            CHECK(fourth.canWriteTo(bob.fingerprint()));
-            fourth.sync();
-            CHECK(fourth.canWriteTo(bob.fingerprint()));
+            const std::unique_ptr<Session> fourth = Session::open(fourthDir, std::string{});
+            CHECK(fourth->hasContact(bob->fingerprint()));
+            CHECK(fourth->canWriteTo(bob->fingerprint()));
+            fourth->sync();
+            CHECK(fourth->canWriteTo(bob->fingerprint()));
         }
 
         {
             const auto fromAnotherDevice = [&](nlohmann::json notice) {
                 signAuthorship(notice, aliceIdentity, /*withKeys=*/false);
                 std::lock_guard<std::mutex> lock(m.mu);
-                m.mailbox[alice.fingerprint()].push_back({"self-" + notice.at("id").get<std::string>(),
+                m.mailbox[alice->fingerprint()].push_back({"self-" + notice.at("id").get<std::string>(),
                     "device",
                     hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({notice}))),
-                        Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
+                        Key::fromPublicDer(fromBase64(alice->sealingPublicB64())))});
             };
             std::int64_t noticeClock = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch())
@@ -1703,7 +1717,7 @@ int main()
                 if (!extra.contains("id")) {
                     extra["id"] = type;
                 }
-                extra["from"] = alice.fingerprint();
+                extra["from"] = alice->fingerprint();
                 if (!extra.contains("sentAt")) {
                     extra["sentAt"] = stamp();
                 }
@@ -1711,76 +1725,76 @@ int main()
                 return extra;
             };
 
-            CHECK(alice.displayName() != "renamed elsewhere");
+            CHECK(alice->displayName() != "renamed elsewhere");
             fromAnotherDevice(notice("device.account-name", {{"name", "renamed elsewhere"}}));
-            alice.sync();
-            CHECK(alice.displayName() == "renamed elsewhere");
+            alice->sync();
+            CHECK(alice->displayName() == "renamed elsewhere");
 
-            CHECK(alice.acceptCalls());
-            CHECK(alice.sendReceipts());
+            CHECK(alice->acceptCalls());
+            CHECK(alice->sendReceipts());
             fromAnotherDevice(notice("device.account-prefs",
                 {{"acceptCalls", false}, {"sendReceipts", false}}));
-            alice.sync();
-            CHECK(!alice.acceptCalls());
-            CHECK(!alice.sendReceipts());
+            alice->sync();
+            CHECK(!alice->acceptCalls());
+            CHECK(!alice->sendReceipts());
             fromAnotherDevice(notice("device.account-prefs", {{"acceptCalls", true}}));
-            alice.sync();
-            CHECK(alice.acceptCalls());
-            CHECK(!alice.sendReceipts());
-            alice.setSendReceipts(true);
+            alice->sync();
+            CHECK(alice->acceptCalls());
+            CHECK(!alice->sendReceipts());
+            alice->setSendReceipts(true);
 
             fromAnotherDevice(notice("device.contact-prefs",
-                {{"peer", bob.fingerprint()}, {"notifications", false}, {"allowCalls", false}}));
-            alice.sync();
-            CHECK(!alice.contactNotifications(bob.fingerprint()));
-            CHECK(!alice.contactCalls(bob.fingerprint()));
+                {{"peer", bob->fingerprint()}, {"notifications", false}, {"allowCalls", false}}));
+            alice->sync();
+            CHECK(!alice->contactNotifications(bob->fingerprint()));
+            CHECK(!alice->contactCalls(bob->fingerprint()));
 
             const std::string stranger = std::string(52, 'y');
             fromAnotherDevice(notice("device.contact-block",
                 {{"peer", stranger}, {"blocked", true}}));
-            alice.sync();
-            CHECK(alice.isBlocked(stranger));
+            alice->sync();
+            CHECK(alice->isBlocked(stranger));
             fromAnotherDevice(notice("device.contact-block",
                 {{"peer", stranger}, {"blocked", false}}));
-            alice.sync();
-            CHECK(!alice.isBlocked(stranger));
+            alice->sync();
+            CHECK(!alice->isBlocked(stranger));
 
             const std::int64_t earlier = stamp();
             const std::int64_t later = stamp();
             fromAnotherDevice(notice("device.contact-block",
                 {{"peer", stranger}, {"blocked", true}, {"sentAt", later}, {"id", "block-later"}}));
-            alice.sync();
-            CHECK(alice.isBlocked(stranger));
+            alice->sync();
+            CHECK(alice->isBlocked(stranger));
             fromAnotherDevice(notice("device.contact-block", {{"peer", stranger}, {"blocked", false},
                 {"sentAt", earlier}, {"id", "unblock-replayed"}}));
-            alice.sync();
-            CHECK(alice.isBlocked(stranger));
+            alice->sync();
+            CHECK(alice->isBlocked(stranger));
             fromAnotherDevice(notice("device.contact-block",
                 {{"peer", stranger}, {"blocked", false}, {"id", "unblock-now"}}));
-            alice.sync();
-            CHECK(!alice.isBlocked(stranger));
+            alice->sync();
+            CHECK(!alice->isBlocked(stranger));
 
-            fromAnotherDevice(notice("device.chat-clear", {{"peer", bob.fingerprint()}}));
+            fromAnotherDevice(notice("device.chat-clear", {{"peer", bob->fingerprint()}}));
             bool sawClear = false;
-            for (const IncomingMessage& item : alice.sync()) {
+            for (const IncomingMessage& item : alice->sync()) {
                 if (item.contentType == "device.chat-clear") {
                     sawClear = true;
-                    CHECK(item.refId == bob.fingerprint());
+                    CHECK(item.refId == bob->fingerprint());
                 }
             }
             CHECK(sawClear);
 
-            CHECK(alice.hasContact(bob.fingerprint()));
-            fromAnotherDevice(notice("device.contact-remove", {{"peer", bob.fingerprint()}}));
+            CHECK(alice->hasContact(bob->fingerprint()));
+            fromAnotherDevice(notice("device.contact-remove", {{"peer", bob->fingerprint()}}));
             bool sawRemove = false;
-            for (const IncomingMessage& item : alice.sync()) {
+            for (const IncomingMessage& item : alice->sync()) {
                 if (item.contentType == "device.contact-remove") {
                     sawRemove = true;
-                    CHECK(item.refId == bob.fingerprint());
+                    CHECK(item.refId == bob->fingerprint());
                 }
             }
             CHECK(sawRemove);
-            CHECK(!alice.hasContact(bob.fingerprint()));
+            CHECK(!alice->hasContact(bob->fingerprint()));
         }
 
         {
@@ -1795,14 +1809,14 @@ int main()
             };
             {
                 std::lock_guard<std::mutex> lock(m.mu);
-                m.mailbox[alice.fingerprint()].push_back({"stranger-blob", "content",
+                m.mailbox[alice->fingerprint()].push_back({"stranger-blob", "content",
                     hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({inner}))),
-                        Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
+                        Key::fromPublicDer(fromBase64(alice->sealingPublicB64())))});
             }
-            for (const IncomingMessage& item : alice.sync()) {
+            for (const IncomingMessage& item : alice->sync()) {
                 CHECK(item.fromFingerprint != stranger);
             }
-            CHECK(!alice.hasContact(stranger));
+            CHECK(!alice->hasContact(stranger));
         }
 
         {
@@ -1824,13 +1838,13 @@ int main()
             const auto deliver = [&](const std::string& id, const std::string& cls,
                                      const std::vector<nlohmann::json>& items) {
                 std::lock_guard<std::mutex> lock(m.mu);
-                m.mailbox[alice.fingerprint()].push_back({id, cls,
+                m.mailbox[alice->fingerprint()].push_back({id, cls,
                     hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json(items))),
-                        Key::fromPublicDer(fromBase64(alice.sealingPublicB64())))});
+                        Key::fromPublicDer(fromBase64(alice->sealingPublicB64())))});
             };
             const auto fromSneak = [&]() {
                 std::size_t count = 0;
-                for (const IncomingMessage& item : alice.sync()) {
+                for (const IncomingMessage& item : alice->sync()) {
                     count += item.fromFingerprint == sneak.fingerprint() ? 1 : 0;
                 }
                 return count;
@@ -1838,16 +1852,16 @@ int main()
 
             deliver("sneak-both", kContactDeliveryClass, {request, invite});
             CHECK(fromSneak() == 0);
-            CHECK(!alice.hasContact(sneak.fingerprint()));
+            CHECK(!alice->hasContact(sneak.fingerprint()));
 
             deliver("sneak-asks", kContactDeliveryClass, {request});
             CHECK(fromSneak() == 1);
-            CHECK(alice.contactIsPending(sneak.fingerprint()));
+            CHECK(alice->contactIsPending(sneak.fingerprint()));
             deliver("sneak-rings", "content", {invite});
             CHECK(fromSneak() == 0);
-            CHECK(alice.currentCall().state == Session::CallState::eIdle);
-            CHECK(alice.contactIsPending(sneak.fingerprint()));
-            alice.removeContact(sneak.fingerprint());
+            CHECK(alice->currentCall().state == Session::CallState::eIdle);
+            CHECK(alice->contactIsPending(sneak.fingerprint()));
+            alice->removeContact(sneak.fingerprint());
         }
 
         {
@@ -1856,41 +1870,184 @@ int main()
                 m.refuseWith = "RECIPIENT_SERVER_UNREACHABLE";
             }
             int refused = 0;
-            alice.setRoutingFanoutSink([&refused](const std::string&, const bool delivered) {
+            alice->setRoutingFanoutSink([&refused](const std::string&, const bool delivered) {
                 if (!delivered) {
                     ++refused;
                 }
             });
-            alice.announceNewRouting();
-            const std::size_t queued = alice.routingFanout().contacts.size();
+            alice->announceNewRouting();
+            const std::size_t queued = alice->routingFanout().contacts.size();
             CHECK(queued > 0);
             CHECK(waitFor([&]() {
-                alice.flushPendingEchoes();
+                alice->flushPendingEchoes();
                 return static_cast<std::size_t>(refused) == queued;
             }));
             {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.refuseWith.clear();
             }
-            CHECK(alice.routingFanout().contacts.size() == queued);
-            for (const std::string& peer : alice.routingFanout().contacts) {
-                CHECK(alice.canWriteTo(peer));
+            CHECK(alice->routingFanout().contacts.size() == queued);
+            for (const std::string& peer : alice->routingFanout().contacts) {
+                CHECK(alice->canWriteTo(peer));
             }
-            CHECK(alice.routingFanout().registry);
-            alice.setRoutingFanoutSink({});
+            CHECK(alice->routingFanout().registry);
+            alice->setRoutingFanoutSink({});
+        }
+
+        {
+            constexpr std::chrono::seconds kServingWithin{60};
+            constexpr std::chrono::seconds kStopWithin{2};
+            constexpr std::chrono::milliseconds kServingPoll{50};
+            const fs::path gDir = fs::temp_directory_path() / "bz-pass-g";
+            fs::remove(gDir);
+            std::unique_ptr<Session> gail
+                = Session::create(gDir, AccountKind::eUser, endpoint, std::string{});
+            {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.destFor[gail->fingerprint()]
+                    = "klkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+            }
+            gail->registerAccount();
+            gail->setFetchTransport(directDial);
+            gail->setOutboundCourier(courierFor());
+            gail->addByInvite(bob->inviteUri(), "a file for you");
+            bob->sync();
+            bob->acceptContactRequest(gail->fingerprint());
+            CHECK(waitFor([&]() {
+                gail->sync();
+                return gail->canWriteTo(bob->fingerprint());
+            }));
+
+            const fs::path scratch = gDir.parent_path() / ".transfers";
+            const auto servingFiles = [&scratch]() {
+                std::set<std::string> names;
+                if (!fs::exists(scratch)) {
+                    return names;
+                }
+                for (const fs::directory_entry& entry : fs::directory_iterator(scratch)) {
+                    const std::string name = entry.path().filename().string();
+                    if (name.rfind("file-serve-", 0) == 0) {
+                        names.insert(name);
+                    }
+                }
+                return names;
+            };
+            const std::set<std::string> earlier = servingFiles();
+            const fs::path offered = fs::temp_directory_path() / "bz-pass-offered.bin";
+            std::ofstream(offered, std::ios::binary) << "a file nobody comes for";
+            std::atomic<int> waiting{0};
+            gail->setTransferHandler([&waiting](const TransferEvent& event) {
+                if (event.stage == TransferStage::eWaiting) {
+                    ++waiting;
+                }
+            });
+            std::atomic<int> fetching{0};
+            bob->setTransferHandler([&fetching](const TransferEvent& event) {
+                if (event.stage == TransferStage::eConnecting) {
+                    ++fetching;
+                }
+            });
+            gail->sendFile(bob->fingerprint(), offered.string());
+            IncomingMessage announced;
+            CHECK(waitFor([&]() {
+                for (const IncomingMessage& item : bob->sync()) {
+                    if (item.contentType == "file"
+                        && item.attachmentName == offered.filename().string()) {
+                        announced = item;
+                    }
+                }
+                return !announced.e2eId.empty();
+            }));
+            const FileTarget copy
+                = fileTargetAt(fs::temp_directory_path() / "bz-pass-offered-copy.bin");
+            bob->requestFile(gail->fingerprint(), announced.e2eId, announced.attachmentRef, copy);
+
+            const Identity gailIdentity
+                = Identity::fromPrivatePem(AccountDb(gDir, std::string{}).text("identity.pem"));
+            FileOffer elsewhere;
+            elsewhere.fileId = announced.e2eId;
+            elsewhere.host = std::string(52, 'w') + ".b32.i2p";
+            elsewhere.header = Bytes{1};
+            elsewhere.key = "key";
+            elsewhere.sha256 = announced.attachmentRef;
+            elsewhere.size = 1;
+            nlohmann::json unasked = {{"v", 1}, {"type", "file.offer"}, {"id", "unasked-offer"},
+                {"from", gail->fingerprint()},
+                {"sentAt",
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count()},
+                {"offer", fileOfferToJson(elsewhere)}, {"forAsk", "not-the-ask"}};
+            signAuthorship(unasked, gailIdentity, /*withKeys=*/false);
+            {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[bob->fingerprint()].push_back({"unasked-offer", "content",
+                    hybrid::seal(
+                        padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({unasked}))),
+                        Key::fromPublicDer(fromBase64(bob->sealingPublicB64())))});
+            }
+            bool offerSeen = false;
+            for (const IncomingMessage& item : bob->sync()) {
+                offerSeen = offerSeen || item.contentType == "file.offer";
+            }
+            CHECK(offerSeen);
+            CHECK(fetching.load() == 0);
+
+            const auto servingBy = std::chrono::steady_clock::now() + kServingWithin;
+            const auto serveUntil = [&](const int count) {
+                int round = 0;
+                while (waiting.load() < count && std::chrono::steady_clock::now() < servingBy) {
+                    gail->setDisplayName("Gail " + std::to_string(++round));
+                    gail->sendMessage(bob->fingerprint(), "while serving");
+                    gail->sync();
+                    std::this_thread::sleep_for(kServingPoll);
+                }
+                return waiting.load() >= count;
+            };
+            const auto heldNow = [&]() {
+                std::set<std::string> held;
+                for (const std::string& name : servingFiles()) {
+                    if (earlier.count(name) == 0) {
+                        held.insert(name);
+                    }
+                }
+                return held;
+            };
+            CHECK(serveUntil(1));
+            CHECK(heldNow().size() == 1);
+
+            bob->requestFile(gail->fingerprint(), announced.e2eId, announced.attachmentRef, copy);
+            CHECK(serveUntil(2));
+            const auto oneBy = std::chrono::steady_clock::now() + kStopWithin;
+            while (heldNow().size() > 1 && std::chrono::steady_clock::now() < oneBy) {
+                std::this_thread::sleep_for(kServingPoll);
+            }
+            const std::set<std::string> held = heldNow();
+            CHECK(held.size() == 1);
+
+            const auto stopping = std::chrono::steady_clock::now();
+            gail.reset();
+            CHECK(std::chrono::steady_clock::now() - stopping < kStopWithin);
+            for (const std::string& name : held) {
+                CHECK(!fs::exists(scratch / name));
+            }
+            bob->setTransferHandler({});
+            fs::remove(offered);
+            fs::remove(gDir);
         }
     }
 
     {
-        const Session reopened = Session::open(aDir, std::string{});
-        CHECK(!reopened.routingFanout().contacts.empty());
-        CHECK(reopened.routingFanout().registry);
-        for (const std::string& peer : reopened.routingFanout().contacts) {
-            CHECK(reopened.canWriteTo(peer));
+        const std::unique_ptr<Session> reopened = Session::open(aDir, std::string{});
+        CHECK(!reopened->routingFanout().contacts.empty());
+        CHECK(reopened->routingFanout().registry);
+        for (const std::string& peer : reopened->routingFanout().contacts) {
+            CHECK(reopened->canWriteTo(peer));
         }
     }
 
     server.stop();
+    gatewayServer.stop();
     fs::remove_all(aDir);
     fs::remove_all(bDir);
 

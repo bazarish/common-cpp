@@ -190,7 +190,7 @@ AccountInfo AccountManager::create(
     return readInfo(id, fileFor(id), passphrase);
 }
 
-Session AccountManager::open(const std::string& id, const std::string& passphrase) const
+std::unique_ptr<Session> AccountManager::open(const std::string& id, const std::string& passphrase) const
 {
     return Session::open(fileFor(id), passphrase);
 }

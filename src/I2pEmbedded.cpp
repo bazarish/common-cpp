@@ -553,6 +553,7 @@ public:
     ~EmbeddedEndpoint() override;
 
     bool ready() const override;
+    bool lost() const override { return stopped->load(); }
     std::string publicBase64() const override;
     std::string routingHost() const override;
     Bytes privateBlob() const override;
@@ -660,7 +661,10 @@ Bytes EmbeddedEndpoint::privateBlob() const { return keysBlob; }
 
 void EmbeddedEndpoint::stop()
 {
-    stopped->store(true);
+    {
+        const std::scoped_lock lock(acceptMutex, dgMutex, rawMutex);
+        stopped->store(true);
+    }
     acceptCv.notify_all();
     dgCv.notify_all();
     rawCv.notify_all();
@@ -757,11 +761,7 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::accept(
 {
     std::unique_lock<std::mutex> lock(acceptMutex);
     const auto ready = [this] { return !acceptQueue.empty() || *stopped; };
-    if (timeout.count() == 0)
-    {
-        acceptCv.wait(lock, ready);
-    }
-    else if (!acceptCv.wait_for(lock, timeout, ready))
+    if (!acceptCv.wait_for(lock, timeout, ready))
     {
         return nullptr;
     }

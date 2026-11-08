@@ -45,7 +45,7 @@ OutboundCourier::OutboundCourier(PrepareFn prepare, OpenStreamFn openStream,
     , retire_(std::move(retire))
     , schedule_(std::move(schedule))
 {
-    watchdog_ = std::thread(&OutboundCourier::watchdogLoop, this);
+    watchdog_ = std::jthread([this](const std::stop_token& stop) { watchdogLoop(stop); });
     for (std::size_t i = 0; i < workers; ++i) {
         workers_.emplace_back(&OutboundCourier::workerLoop, this);
     }
@@ -69,7 +69,19 @@ void OutboundCourier::stop()
     }
     reportDropped(dropped);
     cv_.notify_all();
-    watchCv_.notify_all();
+    watchdog_.request_stop();
+    std::vector<std::shared_ptr<DeliveryStream>> carrying;
+    {
+        const std::lock_guard<std::mutex> lock(watchMutex_);
+        for (const auto& entry : watched_) {
+            if (std::shared_ptr<DeliveryStream> held = entry.first.lock()) {
+                carrying.push_back(std::move(held));
+            }
+        }
+    }
+    for (const std::shared_ptr<DeliveryStream>& stream : carrying) {
+        stream->close();
+    }
     for (std::thread& worker : workers_) {
         if (worker.joinable()) {
             worker.join();
@@ -150,7 +162,18 @@ void OutboundCourier::workerLoop()
             }
         } release{*this, task.toDest};
 
-        const Outcome outcome = task.ready ? *task.ready : deliverNow(task);
+        Outcome outcome;
+        if (task.ready) {
+            outcome = *task.ready;
+        } else {
+            try {
+                outcome = deliverNow(task);
+            } catch (const std::exception& error) {
+                bazarish::log::warn("delivery to {} ended early: {}",
+                    bazarish::log::redact(task.toDest), error.what());
+                outcome.errorMessage = error.what();
+            }
+        }
         if (task.onOutcome) {
             task.onOutcome(outcome);
         }
@@ -245,7 +268,14 @@ OutboundCourier::Outcome OutboundCourier::attempt(const Task& task,
     if (task.onPhase) {
         task.onPhase(kPhaseDialing);
     }
-    const std::shared_ptr<DeliveryStream> stream = openStream_(task.toDest, dialFor);
+    std::shared_ptr<DeliveryStream> stream;
+    try {
+        stream = openStream_(task.toDest, dialFor);
+    } catch (const std::exception& error) {
+        bazarish::log::warn(
+            "no stream to {}: {}", bazarish::log::redact(task.toDest), error.what());
+        return outcome;
+    }
     if (!stream) {
         return outcome;
     }
@@ -300,13 +330,11 @@ void OutboundCourier::unwatch(const DeliveryStream* const stream)
         watched_.end());
 }
 
-void OutboundCourier::watchdogLoop()
+void OutboundCourier::watchdogLoop(const std::stop_token& stop)
 {
-    while (true) {
-        std::unique_lock<std::mutex> lock(watchMutex_);
-        if (watchCv_.wait_for(lock, kWatchdogTick, [this]() { return !running_; })) {
-            return;
-        }
+    std::unique_lock<std::mutex> lock(watchMutex_);
+    const auto stopping = [&stop]() { return stop.stop_requested(); };
+    while (!watchCv_.wait_for(lock, stop, kWatchdogTick, stopping)) {
         const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
         for (const auto& entry : watched_) {
             const std::shared_ptr<DeliveryStream> held = entry.first.lock();

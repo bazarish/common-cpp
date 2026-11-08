@@ -80,12 +80,17 @@ private:
 
 }  // namespace
 
-PreparedFile prepareFile(FileInput& input, const fs::path& ciphertextPath)
+PreparedFile prepareFile(FileInput& input, const fs::path& ciphertextPath, TransferStop& stop)
 {
     PreparedFile prepared;
     prepared.key = toHex(randomBytes(32));
     prepared.header = cms::sealWithPasswordDetached(
-        [&input](void* const buffer, const std::size_t size) { return input.read(buffer, size); },
+        [&input, &stop](void* const buffer, const std::size_t size) {
+            if (stop.requested()) {
+                throw std::runtime_error("transfer cancelled");
+            }
+            return input.read(buffer, size);
+        },
         ciphertextPath, prepared.key);
     prepared.ciphertextPath = ciphertextPath;
     prepared.sha256 = toHex(sha256File(ciphertextPath));
@@ -256,16 +261,49 @@ FileTarget fileTargetAt(const fs::path& dest)
         [dest]() { return std::make_unique<LocalFileOutput>(dest); }};
 }
 
+void TransferStop::request()
+{
+    std::vector<std::weak_ptr<bazarish::i2p::Endpoint>> watched;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        requested_.store(true);
+        watched.swap(watched_);
+    }
+    for (const std::weak_ptr<bazarish::i2p::Endpoint>& held : watched) {
+        if (const std::shared_ptr<bazarish::i2p::Endpoint> endpoint = held.lock()) {
+            endpoint->stop();
+        }
+    }
+}
+
+bool TransferStop::requested() const
+{
+    return requested_.load();
+}
+
+void TransferStop::watch(const std::shared_ptr<bazarish::i2p::Endpoint>& endpoint)
+{
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (!requested_.load()) {
+            std::erase_if(watched_, [](const auto& held) { return held.expired(); });
+            watched_.push_back(endpoint);
+            return;
+        }
+    }
+    endpoint->stop();
+}
+
 void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer,
-    const std::string& announcedSha256, const FileTarget& target,
-    const TransferProgressFn& onProgress, const std::atomic<bool>* cancel)
+    const std::string& announcedSha256, const FileTarget& target, TransferStop& stop,
+    const TransferProgressFn& onProgress)
 {
     const fs::path& partPath = target.part;
     try {
         PartialFile part(partPath);
         int stalled = 0;
         while (part.size() < offer.size) {
-            if (cancel != nullptr && cancel->load()) {
+            if (stop.requested()) {
                 throw std::runtime_error("transfer cancelled");
             }
             const std::uint64_t before = part.size();
@@ -331,14 +369,13 @@ std::uint64_t onTheWire(const std::uint64_t written, const std::size_t queued)
 }  // namespace
 
 bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath,
-    const std::chrono::seconds window, const TransferProgressFn& onProgress,
-    const std::atomic<bool>* cancel)
+    const std::chrono::seconds window, TransferStop& stop, const TransferProgressFn& onProgress)
 {
     const std::uint64_t total = fs::file_size(ciphertextPath);
     const auto deadline = std::chrono::steady_clock::now() + window;
 
     while (std::chrono::steady_clock::now() < deadline) {
-        if (cancel != nullptr && cancel->load()) {
+        if (stop.requested()) {
             return false;
         }
         std::string peer;
@@ -367,7 +404,7 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
             std::vector<char> buffer(kChunkBytes);
             std::uint64_t sent = offset;
             while (sent < total) {
-                if (cancel != nullptr && cancel->load()) {
+                if (stop.requested()) {
                     return false;
                 }
                 in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
@@ -378,7 +415,7 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
                 stream->writeAll(buffer.data(), static_cast<std::size_t>(got));
                 sent += static_cast<std::uint64_t>(got);
                 while (stream->pendingBytes() > kMaxQueuedBytes) {
-                    if (cancel != nullptr && cancel->load()) {
+                    if (stop.requested()) {
                         return false;
                     }
                     if (onProgress) {
@@ -424,15 +461,16 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
 constexpr int kOwnTunnelsSeconds = 180;
 constexpr int kDialSeconds = 90;
 constexpr int kSenderQuietSeconds = 120;
+constexpr int kReadyPollSeconds = 1;
 
 void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
     const std::string& announcedSha256, const FileTarget& target,
-    const bazarish::i2p::Privacy privacy,
-    const TransferProgressFn& onProgress, const std::atomic<bool>* cancel,
+    const bazarish::i2p::Privacy privacy, TransferStop& stop, const TransferProgressFn& onProgress,
     const std::string& owner)
 {
     const FetchAttemptFn fetch
-        = [&router, &offer, privacy, &owner](const std::uint64_t offset, TransferSink& sink) {
+        = [&router, &offer, privacy, &owner, &stop](
+              const std::uint64_t offset, TransferSink& sink) {
               bazarish::i2p::EndpointConfig config;
               config.privacy = privacy;
               config.tunnelQuantity = bazarish::i2p::kDefaultTunnelQuantity;
@@ -443,8 +481,16 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
               config.target = offer.host;
               const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
                   = router.createEndpoint(config);
-              if (!endpoint->waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
-                  throw std::runtime_error("this device could not build I2P tunnels");
+              stop.watch(endpoint);
+              const auto tunnelsBy = std::chrono::steady_clock::now()
+                  + std::chrono::seconds(kOwnTunnelsSeconds);
+              while (!endpoint->waitReady(std::chrono::seconds(kReadyPollSeconds))) {
+                  if (stop.requested()) {
+                      throw std::runtime_error("transfer cancelled");
+                  }
+                  if (std::chrono::steady_clock::now() >= tunnelsBy) {
+                      throw std::runtime_error("this device could not build I2P tunnels");
+                  }
               }
               const std::unique_ptr<bazarish::i2p::Stream> stream
                   = endpoint->connect(offer.host, std::chrono::seconds(kDialSeconds));
@@ -472,7 +518,7 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
               }
               stream->close();
           };
-    receiveFile(fetch, offer, announcedSha256, target, onProgress, cancel);
+    receiveFile(fetch, offer, announcedSha256, target, stop, onProgress);
 }
 
 }  // namespace bazarish::client

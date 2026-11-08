@@ -3,7 +3,6 @@
 
 #include <bazarish/I2p.hpp>
 
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -11,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <thread>
 
 namespace bazarish::client {
@@ -20,7 +20,6 @@ public:
     // The shape is asked for each destination built, so a privacy change reaches the next one.
     using Shape = std::function<bazarish::i2p::EndpointConfig()>;
     WarmDestPool(bazarish::i2p::Router& router, std::size_t size, Shape shape);
-    ~WarmDestPool();
 
     void start();
     void stop();
@@ -32,7 +31,7 @@ public:
     std::shared_ptr<bazarish::i2p::Endpoint> acquire(bazarish::i2p::Privacy privacy);
 
 private:
-    void warmerLoop();
+    void warmerLoop(const std::stop_token& stop);
     struct Building {
         std::shared_ptr<bazarish::i2p::Endpoint> endpoint;
         std::chrono::steady_clock::time_point startedAt;
@@ -52,11 +51,10 @@ private:
     const std::chrono::seconds buildTimeout_{120};
 
     mutable std::mutex mutex_;
-    std::condition_variable cv_;
+    std::condition_variable_any cv_;
     std::deque<Warm> ready_;
     std::size_t generation_ = 0;
-    std::atomic<bool> running_{false};
-    std::thread warmer_;
+    std::jthread warmer_;
 };
 
 }  // namespace bazarish::client

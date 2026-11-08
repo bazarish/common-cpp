@@ -31,6 +31,7 @@
 #include <deque>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace bazarish::client {
@@ -222,13 +223,21 @@ using TransferEventFn = std::function<void(const TransferEvent&)>;
 
 using RelayFitter = std::function<std::size_t(const std::vector<RelayedPost>&)>;
 
+// One thread, its owner, calls a Session; only the static functions may run on any thread.
 class Session {
+    // Only the factories make a Session: its threads and callbacks hold its address.
+    class Made {
+        explicit Made() = default;
+        friend class Session;
+    };
+
 public:
-    static Session create(const std::filesystem::path& accountFile, AccountKind kind,
-        const std::string& passphrase = {}, const std::string& name = {});
-    static Session create(const std::filesystem::path& accountFile, AccountKind kind,
-        const ServerEndpoint& endpoint, const std::string& passphrase);
-    static Session open(const std::filesystem::path& accountFile, const std::string& passphrase = {});
+    static std::unique_ptr<Session> create(const std::filesystem::path& accountFile,
+        AccountKind kind, const std::string& passphrase = {}, const std::string& name = {});
+    static std::unique_ptr<Session> create(const std::filesystem::path& accountFile,
+        AccountKind kind, const ServerEndpoint& endpoint, const std::string& passphrase);
+    static std::unique_ptr<Session> open(
+        const std::filesystem::path& accountFile, const std::string& passphrase = {});
     static std::optional<AccountKind> storedKind(
         const std::filesystem::path& accountFile, const std::string& passphrase);
     // Gives an unencrypted bot or chat account its kind, so it opens; a different kind throws.
@@ -711,8 +720,6 @@ public:
     using SelfSendSink
         = std::function<void(std::string deliveryId, Bytes sealed, std::string kind)>;
     void setSelfSendSink(SelfSendSink sink);
-    void submitPrepared(
-        const std::string& deliveryId, const Bytes& sealed, const std::string& kind);
 
     struct MailboxItem {
         PendingEntry entry;
@@ -727,13 +734,13 @@ public:
     bool hasContact(const std::string& peerFingerprint) const;
     std::vector<std::string> contactFingerprints() const;
 
+    Session(Made, std::filesystem::path accountFile, std::unique_ptr<Client> client,
+        Key sealingKey, std::map<std::string, Contact> contacts);
     ~Session();
-    Session(Session&&) noexcept;
-    Session& operator=(Session&&) noexcept;
+    Session(const Session&) = delete;
+    Session& operator=(const Session&) = delete;
 
 private:
-    Session(std::filesystem::path accountFile, std::unique_ptr<Client> client, Key sealingKey,
-        std::map<std::string, Contact> contacts);
 
     // True when the routing contacts hold (address or serving key) is not the one just published.
     bool storeCard(const PublishResult& result);
@@ -838,6 +845,15 @@ private:
     std::filesystem::path accountPath_;
     std::unique_ptr<AccountDb> db_;
     struct Outbound {
+        // The courier's workers may wait on a leased address: stop those before joining them.
+        ~Outbound()
+        {
+            if (leases) {
+                leases->stop();
+            }
+            courier.reset();
+        }
+
         std::mutex mutex;
         std::unique_ptr<OutboundLeases> leases;
         std::unique_ptr<OutboundCourier> courier;
@@ -853,7 +869,6 @@ private:
 
     void serveRequestedFile(const std::string& peerFingerprint, const std::string& fileId,
         const std::string& forAsk);
-    void dropServe(const std::string& serveId, const std::shared_ptr<std::atomic<bool>>& cancel);
     struct StoppedHalf {
         std::string peer;
         std::string ask;
@@ -866,6 +881,9 @@ private:
         std::uint64_t total, const std::string& error = {},
         TransferStage stage = TransferStage::eNone,
         const std::string& peer = {});
+    void startTransferWorker(std::function<void()> work);
+    void stopTransferWorkers();
+    void sendTransferMail();
     void loadSentFiles();
     void persistSentFiles() const;
 
@@ -909,7 +927,6 @@ private:
         std::int64_t answerByMs = 0;
         CallStage stage = CallStage::eNone;
         std::int64_t peerRingingAtMs = 0;
-        std::int64_t connectedAtMs = 0;
         std::uint64_t lastPacketsReceived = 0;
         std::int64_t lastPacketAtMs = 0;
         std::shared_ptr<bazarish::i2p::Endpoint> dgram;
@@ -923,30 +940,52 @@ private:
     struct PendingTransfer {
         FileTarget target;
         std::string announcedSha256;
-        std::shared_ptr<std::atomic<bool>> cancel;
+        std::shared_ptr<TransferStop> stop;
         std::string peer;
         std::string ask;
         std::int64_t answerByMs = 0;
         bool fetching = false;
     };
     struct ServingTransfer {
-        std::shared_ptr<std::atomic<bool>> cancel;
+        std::shared_ptr<TransferStop> stop;
         std::string fileId;
         std::string peer;
         std::string forAsk;
     };
+    // What a transfer's thread leaves for the owner to send; no offer means the file is unavailable.
+    struct TransferMail {
+        std::string peer;
+        std::string fileId;
+        std::optional<FileOffer> offer;
+        std::string forAsk;
+        std::string serveId;
+        std::shared_ptr<TransferStop> stop;
+    };
+    struct TransferWorker {
+        std::thread thread;
+        std::shared_ptr<std::atomic<bool>> finished;
+    };
+    // Shared with the transfers' threads, which touch nothing of the Session but this.
     struct TransferRegistry {
         std::mutex mutex;
+        // Held while the handler runs, so replacing it waits out a call already under way.
+        std::mutex calling;
         std::map<std::string, PendingTransfer> pending;
         std::map<std::string, ServingTransfer> serving;
         TransferEventFn onEvent;
+        std::vector<TransferMail> outbox;
+        std::vector<TransferWorker> workers;
     };
+    static void emitTransferTo(TransferRegistry& registry, const TransferEvent& event);
+    static void dropServe(TransferRegistry& registry, const std::string& serveId,
+        const std::shared_ptr<TransferStop>& stop);
     std::shared_ptr<TransferRegistry> transfers_ = std::make_shared<TransferRegistry>();
     struct PairingRegistry {
         std::mutex mutex;
         std::shared_ptr<std::atomic<bool>> cancel;
         std::weak_ptr<bazarish::i2p::Endpoint> endpoint;
         PairingEventFn onEvent;
+        std::thread worker;
     };
     std::shared_ptr<PairingRegistry> pairing_ = std::make_shared<PairingRegistry>();
     Key sealingKey_;

@@ -35,7 +35,7 @@ public:
 
     AccountInfo create(
         const std::string& name, AccountKind kind, const std::string& passphrase = {});
-    Session open(const std::string& id, const std::string& passphrase = {}) const;
+    std::unique_ptr<Session> open(const std::string& id, const std::string& passphrase = {}) const;
     AccountInfo import(const std::string& name, const Bytes& bundle,
         const std::string& password, const std::string& atRestPassphrase = {});
     AccountInfo import(const std::string& name, const std::filesystem::path& bundleFile,

@@ -442,7 +442,7 @@ std::string inlineKeyboardJson(const InlineKeyboard& keyboard)
     return keyboardToJson(keyboard).dump();
 }
 
-Session::Session(fs::path accountFile, std::unique_ptr<Client> client, Key sealingKey,
+Session::Session(Made, fs::path accountFile, std::unique_ptr<Client> client, Key sealingKey,
     std::map<std::string, Contact> contacts)
     : accountPath_(std::move(accountFile))
     , client_(std::move(client))
@@ -463,11 +463,12 @@ Session::~Session()
     if (pairing_) {
         stopPairing();
     }
+    if (transfers_) {
+        stopTransferWorkers();
+    }
 }
-Session::Session(Session&&) noexcept = default;
-Session& Session::operator=(Session&&) noexcept = default;
 
-Session Session::create(const fs::path& accountFile, const AccountKind kind,
+std::unique_ptr<Session> Session::create(const fs::path& accountFile, const AccountKind kind,
     const std::string& passphrase, const std::string& name)
 {
     auto db = std::make_unique<AccountDb>(accountFile, passphrase);
@@ -513,28 +514,29 @@ Session Session::create(const fs::path& accountFile, const AccountKind kind,
 
     auto client = std::make_unique<Client>(
         std::move(identity), clientId, endpoint, i2pDirFor(accountFile));
-    Session session(accountFile, std::move(client), std::move(sealing), {});
-    session.db_ = std::move(db);
-    session.encrypted_ = encrypted;
-    session.passphrase_ = passphrase;
-    session.name_ = name;
-    session.deliveryIdSeed_ = deliveryIdSeed;
-    session.deliverySecret_ = fromHex(deliverySecret);
-    session.kind_ = kind;
-    session.presenceKey_ = std::move(presenceKey);
-    session.presenceDestKeys_ = std::move(presenceDestKeys);
+    std::unique_ptr<Session> session = std::make_unique<Session>(Made{}, accountFile,
+        std::move(client), std::move(sealing), std::map<std::string, Contact>{});
+    session->db_ = std::move(db);
+    session->encrypted_ = encrypted;
+    session->passphrase_ = passphrase;
+    session->name_ = name;
+    session->deliveryIdSeed_ = deliveryIdSeed;
+    session->deliverySecret_ = fromHex(deliverySecret);
+    session->kind_ = kind;
+    session->presenceKey_ = std::move(presenceKey);
+    session->presenceDestKeys_ = std::move(presenceDestKeys);
     if (kind == AccountKind::eUser) {
-        session.presenceDest_ = i2pRoutingHost(session.presenceDestKeys_);
+        session->presenceDest_ = i2pRoutingHost(session->presenceDestKeys_);
     }
-    session.client_->setDestinationOwner(session.destinationOwner());
+    session->client_->setDestinationOwner(session->destinationOwner());
     return session;
 }
 
-Session Session::create(const fs::path& accountFile, const AccountKind kind,
+std::unique_ptr<Session> Session::create(const fs::path& accountFile, const AccountKind kind,
     const ServerEndpoint& endpoint, const std::string& passphrase)
 {
-    Session session = create(accountFile, kind, passphrase);
-    session.connectServer(endpoint);
+    std::unique_ptr<Session> session = create(accountFile, kind, passphrase);
+    session->connectServer(endpoint);
     return session;
 }
 
@@ -576,7 +578,7 @@ std::vector<std::string> Session::facadeAddresses() const
     return addresses;
 }
 
-Session Session::open(const fs::path& accountFile, const std::string& passphrase)
+std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::string& passphrase)
 {
     auto db = std::make_unique<AccountDb>(accountFile, passphrase);
     const nlohmann::json meta = parseJson(db->text("meta"));
@@ -662,85 +664,86 @@ Session Session::open(const fs::path& accountFile, const std::string& passphrase
 
     auto client = std::make_unique<Client>(
         std::move(identity), clientId, endpoint, i2pDirFor(accountFile));
-    Session session(accountFile, std::move(client), std::move(sealing), std::move(contacts));
-    session.db_ = std::move(db);
-    session.blocked_ = std::move(blocked);
-    session.botMenus_ = std::move(botMenus);
-    session.stateClock_ = std::move(stateClock);
-    session.fanout_ = std::move(fanout);
-    session.pendingPassRevokes_ = std::move(pendingRevokes);
-    session.acceptCalls_ = meta.value("acceptCalls", true);
-    session.sendReceipts_ = meta.value("sendReceipts", true);
-    session.showPresence_ = meta.value("showPresence", true);
-    session.contactsAskedBy_
+    std::unique_ptr<Session> session = std::make_unique<Session>(
+        Made{}, accountFile, std::move(client), std::move(sealing), std::move(contacts));
+    session->db_ = std::move(db);
+    session->blocked_ = std::move(blocked);
+    session->botMenus_ = std::move(botMenus);
+    session->stateClock_ = std::move(stateClock);
+    session->fanout_ = std::move(fanout);
+    session->pendingPassRevokes_ = std::move(pendingRevokes);
+    session->acceptCalls_ = meta.value("acceptCalls", true);
+    session->sendReceipts_ = meta.value("sendReceipts", true);
+    session->showPresence_ = meta.value("showPresence", true);
+    session->contactsAskedBy_
         = meta.value("contactsAskedBy", std::vector<std::string>());
-    session.cardB64_ = meta.value("card", std::string{});
+    session->cardB64_ = meta.value("card", std::string{});
     for (const nlohmann::json& held : meta.value("aliasNames", nlohmann::json::array())) {
-        session.aliasNames_.push_back(
+        session->aliasNames_.push_back(
             Session::AliasHolding{held.at("alias").get<std::string>(),
                 held.at("notAfter").get<std::int64_t>(), held.at("autoRenew").get<bool>(),
                 held.at("bindingWanted").get<bool>(), held.at("bound").get<bool>(),
                 held.at("inApp").get<bool>(), held.value("word", std::string())});
     }
-    session.aliasCheckAfter_ = meta.value("aliasCheckAfter", std::int64_t{0});
-    session.aliasStatusAt_ = meta.value("aliasStatusAt", std::int64_t{0});
-    session.aliasDepositCovers_ = meta.value("aliasDepositCovers", true);
-    session.aliasPushedDest_ = meta.value("aliasPushedDest", std::string{});
-    session.delegationDays_ = meta.value("delegationDays", kDefaultDelegationDays);
-    session.deliveryIdSeed_ = meta.at("deliveryIdSeed").get<std::string>();
-    session.deliverySecret_ = fromHex(meta.at("deliverySecret").get<std::string>());
+    session->aliasCheckAfter_ = meta.value("aliasCheckAfter", std::int64_t{0});
+    session->aliasStatusAt_ = meta.value("aliasStatusAt", std::int64_t{0});
+    session->aliasDepositCovers_ = meta.value("aliasDepositCovers", true);
+    session->aliasPushedDest_ = meta.value("aliasPushedDest", std::string{});
+    session->delegationDays_ = meta.value("delegationDays", kDefaultDelegationDays);
+    session->deliveryIdSeed_ = meta.at("deliveryIdSeed").get<std::string>();
+    session->deliverySecret_ = fromHex(meta.at("deliverySecret").get<std::string>());
     if (!meta.contains("kind")) {
         throw std::runtime_error("this account was created before account kinds and cannot be opened");
     }
-    session.kind_ = accountKindFromName(meta.at("kind").get<std::string>());
-    if (session.kind_ == AccountKind::eUser) {
-        const std::string presencePem = session.db_->text(kPresenceKeyRow);
-        session.presenceDestKeys_ = session.db_->get(kPresenceDestRow).value_or(Bytes{});
-        if (presencePem.empty() || session.presenceDestKeys_.empty()) {
+    session->kind_ = accountKindFromName(meta.at("kind").get<std::string>());
+    if (session->kind_ == AccountKind::eUser) {
+        const std::string presencePem = session->db_->text(kPresenceKeyRow);
+        session->presenceDestKeys_ = session->db_->get(kPresenceDestRow).value_or(Bytes{});
+        if (presencePem.empty() || session->presenceDestKeys_.empty()) {
             throw std::runtime_error("this account has no presence keys and cannot be opened");
         }
-        session.presenceKey_ = Key::fromPrivatePem(presencePem);
-        session.presenceDest_ = i2pRoutingHost(session.presenceDestKeys_);
+        session->presenceKey_ = Key::fromPrivatePem(presencePem);
+        session->presenceDest_ = i2pRoutingHost(session->presenceDestKeys_);
     }
-    if (!session.cardB64_.empty()) {
-        const ContactCard card = ContactCard::verify(fromBase64(session.cardB64_));
-        session.myDest_ = card.dest;
+    if (!session->cardB64_.empty()) {
+        const ContactCard card = ContactCard::verify(fromBase64(session->cardB64_));
+        session->myDest_ = card.dest;
         if (!card.servingSealingKeyDer.empty()) {
-            session.myServingKeyB64_ = toBase64(card.servingSealingKeyDer);
+            session->myServingKeyB64_ = toBase64(card.servingSealingKeyDer);
         }
     }
-    session.encrypted_ = encrypted;
-    session.passphrase_ = passphrase;
-    session.name_ = meta.value("name", std::string{});
-    if (isBlank(session.name_)) {
-        session.name_ = accountFile.stem().string();
-        session.persistMeta();
+    session->encrypted_ = encrypted;
+    session->passphrase_ = passphrase;
+    session->name_ = meta.value("name", std::string{});
+    if (isBlank(session->name_)) {
+        session->name_ = accountFile.stem().string();
+        session->persistMeta();
     }
-    session.client_->setDestinationOwner(session.destinationOwner());
-    session.loadSentFiles();
+    session->client_->setDestinationOwner(session->destinationOwner());
+    session->loadSentFiles();
 
     const auto loadBlob = [&session](const std::string& name) -> Bytes {
-        return session.db_->get(name).value_or(Bytes{});
+        return session->db_->get(name).value_or(Bytes{});
     };
-    session.i2pMaster_ = loadBlob("i2p-master");
-    if (!session.i2pMaster_.empty()) {
-        session.i2pAddress_ = i2pRoutingHost(session.i2pMaster_);
+    session->i2pMaster_ = loadBlob("i2p-master");
+    if (!session->i2pMaster_.empty()) {
+        session->i2pAddress_ = i2pRoutingHost(session->i2pMaster_);
     }
-    if (const std::string sealingPem = session.db_->text(kAddressSealingRow);
+    if (const std::string sealingPem = session->db_->text(kAddressSealingRow);
         !sealingPem.empty()) {
-        session.addressSealing_ = Key::fromPrivatePem(sealingPem);
-        session.addressSigning_ = Key::fromPrivatePem(session.db_->text(kAddressSigningRow));
+        session->addressSealing_ = Key::fromPrivatePem(sealingPem);
+        session->addressSigning_ = Key::fromPrivatePem(session->db_->text(kAddressSigningRow));
     }
-    session.i2pTransient_ = loadBlob("i2p-transient");
+    session->i2pTransient_ = loadBlob("i2p-transient");
 
-    session.avatarMime_ = meta.value("avatarMime", std::string{});
-    if (!session.avatarMime_.empty()) {
-        session.avatar_ = loadBlob("avatar.self");
-        if (session.avatar_.empty()) {
-            session.avatarMime_.clear();
+    session->avatarMime_ = meta.value("avatarMime", std::string{});
+    if (!session->avatarMime_.empty()) {
+        session->avatar_ = loadBlob("avatar.self");
+        if (session->avatar_.empty()) {
+            session->avatarMime_.clear();
         }
     }
-    for (auto& [contactFp, contact] : session.contacts_) {
+    for (auto& [contactFp, contact] : session->contacts_) {
         if (!contact.avatarMime.empty()) {
             contact.avatar = loadBlob("avatar-" + contactFp);
             if (contact.avatar.empty()) {
@@ -1875,12 +1878,6 @@ void Session::setSelfSendSink(SelfSendSink sink)
     selfSendSink_ = std::move(sink);
 }
 
-void Session::submitPrepared(
-    const std::string& deliveryId, const Bytes& sealed, const std::string& kind)
-{
-    client_->submitSelf(deliveryId, sealed, kind);
-}
-
 IdentityKeys Session::knownKeysFor(const std::string& peerFingerprint) const
 {
     if (peerFingerprint == fingerprint()) {
@@ -2770,21 +2767,112 @@ void Session::setFileSource(std::shared_ptr<const FileSource> files)
 
 void Session::setTransferHandler(TransferEventFn handler)
 {
-    const std::lock_guard<std::mutex> lock(transfers_->mutex);
-    transfers_->onEvent = std::move(handler);
+    {
+        const std::lock_guard<std::mutex> lock(transfers_->mutex);
+        transfers_->onEvent = std::move(handler);
+    }
+    const std::lock_guard<std::mutex> waited(transfers_->calling);
 }
 
 void Session::emitTransfer(const std::string& e2eId, const TransferState state,
     const std::uint64_t bytes, const std::uint64_t total, const std::string& error,
     const TransferStage stage, const std::string& peer)
 {
+    emitTransferTo(*transfers_, TransferEvent{e2eId, peer, state, bytes, total, error, stage});
+}
+
+void Session::emitTransferTo(TransferRegistry& registry, const TransferEvent& event)
+{
+    const std::lock_guard<std::mutex> calling(registry.calling);
     TransferEventFn handler;
     {
-        const std::lock_guard<std::mutex> lock(transfers_->mutex);
-        handler = transfers_->onEvent;
+        const std::lock_guard<std::mutex> lock(registry.mutex);
+        handler = registry.onEvent;
     }
     if (handler) {
-        handler(TransferEvent{e2eId, peer, state, bytes, total, error, stage});
+        handler(event);
+    }
+}
+
+void Session::startTransferWorker(std::function<void()> work)
+{
+    std::vector<std::thread> done;
+    {
+        const std::lock_guard<std::mutex> lock(transfers_->mutex);
+        for (auto it = transfers_->workers.begin(); it != transfers_->workers.end();) {
+            if (it->finished->load()) {
+                done.push_back(std::move(it->thread));
+                it = transfers_->workers.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (std::thread& thread : done) {
+        thread.join();
+    }
+    const std::shared_ptr<std::atomic<bool>> finished = std::make_shared<std::atomic<bool>>(false);
+    std::thread thread([work = std::move(work), finished]() {
+        work();
+        finished->store(true);
+    });
+    const std::lock_guard<std::mutex> lock(transfers_->mutex);
+    transfers_->workers.push_back(TransferWorker{std::move(thread), finished});
+}
+
+void Session::stopTransferWorkers()
+{
+    std::vector<std::shared_ptr<TransferStop>> stops;
+    std::vector<TransferWorker> running;
+    {
+        const std::lock_guard<std::mutex> lock(transfers_->mutex);
+        for (const auto& [fileId, request] : transfers_->pending) {
+            stops.push_back(request.stop);
+        }
+        for (const auto& [serveId, serve] : transfers_->serving) {
+            stops.push_back(serve.stop);
+        }
+        running.swap(transfers_->workers);
+    }
+    for (const std::shared_ptr<TransferStop>& stop : stops) {
+        stop->request();
+    }
+    for (TransferWorker& worker : running) {
+        worker.thread.join();
+    }
+}
+
+void Session::sendTransferMail()
+{
+    std::vector<TransferMail> mail;
+    {
+        const std::lock_guard<std::mutex> lock(transfers_->mutex);
+        mail.swap(transfers_->outbox);
+    }
+    for (const TransferMail& item : mail) {
+        if (!item.offer.has_value()) {
+            try {
+                sendContent(item.peer,
+                    envelope("file.unavailable", newMessageId(), {{"fileId", item.fileId}}));
+            } catch (const std::exception& error) {
+                bazarish::log::warn("could not tell {} the transfer failed: {}",
+                    bazarish::log::redact(item.peer), error.what());
+            }
+            continue;
+        }
+        if (item.stop->requested()) {
+            continue;
+        }
+        try {
+            sendContent(item.peer,
+                envelope("file.offer", newMessageId(),
+                    {{"offer", fileOfferToJson(*item.offer)}, {"forAsk", item.forAsk}}));
+        } catch (const std::exception& error) {
+            item.stop->request();
+            dropServe(*transfers_, item.serveId, item.stop);
+            emitTransfer(item.fileId, TransferState::eFailed, 0, 0, error.what(),
+                TransferStage::eNone, item.peer);
+        }
     }
 }
 
@@ -2802,7 +2890,7 @@ void Session::requestFile(const std::string& peerFingerprint, const std::string&
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
         transfers_->pending[e2eId] = PendingTransfer{std::move(target), announcedSha256,
-            std::make_shared<std::atomic<bool>>(false), peerFingerprint, ask, answerByMs};
+            std::make_shared<TransferStop>(), peerFingerprint, ask, answerByMs};
     }
     emitTransfer(e2eId, TransferState::eRequested, 0, 0, {}, TransferStage::eAsking,
         peerFingerprint);
@@ -2837,13 +2925,13 @@ void Session::expireFileRequests(const std::int64_t nowMs)
     }
 }
 
-void Session::dropServe(
-    const std::string& serveId, const std::shared_ptr<std::atomic<bool>>& cancel)
+void Session::dropServe(TransferRegistry& registry, const std::string& serveId,
+    const std::shared_ptr<TransferStop>& stop)
 {
-    const std::lock_guard<std::mutex> lock(transfers_->mutex);
-    const auto found = transfers_->serving.find(serveId);
-    if (found != transfers_->serving.end() && found->second.cancel == cancel) {
-        transfers_->serving.erase(found);
+    const std::lock_guard<std::mutex> lock(registry.mutex);
+    const auto found = registry.serving.find(serveId);
+    if (found != registry.serving.end() && found->second.stop == stop) {
+        registry.serving.erase(found);
     }
 }
 
@@ -2857,7 +2945,7 @@ std::vector<Session::StoppedHalf> Session::stopTransfer(
         if (found != transfers_->pending.end()
             && (fromPeer.empty() || found->second.peer == fromPeer)
             && (forAsk.empty() || forAsk == found->second.ask)) {
-            found->second.cancel->store(true);
+            found->second.stop->request();
             stopped.push_back(StoppedHalf{found->second.peer, found->second.ask});
             transfers_->pending.erase(found);
         }
@@ -2870,7 +2958,7 @@ std::vector<Session::StoppedHalf> Session::stopTransfer(
                 ++it;
                 continue;
             }
-            serve.cancel->store(true);
+            serve.stop->request();
             stopped.push_back(StoppedHalf{serve.peer, serve.forAsk});
             it = transfers_->serving.erase(it);
         }
@@ -2953,7 +3041,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
     const fs::path ciphertextPath = scratch / ("file-serve-" + toHex(randomBytes(8)) + ".tmp");
 
     const std::string serveId = forAsk.empty() ? fileId : fileId + "@" + forAsk;
-    const std::shared_ptr<std::atomic<bool>> cancel = std::make_shared<std::atomic<bool>>(false);
+    const std::shared_ptr<TransferStop> stop = std::make_shared<TransferStop>();
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
         std::erase_if(transfers_->serving, [&](const auto& entry) {
@@ -2961,34 +3049,44 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             if (earlier.fileId != fileId || earlier.peer != peerFingerprint) {
                 return false;
             }
-            earlier.cancel->store(true);
+            earlier.stop->request();
             return true;
         });
-        transfers_->serving[serveId]
-            = ServingTransfer{cancel, fileId, peerFingerprint, forAsk};
+        transfers_->serving[serveId] = ServingTransfer{stop, fileId, peerFingerprint, forAsk};
     }
-    std::thread([this, peerFingerprint, fileId, serveId, forAsk, source, files, ciphertextPath,
-                    cancel]() {
+    const std::shared_ptr<TransferRegistry> registry = transfers_;
+    const fs::path routerDir = i2pDirFor(accountPath_);
+    const std::vector<std::string> reseeds = client_->endpoint().reseeds;
+    const bazarish::i2p::Privacy privacy = tunnelPrivacy();
+    const std::string owner = destinationOwner();
+    startTransferWorker([registry, routerDir, reseeds, privacy, owner, peerFingerprint, fileId,
+                            serveId, forAsk, source, files, ciphertextPath, stop]() {
+        const auto emit = [&registry, &fileId, &peerFingerprint](const TransferState state,
+                              const std::uint64_t bytes, const std::uint64_t total,
+                              const std::string& error, const TransferStage stage) {
+            emitTransferTo(
+                *registry, TransferEvent{fileId, peerFingerprint, state, bytes, total, error, stage});
+        };
         try {
-            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, TransferStage::eEncrypting,
-                peerFingerprint);
-            const PreparedFile prepared = prepareFile(*files->open(source), ciphertextPath);
-            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, TransferStage::eMakingAddress,
-                peerFingerprint);
+            emit(TransferState::eRequested, 0, 0, {}, TransferStage::eEncrypting);
+            const PreparedFile prepared
+                = prepareFile(*files->open(source), ciphertextPath, *stop);
+            emit(TransferState::eRequested, 0, 0, {}, TransferStage::eMakingAddress);
+            setReseedUrls(reseeds);
             bazarish::i2p::EndpointConfig config;
-            config.privacy = tunnelPrivacy();
+            config.privacy = privacy;
             config.tunnelQuantity = bazarish::i2p::kDefaultTunnelQuantity;
             config.label = "File upload";
             config.bulk = true;
-            config.owner = destinationOwner();
+            config.owner = owner;
             const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
-                = i2pRouter().createEndpoint(config);
-            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, TransferStage::ePublishing,
-                peerFingerprint);
+                = sharedI2pRouter(routerDir).createEndpoint(config);
+            stop->watch(endpoint);
+            emit(TransferState::eRequested, 0, 0, {}, TransferStage::ePublishing);
             const auto publishDeadline
                 = std::chrono::steady_clock::now() + std::chrono::seconds(kPublishWaitSeconds);
             while (!endpoint->waitReady(std::chrono::seconds(kPublishPollSeconds))) {
-                if (cancel->load()) {
+                if (stop->requested()) {
                     throw std::runtime_error("transfer stopped");
                 }
                 if (std::chrono::steady_clock::now() >= publishDeadline) {
@@ -3003,51 +3101,39 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             offer.key = prepared.key;
             offer.sha256 = prepared.sha256;
             offer.size = prepared.size;
-            nlohmann::json inner = envelope("file.offer", newMessageId(), {
-                {"offer", fileOfferToJson(offer)},
-                {"forAsk", forAsk},
-            });
-            sendContent(peerFingerprint, std::move(inner));
-            emitTransfer(fileId, TransferState::eRequested, 0, 0, {}, TransferStage::eWaiting,
-                peerFingerprint);
+            {
+                const std::lock_guard<std::mutex> lock(registry->mutex);
+                registry->outbox.push_back(
+                    TransferMail{peerFingerprint, fileId, offer, forAsk, serveId, stop});
+            }
+            emit(TransferState::eRequested, 0, 0, {}, TransferStage::eWaiting);
 
             const bool served
                 = serveFile(*endpoint, ciphertextPath, std::chrono::seconds(kServeWindowSeconds),
-                    [this, fileId, peerFingerprint](const std::uint64_t sent,
-                        const std::uint64_t total) {
-                        emitTransfer(fileId, TransferState::eRunning, sent, total, {},
-                            TransferStage::eSending,
-                            peerFingerprint);
-                    },
-                    cancel.get());
+                    *stop, [&emit](const std::uint64_t sent, const std::uint64_t total) {
+                        emit(TransferState::eRunning, sent, total, {}, TransferStage::eSending);
+                    });
             if (!served) {
                 throw std::runtime_error(
-                    cancel->load() ? "transfer stopped" : "your contact never connected");
+                    stop->requested() ? "transfer stopped" : "your contact never connected");
             }
-            emitTransfer(
-                fileId, TransferState::eDone, 0, 0, {}, TransferStage::eNone, peerFingerprint);
-            dropServe(serveId, cancel);
+            emit(TransferState::eDone, 0, 0, {}, TransferStage::eNone);
+            dropServe(*registry, serveId, stop);
         } catch (const std::exception& error) {
-            if (cancel->load()) {
+            if (stop->requested()) {
                 std::error_code stoppedEc;
                 fs::remove(ciphertextPath, stoppedEc);
                 return;
             }
-            emitTransfer(
-                fileId, TransferState::eFailed, 0, 0, error.what(), {}, peerFingerprint);
-            dropServe(serveId, cancel);
-            try {
-                sendContent(peerFingerprint,
-                    envelope("file.unavailable", newMessageId(),
-                        {{"fileId", fileId}}));
-            } catch (const std::exception& tellError) {
-                bazarish::log::warn("could not tell {} the transfer failed: {}",
-                    bazarish::log::redact(peerFingerprint), tellError.what());
-            }
+            emit(TransferState::eFailed, 0, 0, error.what(), TransferStage::eNone);
+            dropServe(*registry, serveId, stop);
+            const std::lock_guard<std::mutex> lock(registry->mutex);
+            registry->outbox.push_back(
+                TransferMail{peerFingerprint, fileId, std::nullopt, forAsk, serveId, stop});
         }
         std::error_code ec;
         fs::remove(ciphertextPath, ec);
-    }).detach();
+    });
 }
 
 void Session::startAnnouncedFetch(
@@ -3055,7 +3141,7 @@ void Session::startAnnouncedFetch(
 {
     FileTarget target;
     std::string announcedSha256;
-    std::shared_ptr<std::atomic<bool>> cancel;
+    std::shared_ptr<TransferStop> stop;
     {
         const std::lock_guard<std::mutex> lock(transfers_->mutex);
         const auto found = transfers_->pending.find(offer.fileId);
@@ -3071,33 +3157,43 @@ void Session::startAnnouncedFetch(
         found->second.fetching = true;
         target = found->second.target;
         announcedSha256 = found->second.announcedSha256;
-        cancel = found->second.cancel;
+        stop = found->second.stop;
     }
 
-    std::thread([this, offer, target, announcedSha256, cancel, peer]() {
+    const std::shared_ptr<TransferRegistry> registry = transfers_;
+    const fs::path routerDir = i2pDirFor(accountPath_);
+    const std::vector<std::string> reseeds = client_->endpoint().reseeds;
+    const bazarish::i2p::Privacy privacy = tunnelPrivacy();
+    const std::string owner = destinationOwner();
+    startTransferWorker([registry, routerDir, reseeds, privacy, owner, offer, target,
+                            announcedSha256, stop, peer]() {
         try {
-            emitTransfer(offer.fileId, TransferState::eRequested, 0, 0, {},
-                TransferStage::eConnecting, peer);
-            fetchFileOverI2p(i2pRouter(), offer, announcedSha256, target, tunnelPrivacy(),
-                [this, &offer, &peer](const std::uint64_t got, const std::uint64_t total) {
-                    emitTransfer(
-                        offer.fileId, TransferState::eRunning, got, total, {},
-                        TransferStage::eReceiving, peer);
+            emitTransferTo(*registry, TransferEvent{offer.fileId, peer, TransferState::eRequested,
+                                          0, 0, {}, TransferStage::eConnecting});
+            setReseedUrls(reseeds);
+            fetchFileOverI2p(sharedI2pRouter(routerDir), offer, announcedSha256, target, privacy,
+                *stop,
+                [&registry, &offer, &peer](const std::uint64_t got, const std::uint64_t total) {
+                    emitTransferTo(*registry, TransferEvent{offer.fileId, peer,
+                                                  TransferState::eRunning, got, total, {},
+                                                  TransferStage::eReceiving});
                 },
-                cancel.get(), destinationOwner());
-            emitTransfer(offer.fileId, TransferState::eDone, offer.size, offer.size, {},
-                TransferStage::eNone, peer);
+                owner);
+            emitTransferTo(*registry, TransferEvent{offer.fileId, peer, TransferState::eDone,
+                                          offer.size, offer.size, {}, TransferStage::eNone});
         } catch (const std::exception& error) {
-            if (!cancel->load()) {
-                emitTransfer(offer.fileId, TransferState::eFailed, 0, 0, error.what(), {}, peer);
+            if (!stop->requested()) {
+                emitTransferTo(*registry, TransferEvent{offer.fileId, peer,
+                                              TransferState::eFailed, 0, 0, error.what(),
+                                              TransferStage::eNone});
             }
         }
-        const std::lock_guard<std::mutex> lock(transfers_->mutex);
-        const auto found = transfers_->pending.find(offer.fileId);
-        if (found != transfers_->pending.end() && found->second.cancel == cancel) {
-            transfers_->pending.erase(found);
+        const std::lock_guard<std::mutex> lock(registry->mutex);
+        const auto found = registry->pending.find(offer.fileId);
+        if (found != registry->pending.end() && found->second.stop == stop) {
+            registry->pending.erase(found);
         }
-    }).detach();
+    });
 }
 
 nlohmann::json Session::envelope(
@@ -4031,6 +4127,7 @@ void Session::closeAccountOnServer()
 
 void Session::flushPendingEchoes()
 {
+    sendTransferMail();
     std::vector<std::pair<std::string, nlohmann::json>> ready;
     std::vector<std::string> established;
     std::vector<std::string> notEstablished;
@@ -4246,12 +4343,6 @@ void Session::startCallMedia()
         std::move(audioSink), call_.mediaKey,
         call_.initiator ? CallRole::eCaller : CallRole::eCallee);
     call_.media->setMuted(call_.muted);
-    call_.media->setOnConnected([this]() {
-        if (call_.connectedAtMs == 0) {
-            call_.connectedAtMs = nowMillis();
-            call_.stage = CallStage::eNone;
-        }
-    });
     bazarish::log::info("call media: from {} to {}",
         bazarish::log::redact(call_.dgram->routingHost()),
         bazarish::log::redact(call_.peerMediaDest));
@@ -4283,7 +4374,6 @@ void Session::clearCall()
     call_.startedAtMs = 0;
     call_.answerByMs = 0;
     call_.peerRingingAtMs = 0;
-    call_.connectedAtMs = 0;
     call_.lastPacketsReceived = 0;
     call_.lastPacketAtMs = 0;
 }
@@ -4531,13 +4621,13 @@ Session::CallInfo Session::currentCall() const
     info.callId = call_.callId;
     info.peerFingerprint = call_.peerFingerprint;
     info.muted = call_.muted;
-    info.stage = call_.stage;
+    info.connectedAtMs = call_.media ? call_.media->connectedAtMs() : 0;
+    info.stage = info.connectedAtMs > 0 ? CallStage::eNone : call_.stage;
     if (call_.media) {
         info.inputLevel = call_.media->inputLevel();
         info.outputLevel = call_.media->outputLevel();
     }
     info.peerRinging = call_.peerRingingAtMs > 0;
-    info.connectedAtMs = call_.connectedAtMs;
     return info;
 }
 
@@ -4680,9 +4770,9 @@ void Session::logCompletedCall(const CallOutcome outcome)
     if (call_.peerFingerprint.empty()) {
         return;
     }
-    const std::int64_t durationSec
-        = (outcome == CallOutcome::eAnswered && call_.connectedAtMs > 0)
-        ? (nowMillis() - call_.connectedAtMs) / 1000
+    const std::int64_t connectedAtMs = call_.media ? call_.media->connectedAtMs() : 0;
+    const std::int64_t durationSec = (outcome == CallOutcome::eAnswered && connectedAtMs > 0)
+        ? (nowMillis() - connectedAtMs) / 1000
         : 0;
     pendingCallLog_.push_back(
         CompletedCall{call_.peerFingerprint, !call_.initiator, outcome, durationSec});
@@ -5174,6 +5264,9 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent)
             throw std::runtime_error("this account is already waiting for a device");
         }
     }
+    if (registry->worker.joinable()) {
+        registry->worker.join();
+    }
 
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
         = publishPairDest(i2pRouter(), tunnelPrivacy(), destinationOwner());
@@ -5188,7 +5281,7 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent)
         registry->onEvent = std::move(onEvent);
     }
 
-    std::thread([registry, cancel, endpoint, bundle = std::move(bundle), code]() {
+    registry->worker = std::thread([registry, cancel, endpoint, bundle = std::move(bundle), code]() {
         const auto say = [&registry, &cancel](const PairingEvent& event) {
             PairingEventFn handler;
             {
@@ -5261,7 +5354,7 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent)
             registry->endpoint.reset();
             registry->onEvent = nullptr;
         }
-    }).detach();
+    });
 
     return offer;
 }
@@ -5272,17 +5365,19 @@ void Session::stopPairing()
     std::shared_ptr<bazarish::i2p::Endpoint> endpoint;
     {
         const std::lock_guard<std::mutex> lock(registry->mutex);
-        if (!registry->cancel) {
-            return;
+        if (registry->cancel) {
+            registry->cancel->store(true);
+            registry->cancel.reset();
+            endpoint = registry->endpoint.lock();
+            registry->endpoint.reset();
+            registry->onEvent = nullptr;
         }
-        registry->cancel->store(true);
-        registry->cancel.reset();
-        endpoint = registry->endpoint.lock();
-        registry->endpoint.reset();
-        registry->onEvent = nullptr;
     }
     if (endpoint) {
         endpoint->stop();
+    }
+    if (registry->worker.joinable()) {
+        registry->worker.join();
     }
 }
 
