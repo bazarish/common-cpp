@@ -580,8 +580,19 @@ int main()
                   }
                   return plainDial(toDest, op, body);
               };
-        alice->setFetchTransport(directDial);
-        bob->setFetchTransport(directDial);
+        std::mutex recordedMutex;
+        std::string recorded;
+        const FetchTransport recording
+            = [&](const std::string& toDest, const std::string& op, const Bytes& body) {
+                  const FetchOutcome outcome = directDial(toDest, op, body);
+                  const std::lock_guard<std::mutex> lock(recordedMutex);
+                  recorded.append(body.begin(), body.end());
+                  recorded.append(outcome.sealed.begin(), outcome.sealed.end());
+                  recorded.append(outcome.refusal.begin(), outcome.refusal.end());
+                  return outcome;
+              };
+        alice->setFetchTransport(recording);
+        bob->setFetchTransport(recording);
 
         const Key ackSigning = Key::generateSigning();
         const auto courierFor = [&m, &ackSigning]() {
@@ -681,6 +692,15 @@ int main()
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.aliasDescriptor.count("bob") == 0);
             CHECK(m.aliasDescriptor.at("alice").fingerprint == alice->fingerprint());
+        }
+
+        {
+            const std::lock_guard<std::mutex> lock(recordedMutex);
+            CHECK(!recorded.empty());
+            for (const std::string& secret :
+                {alice->fingerprint(), bob->fingerprint(), std::string("alice")}) {
+                CHECK(recorded.find(secret) == std::string::npos);
+            }
         }
 
         {

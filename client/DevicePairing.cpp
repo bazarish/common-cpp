@@ -5,6 +5,7 @@
 
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Hmac.hpp>
+#include <bazarish/KeyedSeal.hpp>
 #include <bazarish/Log.hpp>
 
 #include <cctype>
@@ -16,9 +17,9 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr char kPairPath[] = "/hello";
-constexpr char kPairMethod[] = "GET";
-constexpr char kPairCodeHeader[] = "X-Bazarish-Pair";
-constexpr char kPairCodeHeaderKey[] = "x-bazarish-pair";
+constexpr char kPairMethod[] = "POST";
+constexpr char kPairHelloLabel[] = "bazarish pairing hello v1";
+constexpr char kPairBundleLabel[] = "bazarish pairing bundle v1";
 constexpr char kPairTriesLeftHeader[] = "X-Bazarish-Pair-Left";
 constexpr char kPairTriesLeftHeaderKey[] = "x-bazarish-pair-left";
 constexpr char kPairBundleContentType[] = "application/octet-stream";
@@ -38,9 +39,6 @@ constexpr unsigned kPairCodeSpace = pairCodeSpace();
 std::shared_ptr<bazarish::i2p::Endpoint> pairEndpoint(bazarish::i2p::Router& router,
     const bazarish::i2p::Privacy privacy, const std::string& owner, const bool published)
 {
-    if (!router.capabilities().privateStreams) {
-        throw PairingThroughGateway();
-    }
     bazarish::i2p::EndpointConfig config;
     config.privacy = privacy;
     config.tunnelQuantity = bazarish::i2p::kDefaultTunnelQuantity;
@@ -74,25 +72,42 @@ bool isPairCode(const std::string& text)
         [](const unsigned char c) { return std::isdigit(c) != 0; });
 }
 
-PairVerdict pairVerdict(const std::string& method, const std::string& target,
-    const std::map<std::string, std::string>& headers, const std::string& code)
+PairVerdict pairVerdict(const std::string& method, const std::string& target, const Bytes& hello,
+    const std::string& code, const Bytes& key)
 {
     if (method != kPairMethod || target != kPairPath) {
         return {kI2pHttpNotFound, false};
     }
-    const auto given = headers.find(kPairCodeHeaderKey);
-    if (given == headers.end()) {
+    const std::optional<Bytes> given = KeyedSeal(key, kPairHelloLabel).open(hello);
+    if (!given.has_value()) {
         return {kI2pHttpBadRequest, false};
     }
-    if (!service::constantTimeEqual(given->second, code)) {
+    if (!service::constantTimeEqual(std::string(given->begin(), given->end()), code)) {
         return {kI2pHttpForbidden, true};
     }
     return {kI2pHttpOk, false};
 }
 
-std::string pairRequest(const std::string& dest, const std::string& code)
+std::string pairRequest(const std::string& dest, const std::string& code, const Bytes& key)
 {
-    return buildI2pHttpRequest(kPairMethod, dest, kPairPath, {{kPairCodeHeader, code}}, 0);
+    const Bytes hello = KeyedSeal(key, kPairHelloLabel).seal(Bytes(code.begin(), code.end()));
+    return buildI2pHttpRequest(kPairMethod, dest, kPairPath,
+               {{"Content-Type", kPairBundleContentType}}, hello.size())
+        + std::string(hello.begin(), hello.end());
+}
+
+Bytes sealPairBundle(const Bytes& key, const Bytes& bundle)
+{
+    return KeyedSeal(key, kPairBundleLabel).seal(bundle);
+}
+
+Bytes openPairBundle(const Bytes& key, const Bytes& sealed)
+{
+    const std::optional<Bytes> bundle = KeyedSeal(key, kPairBundleLabel).open(sealed);
+    if (!bundle.has_value()) {
+        throw std::runtime_error("the account came sealed under another key than the link's");
+    }
+    return *bundle;
 }
 
 std::string pairRefusal(const int status, const int triesLeft)

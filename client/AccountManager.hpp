@@ -4,6 +4,7 @@
 #include "Session.hpp"
 
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -39,6 +40,8 @@ public:
     AccountInfo create(
         const std::string& name, AccountKind kind, const std::string& passphrase = {});
     std::unique_ptr<Session> open(const std::string& id, const std::string& passphrase = {}) const;
+    AccountInfo importBundle(
+        const std::string& name, const Bytes& plain, const std::string& atRestPassphrase);
     AccountInfo import(const std::string& name, const Bytes& bundle,
         const std::string& password, const std::string& atRestPassphrase = {});
     AccountInfo import(const std::string& name, const std::filesystem::path& bundleFile,
@@ -47,6 +50,9 @@ public:
 
 private:
     std::filesystem::path root_;
+    AccountInfo importWith(const std::string& name, const std::string& atRestPassphrase,
+        const std::function<void(const std::filesystem::path&)>& write);
+
     std::mutex importMutex_;
 };
 

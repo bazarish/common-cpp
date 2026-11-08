@@ -1396,7 +1396,6 @@ Capabilities EmbeddedRouter::capabilities() const
     what.lateReaderKey = true;
     what.offlineKeys = true;
     what.reseed = true;
-    what.privateStreams = true;
     return what;
 }
 

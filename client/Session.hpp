@@ -277,8 +277,13 @@ public:
     void stopPairing();
 
     Bytes exportAccountBytes(const std::string& password);
+    // The account as it travels, unsealed: kept in memory only, sealed before it leaves.
+    Bytes accountBundle();
     void exportAccount(const std::filesystem::path& outFile, const std::string& password);
     static AccountKind bundleKind(const Bytes& bundle, const std::string& password);
+    static AccountKind bundleKindOf(const Bytes& plain);
+    static void importAccountBundle(const Bytes& plain, const std::filesystem::path& accountFile,
+        const std::string& atRestPassphrase = {});
     static void importAccountBytes(const Bytes& bundle,
         const std::filesystem::path& accountFile, const std::string& password,
         const std::string& atRestPassphrase = {});

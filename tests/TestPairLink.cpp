@@ -1,4 +1,5 @@
 // Bazarish project (c) 2026
+#include "bazarish/KeyedSeal.hpp"
 #include "bazarish/PairLink.hpp"
 
 #include "TestUtil.hpp"
@@ -16,39 +17,49 @@ int main()
     const std::string seedA = "https://seed.example.org:8443/s/9f3c";
     const std::string seedB = "https://other.example/";
 
-    const std::string bare = encodePairLink(PairLink{b33, {}});
-    CHECK(bare == "https://bazari.sh/#pair?v=1&dest=" + b33);
+    const Bytes key = newLinkKey();
+    const std::string keyText = "&key=" + linkKeyText(key);
+
+    const std::string bare = encodePairLink(PairLink{b33, {}, key});
+    CHECK(bare == "https://bazari.sh/#pair?v=1&dest=" + b33 + keyText);
     CHECK(parsePairLink(bare).dest == b33);
-    CHECK(parsePairLink("bazarish://pair?v=1&dest=" + b33).dest == b33);
-    CHECK_THROWS(parsePairLink("https://bazari.sh/pair?v=1&dest=" + b33));
-    CHECK_THROWS(parsePairLink("https://bazari.example/#pair?v=1&dest=" + b33));
-    CHECK_THROWS(parsePairLink("bazarish://#pair?v=1&dest=" + b33));
+    CHECK(parsePairLink(bare).key == key);
+    CHECK(parsePairLink("bazarish://pair?v=1&dest=" + b33 + keyText).dest == b33);
+    CHECK_THROWS(parsePairLink("https://bazari.sh/pair?v=1&dest=" + b33 + keyText));
+    CHECK_THROWS(parsePairLink("https://bazari.example/#pair?v=1&dest=" + b33 + keyText));
+    CHECK_THROWS(parsePairLink("bazarish://#pair?v=1&dest=" + b33 + keyText));
     CHECK(parsePairLink(bare).reseeds.empty());
 
-    const std::string two = encodePairLink(PairLink{b33, {seedA, seedB}});
+    const std::string two = encodePairLink(PairLink{b33, {seedA, seedB}, key});
     const PairLink back = parsePairLink(two);
     CHECK(back.dest == b33);
     CHECK(back.reseeds.size() == 2);
     CHECK(back.reseeds[0] == seedA);
     CHECK(back.reseeds[1] == seedB);
+    CHECK(back.key == key);
 
-    CHECK_THROWS(parsePairLink("bazarish://pair?v=2&dest=" + b33));
-    CHECK_THROWS(parsePairLink("bazarish://pair?dest=" + b33));
-    CHECK_THROWS(parsePairLink("bazarish://pair?v=1"));
-    CHECK_THROWS(parsePairLink("bazarish://pair?v=1&dest=nothost"));
-    CHECK_THROWS(parsePairLink("bazarish://pair?v=1&dest=" + b33 + "&reseed=http://seed.example/"));
+    CHECK_THROWS(parsePairLink("bazarish://pair?v=1&dest=" + b33));
+    CHECK_THROWS(parsePairLink("bazarish://pair?v=1&dest=" + b33 + "&key=short"));
+    CHECK_THROWS(encodePairLink(PairLink{b33, {}, {}}));
+    CHECK_THROWS(parsePairLink("bazarish://pair?v=2&dest=" + b33 + keyText));
+    CHECK_THROWS(parsePairLink("bazarish://pair?dest=" + b33 + keyText));
+    CHECK_THROWS(parsePairLink("bazarish://pair?v=1" + keyText));
+    CHECK_THROWS(parsePairLink("bazarish://pair?v=1&dest=nothost" + keyText));
+    CHECK_THROWS(parsePairLink(
+        "bazarish://pair?v=1&dest=" + b33 + "&reseed=http://seed.example/" + keyText));
     CHECK_THROWS(
-        parsePairLink("bazarish://pair?v=1&dest=" + b33 + "&reseed=seed.b32.i2p"));
-    CHECK_THROWS(parsePairLink("bazarish://invite?v=1&dest=" + b33));
-    CHECK_THROWS(parsePairLink("bazarish://pairsv=1&dest=" + b33));
-    CHECK_THROWS(parsePairLink("bazarish://pair?v=1&dest=" + b33 + "&broken"));
+        parsePairLink("bazarish://pair?v=1&dest=" + b33 + "&reseed=seed.b32.i2p" + keyText));
+    CHECK_THROWS(parsePairLink("bazarish://invite?v=1&dest=" + b33 + keyText));
+    CHECK_THROWS(parsePairLink("bazarish://pairsv=1&dest=" + b33 + keyText));
+    CHECK_THROWS(parsePairLink("bazarish://pair?v=1&dest=" + b33 + "&broken" + keyText));
     CHECK_THROWS(parsePairLink("bazarish://pair?"));
 
-    const PairLink ignored = parsePairLink("bazarish://pair?v=1&dest=" + b33 + "&x=y");
+    const PairLink ignored = parsePairLink("bazarish://pair?v=1&dest=" + b33 + "&x=y" + keyText);
     CHECK(ignored.dest == b33);
     CHECK(ignored.reseeds.empty());
 
-    const PairLink emptySeed = parsePairLink("bazarish://pair?v=1&dest=" + b33 + "&reseed=");
+    const PairLink emptySeed
+        = parsePairLink("bazarish://pair?v=1&dest=" + b33 + "&reseed=" + keyText);
     CHECK(emptySeed.reseeds.empty());
 
     std::puts("TestPairLink passed");

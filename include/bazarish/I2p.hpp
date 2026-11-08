@@ -201,8 +201,6 @@ struct Capabilities {
     bool warmPool = false;
     // Endpoint::setLeaseSetReaderKey is supported.
     bool lateReaderKey = false;
-    // False when a gateway terminates the streams.
-    bool privateStreams = false;
 };
 
 inline constexpr int kDefaultSamControlPort = 7656;

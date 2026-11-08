@@ -211,12 +211,28 @@ std::unique_ptr<Session> AccountManager::open(const std::string& id, const std::
 AccountInfo AccountManager::import(const std::string& name, const Bytes& bundle,
     const std::string& password, const std::string& atRestPassphrase)
 {
+    return importWith(name, atRestPassphrase, [&](const fs::path& into) {
+        Session::importAccountBytes(bundle, into, password, atRestPassphrase);
+    });
+}
+
+AccountInfo AccountManager::importBundle(
+    const std::string& name, const Bytes& plain, const std::string& atRestPassphrase)
+{
+    return importWith(name, atRestPassphrase, [&](const fs::path& into) {
+        Session::importAccountBundle(plain, into, atRestPassphrase);
+    });
+}
+
+AccountInfo AccountManager::importWith(const std::string& name,
+    const std::string& atRestPassphrase, const std::function<void(const fs::path&)>& write)
+{
     const fs::path tmp
         = root_ / (kImportPrefix + toHex(randomBytes(kImportNameBytes)) + kImportSuffix);
     const std::lock_guard<std::mutex> lock(importMutex_);
     std::string id;
     try {
-        Session::importAccountBytes(bundle, tmp, password, atRestPassphrase);
+        write(tmp);
         const std::string restoredName = readInfo(std::string{}, tmp, atRestPassphrase).name;
         if ((name.empty() ? restoredName : name).find_first_not_of(" \t\r\n")
             == std::string::npos) {

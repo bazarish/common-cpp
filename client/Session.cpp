@@ -5092,7 +5092,8 @@ void Session::changePassphrase(const std::string& passphrase)
 Session::PairingOffer Session::startPairing(PairingEventFn onEvent)
 {
     const std::string code = newPairCode();
-    Bytes bundle = exportAccountBytes(code);
+    const Bytes key = newLinkKey();
+    Bytes bundle = sealPairBundle(key, accountBundle());
     if (bundle.size() > kMaxPairBundleBytes) {
         throw std::runtime_error("this account takes " + std::to_string(bundle.size())
             + " bytes, and pairing carries at most " + std::to_string(kMaxPairBundleBytes));
@@ -5115,7 +5116,8 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent)
 
     PairingOffer offer;
     offer.code = code;
-    offer.uri = encodePairLink(PairLink{endpoint->routingHost(), client_->endpoint().reseeds});
+    offer.uri
+        = encodePairLink(PairLink{endpoint->routingHost(), client_->endpoint().reseeds, key});
     {
         const std::lock_guard<std::mutex> lock(registry->mutex);
         registry->cancel = cancel;
@@ -5123,7 +5125,8 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent)
         registry->onEvent = std::move(onEvent);
     }
 
-    registry->worker = std::thread([registry, cancel, endpoint, bundle = std::move(bundle), code]() {
+    registry->worker
+        = std::thread([registry, cancel, endpoint, bundle = std::move(bundle), code, key]() {
         const auto say = [&registry, &cancel](const PairingEvent& event) {
             PairingEventFn handler;
             {
@@ -5172,7 +5175,7 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent)
                     say(refused);
                 };
                 const PairServeResult result = servePairBundle(
-                    *endpoint, bundle, code, onProgress, onWrongCode, *cancel);
+                    *endpoint, bundle, code, key, onProgress, onWrongCode, *cancel);
                 PairingEvent settled;
                 settled.wrongCodes = result.wrongCodes;
                 if (result.delivered) {
@@ -5225,6 +5228,11 @@ void Session::stopPairing()
 
 Bytes Session::exportAccountBytes(const std::string& password)
 {
+    return cms::sealWithPassword(accountBundle(), password);
+}
+
+Bytes Session::accountBundle()
+{
     const nlohmann::json meta = parseJson(db_->text("meta"));
     nlohmann::json contacts = contactsToJson();
 
@@ -5252,7 +5260,7 @@ Bytes Session::exportAccountBytes(const std::string& password)
         bundle["presenceDest"] = toBase64(presenceDestKeys_);
     }
     const std::string text = bundle.dump();
-    return cms::sealWithPassword(Bytes(text.begin(), text.end()), password);
+    return Bytes(text.begin(), text.end());
 }
 
 void Session::exportAccount(const fs::path& outFile, const std::string& password)
@@ -5263,7 +5271,11 @@ void Session::exportAccount(const fs::path& outFile, const std::string& password
 
 AccountKind Session::bundleKind(const Bytes& sealed, const std::string& password)
 {
-    const Bytes plain = cms::unsealWithPassword(sealed, password);
+    return bundleKindOf(cms::unsealWithPassword(sealed, password));
+}
+
+AccountKind Session::bundleKindOf(const Bytes& plain)
+{
     const nlohmann::json bundle = readBundle(plain);
     return accountKindFromName(bundle.at("meta").at("kind").get<std::string>());
 }
@@ -5271,7 +5283,12 @@ AccountKind Session::bundleKind(const Bytes& sealed, const std::string& password
 void Session::importAccountBytes(const Bytes& sealed, const fs::path& accountFile,
     const std::string& password, const std::string& atRestPassphrase)
 {
-    const Bytes plain = cms::unsealWithPassword(sealed, password);
+    importAccountBundle(cms::unsealWithPassword(sealed, password), accountFile, atRestPassphrase);
+}
+
+void Session::importAccountBundle(
+    const Bytes& plain, const fs::path& accountFile, const std::string& atRestPassphrase)
+{
     const nlohmann::json bundle = readBundle(plain);
     const AccountKind kind = accountKindFromName(bundle.at("meta").at("kind").get<std::string>());
     AccountDb db(accountFile, atRestPassphrase);

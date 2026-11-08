@@ -30,20 +30,13 @@ namespace bazarish::client {
 inline constexpr std::size_t kPairCodeDigits = 4;
 inline constexpr int kMaxWrongCodes = 10;
 inline constexpr std::size_t kMaxPairBundleBytes = 32 * 1024 * 1024;
+inline constexpr std::size_t kMaxPairHelloBytes = 256;
 
 inline constexpr int kPairAcceptPollSeconds = 5;
 inline constexpr int kPairRequestQuietSeconds = 60;
 inline constexpr int kPairPeerQuietSeconds = 120;
 inline constexpr int kPairDrainSeconds = 60;
 inline constexpr char kPairingOwner[] = "pairing";
-
-class PairingThroughGateway : public std::runtime_error {
-public:
-    PairingThroughGateway()
-        : std::runtime_error("pairing needs streams no gateway can read")
-    {
-    }
-};
 
 void notePairingTrouble(const std::string& reason);
 
@@ -55,10 +48,13 @@ struct PairVerdict {
     bool counted = false;
 };
 
-PairVerdict pairVerdict(const std::string& method, const std::string& target,
-    const std::map<std::string, std::string>& headers, const std::string& code);
+// A hello that does not open under the link's key is not counted: without the key no guess is.
+PairVerdict pairVerdict(const std::string& method, const std::string& target, const Bytes& hello,
+    const std::string& code, const Bytes& key);
 
-std::string pairRequest(const std::string& dest, const std::string& code);
+std::string pairRequest(const std::string& dest, const std::string& code, const Bytes& key);
+Bytes sealPairBundle(const Bytes& key, const Bytes& bundle);
+Bytes openPairBundle(const Bytes& key, const Bytes& sealed);
 std::string pairRefusal(int status, int triesLeft);
 std::string pairBundleHead(std::size_t size);
 int pairTriesLeft(const std::map<std::string, std::string>& headers);
@@ -116,9 +112,33 @@ bool writePairBundle(Stream& stream, const Bytes& bundle, const PairProgressFn& 
     return true;
 }
 
+template <class Stream>
+Bytes readPairHello(Stream& stream, const I2pHttpRequestHead& head)
+{
+    const auto length = head.headers.find("content-length");
+    if (length == head.headers.end()) {
+        return {};
+    }
+    const std::uint64_t total = std::stoull(length->second);
+    if (total > kMaxPairHelloBytes) {
+        return {};
+    }
+    Bytes hello(head.leftover.begin(), head.leftover.end());
+    std::array<unsigned char, kMaxPairHelloBytes> buffer{};
+    while (hello.size() < total) {
+        const std::size_t got = stream.readSome(buffer);
+        if (got == 0) {
+            return {};
+        }
+        hello.insert(hello.end(), buffer.data(), buffer.data() + got);
+    }
+    hello.resize(static_cast<std::size_t>(total));
+    return hello;
+}
+
 template <class Endpoint>
 PairServeResult servePairBundle(Endpoint& endpoint, const Bytes& bundle, const std::string& code,
-    const PairProgressFn& onProgress, const PairRefusedFn& onWrongCode,
+    const Bytes& key, const PairProgressFn& onProgress, const PairRefusedFn& onWrongCode,
     const std::atomic<bool>& cancel)
 {
     PairServeResult result;
@@ -131,7 +151,8 @@ PairServeResult servePairBundle(Endpoint& endpoint, const Bytes& bundle, const s
         try {
             stream->setReadTimeout(std::chrono::seconds(kPairRequestQuietSeconds));
             const I2pHttpRequestHead head = readI2pHttpRequestHead(*stream);
-            const PairVerdict verdict = pairVerdict(head.method, head.target, head.headers, code);
+            const PairVerdict verdict
+                = pairVerdict(head.method, head.target, readPairHello(*stream, head), code, key);
             if (verdict.status != kI2pHttpOk) {
                 if (verdict.counted) {
                     ++result.wrongCodes;
@@ -201,7 +222,8 @@ Bytes readPairBundle(Stream& stream, const I2pHttpHead& head, const PairProgress
 
 template <class Endpoint>
 PairFetchResult fetchPairBundle(Endpoint& endpoint, const std::string& dest,
-    const std::string& code, const PairProgressFn& onProgress, const std::atomic<bool>& cancel)
+    const std::string& code, const Bytes& key, const PairProgressFn& onProgress,
+    const std::atomic<bool>& cancel)
 {
     if (!endpoint.waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
         throw std::runtime_error("this device could not build I2P tunnels");
@@ -211,7 +233,7 @@ PairFetchResult fetchPairBundle(Endpoint& endpoint, const std::string& dest,
         throw std::runtime_error("cannot reach the other device");
     }
     stream->setReadTimeout(std::chrono::seconds(kPairPeerQuietSeconds));
-    const std::string request = pairRequest(dest, code);
+    const std::string request = pairRequest(dest, code, key);
     stream->writeAll(viewOf(request));
     const I2pHttpHead head = readI2pHttpHead(*stream);
     if (head.status == kI2pHttpForbidden) {
