@@ -4,6 +4,7 @@
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
 #include "bazarish/GatewayProtocol.hpp"
+#include "bazarish/KeyedSeal.hpp"
 #include "bazarish/WebSocket.hpp"
 #include "bazarish/WebSocketClient.hpp"
 
@@ -37,15 +38,9 @@ Bytes issueCard(const Identity& identity, const Key& sealing);
 Key cardSealingKey(const Bytes& card, const std::string& fingerprint);
 
 // Sealed under a key only a holder of the link has.
-class Cover {
+class Cover : public KeyedSeal {
 public:
     explicit Cover(const std::string& fingerprint);
-
-    Bytes seal(const Bytes& plaintext) const;
-    std::optional<Bytes> open(const Bytes& message) const;
-
-private:
-    Bytes key_;
 };
 
 Bytes padded(const Bytes& body);

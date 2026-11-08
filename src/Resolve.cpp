@@ -5,6 +5,7 @@
 #include "bazarish/Certificates.hpp"
 #include "bazarish/Hybrid.hpp"
 #include "bazarish/I2pAddress.hpp"
+#include "bazarish/KeyedSeal.hpp"
 
 #include <stdexcept>
 
@@ -38,6 +39,7 @@ nlohmann::json descriptorToJson(const Descriptor& descriptor)
     return {
         {"fp", descriptor.fingerprint},
         {"dest", descriptor.dest},
+        {"key", descriptor.cardKey.empty() ? std::string() : linkKeyText(descriptor.cardKey)},
     };
 }
 
@@ -46,13 +48,15 @@ Descriptor descriptorFromJson(const nlohmann::json& body)
     Descriptor descriptor;
     descriptor.fingerprint = body.at("fp").get<std::string>();
     descriptor.dest = body.at("dest").get<std::string>();
-    if (descriptor.fingerprint.empty() && descriptor.dest.empty()) {
+    const std::string key = body.at("key").get<std::string>();
+    if (descriptor.fingerprint.empty() && descriptor.dest.empty() && key.empty()) {
         return descriptor;
     }
     if (!isFingerprint(descriptor.fingerprint)) {
         throw std::invalid_argument("descriptor: that is not a fingerprint");
     }
     validateB32I2pHost(descriptor.dest);
+    descriptor.cardKey = linkKeyFromText(key);
     return descriptor;
 }
 

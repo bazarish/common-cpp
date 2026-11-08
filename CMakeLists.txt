@@ -42,6 +42,7 @@ add_library(bazarish_common STATIC
     src/WebAssets.cpp
     src/Errors.cpp
     src/FederationFrame.cpp
+    src/KeyedSeal.cpp
     src/Address.cpp
     src/Argon2.cpp
     src/I2pAddress.cpp
@@ -133,6 +134,7 @@ bazarish_add_test(TestJsonRead)
 bazarish_add_test(TestFileName)
 bazarish_add_test(TestPortalSession)
 bazarish_add_test(TestGatewayChannel)
+bazarish_add_test(TestKeyedSeal)
 bazarish_add_test(TestHttpServer)
 bazarish_add_test(TestEmbeddedRouter)
 bazarish_add_test(TestErrors)

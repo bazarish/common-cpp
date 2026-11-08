@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "bazarish/Descriptor.hpp"
 
+#include "bazarish/KeyedSeal.hpp"
 #include "bazarish/Crypto.hpp"
 
 #include "TestUtil.hpp"
@@ -17,7 +18,7 @@ int main()
     const std::string fp = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq";
     const std::string srv = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
 
-    const Descriptor original{fp, srv};
+    const Descriptor original{fp, srv, newLinkKey()};
     const std::string uri = encodeDescriptor(original);
     CHECK(uri.starts_with("https://bazari.sh/#invite?v=1&"));
     CHECK(parseDescriptor("bazarish://" + uri.substr(std::string("https://bazari.sh/#").size()))
@@ -27,9 +28,10 @@ int main()
     const Descriptor parsed = parseDescriptor(uri);
     CHECK(parsed.fingerprint == fp);
     CHECK(parsed.dest == srv);
+    CHECK(parsed.cardKey == original.cardKey);
     CHECK(parsed.name.empty());
 
-    Descriptor named{fp, srv};
+    Descriptor named{fp, srv, newLinkKey()};
     named.name = "Ann & Bob = friends \xD0\x9C\xD0\xB0\xD1\x88\xD0\xB0";
     const std::string namedUri = encodeDescriptor(named);
     const Descriptor namedParsed = parseDescriptor(namedUri);
@@ -52,6 +54,11 @@ int main()
     CHECK(rejects("bazarish://invite?v=1&fp=tooShort&dest=" + srv + "&key=AAAA"));
     CHECK(rejects("bazarish://invite?v=1&fp=" + fp + "&dest=stats.i2p&key=AAAA"));
     CHECK(rejects("bazarish://invite?v=1&fp=" + fp));
+    const std::string key = linkKeyText(original.cardKey);
+    CHECK(!rejects("bazarish://invite?v=1&fp=" + fp + "&dest=" + srv + "&key=" + key));
+    CHECK(rejects("bazarish://invite?v=1&fp=" + fp + "&dest=" + srv));
+    CHECK(rejects("bazarish://invite?v=1&fp=" + fp + "&dest=" + srv + "&key=" + key + "="));
+    CHECK(rejects("bazarish://invite?v=1&fp=" + fp + "&dest=" + srv + "&key=" + key.substr(2)));
 
     std::printf("TestDescriptor: all checks passed\n");
     return 0;

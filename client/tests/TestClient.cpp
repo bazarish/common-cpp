@@ -9,6 +9,7 @@
 #include <bazarish/DeliveryEnvelope.hpp>
 #include <bazarish/Errors.hpp>
 #include <bazarish/Hybrid.hpp>
+#include <bazarish/KeyedSeal.hpp>
 #include <bazarish/Pass.hpp>
 #include <bazarish/Resolve.hpp>
 #include <bazarish/ResolvePuzzle.hpp>
@@ -97,6 +98,8 @@ int main()
 
     const Identity alice = Identity::generate();
     const Identity bob = Identity::generate();
+    const Bytes bobCardKey = newLinkKey();
+    const Bytes aliceCardKey = newLinkKey();
 
     http::Server server(localOptions());
 
@@ -110,6 +113,8 @@ int main()
             CHECK(!card.sealingPublicKeyDer.empty());
             CHECK(card.dest == aliceDest);
             CHECK(card.servingSealingKeyDer == servingSealing.publicDer());
+            CHECK(linkKeyFromText(nlohmann::json::parse(request.body).at("cardKey").get<std::string>())
+                == aliceCardKey);
             respondJson(response, {{"quotaBytes", 10 * 1024 * 1024}, {"approval", "approved"},
                 {"registrationMessage", ""}});
         }));
@@ -132,7 +137,11 @@ int main()
         FetchOutcome outcome;
         if (op == "card") {
             CHECK(toDest == bobDest);
-            const CardFetchQuery query = cardFetchQueryFromJson(nlohmann::json::parse(sealed));
+            const std::optional<Bytes> opened = KeyedSeal(bobCardKey, kCardRequestLabel).open(sealed);
+            if (!opened.has_value()) {
+                return outcome;
+            }
+            const CardFetchQuery query = cardFetchQueryFromJson(nlohmann::json::parse(*opened));
             CHECK(query.fingerprint == bob.fingerprint());
             const Key bobSealing = Key::generateSealing();
             outcome.ok = true;
@@ -143,7 +152,7 @@ int main()
             card.servingSealingKeyDer = servingSealing.publicDer();
             card.presenceKeyDer = Key::generateX25519().publicDer();
             card.presenceDest = bobDest;
-            outcome.sealed = card.issue(bob);
+            outcome.sealed = KeyedSeal(bobCardKey, kCardReplyLabel).seal(card.issue(bob));
             return outcome;
         }
 
@@ -172,7 +181,7 @@ int main()
             return outcome;
         }
         const std::string recordAlias = query.alias == "swap" ? "other" : query.alias;
-        const Descriptor descriptor{bob.fingerprint(), bobDest};
+        const Descriptor descriptor{bob.fingerprint(), bobDest, bobCardKey};
         const ResolveRecord record{recordAlias, descriptor, now, now + resolverWeek};
         const ResolveResponse resp{signResolveRecord(record, resolverDelegated),
             resolverDelegationDer, AliasCertificate::issue(bob, recordAlias, now)};
@@ -265,7 +274,7 @@ int main()
         content.sealingPublicKeyDer = aliceSealing.publicDer();
         content.presenceKeyDer = Key::generateX25519().publicDer();
         content.presenceDest = aliceDest;
-        const PublishResult result = client.publishCard(content, serving, 0);
+        const PublishResult result = client.publishCard(content, aliceCardKey, serving, 0);
         CHECK(!result.approvalPending);
         CHECK(result.dest == aliceDest);
         CHECK(result.servingSealingKeyDer == servingSealing.publicDer());
@@ -273,8 +282,10 @@ int main()
     }
 
     {
-        const Descriptor descriptor{bob.fingerprint(), bobDest};
+        const Descriptor descriptor{bob.fingerprint(), bobDest, bobCardKey};
         const ContactInfo info = client.fetchCard(descriptor, directDial);
+        CHECK(info.cardKey == bobCardKey);
+        CHECK_THROWS(client.fetchCard(Descriptor{bob.fingerprint(), bobDest, newLinkKey()}, directDial));
         CHECK(info.card.fingerprint() == bob.fingerprint());
         CHECK(info.card.dest == bobDest);
         CHECK(info.card.servingSealingKey().publicDer() == servingSealing.publicDer());
@@ -304,6 +315,7 @@ int main()
         const Descriptor descriptor = client.resolveAlias({"bob"}, resolver, now, directDial);
         CHECK(descriptor.fingerprint == bob.fingerprint());
         CHECK(descriptor.dest == bobDest);
+        CHECK(descriptor.cardKey == bobCardKey);
 
         CHECK(unknown(
             [&]() { (void)client.resolveAlias({"guarded"}, resolver, now, directDial); }));

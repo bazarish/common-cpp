@@ -6,6 +6,7 @@
 #include "bazarish/Address.hpp"
 #include "bazarish/Crypto.hpp"
 #include "bazarish/I2pAddress.hpp"
+#include "bazarish/KeyedSeal.hpp"
 
 #include <map>
 #include <stdexcept>
@@ -15,7 +16,8 @@ namespace bazarish {
 
 std::string encodeDescriptor(const Descriptor& descriptor)
 {
-    std::string query = "v=1&fp=" + descriptor.fingerprint + "&dest=" + descriptor.dest;
+    std::string query = "v=1&fp=" + descriptor.fingerprint + "&dest=" + descriptor.dest
+        + "&key=" + linkKeyText(descriptor.cardKey);
     if (!descriptor.name.empty()) {
         query += "&name=" + percentEncode(descriptor.name);
     }
@@ -57,6 +59,7 @@ Descriptor parseDescriptor(const std::string& uri)
     }
     descriptor.dest = need("dest");
     validateB32I2pHost(descriptor.dest);
+    descriptor.cardKey = linkKeyFromText(need("key"));
     const auto nameParam = params.find("name");
     if (nameParam != params.end()) {
         descriptor.name = percentDecode(nameParam->second);

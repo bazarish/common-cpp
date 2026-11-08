@@ -18,6 +18,7 @@
 #include <bazarish/Crypto.hpp>
 #include <bazarish/FederationFrame.hpp>
 #include <bazarish/Hybrid.hpp>
+#include <bazarish/KeyedSeal.hpp>
 #include <bazarish/Limits.hpp>
 #include <bazarish/Padding.hpp>
 #include <bazarish/Pass.hpp>
@@ -102,6 +103,7 @@ struct Mock {
     std::map<std::string, std::string> sealingFor;
     std::map<std::string, std::string> destFor;
     std::map<std::string, std::string> certFor;  // fingerprint -> contact card (base64 DER)
+    std::map<std::string, Bytes> cardKeyFor;
     std::set<std::string> delegated;
     struct Item {
         std::string id;
@@ -306,6 +308,8 @@ int main()
                       }
                   }
                   m.certFor[caller] = cardB64;
+                  m.cardKeyFor[caller] = linkKeyFromText(
+                      nlohmann::json::parse(request.body).at("cardKey").get<std::string>());
               }
               respondJson(response, {{"quotaBytes", 100u * 1024 * 1024}, {"approval", "approved"},
                   {"registrationMessage", ""}});
@@ -541,18 +545,26 @@ int main()
                 return outcome;
             }
             CHECK(op == "card");
-            (void)toDest;
             (void)resolverRoot;
-            const CardFetchQuery asked = cardFetchQueryFromJson(nlohmann::json::parse(query));
             std::lock_guard<std::mutex> lock(m.mu);
-            const auto found = m.certFor.find(asked.fingerprint);
             FetchOutcome outcome;
-            if (found == m.certFor.end()) {
-                outcome.errorCode = "CARD_UNKNOWN";
+            outcome.errorCode = "CARD_UNKNOWN";
+            for (const auto& [owner, cardB64] : m.certFor) {
+                const Bytes cardDer = fromBase64(cardB64);
+                if (ContactCard::verify(cardDer).dest != toDest) {
+                    continue;
+                }
+                const Bytes& cardKey = m.cardKeyFor.at(owner);
+                const std::optional<Bytes> asked = KeyedSeal(cardKey, kCardRequestLabel).open(query);
+                if (!asked.has_value()
+                    || cardFetchQueryFromJson(nlohmann::json::parse(*asked)).fingerprint != owner) {
+                    return outcome;
+                }
+                outcome.ok = true;
+                outcome.errorCode.clear();
+                outcome.sealed = KeyedSeal(cardKey, kCardReplyLabel).seal(cardDer);
                 return outcome;
             }
-            outcome.ok = true;
-            outcome.sealed = fromBase64(found->second);
             return outcome;
         };
         alice->setFetchTransport(directDial);
@@ -580,6 +592,10 @@ int main()
             alice->sync();
             return alice->canWriteTo(bob->fingerprint());
         }));
+        CHECK(parseDescriptor(alice->contactInviteUri(bob->fingerprint())).cardKey
+            == parseDescriptor(bob->inviteUri()).cardKey);
+        CHECK(parseDescriptor(bob->contactInviteUri(alice->fingerprint())).cardKey
+            == parseDescriptor(alice->inviteUri()).cardKey);
 
         CHECK(alice->aliasNames().empty());
         const auto runErrand = [](Session& session) {

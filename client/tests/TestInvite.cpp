@@ -5,6 +5,7 @@
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Descriptor.hpp>
+#include <bazarish/KeyedSeal.hpp>
 
 #include "TestUtil.hpp"
 
@@ -40,13 +41,14 @@ int main()
     const std::string userDest = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
     const Identity user = Identity::generate();
 
-    const Descriptor descriptor{user.fingerprint(), userDest};
+    const Descriptor descriptor{user.fingerprint(), userDest, newLinkKey()};
     const std::string uri = encodeDescriptor(descriptor);
     CHECK(uri.starts_with("https://bazari.sh/#invite?"));
 
     const Descriptor decoded = parseDescriptor(uri);
     CHECK(decoded.fingerprint == user.fingerprint());
     CHECK(decoded.dest == userDest);
+    CHECK(decoded.cardKey == descriptor.cardKey);
 
     CHECK_THROWS(parseDescriptor("http://example/x"));
     CHECK_THROWS(parseDescriptor("bazarish://invite?v=1&fp=short"));

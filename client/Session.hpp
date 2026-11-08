@@ -66,6 +66,7 @@ struct Contact {
     std::string sealingPublicB64;
     std::string dest;
     std::string servingSealingB64;
+    Bytes cardKey;
     std::string sendPass;
     bool issuedToThem = false;
     bool acceptInFlight = false;
@@ -428,6 +429,7 @@ public:
         std::string destinationOwner;
         std::string fingerprint;
         std::string dest;
+        Bytes cardKey;
         std::string pushedDest;
         FetchTransport transport;
     };
@@ -980,6 +982,7 @@ private:
     void flushOwedAcks();
     void releaseItem(const std::string& pendingId);
     Bytes deliverySecret_;
+    Bytes cardKey_;
     std::map<std::string, Contact> contacts_;
     std::set<std::string> blocked_;
     // The sentAt of the last applied state message per slot: an older one replayed is ignored.

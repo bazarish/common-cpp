@@ -5,6 +5,7 @@
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Cms.hpp>
+#include <bazarish/KeyedSeal.hpp>
 #include <bazarish/PathText.hpp>
 
 #include "TestUtil.hpp"
@@ -199,6 +200,8 @@ int main()
             CHECK(importedMem->i2pAddress() == sa->i2pAddress());
             CHECK(importedMem->addressKeys().sealingPem == addressKeys.sealingPem);
             CHECK(importedMem->addressKeys().signingPem == addressKeys.signingPem);
+            CHECK(importedMem->aliasErrandContext().cardKey.size() == kLinkKeyBytes);
+            CHECK(importedMem->aliasErrandContext().cardKey == sa->aliasErrandContext().cardKey);
             CHECK(importedMem->avatarMime() == "image/png");
             CHECK(importedMem->avatar() == face);
             CHECK_THROWS(

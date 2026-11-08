@@ -74,27 +74,8 @@ Key cardSealingKey(const Bytes& card, const std::string& fingerprint)
 }
 
 Cover::Cover(const std::string& fingerprint)
-    : key_(hkdfSha256(Bytes(fingerprint.begin(), fingerprint.end()), {}, kCoverInfo,
-          kAeadKeyBytes))
+    : KeyedSeal(Bytes(fingerprint.begin(), fingerprint.end()), kCoverInfo)
 {
-}
-
-Bytes Cover::seal(const Bytes& plaintext) const
-{
-    Bytes message = randomBytes(kAeadNonceBytes);
-    const Bytes sealed = chachaSeal(key_, message, plaintext);
-    message.insert(message.end(), sealed.begin(), sealed.end());
-    return message;
-}
-
-std::optional<Bytes> Cover::open(const Bytes& message) const
-{
-    if (message.size() < kAeadNonceBytes + kAeadTagBytes) {
-        return std::nullopt;
-    }
-    const Bytes nonce(message.begin(), message.begin() + kAeadNonceBytes);
-    const Bytes sealed(message.begin() + kAeadNonceBytes, message.end());
-    return chachaOpen(key_, nonce, sealed);
 }
 
 Bytes padded(const Bytes& body)

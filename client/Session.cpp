@@ -23,6 +23,7 @@
 #include <bazarish/Hybrid.hpp>
 #include <bazarish/I2pAddress.hpp>
 #include <bazarish/JsonRead.hpp>
+#include <bazarish/KeyedSeal.hpp>
 #include <bazarish/Limits.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/Padding.hpp>
@@ -168,6 +169,9 @@ void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap)
     }
     if (bootstrap.contains("servingKey")) {
         contact.servingSealingB64 = bootstrap.at("servingKey").get<std::string>();
+    }
+    if (bootstrap.contains("cardKey")) {
+        contact.cardKey = linkKeyFromText(bootstrap.at("cardKey").get<std::string>());
     }
     if (!bootstrap.contains("pass")) {
         return;
@@ -482,10 +486,12 @@ std::unique_ptr<Session> Session::create(const fs::path& accountFile, const Acco
 
     const std::string deliveryIdSeed = toHex(randomBytes(kDeliveryIdSeedBytes));
     const std::string deliverySecret = toHex(randomBytes(kDeliverySecretSize));
+    const Bytes cardKey = newLinkKey();
     const nlohmann::json meta = {
         {"clientId", clientId},
         {"deliveryIdSeed", deliveryIdSeed},
         {"deliverySecret", deliverySecret},
+        {"cardKey", linkKeyText(cardKey)},
         {"name", name},
         {"fingerprint", fingerprint},
         {"endpoint",
@@ -508,6 +514,7 @@ std::unique_ptr<Session> Session::create(const fs::path& accountFile, const Acco
     session->name_ = name;
     session->deliveryIdSeed_ = deliveryIdSeed;
     session->deliverySecret_ = fromHex(deliverySecret);
+    session->cardKey_ = cardKey;
     session->kind_ = kind;
     session->presenceKey_ = std::move(presenceKey);
     session->presenceDestKeys_ = std::move(presenceDestKeys);
@@ -604,6 +611,10 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
             contact.sealingPublicB64 = entry.at("sealingPublicB64").get<std::string>();
             contact.dest = entry.at("dest").get<std::string>();
             contact.servingSealingB64 = entry.at("servingSealingB64").get<std::string>();
+            if (const std::string cardKey = entry.at("cardKey").get<std::string>();
+                !cardKey.empty()) {
+                contact.cardKey = linkKeyFromText(cardKey);
+            }
             contact.identityClassicalB64 = entry.at("identityClassicalB64").get<std::string>();
             contact.identityPqB64 = entry.at("identityPqB64").get<std::string>();
             contact.sendPass = entry.at("sendPass").get<std::string>();
@@ -678,6 +689,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     session->delegationDays_ = meta.value("delegationDays", kDefaultDelegationDays);
     session->deliveryIdSeed_ = meta.at("deliveryIdSeed").get<std::string>();
     session->deliverySecret_ = fromHex(meta.at("deliverySecret").get<std::string>());
+    session->cardKey_ = linkKeyFromText(meta.at("cardKey").get<std::string>());
     session->kind_ = accountKindFromName(meta.at("kind").get<std::string>());
     if (session->kind_ == AccountKind::eUser) {
         const std::string presencePem = session->db_->text(kPresenceKeyRow);
@@ -848,6 +860,7 @@ nlohmann::json Session::bootstrapBlock(const std::string& pass) const
         {"sealing", sealingPublicB64()},
         {"dest", myDest_},
         {"servingKey", myServingKeyB64_},
+        {"cardKey", linkKeyText(cardKey_)},
         {"pass", pass},
     };
     if (kind_ == AccountKind::eUser) {
@@ -903,6 +916,7 @@ void Session::persistMeta() const
         {"card", cardB64_},
         {"deliveryIdSeed", deliveryIdSeed_},
         {"deliverySecret", toHex(deliverySecret_)},
+        {"cardKey", linkKeyText(cardKey_)},
         {"delegationDays", delegationDays_},
         {"encrypted", encrypted_},
         {"avatarMime", avatarMime_},
@@ -946,6 +960,7 @@ nlohmann::json Session::contactsToJson() const
             {"sealingPublicB64", contact.sealingPublicB64},
             {"dest", contact.dest},
             {"servingSealingB64", contact.servingSealingB64},
+            {"cardKey", contact.cardKey.empty() ? std::string() : linkKeyText(contact.cardKey)},
             {"identityClassicalB64", contact.identityClassicalB64},
             {"identityPqB64", contact.identityPqB64},
             {"sendPass", contact.sendPass},
@@ -976,14 +991,14 @@ void Session::registerAccount()
     const DestinationInfo serving = servedOrOwnDestination();
     PublishResult result;
     try {
-        result = client_->publishCard(cardContent(), serving, currentCardIssuedAt());
+        result = client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt());
     } catch (const ApiError& error) {
         if (error.code != ErrorCode::eAccountUnknown) {
             throw;
         }
         reportConnectProgress(destinationOwner(), ConnectMilestone::eRegistering);
         client_->registerHere();
-        result = client_->publishCard(cardContent(), serving, currentCardIssuedAt());
+        result = client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt());
     }
     const bool movedOnCard = storeCard(result);
     approval_ = {result.approvalPending, result.registrationMessage};
@@ -1011,13 +1026,13 @@ void Session::registerSelfHosted()
 {
     PublishResult result;
     try {
-        result = client_->publishCard(cardContent(), {}, currentCardIssuedAt());
+        result = client_->publishCard(cardContent(), cardKey_, {}, currentCardIssuedAt());
     } catch (const ApiError& error) {
         if (error.code != ErrorCode::eAccountUnknown) {
             throw;
         }
         client_->registerHere();
-        result = client_->publishCard(cardContent(), {}, currentCardIssuedAt());
+        result = client_->publishCard(cardContent(), cardKey_, {}, currentCardIssuedAt());
     }
     storeCard(result);
     client_->registerThisClient();
@@ -1044,7 +1059,7 @@ bool Session::delegateRouting()
         = client_->sendI2pTransient(i2pTransientBase64(), expires, addressKeys());
     serving.servingSealingKeyDer = servingSealingDer();
     reportConnectProgress(destinationOwner(), ConnectMilestone::ePublishingCard);
-    const bool moved = storeCard(client_->publishCard(cardContent(), serving, currentCardIssuedAt()));
+    const bool moved = storeCard(client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt()));
     reportConnectProgress(destinationOwner(), ConnectMilestone::eSyncingDevices);
     try {
         syncI2pMasterToSelf();
@@ -2199,6 +2214,7 @@ void Session::recordRequestedContact(const std::string& peerFingerprint,
     Contact& contact = contacts_[peerFingerprint];
     applyPresence(contact, info.card.kind, toBase64(info.card.presenceKeyDer), info.card.presenceDest);
     contact.dest = info.card.dest;
+    contact.cardKey = info.cardKey;
     contact.sealingPublicB64 = toBase64(peerPrekey.publicDer());
     contact.servingSealingB64 = toBase64(peerServingKey.publicDer());
     rememberKeys(contact, IdentityKeys{info.card.identityClassicalDer, info.card.identityPqDer});
@@ -2553,7 +2569,7 @@ void Session::replaceOwnAddress()
     DestinationInfo serving
         = client_->sendI2pTransient(i2pTransientBase64(), expires, addressKeys());
     serving.servingSealingKeyDer = servingSealingDer();
-    const bool moved = storeCard(client_->publishCard(cardContent(), serving, currentCardIssuedAt()));
+    const bool moved = storeCard(client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt()));
     try {
         syncI2pMasterToSelf();
     } catch (const std::exception& error) {
@@ -4075,6 +4091,7 @@ nlohmann::json Session::contactBookEntry(
         {"sealing", contact.sealingPublicB64},
         {"dest", contact.dest},
         {"servingKey", contact.servingSealingB64},
+        {"cardKey", contact.cardKey.empty() ? std::string() : linkKeyText(contact.cardKey)},
         {"name", contact.displayName},
         {"notifications", contact.notifications},
         {"allowCalls", contact.allowCalls},
@@ -4145,6 +4162,10 @@ void Session::applyContactBook(const nlohmann::json& entries)
         fill(contact.sealingPublicB64, entry.value("sealing", std::string()));
         fill(contact.dest, entry.value("dest", std::string()));
         fill(contact.servingSealingB64, entry.value("servingKey", std::string()));
+        if (const std::string cardKey = entry.value("cardKey", std::string());
+            contact.cardKey.empty() && !cardKey.empty()) {
+            contact.cardKey = linkKeyFromText(cardKey);
+        }
         fill(contact.displayName, entry.value("name", std::string()));
         fill(contact.identityClassicalB64, entry.value("identityClassical", std::string()));
         fill(contact.identityPqB64, entry.value("identityPq", std::string()));
@@ -4717,7 +4738,7 @@ bool Session::refreshOwnCard()
         throw std::runtime_error("not registered: nothing to refresh");
     }
     return storeCard(
-        client_->publishCard(cardContent(), servedOrOwnDestination(), currentCardIssuedAt()));
+        client_->publishCard(cardContent(), cardKey_, servedOrOwnDestination(), currentCardIssuedAt()));
 }
 
 DestinationInfo Session::servedOrOwnDestination()
@@ -4743,6 +4764,7 @@ std::string Session::contactInviteUri(const std::string& peerFingerprint) const
     Descriptor descriptor;
     descriptor.fingerprint = peerFingerprint;
     descriptor.dest = found->second.dest;
+    descriptor.cardKey = found->second.cardKey;
     descriptor.name = found->second.displayName;
     return encodeDescriptor(descriptor);
 }
@@ -4761,6 +4783,7 @@ std::string Session::inviteUri() const
     Descriptor descriptor;
     descriptor.fingerprint = fingerprint();
     descriptor.dest = myDest_;
+    descriptor.cardKey = cardKey_;
     descriptor.name = name_;
     return encodeDescriptor(descriptor);
 }
@@ -4830,6 +4853,7 @@ bool tellAliasesWhereWeAre(const Session::AliasErrandContext& context, const Ide
     Descriptor descriptor;
     descriptor.fingerprint = context.fingerprint;
     descriptor.dest = context.dest;
+    descriptor.cardKey = context.cardKey;
 
     const bool moved = context.pushedDest != context.dest;
     std::size_t needed = 0;
@@ -4980,6 +5004,7 @@ Session::AliasErrandContext Session::aliasErrandContext() const
     context.destinationOwner = destinationOwner();
     context.fingerprint = fingerprint();
     context.dest = myDest_;
+    context.cardKey = cardKey_;
     context.pushedDest = aliasPushedDest_;
     context.transport = fetchTransportOverride_;
     return context;

@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "bazarish/Resolve.hpp"
 
+#include "bazarish/KeyedSeal.hpp"
 #include "bazarish/Certificates.hpp"
 
 #include "TestUtil.hpp"
@@ -17,11 +18,13 @@ int main()
     const Descriptor descriptor{
         "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq",
         "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p",
+        newLinkKey(),
     };
 
     const Descriptor d2 = descriptorFromJson(descriptorToJson(descriptor));
     CHECK(d2.fingerprint == descriptor.fingerprint);
     CHECK(d2.dest == descriptor.dest);
+    CHECK(d2.cardKey == descriptor.cardKey);
 
     const CardFetchQuery query{"dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq"};
     const CardFetchQuery q2 = cardFetchQueryFromJson(toJson(query));
@@ -69,7 +72,7 @@ int main()
     CHECK(del.delegatedFingerprint() == delegated.fingerprint());
 
     const Identity owner = Identity::generate();
-    const Descriptor owned{owner.fingerprint(), descriptor.dest};
+    const Descriptor owned{owner.fingerprint(), descriptor.dest, descriptor.cardKey};
     const Bytes ownerCert = AliasCertificate::issue(owner, "alice", now);
 
     const ResolveRecord signedRec{"alice", owned, now, now + week};
@@ -131,10 +134,13 @@ int main()
         }
         return false;
     };
-    CHECK(descriptorRejects({{"fp", "not-a-fingerprint"}, {"dest", descriptor.dest}}));
-    CHECK(descriptorRejects({{"fp", descriptor.fingerprint}, {"dest", "nowhere.example"}}));
+    const std::string key = linkKeyText(descriptor.cardKey);
+    CHECK(descriptorRejects({{"fp", "not-a-fingerprint"}, {"dest", descriptor.dest}, {"key", key}}));
+    CHECK(descriptorRejects({{"fp", descriptor.fingerprint}, {"dest", "nowhere.example"}, {"key", key}}));
+    CHECK(descriptorRejects({{"fp", descriptor.fingerprint}, {"dest", descriptor.dest}, {"key", ""}}));
+    CHECK(descriptorRejects({{"fp", descriptor.fingerprint}, {"dest", descriptor.dest}}));
     CHECK(descriptorRejects({{"fp", descriptor.fingerprint}, {"dest", ""}}));
-    CHECK(!descriptorRejects({{"fp", ""}, {"dest", ""}}));
+    CHECK(!descriptorRejects({{"fp", ""}, {"dest", ""}, {"key", ""}}));
 
     CHECK(!chainRejects(recordDer, delegationDer, AliasCertificate::issue(owner, "Alice", now),
         root.fingerprint(), now));

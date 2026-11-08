@@ -6,6 +6,7 @@
 #include <bazarish/Hmac.hpp>
 #include <bazarish/I2pAddress.hpp>
 #include <bazarish/JsonRead.hpp>
+#include <bazarish/KeyedSeal.hpp>
 #include <bazarish/Limits.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/Resolve.hpp>
@@ -112,15 +113,16 @@ void Client::releaseI2pLink()
     api_.releaseI2pLink();
 }
 
-PublishResult Client::publishCard(const ContactCard& content, const DestinationInfo& serving,
-    const std::int64_t notBefore)
+PublishResult Client::publishCard(const ContactCard& content, const Bytes& cardKey,
+    const DestinationInfo& serving, const std::int64_t notBefore)
 {
     ContactCard signedCard = content;
     signedCard.issuedAt = std::max(nowSeconds(), notBefore + 1);
     signedCard.dest = serving.dest;
     signedCard.servingSealingKeyDer = serving.servingSealingKeyDer;
     const Bytes card = signedCard.issue(identity_);
-    const nlohmann::json answer = api_.postJson("/v1/account/card", {{"card", toBase64(card)}}).json();
+    const nlohmann::json answer = api_.postJson(
+        "/v1/account/card", {{"card", toBase64(card)}, {"cardKey", linkKeyText(cardKey)}}).json();
 
     PublishResult result;
     result.approvalPending = answer.at("approval").get<std::string>() == kApprovalPending;
@@ -199,13 +201,20 @@ StorageUsage Client::storageUsage()
 ContactInfo Client::fetchCard(const Descriptor& descriptor, const FetchTransport& transport)
 {
     const FetchOutcome outcome = transport(descriptor.dest, "card",
-        cardQueryBytes(CardFetchQuery{descriptor.fingerprint}));
+        KeyedSeal(descriptor.cardKey, kCardRequestLabel)
+            .seal(cardQueryBytes(CardFetchQuery{descriptor.fingerprint})));
     if (!outcome.ok) {
         throw std::runtime_error("that invite is out of date - ask for a new one");
     }
+    const std::optional<Bytes> cardDer
+        = KeyedSeal(descriptor.cardKey, kCardReplyLabel).open(outcome.sealed);
+    if (!cardDer.has_value()) {
+        throw std::runtime_error("the card came back sealed under another key");
+    }
 
     ContactInfo info;
-    info.card = ContactCard::verify(outcome.sealed);
+    info.card = ContactCard::verify(*cardDer);
+    info.cardKey = descriptor.cardKey;
     if (info.card.fingerprint() != descriptor.fingerprint) {
         throw std::runtime_error("fetched card is for a different fingerprint");
     }

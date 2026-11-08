@@ -58,6 +58,7 @@ struct PublishResult {
 
 struct ContactInfo {
     ContactCard card;
+    Bytes cardKey;
 };
 
 struct PendingEntry {
@@ -115,8 +116,8 @@ public:
     void setDestinationOwner(std::string owner);
     void releaseI2pLink();
 
-    PublishResult publishCard(
-        const ContactCard& content, const DestinationInfo& serving, std::int64_t notBefore);
+    PublishResult publishCard(const ContactCard& content, const Bytes& cardKey,
+        const DestinationInfo& serving, std::int64_t notBefore);
 
     void closeAccount();
     PortalInfo fetchPortalInfo();

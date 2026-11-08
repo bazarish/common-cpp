@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "bazarish/AliasMaintenance.hpp"
 
+#include "bazarish/KeyedSeal.hpp"
 #include "bazarish/Certificates.hpp"
 
 #include "TestUtil.hpp"
@@ -35,6 +36,7 @@ int main()
     const Descriptor descriptor{
         "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq",
         "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p",
+        newLinkKey(),
     };
 
     const Identity alice = Identity::generate();
