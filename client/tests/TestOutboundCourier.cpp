@@ -95,7 +95,7 @@ private:
 
 std::string signedDeliveredReply(const Key& signingKey, const std::string& deliveryId)
 {
-    const Bytes signedBytes(deliveryId.begin(), deliveryId.end());
+    const Bytes signedBytes = deliveryAckInput(deliveryId);
     const nlohmann::json reply = {
         {"delivered", true},
         {"deliveryId", deliveryId},
@@ -149,7 +149,13 @@ int main()
         CHECK(leaseKeyFor(OutboundAddressing::eOneForAll, false, dest)
             == leaseKeyFor(OutboundAddressing::eOneForAll, false, other));
         CHECK(leaseKeyFor(OutboundAddressing::eOneForAll, false, dest) != dest);
-        CHECK(leaseKeyFor(OutboundAddressing::eOneForAll, true, dest) == dest);
+        for (const OutboundAddressing addressing :
+            {OutboundAddressing::eOneForAll, OutboundAddressing::eOnePerCorrespondent}) {
+            const std::string own = leaseKeyFor(addressing, true, dest);
+            CHECK(own != dest);
+            CHECK(own != leaseKeyFor(addressing, false, dest));
+            CHECK(own != leaseKeyFor(addressing, true, other));
+        }
     }
 
     {

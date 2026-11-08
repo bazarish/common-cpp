@@ -40,6 +40,9 @@ struct Response {
     std::string body;
 };
 
+// A route registered with this method answers every method its path is asked with.
+inline constexpr char kAnyMethod[] = "*";
+
 using Handler = std::function<Response(const Request&)>;
 using Responder = std::function<void(Response)>;
 using AsyncHandler = std::function<std::optional<Response>(const Request&, Responder respond)>;
@@ -64,6 +67,8 @@ public:
         int threads = 4;
         std::size_t maxHeadBytes = 64 * 1024;
         std::size_t maxTargetBytes = 8 * 1024;
+        // A page a person signs in to: no other site may show it inside a frame.
+        bool denyFraming = false;
         std::size_t maxBodyBytes = kMaxRequestBodyBytes;
         std::chrono::seconds readTimeout{120};
         std::string certificate;

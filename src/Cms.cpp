@@ -8,7 +8,9 @@
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/objects.h>
+#include <openssl/x509.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <memory>
@@ -84,6 +86,31 @@ void addPasswordRecipient(CMS_ContentInfo* const cms, const std::string& passwor
     }
     // The recipient owns the copy now.
     static_cast<void>(copy.release());
+}
+
+// RFC 8018, A.2: id-PBKDF2 as DER, followed by its PBKDF2-params.
+constexpr std::array<unsigned char, 11> kPbkdf2Oid
+    = {0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05, 0x0c};
+// What CMS_add0_recipient_password writes when given no count (OpenSSL PKCS5_DEFAULT_ITER).
+constexpr long kMaxPbkdf2Iterations = 2048;
+
+// The sender picks the key derivation's cost; one larger than ours is refused before it is paid.
+void requireOurPasswordCost(const Bytes& der)
+{
+    const auto at = std::search(der.begin(), der.end(), kPbkdf2Oid.begin(), kPbkdf2Oid.end());
+    if (at == der.end()) {
+        throw std::runtime_error("the envelope names no PBKDF2 key derivation");
+    }
+    const unsigned char* cursor = &*at + kPbkdf2Oid.size();
+    const long left = static_cast<long>(der.end() - at) - static_cast<long>(kPbkdf2Oid.size());
+    const bazarish::ossl::Pbkdf2ParamPtr params(d2i_PBKDF2PARAM(nullptr, &cursor, left));
+    if (params == nullptr) {
+        throw std::runtime_error("the envelope's PBKDF2 parameters do not parse");
+    }
+    const long iterations = ASN1_INTEGER_get(params->iter);
+    if (iterations <= 0 || iterations > kMaxPbkdf2Iterations) {
+        throw std::runtime_error("the envelope asks for an unexpected key derivation cost");
+    }
 }
 
 void unsealWithPasswordBio(BIO* const input, BIO* const output, const std::string& password)
@@ -179,6 +206,7 @@ Bytes unsealWithPassword(const Bytes& der, const std::string& password)
     if (password.empty()) {
         throw std::invalid_argument("password must not be empty");
     }
+    requireOurPasswordCost(der);
     const BioPtr input = makeInputBio(der);
     const BioPtr output = makeMemoryBio();
     unsealWithPasswordBio(input.get(), output.get(), password);
@@ -191,6 +219,7 @@ void unsealWithPasswordDetached(const Bytes& header, const std::filesystem::path
     if (password.empty()) {
         throw std::invalid_argument("password must not be empty");
     }
+    requireOurPasswordCost(header);
     const BioPtr headerBio = makeInputBio(header);
     const CmsPtr cms(d2i_CMS_bio(headerBio.get(), nullptr));
     if (cms == nullptr) {

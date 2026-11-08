@@ -34,6 +34,7 @@ using CipherCtxPtr = std::unique_ptr<EVP_CIPHER_CTX, Freer<&EVP_CIPHER_CTX_free>
 using CmsPtr = std::unique_ptr<CMS_ContentInfo, Freer<&CMS_ContentInfo_free>>;
 using KdfCtxPtr = std::unique_ptr<EVP_KDF_CTX, Freer<&EVP_KDF_CTX_free>>;
 using KdfPtr = std::unique_ptr<EVP_KDF, Freer<&EVP_KDF_free>>;
+using Pbkdf2ParamPtr = std::unique_ptr<PBKDF2PARAM, Freer<&PBKDF2PARAM_free>>;
 using MdCtxPtr = std::unique_ptr<EVP_MD_CTX, Freer<&EVP_MD_CTX_free>>;
 using PkeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, Freer<&EVP_PKEY_CTX_free>>;
 using X509Ptr = std::unique_ptr<X509, Freer<&X509_free>>;

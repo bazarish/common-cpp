@@ -24,6 +24,8 @@ using namespace bazarish;
 
 namespace {
 
+constexpr std::chrono::milliseconds kStrangerWait{300};
+
 const std::string kDestination
     = "GmVBArK-6asEg1BTOKbZ9O7c9VFbbm6g4TVPBrmuNyIcD0t-2kEJy39~dawKvPQsNJyTLK5eJi1S8jadM~z"
       "TNEpb5KHKLw6dXxgnWHw2rOVl5MXT7a96ovHhfkiaiSQQc4HIwQJhOg6hwbbhwNNs-QBLA47l5g9008tq1m"
@@ -198,6 +200,21 @@ public:
         const ssize_t sent = ::sendto(udp_, payload.data(), payload.size(), 0,
             reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
         CHECK(sent == static_cast<ssize_t>(payload.size()));
+    }
+
+    // The same bytes from another local socket, the way a stranger on the host would send them.
+    void forwardDatagramFromElsewhere(const std::string& payload)
+    {
+        std::uint16_t unused = 0;
+        const int stranger = openLoopbackDatagramSocket(unused);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(clientUdpPort_);
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        const ssize_t sent = ::sendto(stranger, payload.data(), payload.size(), 0,
+            reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+        CHECK(sent == static_cast<ssize_t>(payload.size()));
+        ::close(stranger);
     }
 
 private:
@@ -515,6 +532,8 @@ void testRawDatagrams()
     CHECK(handed.starts_with("3.0 "));
     CHECK(contains(handed, " " + kB33 + "\n" + payload));
 
+    router.forwardDatagramFromElsewhere("forged frame");
+    CHECK(session.receiveDatagram(kStrangerWait).data.empty());
     router.forwardDatagram(payload);
     const i2p::Datagram received = session.receiveDatagram(std::chrono::milliseconds(5000));
     CHECK(received.from.empty());

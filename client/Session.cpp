@@ -4574,7 +4574,7 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
     }
 
     if (type == "call.taken") {
-        if (body.value("device", std::string()) != client_->clientId()
+        if (from == fingerprint() && body.value("device", std::string()) != client_->clientId()
             && call_.state == CallState::eIncoming && call_.callId == message.callId) {
             clearCall();
         }

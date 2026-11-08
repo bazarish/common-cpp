@@ -31,6 +31,11 @@ int main()
     const std::string fingerprint = signing.fingerprint();
     CHECK(fingerprint.size() == kFingerprintTextLength);
     const Key publicOnly = Key::fromPublicDer(signing.publicDer());
+    {
+        Bytes padded = signing.publicDer();
+        padded.push_back(0);
+        CHECK_THROWS(Key::fromPublicDer(padded));
+    }
     CHECK(!publicOnly.hasPrivate());
     CHECK(publicOnly.fingerprint() == fingerprint);
 

@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <map>
 #include <string>
 #include <thread>
 #include <vector>
@@ -29,6 +30,7 @@ constexpr std::chrono::seconds kParkWithin{10};
 
 struct Answer {
     int status = 0;
+    std::map<std::string, std::string> headers;
 };
 
 Answer ask(http::Server& server, const std::string& method, const std::string& path,
@@ -42,7 +44,10 @@ Answer ask(http::Server& server, const std::string& method, const std::string& p
         request.headers["sec-fetch-site"] = fetchSite;
     }
     Answer answer;
-    server.dispatch(request, [&answer](http::Response response) { answer.status = response.status; });
+    server.dispatch(request, [&answer](http::Response response) {
+        answer.status = response.status;
+        answer.headers = response.headers;
+    });
     return answer;
 }
 
@@ -95,6 +100,18 @@ int main()
     CHECK(ask(server, "GET", "/v1/alias/name-word").status == kOk);
     CHECK(captured == std::vector<std::string>{"name-word"});
     CHECK(ask(server, "DELETE", "/tokens/A~b+c").status == kOk);
+    CHECK(ask(server, "GET", "/healthz").headers.count("X-Frame-Options") == 0);
+    {
+        http::Server::Options framedOptions;
+        framedOptions.denyFraming = true;
+        http::Server page(framedOptions);
+        std::vector<std::string> seen;
+        page.route(http::kAnyMethod, "*", echo(seen));
+        const Answer odd = ask(page, "OPTIONS", "/anything");
+        CHECK(odd.status == kOk);
+        CHECK(odd.headers.at("X-Frame-Options") == "DENY");
+        CHECK(odd.headers.at("Content-Security-Policy") == "frame-ancestors 'none'");
+    }
 
     CHECK(ask(server, "PUT", "/any/path?x=1").status == kOk);
     CHECK(captured == std::vector<std::string>{"/any/path?x=1"});

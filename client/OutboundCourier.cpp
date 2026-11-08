@@ -29,7 +29,7 @@ bool signedForUs(const FederationDeliverResult& reply, const std::string& delive
     if (reply.deliveryId != deliveryId || reply.signature.empty()) {
         return false;
     }
-    const Bytes signedBytes(deliveryId.begin(), deliveryId.end());
+    const Bytes signedBytes = deliveryAckInput(deliveryId);
     try {
         return bazarish::verify(
             Key::fromPublicDer(reply.signerPublicDer), signedBytes, reply.signature);

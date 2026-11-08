@@ -178,6 +178,12 @@ std::string htmlEscape(const std::string& text)
         case '\'':
             out += "&#39;";
             break;
+        case '{':
+            out += "&#123;";
+            break;
+        case '}':
+            out += "&#125;";
+            break;
         default:
             out += c;
         }

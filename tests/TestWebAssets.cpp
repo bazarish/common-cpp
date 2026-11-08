@@ -82,6 +82,7 @@ int main()
     CHECK(assets.file("page.html").etag != etag);
 
     CHECK(assets.render("page.html", {{"note", "hello"}}) == "<p>hello</p>");
+    CHECK(bazarish::htmlEscape("{{note}}") == "&#123;&#123;note&#125;&#125;");
     CHECK_THROWS(assets.file("secrets.json"));
 
     std::filesystem::remove_all(dir);

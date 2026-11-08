@@ -3,6 +3,12 @@
 
 #include "TestUtil.hpp"
 
+#include <openssl/bio.h>
+#include <openssl/cms.h>
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/objects.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -13,6 +19,36 @@
 
 using namespace bazarish;
 
+namespace {
+
+// An envelope like ours, but with the key derivation cost the sender chose.
+Bytes envelopeCosting(const int iterations, const std::string& password, const Bytes& plain)
+{
+    BIO* const input = BIO_new_mem_buf(plain.data(), static_cast<int>(plain.size()));
+    CMS_ContentInfo* const cms
+        = CMS_encrypt(nullptr, input, EVP_aes_256_cbc(), CMS_BINARY | CMS_PARTIAL);
+    unsigned char* const copy
+        = static_cast<unsigned char*>(OPENSSL_memdup(password.data(), password.size()));
+    CHECK(cms != nullptr && copy != nullptr);
+    CHECK(CMS_add0_recipient_password(cms, iterations, NID_undef, NID_undef, copy,
+              static_cast<int>(password.size()), nullptr)
+        != nullptr);
+    CHECK(CMS_final(cms, input, nullptr, CMS_BINARY) == 1);
+    unsigned char* der = nullptr;
+    const int length = i2d_CMS_ContentInfo(cms, &der);
+    CHECK(length > 0);
+    const Bytes out(der, der + length);
+    OPENSSL_free(der);
+    CMS_ContentInfo_free(cms);
+    BIO_free(input);
+    return out;
+}
+
+constexpr int kOurCost = 2048;
+constexpr int kCostlierThanOurs = 4096;
+
+}  // namespace
+
 int main()
 {
     const std::string password = "open sesame";
@@ -22,6 +58,9 @@ int main()
     CHECK(cms::unsealWithPassword(passEnvelope, password) == secret);
     CHECK_THROWS(cms::unsealWithPassword(passEnvelope, "guess"));
     CHECK_THROWS(cms::sealWithPassword(secret, ""));
+    CHECK(cms::unsealWithPassword(envelopeCosting(kOurCost, password, secret), password) == secret);
+    CHECK_THROWS(cms::unsealWithPassword(
+        envelopeCosting(kCostlierThanOurs, password, secret), password));
 
     {
         Bytes bigSecret;

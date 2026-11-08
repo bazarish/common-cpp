@@ -15,13 +15,14 @@
 #include <bazarish/AliasMaintenance.hpp>
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
+#include <bazarish/Crypto.hpp>
+#include <bazarish/FederationFrame.hpp>
 #include <bazarish/Hybrid.hpp>
 #include <bazarish/Limits.hpp>
-#include <bazarish/Crypto.hpp>
-#include <bazarish/ServerDescriptor.hpp>
-#include <bazarish/Resolve.hpp>
 #include <bazarish/Padding.hpp>
 #include <bazarish/Pass.hpp>
+#include <bazarish/Resolve.hpp>
+#include <bazarish/ServerDescriptor.hpp>
 
 #include <bazarish/HttpServer.hpp>
 
@@ -210,7 +211,7 @@ private:
                     {"m" + std::to_string(mock_.nextId++), cls, payload});
             }
         }
-        const Bytes signedBytes(deliveryId.begin(), deliveryId.end());
+        const Bytes signedBytes = deliveryAckInput(deliveryId);
         const nlohmann::json reply = {
             {"delivered", true},
             {"deliveryId", deliveryId},

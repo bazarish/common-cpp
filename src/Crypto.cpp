@@ -148,6 +148,28 @@ constexpr const char* kSealingPairTag = "bzsk1";
 
 }  // namespace
 
+namespace {
+
+// One key has one encoding: anything but its canonical DER would give it a second fingerprint.
+KeyPtr exactPublicKey(const unsigned char* const der, const std::size_t size)
+{
+    const unsigned char* cursor = der;
+    KeyPtr key(d2i_PUBKEY(nullptr, &cursor, static_cast<long>(size)));
+    if (key == nullptr || cursor != der + size) {
+        throw std::runtime_error("a public key does not parse as exactly one DER key");
+    }
+    unsigned char* encoded = nullptr;
+    const int length = i2d_PUBKEY(key.get(), &encoded);
+    const ossl::BlockPtr owned(encoded);
+    if (length <= 0 || static_cast<std::size_t>(length) != size
+        || std::memcmp(encoded, der, size) != 0) {
+        throw std::runtime_error("a public key is not in its canonical DER encoding");
+    }
+    return key;
+}
+
+}  // namespace
+
 Key Key::fromPublicDer(const Bytes& spkiDer)
 {
     // The pair form is CBOR; a bare SPKI is DER.
@@ -158,24 +180,12 @@ Key Key::fromPublicDer(const Bytes& spkiDer)
             if (pair.is_object() && pair.value("t", std::string()) == kSealingPairTag) {
                 const nlohmann::json::binary_t& classical = pair.at("c").get_binary();
                 const nlohmann::json::binary_t& kem = pair.at("q").get_binary();
-                const unsigned char* classicalCursor = classical.data();
-                KeyPtr classicalKey(d2i_PUBKEY(
-                    nullptr, &classicalCursor, static_cast<long>(classical.size())));
-                const unsigned char* kemCursor = kem.data();
-                KeyPtr kemKey(d2i_PUBKEY(nullptr, &kemCursor, static_cast<long>(kem.size())));
-                if (classicalKey == nullptr || kemKey == nullptr) {
-                    throw std::runtime_error("sealing key pair does not parse");
-                }
-                return Key(std::move(classicalKey), std::move(kemKey), false);
+                return Key(exactPublicKey(classical.data(), classical.size()),
+                    exactPublicKey(kem.data(), kem.size()), false);
             }
         }
     }
-    const unsigned char* cursor = spkiDer.data();
-    EVP_PKEY* const key = d2i_PUBKEY(nullptr, &cursor, static_cast<long>(spkiDer.size()));
-    if (key == nullptr) {
-        throw std::runtime_error("d2i_PUBKEY failed");
-    }
-    return Key(KeyPtr(key), false);
+    return Key(exactPublicKey(spkiDer.data(), spkiDer.size()), false);
 }
 
 std::string Key::privatePem(const std::string& passphrase) const

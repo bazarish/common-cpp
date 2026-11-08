@@ -23,6 +23,9 @@ struct FederationDeliverResult {
     Bytes signature;
 };
 
+// What the admitting destination signs to say it stored a delivery (Federation.md).
+Bytes deliveryAckInput(const std::string& deliveryId);
+
 struct FederationFetchResult {
     bool ok = false;
     Bytes sealed;

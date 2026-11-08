@@ -23,6 +23,8 @@ namespace {
 constexpr int kReceived = static_cast<int>(DeliveryState::eReceived);
 constexpr int kAtRecipientServer = static_cast<int>(DeliveryState::eAtRecipientServer);
 constexpr int kDelivered = static_cast<int>(DeliveryState::eDelivered);
+constexpr std::size_t kMaxReceiptsAheadPerPeer = 1024;
+constexpr std::size_t kMaxPeersWithReceiptsAhead = 4096;
 
 struct Placement {
     std::int64_t displayTs = 0;
@@ -115,6 +117,7 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
             if (!store_.clearPeer(message.refId)) {
                 return false;
             }
+            receiptsAhead_.erase(message.refId);
             listener_.peerReset(message.refId);
         }
         return true;
@@ -134,6 +137,7 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
         if (!store_.clearPeer(own)) {
             return false;
         }
+        receiptsAhead_.erase(own);
         listener_.peerReset(own);
         return true;
     }
@@ -142,6 +146,7 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
             if (!store_.forgetPeer(message.refId)) {
                 return false;
             }
+            receiptsAhead_.erase(message.refId);
             listener_.peerForgotten(message.refId);
         }
         return true;
@@ -180,7 +185,7 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
         const std::int64_t localId = store_.idForKey(peer, message.refId, true);
         if (localId == 0) {
             log::info("receipt for {} arrived before the message it is about", message.refId);
-            receiptsAhead_[peer].insert(message.refId);
+            noteReceiptAhead(peer, message.refId);
             return true;
         }
         log::info("receipt for {} applied to row {}", message.refId, localId);
@@ -220,6 +225,7 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
             || appendNote(message, notes_.chatCleared(message.sentByUs, peer), false) == 0) {
             return false;
         }
+        receiptsAhead_.erase(peer);
         listener_.peerReset(peer);
         return true;
     }
@@ -389,6 +395,20 @@ bool TranscriptIngest::applyGroupReactions(const std::string& peer, const std::s
     }
     listener_.groupReactionsChanged(peer);
     return true;
+}
+
+void TranscriptIngest::noteReceiptAhead(const std::string& peer, const std::string& refId)
+{
+    const auto held = receiptsAhead_.find(peer);
+    const bool room = held == receiptsAhead_.end()
+        ? receiptsAhead_.size() < kMaxPeersWithReceiptsAhead
+        : held->second.size() < kMaxReceiptsAheadPerPeer;
+    if (!room) {
+        log::info(
+            "a receipt ahead of its message from {} is dropped: too many wait", log::redact(peer));
+        return;
+    }
+    receiptsAhead_[peer].insert(refId);
 }
 
 bool TranscriptIngest::markOutgoingRead(const std::string& peer, const std::int64_t uptoId)

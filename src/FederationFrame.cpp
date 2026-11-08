@@ -6,6 +6,10 @@
 
 namespace bazarish {
 
+namespace {
+constexpr char kDeliveryAckLabel[] = "bazarish delivered v1\n";
+}  // namespace
+
 std::string buildFederationDeliverHeader(const Bytes& sealed, const std::size_t payloadLen)
 {
     const nlohmann::json header = {
@@ -60,6 +64,12 @@ FederationFetchResult parseFederationFetchReply(const std::string& line)
         result.errorMessage = reply.at("errorMessage").get<std::string>();
     }
     return result;
+}
+
+Bytes deliveryAckInput(const std::string& deliveryId)
+{
+    const std::string input = std::string(kDeliveryAckLabel) + deliveryId;
+    return Bytes(input.begin(), input.end());
 }
 
 }  // namespace bazarish

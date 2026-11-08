@@ -2,6 +2,7 @@
 #include <bazarish/HttpServer.hpp>
 
 #include <bazarish/Errors.hpp>
+#include <bazarish/Hmac.hpp>
 #include <bazarish/HttpResponses.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/Percent.hpp>
@@ -49,6 +50,14 @@ constexpr int kForbidden = 403;
 constexpr int kMisdirected = 421;
 // RFC 9110, 15.5.15.
 constexpr int kUriTooLong = 414;
+
+void denyFraming(const bool deny, Response& response)
+{
+    if (deny) {
+        response.headers["X-Frame-Options"] = "DENY";
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'";
+    }
+}
 
 std::string valueFrom(const std::string& encoded, const std::string& key)
 {
@@ -444,6 +453,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     }
 
     std::optional<Resolved> resolve(const Request& request) const;
+
     template <typename Stream>
     asio::awaitable<void> serveOn(Stream stream);
     asio::awaitable<void> serve(tcp::socket socket);
@@ -472,7 +482,7 @@ std::optional<Resolved> Server::Impl::resolve(const Request& request) const
     }
     const std::lock_guard<std::mutex> lock(routesMutex);
     for (const Route& route : routes) {
-        if (route.method != request.method) {
+        if (route.method != kAnyMethod && route.method != request.method) {
             continue;
         }
         if (std::optional<std::vector<std::string>> captures = capturesOf(route, request.path)) {
@@ -518,7 +528,7 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                 {
                     const std::lock_guard<std::mutex> lock(routesMutex);
                     for (const SocketRoute& route : socketRoutes) {
-                        if (route.pattern == request.path) {
+                        if (service::constantTimeEqual(route.pattern, request.path)) {
                             chosen = route.routes;
                             matched = true;
                             break;
@@ -546,12 +556,15 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                             out.set(header.first, header.second);
                         }
                         out.body() = refusal->body;
-                        out.keep_alive(false);
+                        out.keep_alive(parsed.keep_alive());
                         out.prepare_payload();
                         boost::system::error_code refusalError;
                         co_await http::async_write(stream, out,
                             asio::redirect_error(asio::use_awaitable, refusalError));
-                        break;
+                        if (refusalError || !parsed.keep_alive()) {
+                            break;
+                        }
+                        continue;
                     }
                     if constexpr (std::is_same_v<Stream, beast::tcp_stream>) {
                         // The request's read deadline would otherwise close the socket later.
@@ -626,6 +639,7 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                         }
                         immediate = *answer;
                     }
+                    denyFraming(options.denyFraming, *immediate);
                     http::response<http::string_body> out{
                         static_cast<http::status>(immediate->status), parsed.version()};
                     if (!immediate->contentType.empty()) {
@@ -796,15 +810,19 @@ void Server::dispatch(const Request& request, Responder respond)
     }
     Request routed = request;
     routed.captures = std::move(resolved->captures);
+    const Responder framed = [deny = impl_->options.denyFraming, respond](Response response) {
+        denyFraming(deny, response);
+        respond(std::move(response));
+    };
     std::optional<Response> answered;
     try {
-        answered = resolved->handler(routed, respond);
+        answered = resolved->handler(routed, framed);
     } catch (const std::exception& error) {
         log::warn("handler for {} threw: {}", request.path, error.what());
         answered = errorResponse(500, ErrorCode::eRequestFailed, "internal error");
     }
     if (answered.has_value()) {
-        respond(std::move(*answered));
+        framed(std::move(*answered));
     }
 }
 

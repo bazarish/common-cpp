@@ -311,7 +311,8 @@ Socket openControlSocket(const std::string& host, const std::uint16_t port)
     return fd.release();
 }
 
-Socket openLocalUdpSocket(std::uint16_t& boundPort)
+// Connected to the bridge's datagram port, so the kernel drops what any other local sender sends.
+Socket openLocalUdpSocket(std::uint16_t& boundPort, const sockaddr_in& bridge)
 {
     ensureSockets();
     Held fd(::socket(AF_INET, SOCK_DGRAM, 0));
@@ -331,6 +332,10 @@ Socket openLocalUdpSocket(std::uint16_t& boundPort)
         throw Error(Result::eI2pError, "SAM: could not read the datagram port");
     }
     boundPort = ntohs(bound.sin_port);
+    if (::connect(native(fd.get()), reinterpret_cast<const sockaddr*>(&bridge), sizeof(bridge))
+        != 0) {
+        throw Error(Result::eI2pError, "SAM: could not tie the datagram socket to the router");
+    }
     // Several threads may wait on one session: whoever loses the race must not block in accept.
     setBlocking(fd.get(), false);
     return fd.release();
@@ -780,7 +785,8 @@ Session::Session(RouterAddress router, SessionConfig config, const std::chrono::
     impl_->readyTimeout = readyTimeout;
     impl_->id = "bazarish-" + toHex(randomBytes(8));
     if (impl_->config.style != Style::eStream) {
-        impl_->datagrams.reset(openLocalUdpSocket(impl_->datagramPort));
+        impl_->datagrams.reset(openLocalUdpSocket(impl_->datagramPort,
+            loopbackAddress(impl_->router.host, impl_->router.resolvedDatagramPort())));
     }
     impl_->create();
     impl_->watch = std::thread([&impl = *impl_]() { impl.watchLoop(); });

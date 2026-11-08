@@ -19,6 +19,7 @@ constexpr char kLeaseLabel[] = "Outbound delivery";
 constexpr char kLeaseLabelPrefix[] = "Outbound for ";
 constexpr char kSharedLeaseLabel[] = "Outbound for everyone";
 constexpr char kSharedLeaseKey[] = "";
+const std::string kOwnLeasePrefix = "own:";
 
 class I2pDeliveryStream final : public DeliveryStream {
 public:
@@ -52,9 +53,10 @@ bool leaseSpent(const std::chrono::steady_clock::time_point created,
 std::string leaseKeyFor(
     const OutboundAddressing addressing, const bool ownAddress, const std::string& toDest)
 {
-    return addressing == OutboundAddressing::eOneForAll && !ownAddress
-        ? std::string(kSharedLeaseKey)
-        : toDest;
+    if (ownAddress) {
+        return kOwnLeasePrefix + toDest;
+    }
+    return addressing == OutboundAddressing::eOneForAll ? std::string(kSharedLeaseKey) : toDest;
 }
 
 OutboundLeases::OutboundLeases(bazarish::i2p::Router& router, std::string owner)
@@ -140,7 +142,8 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
             making = true;
         }
     }
-    const std::string label = key == toDest ? labelFor(peerName) : std::string(kSharedLeaseLabel);
+    const bool shared = key == kSharedLeaseKey;
+    const std::string label = shared ? std::string(kSharedLeaseLabel) : labelFor(peerName);
     if (making) {
         const log::Slow timed("making an address ready to send from", kSlowPrepare);
         const bazarish::i2p::Privacy privacy = tunnelPrivacy();
@@ -156,7 +159,7 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
                 config.published = false;
                 config.label = label;
                 config.owner = owner_;
-                if (key == toDest) {
+                if (!shared) {
                     config.target = toDest;
                 }
                 endpoint = router_.createEndpoint(config);
@@ -216,7 +219,7 @@ std::shared_ptr<DeliveryStream> OutboundLeases::openStream(
 void OutboundLeases::release(const std::string& toDest)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
-    leases_.erase(toDest);
+    leases_.erase(kOwnLeasePrefix + toDest);
     own_.erase(toDest);
 }
 
@@ -240,6 +243,7 @@ void OutboundLeases::keepOwn(const std::string& toDest)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     own_.insert(toDest);
+    leases_.erase(kOwnLeasePrefix + toDest);
 }
 
 void OutboundLeases::sweeperLoop(const std::stop_token& stop)

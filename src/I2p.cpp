@@ -339,6 +339,7 @@ void Endpoint::setLeaseSetReaderKey(const Bytes& rawPrivate)
 std::unique_ptr<Stream> Endpoint::connect(
     const std::string& host, const std::chrono::seconds timeout)
 {
+    validateB32I2pHost(host);
     std::unique_ptr<backend::StreamBackend> transport = impl_->transport->connect(host, timeout);
     if (!transport) {
         return nullptr;
@@ -363,6 +364,7 @@ std::unique_ptr<Stream> Endpoint::accept(
 
 void Endpoint::sendDatagram(const std::string& host, const ByteView data)
 {
+    validateB32I2pHost(host);
     impl_->transport->sendDatagram(host, data);
 }
 
@@ -373,6 +375,7 @@ Datagram Endpoint::receiveDatagram(const std::chrono::milliseconds timeout)
 
 void Endpoint::sendRawDatagram(const std::string& host, const ByteView data)
 {
+    validateB32I2pHost(host);
     impl_->transport->sendRawDatagram(host, data);
 }
 

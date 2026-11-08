@@ -59,6 +59,7 @@ private:
     bool noteGroupBlock(const IncomingMessage& message);
     bool applyGroupReactions(const std::string& peer, const std::string& json);
     bool markOutgoingRead(const std::string& peer, std::int64_t uptoId);
+    void noteReceiptAhead(const std::string& peer, const std::string& refId);
     std::int64_t appendNote(const IncomingMessage& message, const std::string& text, bool placed);
     std::int64_t orderFloor(const IncomingMessage& message) const;
     std::int64_t localIdOf(const IncomingMessage& message) const;
