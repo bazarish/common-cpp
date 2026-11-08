@@ -104,9 +104,9 @@ public:
     Stream& operator=(const Stream&) = delete;
 
     void setReadTimeout(std::chrono::seconds timeout);
-    std::size_t readSome(void* buffer, std::size_t size);
-    void readExact(void* buffer, std::size_t size);
-    void writeAll(const void* data, std::size_t size);
+    std::size_t readSome(ByteBuffer buffer);
+    void readExact(ByteBuffer buffer);
+    void writeAll(ByteView data);
     std::size_t pendingBytes() const;
     void close();
 
@@ -118,6 +118,12 @@ private:
 };
 
 enum class Traffic { eStream, eRaw };
+
+struct Datagram {
+    // Base64 of the sender; empty for a raw datagram.
+    std::string from;
+    Bytes data;
+};
 
 struct EndpointConfig {
     std::optional<Keys> keys;
@@ -161,11 +167,10 @@ public:
     std::unique_ptr<Stream> accept(std::string& peerBase64, std::chrono::seconds timeout);
 
     // Send one repliable datagram to a host (".b32.i2p" or base64).
-    void sendDatagram(const std::string& host, const void* data, std::size_t size);
-    std::vector<std::uint8_t> receiveDatagram(std::string& peerBase64,
-        std::chrono::milliseconds timeout);
+    void sendDatagram(const std::string& host, ByteView data);
+    Datagram receiveDatagram(std::chrono::milliseconds timeout);
 
-    void sendRawDatagram(const std::string& host, const void* data, std::size_t size);
+    void sendRawDatagram(const std::string& host, ByteView data);
     std::vector<std::uint8_t> receiveRawDatagram(std::chrono::milliseconds timeout);
 
     void stop();

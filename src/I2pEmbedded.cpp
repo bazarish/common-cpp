@@ -219,14 +219,14 @@ public:
         }
         for (auto& lane : lanes_)
         {
-            Lane* const l = lane.get();
-            l->worker = std::thread([l]
+            Lane& l = *lane;
+            l.worker = std::thread([&l]
             {
-                while (l->running)
+                while (l.running)
                 {
                     try
                     {
-                        l->ctx.run();
+                        l.ctx.run();
                     }
                     catch (const std::exception& ex)
                     {
@@ -325,8 +325,8 @@ public:
     {
         readTimeoutSeconds = static_cast<int>(timeout.count());
     }
-    std::size_t readSome(void* buffer, std::size_t size) override;
-    void writeAll(const void* data, std::size_t size) override;
+    std::size_t readSome(ByteBuffer buffer) override;
+    void writeAll(ByteView data) override;
     std::size_t pendingBytes() const override;
     void close() override;
 
@@ -337,16 +337,16 @@ public:
     std::atomic<int> readTimeoutSeconds{0};
 };
 
-std::size_t EmbeddedStream::readSome(void* buffer, std::size_t size)
+std::size_t EmbeddedStream::readSome(const ByteBuffer buffer)
 {
-    if (!stream || closed || (stopped && *stopped) || size == 0) { return 0; }
+    if (!stream || closed || (stopped && *stopped) || buffer.empty()) { return 0; }
     const std::chrono::seconds timeout{readTimeoutSeconds.load()};
     const auto started = std::chrono::steady_clock::now();
     while (!closed && !(stopped && *stopped))
     {
         auto promise = std::make_shared<std::promise<std::size_t>>();
         auto future = promise->get_future();
-        stream->AsyncReceive(boost::asio::buffer(buffer, size),
+        stream->AsyncReceive(boost::asio::buffer(buffer.data(), buffer.size()),
             [promise](const boost::system::error_code&, std::size_t received)
             {
                 promise->set_value(received);
@@ -363,14 +363,14 @@ std::size_t EmbeddedStream::readSome(void* buffer, std::size_t size)
     return 0;
 }
 
-void EmbeddedStream::writeAll(const void* data, std::size_t size)
+void EmbeddedStream::writeAll(const ByteView data)
 {
     if (!stream) { throw std::runtime_error("bazarish::i2p: write on a closed stream"); }
-    const auto* in = static_cast<const std::uint8_t*>(data);
     std::size_t off = 0;
-    while (off < size)
+    while (off < data.size())
     {
-        const std::size_t written = stream->Send(in + off, size - off);
+        const ByteView rest = data.subspan(off);
+        const std::size_t written = stream->Send(rest.data(), rest.size());
         if (written == 0) { break; }
         off += written;
     }
@@ -563,10 +563,9 @@ public:
         const std::string& host, std::chrono::seconds timeout) override;
     std::unique_ptr<backend::StreamBackend> accept(
         std::string& peerBase64, std::chrono::seconds timeout) override;
-    void sendDatagram(const std::string& host, const void* data, std::size_t size) override;
-    std::vector<std::uint8_t> receiveDatagram(
-        std::string& peerBase64, std::chrono::milliseconds timeout) override;
-    void sendRawDatagram(const std::string& host, const void* data, std::size_t size) override;
+    void sendDatagram(const std::string& host, ByteView data) override;
+    Datagram receiveDatagram(std::chrono::milliseconds timeout) override;
+    void sendRawDatagram(const std::string& host, ByteView data) override;
     std::vector<std::uint8_t> receiveRawDatagram(std::chrono::milliseconds timeout) override;
     void stop() override;
 
@@ -607,7 +606,7 @@ public:
     };
     std::shared_ptr<RawTargets> rawTargets = std::make_shared<RawTargets>();
 
-    void answerPathProbe(const std::uint8_t* frame, std::size_t size);
+    void answerPathProbe(ByteView frame);
 
 private:
     static void sendRawOnLane(const std::shared_ptr<i2pd::client::ClientDestination>& dest,
@@ -778,12 +777,11 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::accept(
     return wrapped;
 }
 
-void EmbeddedEndpoint::sendDatagram(const std::string& host, const void* data, std::size_t size)
+void EmbeddedEndpoint::sendDatagram(const std::string& host, const ByteView data)
 {
     if (!datagram) { return; }
-    const auto* payload = static_cast<const std::uint8_t*>(data);
     const std::shared_ptr<i2pd::datagram::DatagramDestination> sender = datagram;
-    std::vector<std::uint8_t> copy(payload, payload + size);
+    std::vector<std::uint8_t> copy(data.begin(), data.end());
     const auto sendTo = [this, &sender, &copy](const i2pd::data::IdentHash& to)
     {
         boost::asio::post(dest->GetService(), [sender, copy = std::move(copy), to]()
@@ -821,8 +819,7 @@ void EmbeddedEndpoint::sendDatagram(const std::string& host, const void* data, s
     }
 }
 
-std::vector<std::uint8_t> EmbeddedEndpoint::receiveDatagram(std::string& peerBase64,
-    std::chrono::milliseconds timeout)
+Datagram EmbeddedEndpoint::receiveDatagram(const std::chrono::milliseconds timeout)
 {
     std::unique_lock<std::mutex> lock(dgMutex);
     if (!dgCv.wait_for(lock, timeout, [this] { return !dgQueue.empty() || *stopped; })
@@ -833,18 +830,16 @@ std::vector<std::uint8_t> EmbeddedEndpoint::receiveDatagram(std::string& peerBas
     auto incoming = std::move(dgQueue.front());
     dgQueue.pop_front();
     lock.unlock();
-    peerBase64 = std::move(incoming.from);
-    return std::move(incoming.payload);
+    return {std::move(incoming.from), std::move(incoming.payload)};
 }
 
-void EmbeddedEndpoint::sendRawDatagram(const std::string& host, const void* data, std::size_t size)
+void EmbeddedEndpoint::sendRawDatagram(const std::string& host, const ByteView data)
 {
     if (!datagram) { return; }
-    const auto* payload = static_cast<const std::uint8_t*>(data);
     // libi2pd keeps a destination's garlic state for the one thread that runs it.
     boost::asio::post(dest->GetService(),
         [destination = dest, sender = datagram, targets = rawTargets, host,
-            copy = std::vector<std::uint8_t>(payload, payload + size)]()
+            copy = std::vector<std::uint8_t>(data.begin(), data.end())]()
         {
             sendRawOnLane(destination, sender, targets, host, copy);
         });
@@ -966,13 +961,13 @@ void EmbeddedEndpoint::deliverRaw(i2pd::client::ClientDestination& dest,
     }
 }
 
-void EmbeddedEndpoint::answerPathProbe(const std::uint8_t* const frame, const std::size_t size)
+void EmbeddedEndpoint::answerPathProbe(const ByteView frame)
 {
-    if (size != kPathProbeBytes || !datagram)
+    if (frame.size() != kPathProbeBytes || !datagram)
     {
         return;
     }
-    const std::uint64_t id = bufbe64toh(frame + kPathProbeIdOffset);
+    const std::uint64_t id = bufbe64toh(frame.subspan(kPathProbeIdOffset).data());
     const auto now = std::chrono::steady_clock::now();
     if (frame[0] == kPathEcho)
     {
@@ -991,7 +986,7 @@ void EmbeddedEndpoint::answerPathProbe(const std::uint8_t* const frame, const st
     {
         return;
     }
-    std::vector<std::uint8_t> echo(frame, frame + size);
+    std::vector<std::uint8_t> echo(frame.begin(), frame.end());
     echo[0] = kPathEcho;
     for (const auto& [host, route] : rawTargets->routes)
     {
@@ -1414,7 +1409,7 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
             const std::uint8_t* buf, std::size_t len)
         {
             const std::shared_ptr<EmbeddedEndpoint> held = weak.lock();
-            if (held) { held->answerPathProbe(buf, len); }
+            if (held) { held->answerPathProbe(ByteView(buf, len)); }
         }, kPathProbePort);
     }
 

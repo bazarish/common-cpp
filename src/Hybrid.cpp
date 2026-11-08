@@ -2,6 +2,8 @@
 #include "bazarish/Hybrid.hpp"
 #include "bazarish/JsonRead.hpp"
 
+#include "OpenSslHandles.hpp"
+
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 
@@ -20,21 +22,8 @@ constexpr const char* kSignContext = "bazarish-composite-sig-v1";
 constexpr const char* kSealContext = "bazarish-composite-seal-v1";
 constexpr std::size_t kX25519SharedSecretBytes = 32;
 
-struct PkeyDeleter {
-    void operator()(EVP_PKEY* key) const
-    {
-        EVP_PKEY_free(key);
-    }
-};
-using PkeyPtr = std::unique_ptr<EVP_PKEY, PkeyDeleter>;
-
-struct PkeyCtxDeleter {
-    void operator()(EVP_PKEY_CTX* ctx) const
-    {
-        EVP_PKEY_CTX_free(ctx);
-    }
-};
-using PkeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, PkeyCtxDeleter>;
+using PkeyPtr = bazarish::KeyPtr;
+using bazarish::ossl::PkeyCtxPtr;
 
 
 void append(Bytes& target, const Bytes& tail)

@@ -41,18 +41,18 @@ public:
 
     void setReadTimeout(std::chrono::seconds) {}
 
-    std::size_t readSome(void* const buffer, const std::size_t size)
+    std::size_t readSome(const ByteBuffer buffer)
     {
-        const ssize_t got = ::read(fd_, buffer, size);
+        const ssize_t got = ::read(fd_, buffer.data(), buffer.size());
         return got > 0 ? static_cast<std::size_t>(got) : 0;
     }
 
-    void writeAll(const void* const data, const std::size_t size)
+    void writeAll(const ByteView data)
     {
-        const char* const bytes = static_cast<const char*>(data);
         std::size_t done = 0;
-        while (done < size) {
-            const ssize_t put = ::write(fd_, bytes + done, size - done);
+        while (done < data.size()) {
+            const ByteView rest = data.subspan(done);
+            const ssize_t put = ::write(fd_, rest.data(), rest.size());
             if (put <= 0) {
                 throw std::runtime_error("fake stream: the other end is gone");
             }

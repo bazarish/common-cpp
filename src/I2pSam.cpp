@@ -64,14 +64,8 @@ public:
     {
         stream_->setReadTimeout(static_cast<int>(timeout.count()));
     }
-    std::size_t readSome(void* buffer, const std::size_t size) override
-    {
-        return stream_->readSome(buffer, size);
-    }
-    void writeAll(const void* data, const std::size_t size) override
-    {
-        stream_->writeAll(data, size);
-    }
+    std::size_t readSome(const ByteBuffer buffer) override { return stream_->readSome(buffer); }
+    void writeAll(const ByteView data) override { stream_->writeAll(data); }
     std::size_t pendingBytes() const override { return stream_->pendingBytes(); }
     void close() override { stream_->close(); }
 
@@ -174,28 +168,25 @@ public:
         return std::make_unique<SamStream>(std::move(stream));
     }
 
-    void sendDatagram(
-        const std::string& host, const void* data, const std::size_t size) override
+    void sendDatagram(const std::string& host, const ByteView data) override
     {
-        datagrams(sam::Style::eDatagram)->sendDatagram(host, data, size);
+        datagrams(sam::Style::eDatagram)->sendDatagram(host, data);
     }
 
-    std::vector<std::uint8_t> receiveDatagram(
-        std::string& peerBase64, const std::chrono::milliseconds timeout) override
+    Datagram receiveDatagram(const std::chrono::milliseconds timeout) override
     {
-        return datagrams(sam::Style::eDatagram)->receiveDatagram(&peerBase64, timeout);
+        return datagrams(sam::Style::eDatagram)->receiveDatagram(timeout);
     }
 
-    void sendRawDatagram(
-        const std::string& host, const void* data, const std::size_t size) override
+    void sendRawDatagram(const std::string& host, const ByteView data) override
     {
-        datagrams(sam::Style::eRaw)->sendDatagram(host, data, size);
+        datagrams(sam::Style::eRaw)->sendDatagram(host, data);
     }
 
     std::vector<std::uint8_t> receiveRawDatagram(
         const std::chrono::milliseconds timeout) override
     {
-        return datagrams(sam::Style::eRaw)->receiveDatagram(nullptr, timeout);
+        return datagrams(sam::Style::eRaw)->receiveDatagram(timeout).data;
     }
 
     std::string label() const

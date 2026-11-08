@@ -33,9 +33,9 @@ public:
     FdStream(const FdStream&) = delete;
     FdStream& operator=(const FdStream&) = delete;
 
-    std::size_t readSome(void* buffer, std::size_t size)
+    std::size_t readSome(const bazarish::ByteBuffer buffer)
     {
-        const ssize_t n = ::read(fd_, buffer, size);
+        const ssize_t n = ::read(fd_, buffer.data(), buffer.size());
         return n > 0 ? static_cast<std::size_t>(n) : 0;
     }
 

@@ -247,17 +247,16 @@ void Stream::setReadTimeout(const std::chrono::seconds timeout)
     impl_->transport->setReadTimeout(timeout);
 }
 
-std::size_t Stream::readSome(void* buffer, const std::size_t size)
+std::size_t Stream::readSome(const ByteBuffer buffer)
 {
-    return impl_->transport->readSome(buffer, size);
+    return impl_->transport->readSome(buffer);
 }
 
-void Stream::readExact(void* buffer, const std::size_t size)
+void Stream::readExact(const ByteBuffer buffer)
 {
-    auto* cursor = static_cast<std::uint8_t*>(buffer);
     std::size_t read = 0;
-    while (read < size) {
-        const std::size_t got = impl_->transport->readSome(cursor + read, size - read);
+    while (read < buffer.size()) {
+        const std::size_t got = impl_->transport->readSome(buffer.subspan(read));
         if (got == 0) {
             throw std::runtime_error("bazarish::i2p: stream closed before the read completed");
         }
@@ -265,9 +264,9 @@ void Stream::readExact(void* buffer, const std::size_t size)
     }
 }
 
-void Stream::writeAll(const void* data, const std::size_t size)
+void Stream::writeAll(const ByteView data)
 {
-    impl_->transport->writeAll(data, size);
+    impl_->transport->writeAll(data);
 }
 
 std::size_t Stream::pendingBytes() const
@@ -367,20 +366,19 @@ std::unique_ptr<Stream> Endpoint::accept(
     return stream;
 }
 
-void Endpoint::sendDatagram(const std::string& host, const void* data, const std::size_t size)
+void Endpoint::sendDatagram(const std::string& host, const ByteView data)
 {
-    impl_->transport->sendDatagram(host, data, size);
+    impl_->transport->sendDatagram(host, data);
 }
 
-std::vector<std::uint8_t> Endpoint::receiveDatagram(
-    std::string& peerBase64, const std::chrono::milliseconds timeout)
+Datagram Endpoint::receiveDatagram(const std::chrono::milliseconds timeout)
 {
-    return impl_->transport->receiveDatagram(peerBase64, timeout);
+    return impl_->transport->receiveDatagram(timeout);
 }
 
-void Endpoint::sendRawDatagram(const std::string& host, const void* data, const std::size_t size)
+void Endpoint::sendRawDatagram(const std::string& host, const ByteView data)
 {
-    impl_->transport->sendRawDatagram(host, data, size);
+    impl_->transport->sendRawDatagram(host, data);
 }
 
 std::vector<std::uint8_t> Endpoint::receiveRawDatagram(const std::chrono::milliseconds timeout)

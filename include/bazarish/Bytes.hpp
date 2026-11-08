@@ -3,12 +3,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace bazarish {
 
 using Bytes = std::vector<unsigned char>;
+using ByteView = std::span<const unsigned char>;
+using ByteBuffer = std::span<unsigned char>;
+
+ByteView viewOf(std::string_view text);
+ByteBuffer bufferOf(std::string& text);
 
 std::string toHex(const Bytes& data);
 Bytes fromHex(const std::string& text);

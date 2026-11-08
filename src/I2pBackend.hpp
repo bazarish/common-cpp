@@ -20,8 +20,8 @@ public:
     virtual ~StreamBackend() = default;
 
     virtual void setReadTimeout(std::chrono::seconds timeout) = 0;
-    virtual std::size_t readSome(void* buffer, std::size_t size) = 0;
-    virtual void writeAll(const void* data, std::size_t size) = 0;
+    virtual std::size_t readSome(ByteBuffer buffer) = 0;
+    virtual void writeAll(ByteView data) = 0;
     virtual std::size_t pendingBytes() const = 0;
     virtual void close() = 0;
 };
@@ -45,11 +45,9 @@ public:
         std::string& peerBase64, std::chrono::seconds timeout)
         = 0;
 
-    virtual void sendDatagram(const std::string& host, const void* data, std::size_t size) = 0;
-    virtual std::vector<std::uint8_t> receiveDatagram(
-        std::string& peerBase64, std::chrono::milliseconds timeout)
-        = 0;
-    virtual void sendRawDatagram(const std::string& host, const void* data, std::size_t size) = 0;
+    virtual void sendDatagram(const std::string& host, ByteView data) = 0;
+    virtual Datagram receiveDatagram(std::chrono::milliseconds timeout) = 0;
+    virtual void sendRawDatagram(const std::string& host, ByteView data) = 0;
     virtual std::vector<std::uint8_t> receiveRawDatagram(std::chrono::milliseconds timeout) = 0;
 
     virtual void stop() = 0;

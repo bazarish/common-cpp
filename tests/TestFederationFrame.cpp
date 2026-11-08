@@ -29,12 +29,12 @@ public:
     SocketStream(const SocketStream&) = delete;
     SocketStream& operator=(const SocketStream&) = delete;
 
-    void readExact(void* const buffer, const std::size_t size)
+    void readExact(const bazarish::ByteBuffer buffer)
     {
-        auto* const out = static_cast<std::uint8_t*>(buffer);
         std::size_t got = 0;
-        while (got < size) {
-            const ssize_t n = ::read(fd_, out + got, size - got);
+        while (got < buffer.size()) {
+            const bazarish::ByteBuffer rest = buffer.subspan(got);
+            const ssize_t n = ::read(fd_, rest.data(), rest.size());
             if (n <= 0) {
                 throw std::runtime_error("socket closed before readExact completed");
             }
@@ -42,12 +42,12 @@ public:
         }
     }
 
-    void writeAll(const void* const data, const std::size_t size)
+    void writeAll(const bazarish::ByteView data)
     {
-        const auto* const in = static_cast<const std::uint8_t*>(data);
         std::size_t off = 0;
-        while (off < size) {
-            const ssize_t n = ::write(fd_, in + off, size - off);
+        while (off < data.size()) {
+            const bazarish::ByteView rest = data.subspan(off);
+            const ssize_t n = ::write(fd_, rest.data(), rest.size());
             if (n <= 0) {
                 throw std::runtime_error("socket closed before writeAll completed");
             }
@@ -123,7 +123,7 @@ int main()
             try {
                 for (std::size_t sent = 0; sent <= kMaxFederationHeaderLineBytes;
                     sent += chunk.size()) {
-                    writer.writeAll(chunk.data(), chunk.size());
+                    writer.writeAll(bazarish::viewOf(chunk));
                 }
             } catch (const std::exception&) {
             }
@@ -151,7 +151,7 @@ int main()
                 = nlohmann::json::parse(detail::readFederationHeaderLine(server));
             CHECK(header.at("len") == payload.size());
             Bytes received(header.at("len").get<std::size_t>());
-            server.readExact(received.data(), received.size());
+            server.readExact(received);
             CHECK(received == payload);
             detail::writeFederationHeaderLine(server,
                 nlohmann::json({{"delivered", true}, {"deliveryId", "round-trip"}}).dump());

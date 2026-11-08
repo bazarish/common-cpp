@@ -313,12 +313,12 @@ std::vector<nlohmann::json> decodedBody(const Bytes& bytes)
 
 bazarish::i2p::Router& routerForAdd()
 {
-    bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
-    if (router == nullptr || !router->ready()) {
+    const auto running = sharedI2pRouterIfRunning();
+    if (!running.has_value() || !running->get().ready()) {
         throw std::runtime_error(
             "adding a contact needs the I2P router; it is still building tunnels");
     }
-    return *router;
+    return running->get();
 }
 
 void addReplyAndForward(
@@ -1989,13 +1989,12 @@ bool Session::deliver(const std::string& toDest, const Key& servingSealingKey,
     task.onPhase = watch.onPhase;
     task.onOutcome = watch.onOutcome;
     OutboundCourier& courier = outboundCourier();
-    OutboundLeases* const leases = outbound_->leases.get();
-    const bool oneAddressOnly = kind == kContactDeliveryClass && leases != nullptr;
+    const bool oneAddressOnly = kind == kContactDeliveryClass && outbound_->leases != nullptr;
     if (oneAddressOnly) {
-        leases->keepOwn(toDest);
-        task.onOutcome = [leases, toDest, report = watch.onOutcome](
+        outbound_->leases->keepOwn(toDest);
+        task.onOutcome = [outbound = outbound_, toDest, report = watch.onOutcome](
                              const OutboundCourier::Outcome& outcome) {
-            leases->release(toDest);
+            outbound->leases->release(toDest);
             if (report) {
                 report(outcome);
             }
@@ -2007,7 +2006,7 @@ bool Session::deliver(const std::string& toDest, const Key& servingSealingKey,
     }
     const OutboundCourier::Outcome outcome = courier.deliverNow(task);
     if (oneAddressOnly) {
-        leases->release(toDest);
+        outbound_->leases->release(toDest);
     }
     flushPendingEchoes();
     if (!outcome.stored) {
@@ -2509,10 +2508,9 @@ bool Session::announceTransfer(const std::string& type, const std::string& peerF
     const std::unique_ptr<FileInput> input = files_->open(location);
     Sha256 hash;
     std::uint64_t size = 0;
-    std::array<char, kHashChunkBytes> buffer{};
-    for (std::size_t got = input->read(buffer.data(), buffer.size()); got > 0;
-        got = input->read(buffer.data(), buffer.size())) {
-        hash.update(buffer.data(), got);
+    std::array<unsigned char, kHashChunkBytes> buffer{};
+    for (std::size_t got = input->read(buffer); got > 0; got = input->read(buffer)) {
+        hash.update(ByteView(buffer).first(got));
         size += got;
     }
     const std::string digest = toHex(hash.digest());
@@ -5004,11 +5002,11 @@ bool tellAliasesWhereWeAre(const Session::AliasErrandContext& context, const Ide
 
 FetchTransport heldDestFor(const bazarish::i2p::Privacy privacy, const std::string& owner)
 {
-    bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
-    if (router == nullptr || !router->ready()) {
+    const auto running = sharedI2pRouterIfRunning();
+    if (!running.has_value() || !running->get().ready()) {
         throw std::runtime_error("The I2P router is still building tunnels.");
     }
-    return resolverHeldDest(*router, privacy, owner);
+    return resolverHeldDest(running->get(), privacy, owner);
 }
 
 }  // namespace

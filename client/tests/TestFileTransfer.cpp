@@ -45,7 +45,7 @@ FetchAttemptFn servingFrom(const Bytes& ciphertext, const std::size_t limit)
         sink.total(ciphertext.size());
         const std::size_t from = static_cast<std::size_t>(offset);
         const std::size_t count = std::min(limit, ciphertext.size() - from);
-        sink.append(ciphertext.data() + from, count);
+        sink.append(ByteView(ciphertext).subspan(from, count));
     };
 }
 
@@ -136,7 +136,7 @@ int main()
             receiveFile(
                 [&ciphertext](const std::uint64_t, TransferSink& sink) {
                     sink.total(ciphertext.size() + 1);
-                    sink.append(ciphertext.data(), ciphertext.size());
+                    sink.append(ciphertext);
                 },
                 offer, announced, fileTargetAt(dest), going);
         } catch (const std::exception&) {
@@ -192,7 +192,7 @@ int main()
                     ++attempts;
                     sink.total(ciphertext.size());
                     for (int round = 0; round < kOverflowRounds; ++round) {
-                        sink.append(ciphertext.data(), ciphertext.size());
+                        sink.append(ciphertext);
                         largestPart = std::max(largestPart, fs::file_size(part));
                     }
                 },
@@ -247,7 +247,7 @@ int main()
         Bytes back(original.size());
         std::size_t got = 0;
         while (got < back.size()) {
-            const std::size_t read = input->read(back.data() + got, back.size() - got);
+            const std::size_t read = input->read(ByteBuffer(back).subspan(got));
             CHECK(read > 0);
             got += read;
         }

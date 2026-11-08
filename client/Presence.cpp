@@ -154,7 +154,7 @@ public:
 
     void send(const std::string& host, const Bytes& datagram) override
     {
-        endpoint_->sendRawDatagram(host, datagram.data(), datagram.size());
+        endpoint_->sendRawDatagram(host, datagram);
     }
 
     bool lost() const override
@@ -339,10 +339,9 @@ struct Presence::Impl {
     {
         auto runner = std::make_unique<Runner>();
         runner->link = net(config);
-        Runner* const raw = runner.get();
-        runner->reader = std::thread([this, raw, &inbox]() {
-            while (!raw->stopping.load() && !raw->link->lost()) {
-                std::optional<Bytes> got = raw->link->receive(kReceiveSlice);
+        runner->reader = std::thread([this, &held = *runner, &inbox]() {
+            while (!held.stopping.load() && !held.link->lost()) {
+                std::optional<Bytes> got = held.link->receive(kReceiveSlice);
                 if (!got) {
                     continue;
                 }
@@ -366,15 +365,16 @@ struct Presence::Impl {
         runner.reset();
     }
 
-    const PresenceContact* contactFor(const std::string& fingerprint, const bool readersOnly) const
+    std::optional<std::reference_wrapper<const PresenceContact>> contactFor(
+        const std::string& fingerprint, const bool readersOnly) const
     {
         const std::size_t limit = readersOnly ? kMaxPresenceReaders : contacts.size();
         for (std::size_t index = 0; index < contacts.size() && index < limit; ++index) {
             if (contacts[index].fingerprint == fingerprint) {
-                return &contacts[index];
+                return std::cref(contacts[index]);
             }
         }
-        return nullptr;
+        return std::nullopt;
     }
 
     std::vector<Bytes> readersWanted() const
@@ -475,16 +475,17 @@ struct Presence::Impl {
             return;
         }
         const std::string from = content.value("from", std::string());
-        const PresenceContact* const contact = contactFor(from, true);
-        if (contact == nullptr) {
+        const auto found = contactFor(from, true);
+        if (!found.has_value()) {
             return;
         }
+        const PresenceContact& contact = found->get();
         if (!content.contains(kWatchSignatureField) || !content.at(kWatchSignatureField).is_binary()) {
             return;
         }
         const Bytes signature = content.at(kWatchSignatureField).get_binary();
         content.erase(kWatchSignatureField);
-        if (!verify(Key::fromPublicDer(contact->identity.classicalDer), watchSigningInput(content),
+        if (!verify(Key::fromPublicDer(contact.identity.classicalDer), watchSigningInput(content),
                 signature)) {
             return;
         }
@@ -527,33 +528,30 @@ struct Presence::Impl {
     void onState(const Bytes& frame, const Clock::time_point now)
     {
         const Bytes id(frame.begin() + kTypeBytes, frame.begin() + kHeaderBytes);
-        Outgoing* outgoing = nullptr;
-        for (auto& [peerFp, watching] : peers) {
-            if (watching.id == id) {
-                outgoing = &watching;
-            }
-        }
-        if (outgoing == nullptr) {
+        const auto watching = std::find_if(peers.begin(), peers.end(),
+            [&id](const auto& entry) { return entry.second.id == id; });
+        if (watching == peers.end()) {
             return;
         }
+        Outgoing& outgoing = watching->second;
         const std::optional<nlohmann::json> payload
-            = openedFrame(frame, outgoing->key, kFromHolder, outgoing->heard);
+            = openedFrame(frame, outgoing.key, kFromHolder, outgoing.heard);
         if (!payload) {
             return;
         }
-        heardFrom[outgoing->peer] = now;
+        heardFrom[outgoing.peer] = now;
         if (payload->value("moved", false)) {
             watchAfresh("a contact's address moved");
             return;
         }
-        outgoing->answered = true;
-        outgoing->lastHeard = now;
-        carriedUntil.erase(outgoing->peer);
+        outgoing.answered = true;
+        outgoing.lastHeard = now;
+        carriedUntil.erase(outgoing.peer);
         const PresenceState state{payload->value("online", false), payload->value("typing", false)};
-        if (state != outgoing->state) {
-            told.emplace_back(outgoing->peer, state);
+        if (state != outgoing.state) {
+            told.emplace_back(outgoing.peer, state);
         }
-        outgoing->state = state;
+        outgoing.state = state;
     }
 
     void wokenBy(Outgoing& outgoing, const Clock::time_point now)
@@ -668,7 +666,7 @@ struct Presence::Impl {
             at = carriedUntil.erase(at);
         }
         for (auto at = peers.begin(); at != peers.end();) {
-            const bool still = watching && contactFor(at->first, false) != nullptr
+            const bool still = watching && contactFor(at->first, false).has_value()
                 && std::find(watched.begin(), watched.end(), at->first) != watched.end();
             if (still) {
                 ++at;
@@ -691,13 +689,14 @@ struct Presence::Impl {
         }
         announced = holderUp;
         for (const std::string& peerFp : watched) {
-            const PresenceContact* contact = contactFor(peerFp, false);
-            if (contact == nullptr) {
+            const auto known = contactFor(peerFp, false);
+            if (!known.has_value()) {
                 continue;
             }
+            const PresenceContact& contact = known->get();
             auto found = peers.find(peerFp);
             if (found == peers.end()) {
-                found = peers.emplace(peerFp, outgoingTo(*contact)).first;
+                found = peers.emplace(peerFp, outgoingTo(contact)).first;
             }
             tickPeer(found->second, now);
         }

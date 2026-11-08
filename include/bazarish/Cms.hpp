@@ -15,11 +15,11 @@ Bytes sealWithPassword(const Bytes& plaintext, const std::string& password);
 Bytes unsealWithPassword(const Bytes& der, const std::string& password);
 
 // The decoder reads an attached envelope whole into memory, so the file forms are detached.
-using PlainReadFn = std::function<std::size_t(void* buffer, std::size_t size)>;
+using PlainReadFn = std::function<std::size_t(ByteBuffer buffer)>;
 Bytes sealWithPasswordDetached(const PlainReadFn& read, const std::filesystem::path& contentPath,
     const std::string& password);
 
-using PlainWriteFn = std::function<void(const void* data, std::size_t size)>;
+using PlainWriteFn = std::function<void(ByteView data)>;
 void unsealWithPasswordDetached(const Bytes& header, const std::filesystem::path& contentPath,
     const std::string& password, const PlainWriteFn& write);
 

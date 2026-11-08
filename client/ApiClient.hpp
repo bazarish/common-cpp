@@ -72,7 +72,7 @@ public:
         int readTimeoutSeconds = kDefaultReadTimeoutSeconds, const std::string& note = {});
     ApiResponse del(const std::string& path, const nlohmann::json& body = nlohmann::json());
 
-    void setWireLog(WireLog* log);
+    void setWireLog(std::shared_ptr<WireLog> log);
 
     const std::string& clientId() const;
     const ServerEndpoint& endpoint() const;
@@ -139,7 +139,7 @@ private:
     Tunnel serviceNode_{ServerCard::Service::eServiceNode};
     std::string gatewayRefusal_;
 
-    WireLog* wireLog_ = nullptr;
+    std::shared_ptr<WireLog> wireLog_;
     std::shared_ptr<bazarish::i2p::Endpoint> i2pOut_;
     std::string i2pOutHost_;
     std::unique_ptr<bazarish::i2p::Stream> i2pStream_;

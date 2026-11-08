@@ -631,7 +631,7 @@ void Stream::setReadTimeout(const int seconds)
     readTimeoutSeconds_ = seconds;
 }
 
-std::size_t Stream::readSome(void* buffer, const std::size_t size)
+std::size_t Stream::readSome(const ByteBuffer buffer)
 {
     if (socket_ == kInvalidSocket) {
         return 0;
@@ -641,19 +641,18 @@ std::size_t Stream::readSome(void* buffer, const std::size_t size)
         throw Error(Result::eI2pError,
             "SAM: nothing read within " + std::to_string(readTimeoutSeconds_) + "s");
     }
-    const std::ptrdiff_t got = socketRead(socket_, buffer, size);
+    const std::ptrdiff_t got = socketRead(socket_, buffer.data(), buffer.size());
     if (got < 0) {
         throw Error(Result::eI2pError, "SAM: stream read failed");
     }
     return static_cast<std::size_t>(got);
 }
 
-void Stream::readExact(void* buffer, const std::size_t size)
+void Stream::readExact(const ByteBuffer buffer)
 {
-    auto* cursor = static_cast<unsigned char*>(buffer);
     std::size_t read = 0;
-    while (read < size) {
-        const std::size_t got = readSome(cursor + read, size - read);
+    while (read < buffer.size()) {
+        const std::size_t got = readSome(buffer.subspan(read));
         if (got == 0) {
             throw Error(Result::eI2pError, "SAM: stream closed before the read completed");
         }
@@ -661,12 +660,12 @@ void Stream::readExact(void* buffer, const std::size_t size)
     }
 }
 
-void Stream::writeAll(const void* data, const std::size_t size)
+void Stream::writeAll(const ByteView data)
 {
     if (socket_ == kInvalidSocket) {
         throw Error(Result::eI2pError, "SAM: write to a closed stream");
     }
-    writeAllSocket(socket_, data, size);
+    writeAllSocket(socket_, data.data(), data.size());
 }
 
 std::size_t Stream::pendingBytes() const
@@ -811,7 +810,7 @@ Session::Session(RouterAddress router, SessionConfig config, const std::chrono::
         impl_->datagrams.reset(openLocalUdpSocket(impl_->datagramPort));
     }
     impl_->create();
-    impl_->watch = std::thread([impl = impl_.get()]() { impl->watchLoop(); });
+    impl_->watch = std::thread([&impl = *impl_]() { impl.watchLoop(); });
 }
 
 Session::~Session()
@@ -897,23 +896,21 @@ std::unique_ptr<Stream> Session::accept(
     return std::make_unique<Stream>(incoming.release());
 }
 
-void Session::sendDatagram(
-    const std::string& destination, const void* data, const std::size_t size)
+void Session::sendDatagram(const std::string& destination, const ByteView data)
 {
     if (impl_->config.style == Style::eStream) {
         throw Error(Result::eI2pError, "SAM: datagram on a stream session");
     }
-    if (size > kMaxDatagramBytes) {
+    if (data.size() > kMaxDatagramBytes) {
         throw Error(Result::eI2pError, "SAM: datagram over "
                 + std::to_string(kMaxDatagramBytes) + " bytes");
     }
     const std::string header = std::string(kDatagramHeaderVersion) + " " + impl_->id + " "
         + destination + "\n";
     std::vector<unsigned char> packet;
-    packet.reserve(header.size() + size);
+    packet.reserve(header.size() + data.size());
     packet.insert(packet.end(), header.begin(), header.end());
-    const auto* bytes = static_cast<const unsigned char*>(data);
-    packet.insert(packet.end(), bytes, bytes + size);
+    packet.insert(packet.end(), data.begin(), data.end());
 
     const sockaddr_in addr
         = loopbackAddress(impl_->router.host, impl_->router.resolvedDatagramPort());
@@ -924,8 +921,7 @@ void Session::sendDatagram(
     }
 }
 
-std::vector<std::uint8_t> Session::receiveDatagram(
-    std::string* const peerDestination, const std::chrono::milliseconds timeout)
+i2p::Datagram Session::receiveDatagram(const std::chrono::milliseconds timeout)
 {
     if (impl_->config.style == Style::eStream) {
         throw Error(Result::eI2pError, "SAM: datagram on a stream session");
@@ -941,16 +937,13 @@ std::vector<std::uint8_t> Session::receiveDatagram(
     }
     buffer.resize(static_cast<std::size_t>(got));
     if (impl_->config.style == Style::eRaw) {
-        return buffer;
+        return {{}, std::move(buffer)};
     }
     const auto newline = std::find(buffer.begin(), buffer.end(), '\n');
     if (newline == buffer.end()) {
         throw Error(Result::eUnknown, "SAM: a repliable datagram named no sender");
     }
-    if (peerDestination != nullptr) {
-        peerDestination->assign(buffer.begin(), newline);
-    }
-    return std::vector<std::uint8_t>(newline + 1, buffer.end());
+    return {std::string(buffer.begin(), newline), Bytes(newline + 1, buffer.end())};
 }
 
 }  // namespace bazarish::sam

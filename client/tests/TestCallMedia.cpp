@@ -112,10 +112,9 @@ public:
     {
     }
 
-    void sendDatagram(const void* data, const std::size_t size) override
+    void sendDatagram(const ByteView data) override
     {
-        const auto* bytes = static_cast<const std::uint8_t*>(data);
-        out_.push(std::vector<std::uint8_t>(bytes, bytes + size));
+        out_.push(std::vector<std::uint8_t>(data.begin(), data.end()));
     }
 
     std::vector<std::uint8_t> receiveDatagram(const int timeoutMs) override
@@ -242,7 +241,7 @@ int main()
 
         AudioEncoder encoder;
         AudioDecoder decoder;
-        const Bytes packet = encoder.encode(frame.data(), static_cast<int>(frame.size()));
+        const Bytes packet = encoder.encode(frame);
         CHECK(!packet.empty());
         CHECK(packet.size() < frame.size() * sizeof(std::int16_t));
         const std::vector<std::int16_t> decoded = decoder.decode(packet);
@@ -263,11 +262,11 @@ int main()
         const std::vector<std::int16_t> silence(kCallSamplesPerFrame, 0);
         std::vector<Bytes> frames;
         for (int i = 0; i < kFramesPerHalf; ++i) {
-            frames.push_back(encoder.encode(silence.data(), kCallSamplesPerFrame));
+            frames.push_back(encoder.encode(silence));
         }
         for (int i = 0; i < kFramesPerHalf; ++i) {
             const std::vector<std::int16_t> tone = source.readFrame();
-            frames.push_back(encoder.encode(tone.data(), kCallSamplesPerFrame));
+            frames.push_back(encoder.encode(tone));
         }
         source.stop();
 
@@ -279,7 +278,7 @@ int main()
         AudioEncoder quietEncoder;
         std::vector<Bytes> quiet;
         for (int i = 0; i < kFramesPerHalf; ++i) {
-            quiet.push_back(quietEncoder.encode(silence.data(), kCallSamplesPerFrame));
+            quiet.push_back(quietEncoder.encode(silence));
         }
         const std::vector<std::uint8_t> flat = voiceWaveform(packOpusFrames(quiet), kBars);
         CHECK(flat.size() == static_cast<std::size_t>(kBars));
@@ -306,8 +305,8 @@ int main()
         TimeStretch stretch(tone, kSpeed);
         std::vector<std::int16_t> fast;
         std::vector<std::int16_t> chunk(kCallSamplesPerFrame);
-        for (std::size_t produced = stretch.read(chunk.data(), chunk.size()); produced > 0;
-            produced = stretch.read(chunk.data(), chunk.size())) {
+        for (std::size_t produced = stretch.read(chunk); produced > 0;
+            produced = stretch.read(chunk)) {
             fast.insert(fast.end(), chunk.begin(),
                 chunk.begin() + static_cast<std::ptrdiff_t>(produced));
         }
@@ -346,7 +345,7 @@ int main()
         source.start();
         const std::vector<std::int16_t> tone = source.readFrame();
         source.stop();
-        toCallee.push(callPacket(key, 1, encoder.encode(tone.data(), kCallSamplesPerFrame)));
+        toCallee.push(callPacket(key, 1, encoder.encode(tone)));
         for (int waited = 0; waited < kWaitMs && callee.packetsReceived() < 1; waited += kPollMs) {
             std::this_thread::sleep_for(std::chrono::milliseconds(kPollMs));
         }

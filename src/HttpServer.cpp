@@ -303,18 +303,19 @@ public:
 private:
     void write()
     {
-        std::vector<unsigned char>* front = nullptr;
+        // A deque keeps its front in place while others are pushed behind it.
+        asio::const_buffer front;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             if (queue_.empty()) {
                 writing_ = false;
                 return;
             }
-            front = &queue_.front();
+            front = asio::buffer(queue_.front());
         }
         const std::shared_ptr<SocketImpl> self = shared_from_this();
         stream_.binary(true);
-        stream_.async_write(asio::buffer(*front),
+        stream_.async_write(front,
             [self](const boost::system::error_code& error, const std::size_t) {
                 {
                     const std::lock_guard<std::mutex> lock(self->mutex_);

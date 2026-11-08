@@ -50,8 +50,9 @@ int main()
         const auto sealed = [&](const std::string& secret) {
             std::ifstream in(plainPath, std::ios::binary);
             return cms::sealWithPasswordDetached(
-                [&in](void* const buffer, const std::size_t size) {
-                    in.read(static_cast<char*>(buffer), static_cast<std::streamsize>(size));
+                [&in](const ByteBuffer buffer) {
+                    in.read(reinterpret_cast<char*>(buffer.data()),
+                        static_cast<std::streamsize>(buffer.size()));
                     return static_cast<std::size_t>(in.gcount());
                 },
                 contentPath, secret);
@@ -64,10 +65,7 @@ int main()
         const auto unsealed = [&](const Bytes& envelope, const std::string& secret) {
             Bytes plain;
             cms::unsealWithPasswordDetached(envelope, contentPath, secret,
-                [&plain](const void* data, const std::size_t size) {
-                    const auto* const bytes = static_cast<const unsigned char*>(data);
-                    plain.insert(plain.end(), bytes, bytes + size);
-                });
+                [&plain](const ByteView data) { plain.insert(plain.end(), data.begin(), data.end()); });
             return plain;
         };
         CHECK(unsealed(header, password) == bigPlain);

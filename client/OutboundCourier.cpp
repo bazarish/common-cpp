@@ -292,14 +292,14 @@ OutboundCourier::Outcome OutboundCourier::attempt(const Task& task,
     try {
         reply = federationSendDeliver(*stream, task.sealed, task.payload);
     } catch (const std::exception& error) {
-        unwatch(stream.get());
+        unwatch(stream);
         const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - wroteAt);
         bazarish::log::warn("delivery to {} did not complete after {} ms: {}",
             bazarish::log::redact(task.toDest), waited.count(), error.what());
         return outcome;
     }
-    unwatch(stream.get());
+    unwatch(stream);
     if (reply.delivered && !signedForUs(reply, task.deliveryId)) {
         bazarish::log::warn("delivery to {} was claimed without a valid signature",
             bazarish::log::redact(task.toDest));
@@ -319,13 +319,13 @@ void OutboundCourier::watch(
     watched_.emplace_back(stream, deadline);
 }
 
-void OutboundCourier::unwatch(const DeliveryStream* const stream)
+void OutboundCourier::unwatch(const std::shared_ptr<DeliveryStream>& stream)
 {
     const std::lock_guard<std::mutex> lock(watchMutex_);
     watched_.erase(std::remove_if(watched_.begin(), watched_.end(),
-                       [stream](const auto& entry) {
+                       [&stream](const auto& entry) {
                            const std::shared_ptr<DeliveryStream> held = entry.first.lock();
-                           return !held || held.get() == stream;
+                           return !held || held == stream;
                        }),
         watched_.end());
 }

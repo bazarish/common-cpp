@@ -5,7 +5,7 @@
 
 #include <cstddef>
 #include <stdexcept>
-#include <cstring>
+#include <array>
 #include <algorithm>
 #include <string>
 
@@ -45,7 +45,7 @@ public:
         std::string out;
         for (;;) {
             while (at_ < buffer_.size()) {
-                const char c = buffer_[at_++];
+                const char c = static_cast<char>(buffer_[at_++]);
                 if (c == '\n') {
                     return out;
                 }
@@ -58,16 +58,17 @@ public:
         }
     }
 
-    void read(void* const out, const std::size_t size)
+    void read(const ByteBuffer out)
     {
-        auto* const bytes = static_cast<unsigned char*>(out);
         std::size_t done = 0;
-        while (done < size) {
+        while (done < out.size()) {
             if (at_ >= buffer_.size()) {
                 fill();
             }
-            const std::size_t take = std::min(size - done, buffer_.size() - at_);
-            std::memcpy(bytes + done, buffer_.data() + at_, take);
+            const std::size_t take = std::min(out.size() - done, buffer_.size() - at_);
+            const auto from = buffer_.begin() + static_cast<std::ptrdiff_t>(at_);
+            std::copy(from, from + static_cast<std::ptrdiff_t>(take),
+                out.begin() + static_cast<std::ptrdiff_t>(done));
             at_ += take;
             done += take;
         }
@@ -77,7 +78,7 @@ private:
     void fill()
     {
         buffer_.resize(kFrameReadChunkBytes);
-        const std::size_t got = stream_.readSome(buffer_.data(), buffer_.size());
+        const std::size_t got = stream_.readSome(ByteBuffer(buffer_));
         if (got == 0) {
             throw std::runtime_error("the stream ended mid-frame");
         }
@@ -86,7 +87,7 @@ private:
     }
 
     Stream& stream_;
-    std::string buffer_;
+    Bytes buffer_;
     std::size_t at_ = 0;
 };
 
@@ -94,13 +95,13 @@ template <class Stream>
 std::string readFederationHeaderLine(Stream& stream)
 {
     std::string line;
-    char c = 0;
+    std::array<unsigned char, 1> c{};
     while (true) {
-        stream.readExact(&c, 1);
-        if (c == '\n') {
+        stream.readExact(ByteBuffer(c));
+        if (c[0] == '\n') {
             break;
         }
-        line.push_back(c);
+        line.push_back(static_cast<char>(c[0]));
         if (line.size() > kMaxFederationHeaderLineBytes) {
             throw std::runtime_error("federation header line too long");
         }
@@ -112,7 +113,7 @@ template <class Stream>
 void writeFederationHeaderLine(Stream& stream, const std::string& line)
 {
     const std::string framed = line + "\n";
-    stream.writeAll(framed.data(), framed.size());
+    stream.writeAll(viewOf(framed));
 }
 
 }  // namespace detail
@@ -128,7 +129,7 @@ FederationDeliverResult federationSendDeliver(
 {
     detail::writeFederationHeaderLine(stream, buildFederationDeliverHeader(sealed, payload.size()));
     if (!payload.empty()) {
-        stream.writeAll(payload.data(), payload.size());
+        stream.writeAll(ByteView(payload));
     }
     return parseFederationDeliverReply(detail::readFederationHeaderLine(stream));
 }

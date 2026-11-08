@@ -1,5 +1,7 @@
 // Bazarish project (c) 2026
 #include "bazarish/Crypto.hpp"
+
+#include "OpenSslHandles.hpp"
 #include "bazarish/JsonRead.hpp"
 
 #include <openssl/bio.h>
@@ -23,6 +25,8 @@
 
 namespace {
 
+constexpr std::size_t kHashChunkBytes = 64 * 1024;
+
 using bazarish::Bytes;
 
 int passphraseCallback(char* const buffer, const int size, int, void* const userdata)
@@ -45,21 +49,8 @@ bazarish::KeyPtr generateNamed(const char* const algorithm)
     return bazarish::KeyPtr(key);
 }
 
-struct BioDeleter {
-    void operator()(BIO* bio) const
-    {
-        BIO_free(bio);
-    }
-};
-using BioPtr = std::unique_ptr<BIO, BioDeleter>;
-
-struct CipherCtxDeleter {
-    void operator()(EVP_CIPHER_CTX* ctx) const
-    {
-        EVP_CIPHER_CTX_free(ctx);
-    }
-};
-using CipherCtxPtr = std::unique_ptr<EVP_CIPHER_CTX, CipherCtxDeleter>;
+using bazarish::ossl::BioPtr;
+using bazarish::ossl::CipherCtxPtr;
 
 BioPtr makeMemoryBio()
 {
@@ -168,17 +159,14 @@ Key Key::fromPublicDer(const Bytes& spkiDer)
                 const nlohmann::json::binary_t& classical = pair.at("c").get_binary();
                 const nlohmann::json::binary_t& kem = pair.at("q").get_binary();
                 const unsigned char* classicalCursor = classical.data();
-                EVP_PKEY* const classicalKey = d2i_PUBKEY(
-                    nullptr, &classicalCursor, static_cast<long>(classical.size()));
+                KeyPtr classicalKey(d2i_PUBKEY(
+                    nullptr, &classicalCursor, static_cast<long>(classical.size())));
                 const unsigned char* kemCursor = kem.data();
-                EVP_PKEY* const kemKey
-                    = d2i_PUBKEY(nullptr, &kemCursor, static_cast<long>(kem.size()));
+                KeyPtr kemKey(d2i_PUBKEY(nullptr, &kemCursor, static_cast<long>(kem.size())));
                 if (classicalKey == nullptr || kemKey == nullptr) {
-                    EVP_PKEY_free(classicalKey);
-                    EVP_PKEY_free(kemKey);
                     throw std::runtime_error("sealing key pair does not parse");
                 }
-                return Key(KeyPtr(classicalKey), KeyPtr(kemKey), false);
+                return Key(std::move(classicalKey), std::move(kemKey), false);
             }
         }
     }
@@ -294,8 +282,7 @@ Bytes sign(const Key& key, const Bytes& data)
     if (!key.hasPrivate()) {
         throw std::logic_error("signing requires a private key");
     }
-    const std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
-        EVP_MD_CTX_new(), &EVP_MD_CTX_free);
+    const bazarish::ossl::MdCtxPtr ctx(EVP_MD_CTX_new());
     if (ctx == nullptr) {
         throw std::runtime_error("EVP_MD_CTX_new failed");
     }
@@ -318,8 +305,7 @@ Bytes sign(const Key& key, const Bytes& data)
 
 bool verify(const Key& key, const Bytes& data, const Bytes& signature)
 {
-    const std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
-        EVP_MD_CTX_new(), &EVP_MD_CTX_free);
+    const bazarish::ossl::MdCtxPtr ctx(EVP_MD_CTX_new());
     if (ctx == nullptr) {
         throw std::runtime_error("EVP_MD_CTX_new failed");
     }
@@ -415,10 +401,6 @@ std::optional<Bytes> openWith(const EVP_CIPHER* const cipher, const Bytes& key,
     return out;
 }
 
-struct KdfDeleter {
-    void operator()(EVP_KDF_CTX* const ctx) const { EVP_KDF_CTX_free(ctx); }
-};
-
 }  // namespace
 
 Bytes aeadSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext)
@@ -444,12 +426,11 @@ std::optional<Bytes> chachaOpen(const Bytes& key, const Bytes& nonce, const Byte
 Bytes hkdfSha256(const Bytes& secret, const Bytes& salt, const std::string& info,
     const std::size_t size)
 {
-    EVP_KDF* const kdf = EVP_KDF_fetch(nullptr, "HKDF", nullptr);
+    const ossl::KdfPtr kdf(EVP_KDF_fetch(nullptr, "HKDF", nullptr));
     if (kdf == nullptr) {
         throw std::runtime_error("HKDF unavailable");
     }
-    const std::unique_ptr<EVP_KDF_CTX, KdfDeleter> ctx(EVP_KDF_CTX_new(kdf));
-    EVP_KDF_free(kdf);
+    const ossl::KdfCtxPtr ctx(EVP_KDF_CTX_new(kdf.get()));
     if (ctx == nullptr) {
         throw std::runtime_error("EVP_KDF_CTX_new failed");
     }
@@ -484,10 +465,10 @@ Bytes sha256File(const std::filesystem::path& path)
         throw std::runtime_error("cannot open file for hashing: " + path.string());
     }
     Sha256 hash;
-    std::array<char, 64 * 1024> buffer;
+    std::array<unsigned char, kHashChunkBytes> buffer;
     while (input) {
-        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        hash.update(buffer.data(), static_cast<std::size_t>(input.gcount()));
+        input.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
+        hash.update(ByteView(buffer).first(static_cast<std::size_t>(input.gcount())));
     }
     if (input.bad()) {
         throw std::runtime_error("read error while hashing: " + path.string());
@@ -508,9 +489,9 @@ Sha256::Sha256()
     }
 }
 
-void Sha256::update(const void* const data, const std::size_t size)
+void Sha256::update(const ByteView data)
 {
-    if (size > 0 && EVP_DigestUpdate(context_.get(), data, size) != 1) {
+    if (!data.empty() && EVP_DigestUpdate(context_.get(), data.data(), data.size()) != 1) {
         throw std::runtime_error("EVP_DigestUpdate failed");
     }
 }

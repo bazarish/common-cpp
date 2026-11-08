@@ -22,14 +22,14 @@ namespace bazarish {
 class CallTransport {
 public:
     virtual ~CallTransport() = default;
-    virtual void sendDatagram(const void* data, std::size_t size) = 0;
+    virtual void sendDatagram(ByteView data) = 0;
     virtual std::vector<std::uint8_t> receiveDatagram(int timeoutMs) = 0;
 };
 
 class I2pCallTransport : public CallTransport {
 public:
     I2pCallTransport(bazarish::i2p::Endpoint& endpoint, std::string peerDestination);
-    void sendDatagram(const void* data, std::size_t size) override;
+    void sendDatagram(ByteView data) override;
     std::vector<std::uint8_t> receiveDatagram(int timeoutMs) override;
 
 private:

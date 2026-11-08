@@ -18,7 +18,7 @@ namespace bazarish::client {
 
 bazarish::i2p::Router& sharedI2pRouter(const std::filesystem::path& dataDir);
 
-bazarish::i2p::Router* sharedI2pRouterIfRunning();
+std::optional<std::reference_wrapper<bazarish::i2p::Router>> sharedI2pRouterIfRunning();
 
 std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest(bazarish::i2p::Privacy privacy);
 // A published datagram destination for presence watching; it gets its reader key when taken.

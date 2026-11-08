@@ -3,7 +3,6 @@
 #include "bazarish/JsonRead.hpp"
 
 #include <algorithm>
-#include <cstring>
 #include <limits>
 
 namespace bazarish::gateway {
@@ -153,51 +152,44 @@ std::string_view faultName(const Fault fault)
     return "internal";
 }
 
-Bytes encode(const FrameType type, const std::uint32_t ref, const void* const body,
-    const std::size_t size)
+Bytes encode(const FrameType type, const std::uint32_t ref, const ByteView body)
 {
-    if (size > kMaxBodyBytes) {
+    if (body.size() > kMaxBodyBytes) {
         throw ProtocolError(Fault::eBadFrame, "frame body over the cap");
     }
     Bytes out;
-    out.reserve(kFrameHeaderBytes + size);
+    out.reserve(kFrameHeaderBytes + body.size());
     out.push_back(static_cast<unsigned char>(type));
     appendBigEndian32(out, ref);
-    if (size > 0) {
-        const unsigned char* const at = static_cast<const unsigned char*>(body);
-        out.insert(out.end(), at, at + size);
+    if (!body.empty()) {
+        out.insert(out.end(), body.begin(), body.end());
     }
     return out;
-}
-
-Bytes encode(const FrameType type, const std::uint32_t ref, const Bytes& body)
-{
-    return encode(type, ref, body.data(), body.size());
 }
 
 Bytes encodeJson(const FrameType type, const std::uint32_t ref, const nlohmann::json& body)
 {
     const std::string text = body.dump();
-    return encode(type, ref, text.data(), text.size());
+    return encode(type, ref, viewOf(text));
 }
 
-Frame decode(const void* const data, const std::size_t size)
+Frame decode(const ByteView data)
 {
-    if (size < kFrameHeaderBytes) {
+    if (data.size() < kFrameHeaderBytes) {
         throw ProtocolError(Fault::eBadFrame, "frame shorter than its header");
     }
-    if (size > kMaxFrameBytes) {
+    if (data.size() > kMaxFrameBytes) {
         throw ProtocolError(Fault::eBadFrame, "frame over the cap");
     }
-    const unsigned char* const at = static_cast<const unsigned char*>(data);
-    const std::optional<FrameType> type = frameTypeFromByte(at[0]);
+    const std::optional<FrameType> type = frameTypeFromByte(data[0]);
     if (!type.has_value()) {
         throw ProtocolError(Fault::eBadFrame, "frame type does not exist");
     }
     Frame frame;
     frame.type = type.value();
-    frame.ref = readBigEndian32(at + 1);
-    frame.body.assign(at + kFrameHeaderBytes, at + size);
+    frame.ref = readBigEndian32(data.subspan(1).data());
+    const ByteView body = data.subspan(kFrameHeaderBytes);
+    frame.body.assign(body.begin(), body.end());
     return frame;
 }
 
@@ -230,20 +222,17 @@ std::uint64_t decodeCredit(const Frame& frame)
     return readBigEndian64(frame.body.data());
 }
 
-Bytes encodeRawSend(const std::uint32_t endpoint, const std::string& host, const void* const data,
-    const std::size_t size)
+Bytes encodeRawSend(const std::uint32_t endpoint, const std::string& host, const ByteView data)
 {
     if (host.empty() || host.size() > std::numeric_limits<std::uint16_t>::max()) {
         throw ProtocolError(Fault::eBadFrame, "a datagram names one destination");
     }
     const std::uint16_t length = static_cast<std::uint16_t>(host.size());
-    Bytes body(kHostLengthBytes + host.size() + size);
+    Bytes body(kHostLengthBytes + host.size() + data.size());
     body[0] = static_cast<unsigned char>((length >> kBitsPerByte) & kByteMask);
     body[1] = static_cast<unsigned char>(length & kByteMask);
-    std::copy(host.begin(), host.end(), body.begin() + kHostLengthBytes);
-    if (size > 0) {
-        std::memcpy(body.data() + kHostLengthBytes + host.size(), data, size);
-    }
+    const auto hostAt = body.begin() + kHostLengthBytes;
+    std::copy(data.begin(), data.end(), std::copy(host.begin(), host.end(), hostAt));
     return encode(FrameType::eRawSend, endpoint, body);
 }
 

@@ -28,50 +28,30 @@ int samplesOf(const int milliseconds)
 
 }  // namespace
 
+void AudioEncoder::Destroy::operator()(OpusEncoder* const encoder) const
+{
+    opus_encoder_destroy(encoder);
+}
+
 AudioEncoder::AudioEncoder(const int bitrateBps)
-    : encoder_(nullptr)
 {
     int error = 0;
-    encoder_ = opus_encoder_create(kCallSampleRate, kCallChannels, OPUS_APPLICATION_VOIP, &error);
+    encoder_.reset(
+        opus_encoder_create(kCallSampleRate, kCallChannels, OPUS_APPLICATION_VOIP, &error));
     if (encoder_ == nullptr || error != OPUS_OK) {
         throw std::runtime_error("opus encoder creation failed");
     }
-    if (bitrateBps > 0 && opus_encoder_ctl(encoder_, OPUS_SET_BITRATE(bitrateBps)) != OPUS_OK) {
-        opus_encoder_destroy(encoder_);
+    if (bitrateBps > 0
+        && opus_encoder_ctl(encoder_.get(), OPUS_SET_BITRATE(bitrateBps)) != OPUS_OK) {
         throw std::runtime_error("opus encoder rejected the bitrate");
     }
 }
 
-AudioEncoder::~AudioEncoder()
-{
-    if (encoder_ != nullptr) {
-        opus_encoder_destroy(encoder_);
-    }
-}
-
-AudioEncoder::AudioEncoder(AudioEncoder&& other) noexcept
-    : encoder_(other.encoder_)
-{
-    other.encoder_ = nullptr;
-}
-
-AudioEncoder& AudioEncoder::operator=(AudioEncoder&& other) noexcept
-{
-    if (this != &other) {
-        if (encoder_ != nullptr) {
-            opus_encoder_destroy(encoder_);
-        }
-        encoder_ = other.encoder_;
-        other.encoder_ = nullptr;
-    }
-    return *this;
-}
-
-Bytes AudioEncoder::encode(const std::int16_t* pcm, const int samples)
+Bytes AudioEncoder::encode(const std::span<const std::int16_t> pcm)
 {
     Bytes packet(kMaxPacketBytes);
-    const opus_int32 written
-        = opus_encode(encoder_, pcm, samples, packet.data(), kMaxPacketBytes);
+    const opus_int32 written = opus_encode(
+        encoder_.get(), pcm.data(), static_cast<int>(pcm.size()), packet.data(), kMaxPacketBytes);
     if (written < 0) {
         throw std::runtime_error("opus encode failed");
     }
@@ -79,39 +59,18 @@ Bytes AudioEncoder::encode(const std::int16_t* pcm, const int samples)
     return packet;
 }
 
+void AudioDecoder::Destroy::operator()(OpusDecoder* const decoder) const
+{
+    opus_decoder_destroy(decoder);
+}
+
 AudioDecoder::AudioDecoder()
-    : decoder_(nullptr)
 {
     int error = 0;
-    decoder_ = opus_decoder_create(kCallSampleRate, kCallChannels, &error);
+    decoder_.reset(opus_decoder_create(kCallSampleRate, kCallChannels, &error));
     if (decoder_ == nullptr || error != OPUS_OK) {
         throw std::runtime_error("opus decoder creation failed");
     }
-}
-
-AudioDecoder::~AudioDecoder()
-{
-    if (decoder_ != nullptr) {
-        opus_decoder_destroy(decoder_);
-    }
-}
-
-AudioDecoder::AudioDecoder(AudioDecoder&& other) noexcept
-    : decoder_(other.decoder_)
-{
-    other.decoder_ = nullptr;
-}
-
-AudioDecoder& AudioDecoder::operator=(AudioDecoder&& other) noexcept
-{
-    if (this != &other) {
-        if (decoder_ != nullptr) {
-            opus_decoder_destroy(decoder_);
-        }
-        decoder_ = other.decoder_;
-        other.decoder_ = nullptr;
-    }
-    return *this;
 }
 
 std::vector<std::int16_t> AudioDecoder::decode(const Bytes& packet)
@@ -119,7 +78,8 @@ std::vector<std::int16_t> AudioDecoder::decode(const Bytes& packet)
     std::vector<std::int16_t> pcm(kCallSamplesPerFrame);
     const unsigned char* const data = packet.empty() ? nullptr : packet.data();
     const opus_int32 dataSize = static_cast<opus_int32>(packet.size());
-    const int samples = opus_decode(decoder_, data, dataSize, pcm.data(), kCallSamplesPerFrame, 0);
+    const int samples
+        = opus_decode(decoder_.get(), data, dataSize, pcm.data(), kCallSamplesPerFrame, 0);
     if (samples < 0) {
         throw std::runtime_error("opus decode failed");
     }
@@ -210,13 +170,14 @@ bool TimeStretch::step()
     return true;
 }
 
-std::size_t TimeStretch::read(std::int16_t* const out, const std::size_t want)
+std::size_t TimeStretch::read(const std::span<std::int16_t> out)
 {
+    const std::size_t want = out.size();
     if (!stretching_) {
         const std::size_t left = pcm_.size() - passthrough_;
         const std::size_t take = std::min(want, left);
         std::copy(pcm_.begin() + static_cast<std::ptrdiff_t>(passthrough_),
-            pcm_.begin() + static_cast<std::ptrdiff_t>(passthrough_ + take), out);
+            pcm_.begin() + static_cast<std::ptrdiff_t>(passthrough_ + take), out.begin());
         passthrough_ += take;
         return take;
     }

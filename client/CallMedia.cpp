@@ -70,9 +70,9 @@ I2pCallTransport::I2pCallTransport(bazarish::i2p::Endpoint& endpoint, std::strin
 {
 }
 
-void I2pCallTransport::sendDatagram(const void* data, const std::size_t size)
+void I2pCallTransport::sendDatagram(const ByteView data)
 {
-    endpoint_.sendRawDatagram(peerDestination_, data, size);
+    endpoint_.sendRawDatagram(peerDestination_, data);
 }
 
 std::vector<std::uint8_t> I2pCallTransport::receiveDatagram(const int timeoutMs)
@@ -203,7 +203,7 @@ void CallMedia::sealAndSend(
     packet.insert(packet.end(), sealed.begin(), sealed.end());
     {
         const std::lock_guard<std::mutex> lock(sendMutex_);
-        transport_.sendDatagram(packet.data(), packet.size());
+        transport_.sendDatagram(packet);
     }
     packetsSent_.fetch_add(1, std::memory_order_relaxed);
 }
@@ -226,7 +226,7 @@ void CallMedia::audioCaptureLoop()
             inputLevel_.store(frameLevel(frame));
         }
         if (haveAudio) {
-            const Bytes opus = encoder_.encode(frame.data(), static_cast<int>(frame.size()));
+            const Bytes opus = encoder_.encode(frame);
             sealAndSend(kTrackAudio, sendSeqAudio_, opus);
             lastSent = std::chrono::steady_clock::now();
             continue;

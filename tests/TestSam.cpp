@@ -425,9 +425,9 @@ void testConnectAndEcho()
     CHECK(contains(connect, "SILENT=false"));
 
     const std::string sent = "the frame";
-    stream->writeAll(sent.data(), sent.size());
+    stream->writeAll(bazarish::viewOf(sent));
     std::string back(sent.size(), '\0');
-    stream->readExact(back.data(), back.size());
+    stream->readExact(bazarish::bufferOf(back));
     CHECK(back == sent);
 }
 
@@ -473,7 +473,7 @@ void testForwardedAccept()
     CHECK(stream != nullptr);
     CHECK(peer == kDestination);
     std::string body(payload.size(), '\0');
-    stream->readExact(body.data(), body.size());
+    stream->readExact(bazarish::bufferOf(body));
     CHECK(body == payload);
 
     std::string nobody;
@@ -512,15 +512,15 @@ void testRawDatagrams()
     CHECK(!contains(create, "leaseSetPrivKey"));
 
     const std::string payload = "audio frame";
-    session.sendDatagram(kB33, payload.data(), payload.size());
+    session.sendDatagram(kB33, viewOf(payload));
     const std::string handed = router.takeDatagram();
     CHECK(handed.rfind("3.0 ", 0) == 0);
     CHECK(contains(handed, " " + kB33 + "\n" + payload));
 
     router.forwardDatagram(payload);
-    const std::vector<std::uint8_t> received
-        = session.receiveDatagram(nullptr, std::chrono::milliseconds(5000));
-    CHECK(std::string(received.begin(), received.end()) == payload);
+    const i2p::Datagram received = session.receiveDatagram(std::chrono::milliseconds(5000));
+    CHECK(received.from.empty());
+    CHECK(std::string(received.data.begin(), received.data.end()) == payload);
 }
 
 void testLeaseSetReaders()
@@ -549,11 +549,9 @@ void testRepliableDatagrams()
 
     const std::string payload = "a repliable line";
     router.forwardDatagram(kDestination + "\n" + payload);
-    std::string peer;
-    const std::vector<std::uint8_t> received
-        = session.receiveDatagram(&peer, std::chrono::milliseconds(5000));
-    CHECK(peer == kDestination);
-    CHECK(std::string(received.begin(), received.end()) == payload);
+    const i2p::Datagram received = session.receiveDatagram(std::chrono::milliseconds(5000));
+    CHECK(received.from == kDestination);
+    CHECK(std::string(received.data.begin(), received.data.end()) == payload);
 }
 
 void testSessionComesBackAfterTheRouterDoes()

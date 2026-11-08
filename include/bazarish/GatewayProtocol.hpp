@@ -108,17 +108,15 @@ struct Frame {
     Bytes body;
 };
 
-Bytes encode(FrameType type, std::uint32_t ref, const void* body, std::size_t size);
-Bytes encode(FrameType type, std::uint32_t ref, const Bytes& body = {});
+Bytes encode(FrameType type, std::uint32_t ref, ByteView body = {});
 Bytes encodeJson(FrameType type, std::uint32_t ref, const nlohmann::json& body);
-Frame decode(const void* data, std::size_t size);
+Frame decode(ByteView data);
 nlohmann::json bodyJson(const Frame& frame);
 
 Bytes encodeCredit(std::uint32_t stream, std::uint64_t total);
 std::uint64_t decodeCredit(const Frame& frame);
 
-Bytes encodeRawSend(std::uint32_t endpoint, const std::string& host, const void* data,
-    std::size_t size);
+Bytes encodeRawSend(std::uint32_t endpoint, const std::string& host, ByteView data);
 std::size_t rawPayloadRoom(const std::string& host);
 struct RawSend {
     std::string host;

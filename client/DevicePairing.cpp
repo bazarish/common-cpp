@@ -124,7 +124,7 @@ bool applyLinkReseed(const fs::path& i2pDataDir, const std::vector<std::string>&
     if (reseeds.empty() || knownRouterCount(i2pDataDir) >= kMinKnownRouters) {
         return false;
     }
-    if (sharedI2pRouterIfRunning() != nullptr) {
+    if (sharedI2pRouterIfRunning().has_value()) {
         return false;
     }
     setReseedUrls(reseeds);

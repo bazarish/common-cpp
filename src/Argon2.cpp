@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "bazarish/Argon2.hpp"
 
+#include "OpenSslHandles.hpp"
+
 #include <openssl/kdf.h>
 #include <openssl/params.h>
 
@@ -10,12 +12,11 @@ namespace bazarish {
 
 Bytes argon2id(const Bytes& pass, const Bytes& salt, const Argon2Cost& cost, const std::size_t outBytes)
 {
-    EVP_KDF* const kdf = EVP_KDF_fetch(nullptr, "ARGON2ID", nullptr);
+    const ossl::KdfPtr kdf(EVP_KDF_fetch(nullptr, "ARGON2ID", nullptr));
     if (kdf == nullptr) {
         throw std::runtime_error("this OpenSSL has no Argon2id");
     }
-    EVP_KDF_CTX* const ctx = EVP_KDF_CTX_new(kdf);
-    EVP_KDF_free(kdf);
+    const ossl::KdfCtxPtr ctx(EVP_KDF_CTX_new(kdf.get()));
     if (ctx == nullptr) {
         throw std::runtime_error("Argon2id could not start");
     }
@@ -34,9 +35,7 @@ Bytes argon2id(const Bytes& pass, const Bytes& salt, const Argon2Cost& cost, con
         OSSL_PARAM_construct_end(),
     };
     Bytes derived(outBytes);
-    const int ok = EVP_KDF_derive(ctx, derived.data(), derived.size(), params);
-    EVP_KDF_CTX_free(ctx);
-    if (ok <= 0) {
+    if (EVP_KDF_derive(ctx.get(), derived.data(), derived.size(), params) <= 0) {
         throw std::runtime_error("Argon2id failed");
     }
     return derived;

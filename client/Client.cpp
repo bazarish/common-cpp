@@ -84,7 +84,7 @@ Client::Client(Identity identity, std::string clientId, ServerEndpoint endpoint,
     : identity_(std::move(identity))
     , api_(identity_, std::move(clientId), std::move(endpoint), std::move(i2pDataDir))
 {
-    api_.setWireLog(log_.get());
+    api_.setWireLog(log_);
 }
 
 WireLog& Client::wireLog()

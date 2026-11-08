@@ -44,12 +44,12 @@ std::string wrongCodeFor(const std::string& code)
 
 void sayDestinations(const std::string& when)
 {
-    bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
-    if (router == nullptr) {
+    const auto running = sharedI2pRouterIfRunning();
+    if (!running.has_value()) {
         say("pool " + when + ": no router");
         return;
     }
-    for (const bazarish::i2p::LocalDestination& dest : router->localDestinations()) {
+    for (const bazarish::i2p::LocalDestination& dest : running->get().localDestinations()) {
         say("pool " + when + ": " + dest.label + " " + dest.host + " in="
             + std::to_string(dest.inboundTunnels) + " out="
             + std::to_string(dest.outboundTunnels)

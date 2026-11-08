@@ -17,11 +17,11 @@ namespace {
 
 bazarish::i2p::Router& readyRouter()
 {
-    bazarish::i2p::Router* const router = sharedI2pRouterIfRunning();
-    if (router == nullptr || !router->ready()) {
+    const auto running = sharedI2pRouterIfRunning();
+    if (!running.has_value() || !running->get().ready()) {
         throw std::runtime_error("the I2P router is still building tunnels");
     }
-    return *router;
+    return running->get();
 }
 
 }  // namespace

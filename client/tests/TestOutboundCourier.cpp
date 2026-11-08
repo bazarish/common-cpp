@@ -35,13 +35,12 @@ public:
     {
     }
 
-    void writeAll(const void* const data, const std::size_t size) override
+    void writeAll(const ByteView data) override
     {
-        const auto* const in = static_cast<const std::uint8_t*>(data);
-        written_.insert(written_.end(), in, in + size);
+        written_.insert(written_.end(), data.begin(), data.end());
     }
 
-    void readExact(void* const buffer, const std::size_t size) override
+    void readExact(const ByteBuffer buffer) override
     {
         if (!answer_) {
             throw std::runtime_error("no answer");
@@ -49,9 +48,10 @@ public:
         if (sent_ == 0) {
             reply_.push_back('\n');
         }
-        CHECK(sent_ + size <= reply_.size());
-        std::memcpy(buffer, reply_.data() + sent_, size);
-        sent_ += size;
+        CHECK(sent_ + buffer.size() <= reply_.size());
+        const ByteView from = viewOf(reply_).subspan(sent_, buffer.size());
+        std::copy(from.begin(), from.end(), buffer.begin());
+        sent_ += buffer.size();
     }
 
     void close() override { answer_ = false; }
@@ -68,9 +68,9 @@ private:
 // What a stream into a lease set whose tunnels are gone does: takes everything, answers nothing.
 class SilentStream final : public DeliveryStream {
 public:
-    void writeAll(const void*, std::size_t) override {}
+    void writeAll(ByteView) override {}
 
-    void readExact(void*, std::size_t) override
+    void readExact(ByteBuffer) override
     {
         std::unique_lock<std::mutex> lock(mutex_);
         closedCv_.wait(lock, [this]() { return closed_; });

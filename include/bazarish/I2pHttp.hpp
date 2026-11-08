@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include <bazarish/Bytes.hpp>
+
 #include <array>
 #include <cstddef>
 #include <cstdlib>
@@ -41,19 +43,19 @@ std::string readI2pHttpHeadBlock(Stream& stream, std::string& leftover, const st
 {
     const std::string terminator = "\r\n\r\n";
     std::string raw;
-    std::array<char, kI2pHttpReadChunk> buffer{};
+    std::array<unsigned char, kI2pHttpReadChunk> buffer{};
     std::size_t headerEnd = std::string::npos;
     while ((headerEnd = raw.find(terminator)) == std::string::npos) {
         if (raw.size() > kMaxI2pHttpHeadBytes) {
             throw std::runtime_error("i2p " + kind + " head is over "
                 + std::to_string(kMaxI2pHttpHeadBytes) + " bytes");
         }
-        const std::size_t got = stream.readSome(buffer.data(), buffer.size());
+        const std::size_t got = stream.readSome(buffer);
         if (got == 0) {
             throw std::runtime_error("i2p stream closed after " + std::to_string(raw.size())
                 + " bytes, before the " + kind + " head was complete");
         }
-        raw.append(buffer.data(), got);
+        raw.append(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(got));
     }
     leftover = raw.substr(headerEnd + terminator.size());
     return raw.substr(0, headerEnd);
@@ -129,13 +131,13 @@ I2pHttpResponse readI2pHttpResponse(Stream& stream, const std::size_t maxBodyByt
     if (framed) {
         refuseOversized(expected);
     }
-    std::array<char, 65536> buffer{};
+    std::array<unsigned char, kI2pHttpReadChunk> buffer{};
     while (!framed || response.body.size() < expected) {
-        const std::size_t got = stream.readSome(buffer.data(), buffer.size());
+        const std::size_t got = stream.readSome(buffer);
         if (got == 0) {
             break;
         }
-        response.body.append(buffer.data(), got);
+        response.body.append(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(got));
         refuseOversized(response.body.size());
     }
     if (framed && response.body.size() > expected) {

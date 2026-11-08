@@ -29,15 +29,9 @@ public:
     {
     }
 
-    void readExact(void* const buffer, const std::size_t size) override
-    {
-        stream_->readExact(buffer, size);
-    }
+    void readExact(const ByteBuffer buffer) override { stream_->readExact(buffer); }
 
-    void writeAll(const void* const data, const std::size_t size) override
-    {
-        stream_->writeAll(data, size);
-    }
+    void writeAll(const ByteView data) override { stream_->writeAll(data); }
 
     void close() override { stream_->close(); }
 

@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "bazarish/Cms.hpp"
 
+#include "OpenSslHandles.hpp"
+
 #include <openssl/bio.h>
 #include <openssl/cms.h>
 #include <openssl/crypto.h>
@@ -16,31 +18,11 @@ namespace {
 
 using bazarish::Bytes;
 
-struct BioDeleter {
-    void operator()(BIO* bio) const
-    {
-        BIO_free(bio);
-    }
-};
-using BioPtr = std::unique_ptr<BIO, BioDeleter>;
-
-struct BioChainDeleter {
-    void operator()(BIO* bio) const
-    {
-        BIO_free_all(bio);
-    }
-};
-using BioChainPtr = std::unique_ptr<BIO, BioChainDeleter>;
+using bazarish::ossl::BioChainPtr;
+using bazarish::ossl::BioPtr;
+using bazarish::ossl::CmsPtr;
 
 constexpr std::size_t kStreamChunkBytes = 64 * 1024;
-
-struct CmsDeleter {
-    void operator()(CMS_ContentInfo* cms) const
-    {
-        CMS_ContentInfo_free(cms);
-    }
-};
-using CmsPtr = std::unique_ptr<CMS_ContentInfo, CmsDeleter>;
 
 BioPtr makeMemoryBio()
 {
@@ -90,17 +72,18 @@ Bytes bioToBytes(BIO* const bio)
 
 void addPasswordRecipient(CMS_ContentInfo* const cms, const std::string& password)
 {
-    unsigned char* const copy
-        = static_cast<unsigned char*>(OPENSSL_memdup(password.data(), password.size()));
+    bazarish::ossl::BlockPtr copy(
+        static_cast<unsigned char*>(OPENSSL_memdup(password.data(), password.size())));
     if (copy == nullptr) {
         throw std::runtime_error("OPENSSL_memdup failed");
     }
-    if (CMS_add0_recipient_password(
-            cms, -1, NID_undef, NID_undef, copy, static_cast<int>(password.size()), nullptr)
+    if (CMS_add0_recipient_password(cms, -1, NID_undef, NID_undef, copy.get(),
+            static_cast<int>(password.size()), nullptr)
         == nullptr) {
-        OPENSSL_free(copy);
         throw std::runtime_error("CMS_add0_recipient_password failed");
     }
+    // The recipient owns the copy now.
+    static_cast<void>(copy.release());
 }
 
 void unsealWithPasswordBio(BIO* const input, BIO* const output, const std::string& password)
@@ -167,7 +150,7 @@ Bytes sealWithPasswordDetached(const PlainReadFn& read, const std::filesystem::p
     content.release();
     std::array<unsigned char, kStreamChunkBytes> buffer{};
     for (;;) {
-        const int got = static_cast<int>(read(buffer.data(), buffer.size()));
+        const int got = static_cast<int>(read(buffer));
         if (got == 0) {
             break;
         }
@@ -237,7 +220,7 @@ void unsealWithPasswordDetached(const Bytes& header, const std::filesystem::path
         if (got == 0) {
             break;
         }
-        write(buffer.data(), static_cast<std::size_t>(got));
+        write(ByteView(buffer).first(static_cast<std::size_t>(got)));
     }
     // The padding of the last block is checked only once the content has run out.
     if (BIO_get_cipher_status(chain.get()) != 1) {

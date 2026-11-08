@@ -24,8 +24,8 @@ namespace bazarish::client {
 class DeliveryStream {
 public:
     virtual ~DeliveryStream() = default;
-    virtual void readExact(void* buffer, std::size_t size) = 0;
-    virtual void writeAll(const void* data, std::size_t size) = 0;
+    virtual void readExact(ByteBuffer buffer) = 0;
+    virtual void writeAll(ByteView data) = 0;
     virtual void close() = 0;
 };
 
@@ -107,7 +107,7 @@ private:
         bool& outReachable, bool& outSent);
     void watch(const std::shared_ptr<DeliveryStream>& stream,
         std::chrono::steady_clock::time_point deadline);
-    void unwatch(const DeliveryStream* stream);
+    void unwatch(const std::shared_ptr<DeliveryStream>& stream);
 
     const PrepareFn prepare_;
     const OpenStreamFn openStream_;

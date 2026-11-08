@@ -51,8 +51,8 @@ int main(int argc, char** argv)
                     return;
                 }
                 std::vector<unsigned char> in(payload);
-                stream->readExact(in.data(), in.size());
-                stream->writeAll(in.data(), in.size());
+                stream->readExact(in);
+                stream->writeAll(in);
                 stream->close();
                 ++served;
             } catch (const std::exception& error) {
@@ -67,9 +67,9 @@ int main(int argc, char** argv)
         try {
             const auto stream = client->connect(server->routingHost(), std::chrono::seconds(120));
             std::vector<unsigned char> out(payload, static_cast<unsigned char>('a' + i));
-            stream->writeAll(out.data(), out.size());
+            stream->writeAll(out);
             std::vector<unsigned char> back(payload);
-            stream->readExact(back.data(), back.size());
+            stream->readExact(back);
             stream->close();
             if (back == out) {
                 ++ok;

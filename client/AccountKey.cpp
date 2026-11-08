@@ -2,12 +2,13 @@
 #include "AccountKey.hpp"
 
 #include <bazarish/Argon2.hpp>
+#include <bazarish/Crypto.hpp>
 #include <bazarish/PrivateFile.hpp>
 
-#include <openssl/evp.h>
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <system_error>
 
@@ -25,10 +27,10 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr char kMagic[4] = {'B', 'Z', 'K', '1'};
-constexpr std::size_t kKeyBytes = 32;
+constexpr std::size_t kKeyBytes = bazarish::kAeadKeyBytes;
 constexpr std::size_t kSaltBytes = 16;
-constexpr std::size_t kNonceBytes = 12;
-constexpr std::size_t kTagBytes = 16;
+constexpr std::size_t kNonceBytes = bazarish::kAeadNonceBytes;
+constexpr std::size_t kTagBytes = bazarish::kAeadTagBytes;
 
 constexpr std::uint32_t kMemoryKiB = 64 * 1024;
 constexpr std::uint32_t kPasses = 3;
@@ -77,15 +79,8 @@ std::shared_ptr<std::mutex> pathLock(const fs::path& databaseFile)
 
 Bytes verifierOf(const std::string& passphrase)
 {
-    Bytes digest(EVP_MAX_MD_SIZE);
-    unsigned int size = 0;
     const std::string labelled = std::string("bazarish-account-key") + '\0' + passphrase;
-    if (EVP_Digest(labelled.data(), labelled.size(), digest.data(), &size, EVP_sha256(), nullptr)
-        != 1) {
-        throw std::runtime_error("account key: could not hash the passphrase");
-    }
-    digest.resize(size);
-    return digest;
+    return sha256(Bytes(labelled.begin(), labelled.end()));
 }
 
 std::string secretOf(const std::string& passphrase)
@@ -93,9 +88,9 @@ std::string secretOf(const std::string& passphrase)
     return passphrase.empty() ? std::string(kOpenSecret) : passphrase;
 }
 
-void fill(unsigned char* const out, const std::size_t size)
+void fill(const ByteBuffer out)
 {
-    if (RAND_bytes(out, static_cast<int>(size)) != 1) {
+    if (RAND_bytes(out.data(), static_cast<int>(out.size())) != 1) {
         throw std::runtime_error("account key: no randomness available");
     }
 }
@@ -110,50 +105,28 @@ Bytes wrappingKey(const std::string& passphrase, const Sidecar& sidecar)
 
 void seal(const Bytes& wrapping, Sidecar& sidecar, const Bytes& key)
 {
-    EVP_CIPHER_CTX* const ctx = EVP_CIPHER_CTX_new();
-    if (ctx == nullptr) {
-        throw std::runtime_error("account key: no cipher context");
+    const Bytes sealed
+        = aeadSeal(wrapping, Bytes(sidecar.nonce.begin(), sidecar.nonce.end()), key);
+    if (sealed.size() != kKeyBytes + kTagBytes) {
+        throw std::runtime_error("account key: the key is not the size it should be");
     }
-    int length = 0;
-    const bool ok
-        = EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, wrapping.data(), sidecar.nonce.data())
-            == 1
-        && EVP_EncryptUpdate(ctx, sidecar.sealed.data(), &length, key.data(),
-               static_cast<int>(key.size()))
-            == 1
-        && EVP_EncryptFinal_ex(ctx, sidecar.sealed.data() + length, &length) == 1
-        && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, static_cast<int>(sidecar.tag.size()),
-               sidecar.tag.data())
-            == 1;
-    EVP_CIPHER_CTX_free(ctx);
-    if (!ok) {
-        throw std::runtime_error("account key: could not seal the key");
-    }
+    const auto tagAt = sealed.begin() + static_cast<std::ptrdiff_t>(kKeyBytes);
+    std::copy(sealed.begin(), tagAt, sidecar.sealed.begin());
+    std::copy(tagAt, sealed.end(), sidecar.tag.begin());
 }
 
 bool unseal(const Bytes& wrapping, const Sidecar& sidecar, Bytes& key)
 {
-    EVP_CIPHER_CTX* const ctx = EVP_CIPHER_CTX_new();
-    if (ctx == nullptr) {
-        throw std::runtime_error("account key: no cipher context");
-    }
-    key.assign(kKeyBytes, 0);
-    int length = 0;
-    bool ok
-        = EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, wrapping.data(), sidecar.nonce.data())
-            == 1
-        && EVP_DecryptUpdate(ctx, key.data(), &length, sidecar.sealed.data(), kKeyBytes) == 1
-        && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, static_cast<int>(sidecar.tag.size()),
-               const_cast<unsigned char*>(sidecar.tag.data()))
-            == 1;
-    if (ok) {
-        ok = EVP_DecryptFinal_ex(ctx, key.data() + length, &length) == 1;
-    }
-    EVP_CIPHER_CTX_free(ctx);
-    if (!ok) {
+    Bytes sealed(sidecar.sealed.begin(), sidecar.sealed.end());
+    sealed.insert(sealed.end(), sidecar.tag.begin(), sidecar.tag.end());
+    std::optional<Bytes> opened
+        = aeadOpen(wrapping, Bytes(sidecar.nonce.begin(), sidecar.nonce.end()), sealed);
+    if (!opened.has_value()) {
         key.clear();
+        return false;
     }
-    return ok;
+    key = std::move(*opened);
+    return true;
 }
 
 void write(const fs::path& file, const Sidecar& sidecar)
@@ -223,8 +196,8 @@ Sidecar freshSidecar(const std::string& passphrase)
         sidecar.memoryKiB = kOpenMemoryKiB;
         sidecar.passes = kOpenPasses;
     }
-    fill(sidecar.salt.data(), sidecar.salt.size());
-    fill(sidecar.nonce.data(), sidecar.nonce.size());
+    fill(sidecar.salt);
+    fill(sidecar.nonce);
     return sidecar;
 }
 
@@ -232,7 +205,7 @@ Bytes create(const fs::path& file, const std::string& passphrase)
 {
     Sidecar sidecar = freshSidecar(passphrase);
     Bytes key(kKeyBytes);
-    fill(key.data(), key.size());
+    fill(key);
     seal(wrappingKey(passphrase, sidecar), sidecar, key);
     write(file, sidecar);
     return key;

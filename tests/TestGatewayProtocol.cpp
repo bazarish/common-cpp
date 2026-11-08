@@ -27,7 +27,7 @@ const std::vector<Fault> kAllFaults = {Fault::eVersion, Fault::eBadFrame, Fault:
 
 Frame roundTrip(const Bytes& wire)
 {
-    return decode(wire.data(), wire.size());
+    return decode(wire);
 }
 
 }  // namespace
@@ -79,23 +79,23 @@ int main()
     CHECK_THROWS(encode(FrameType::eStreamData, 8, tooLong));
     Bytes oversized = full;
     oversized.push_back(0);
-    CHECK_THROWS(decode(oversized.data(), oversized.size()));
+    CHECK_THROWS(decode(oversized));
 
-    CHECK_THROWS(decode(empty.data(), kFrameHeaderBytes - 1));
+    CHECK_THROWS(decode(ByteView(empty).first(kFrameHeaderBytes - 1)));
     Bytes unknownType = empty;
     unknownType[0] = 0x7F;
-    CHECK_THROWS(decode(unknownType.data(), unknownType.size()));
+    CHECK_THROWS(decode(unknownType));
 
     const nlohmann::json body = {{"version", kProtocolVersion}, {"resumed", true}};
     const Frame ready = roundTrip(encodeJson(FrameType::eReady, 3, body));
     CHECK(bodyJson(ready) == body);
     const std::string notADocument = "[1,2,3]";
     const Frame array = roundTrip(
-        encode(FrameType::eReady, 3, notADocument.data(), notADocument.size()));
+        encode(FrameType::eReady, 3, viewOf(notADocument)));
     CHECK_THROWS(bodyJson(array));
     const std::string broken = "{\"a\":";
     const Frame malformed
-        = roundTrip(encode(FrameType::eReady, 3, broken.data(), broken.size()));
+        = roundTrip(encode(FrameType::eReady, 3, viewOf(broken)));
     CHECK_THROWS(bodyJson(malformed));
     CHECK_THROWS(bodyJson(decodedFull));
 
@@ -110,17 +110,17 @@ int main()
 
     const std::string host = "ukeu3k5oycgaauneqgtnvselmt4yemvoilkln7jpvamvfx7dnkdq.b32.i2p";
     const Bytes media = {0xDE, 0xAD, 0xBE, 0xEF};
-    const Frame raw = roundTrip(encodeRawSend(4, host, media.data(), media.size()));
+    const Frame raw = roundTrip(encodeRawSend(4, host, media));
     CHECK(raw.type == FrameType::eRawSend);
     CHECK(raw.ref == 4);
     const RawSend sent = decodeRawSend(raw);
     CHECK(sent.host == host);
     CHECK(sent.payload == media);
 
-    const Frame bare = roundTrip(encodeRawSend(4, host, nullptr, 0));
+    const Frame bare = roundTrip(encodeRawSend(4, host, {}));
     CHECK(decodeRawSend(bare).host == host);
     CHECK(decodeRawSend(bare).payload.empty());
-    CHECK_THROWS(encodeRawSend(4, std::string(), media.data(), media.size()));
+    CHECK_THROWS(encodeRawSend(4, std::string(), media));
     Frame truncated = raw;
     truncated.body.resize(3);
     CHECK_THROWS(decodeRawSend(truncated));

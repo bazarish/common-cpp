@@ -22,8 +22,8 @@ namespace bazarish::client {
 class FileInput {
 public:
     virtual ~FileInput() = default;
-    // Fills up to size bytes and answers 0 only at the end.
-    virtual std::size_t read(void* buffer, std::size_t size) = 0;
+    // Fills up to the whole buffer and answers 0 only at the end.
+    virtual std::size_t read(ByteBuffer buffer) = 0;
 };
 
 // Where sent files are read from. A location is a path on this device, or something
@@ -79,7 +79,7 @@ class TransferSink {
 public:
     virtual ~TransferSink() = default;
     virtual void total(std::uint64_t bytes) = 0;
-    virtual void append(const void* data, std::size_t size) = 0;
+    virtual void append(ByteView data) = 0;
 };
 
 using FetchAttemptFn = std::function<void(std::uint64_t offset, TransferSink& sink)>;
@@ -90,7 +90,7 @@ using TransferProgressFn = std::function<void(std::uint64_t, std::uint64_t)>;
 class FileOutput {
 public:
     virtual ~FileOutput() = default;
-    virtual void write(const void* data, std::size_t size) = 0;
+    virtual void write(ByteView data) = 0;
     virtual void finish() = 0;
     // Takes away what was written, open or finished: it must not be left as the file.
     virtual void discard() noexcept = 0;

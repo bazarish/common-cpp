@@ -15,7 +15,7 @@ class StreamBook {
 public:
 
     std::size_t room() const;
-    void wrote(const void* data, std::size_t size);
+    void wrote(ByteView data);
     std::uint64_t sent() const
     {
         const std::lock_guard<std::mutex> lock(mutex_);

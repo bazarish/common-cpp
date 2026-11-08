@@ -91,7 +91,7 @@ bool writePairBundle(Stream& stream, const Bytes& bundle, const PairProgressFn& 
 {
     const std::uint64_t total = bundle.size();
     const std::string head = pairBundleHead(bundle.size());
-    stream.writeAll(head.data(), head.size());
+    stream.writeAll(viewOf(head));
     std::uint64_t sent = 0;
     while (sent < total) {
         if (cancel.load()) {
@@ -99,7 +99,7 @@ bool writePairBundle(Stream& stream, const Bytes& bundle, const PairProgressFn& 
         }
         const std::size_t chunk
             = static_cast<std::size_t>(std::min<std::uint64_t>(kPairChunkBytes, total - sent));
-        stream.writeAll(bundle.data() + sent, chunk);
+        stream.writeAll(ByteView(bundle).subspan(static_cast<std::size_t>(sent), chunk));
         sent += chunk;
         while (stream.pendingBytes() > kPairQueuedBytesCap) {
             if (cancel.load()) {
@@ -114,14 +114,14 @@ bool writePairBundle(Stream& stream, const Bytes& bundle, const PairProgressFn& 
             onProgress(pairOnTheWire(sent, stream.pendingBytes()), total);
         }
     }
-    std::array<char, kPairDrainProbeBytes> drain{};
+    std::array<unsigned char, kPairDrainProbeBytes> drain{};
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(kPairDrainSeconds);
     while (std::chrono::steady_clock::now() < until) {
         if (onProgress) {
             onProgress(pairOnTheWire(sent, stream.pendingBytes()), total);
         }
         try {
-            if (stream.readSome(drain.data(), drain.size()) != 0) {
+            if (stream.readSome(drain) != 0) {
                 continue;
             }
         } catch (const std::exception& error) {
@@ -160,7 +160,7 @@ PairServeResult servePairBundle(Endpoint& endpoint, const Bytes& bundle, const s
                 }
                 const std::string refusal
                     = pairRefusal(verdict.status, kMaxWrongCodes - result.wrongCodes);
-                stream->writeAll(refusal.data(), refusal.size());
+                stream->writeAll(viewOf(refusal));
                 stream->close();
                 if (result.wrongCodes >= kMaxWrongCodes) {
                     return result;
@@ -204,7 +204,7 @@ Bytes readPairBundle(Stream& stream, const I2pHttpHead& head, const PairProgress
         if (cancel.load()) {
             throw std::runtime_error("pairing stopped");
         }
-        const std::size_t got = stream.readSome(buffer.data(), buffer.size());
+        const std::size_t got = stream.readSome(buffer);
         if (got == 0) {
             throw std::runtime_error("the other device closed after "
                 + std::to_string(bundle.size()) + " of " + std::to_string(total) + " bytes");
@@ -231,7 +231,7 @@ PairFetchResult fetchPairBundle(Endpoint& endpoint, const std::string& dest,
     }
     stream->setReadTimeout(std::chrono::seconds(kPairPeerQuietSeconds));
     const std::string request = pairRequest(dest, code);
-    stream->writeAll(request.data(), request.size());
+    stream->writeAll(viewOf(request));
     const I2pHttpHead head = readI2pHttpHead(*stream);
     if (head.status == kI2pHttpForbidden) {
         PairFetchResult refused;

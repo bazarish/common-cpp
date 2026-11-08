@@ -77,19 +77,18 @@ int main(int argc, char** argv)
 
     const auto datagramsByHost = [&]() {
         const std::string toHost = "one raw datagram, addressed by host";
-        client->sendRawDatagram(server->routingHost(), toHost.data(), toHost.size());
+        client->sendRawDatagram(server->routingHost(), bazarish::viewOf(toHost));
         const std::vector<std::uint8_t> byHost = server->receiveRawDatagram(kDatagramWait);
         CHECK(std::string(byHost.begin(), byHost.end()) == toHost);
         std::printf("raw datagram to %s: %zu bytes\n", server->routingHost().c_str(),
             byHost.size());
 
         const std::string repliable = "one repliable datagram";
-        client->sendDatagram(server->routingHost(), repliable.data(), repliable.size());
-        std::string sender;
-        const std::vector<std::uint8_t> answered = server->receiveDatagram(sender, kDatagramWait);
-        CHECK(std::string(answered.begin(), answered.end()) == repliable);
-        CHECK(sender == client->publicBase64());
-        std::printf("repliable datagram: %zu bytes, sender identified\n", answered.size());
+        client->sendDatagram(server->routingHost(), bazarish::viewOf(repliable));
+        const bazarish::i2p::Datagram answered = server->receiveDatagram(kDatagramWait);
+        CHECK(std::string(answered.data.begin(), answered.data.end()) == repliable);
+        CHECK(answered.from == client->publicBase64());
+        std::printf("repliable datagram: %zu bytes, sender identified\n", answered.data.size());
     };
 
     const std::string mode = argc > 3 ? argv[3] : std::string();
@@ -111,8 +110,8 @@ int main(int argc, char** argv)
                 return;
             }
             received.resize(sent.size());
-            stream->readExact(received.data(), received.size());
-            stream->writeAll(received.data(), received.size());
+            stream->readExact(bazarish::bufferOf(received));
+            stream->writeAll(bazarish::viewOf(received));
         } catch (const std::exception& error) {
             acceptFailure = error.what();
         }
@@ -123,9 +122,9 @@ int main(int argc, char** argv)
         const std::unique_ptr<i2p::Stream> stream
             = client->connect(server->routingHost(), kDial);
         CHECK(stream != nullptr);
-        stream->writeAll(sent.data(), sent.size());
+        stream->writeAll(bazarish::viewOf(sent));
         std::string echoed(sent.size(), '\0');
-        stream->readExact(echoed.data(), echoed.size());
+        stream->readExact(bazarish::bufferOf(echoed));
         CHECK(echoed == sent);
     } catch (const std::exception& error) {
         dialFailure = error.what();
@@ -143,7 +142,7 @@ int main(int argc, char** argv)
     std::printf("stream: %zu bytes there and back, caller identified\n", sent.size());
 
     const std::string frame = "one raw datagram";
-    client->sendRawDatagram(server->publicBase64(), frame.data(), frame.size());
+    client->sendRawDatagram(server->publicBase64(), bazarish::viewOf(frame));
     const std::vector<std::uint8_t> arrived = server->receiveRawDatagram(kDatagramWait);
     CHECK(std::string(arrived.begin(), arrived.end()) == frame);
     std::printf("raw datagram: %zu bytes\n", arrived.size());
@@ -173,15 +172,15 @@ int main(int argc, char** argv)
                 return;
             }
             std::string body(sent.size(), '\0');
-            incoming->readExact(body.data(), body.size());
-            incoming->writeAll(body.data(), body.size());
+            incoming->readExact(bazarish::bufferOf(body));
+            incoming->writeAll(bazarish::viewOf(body));
         });
         const std::unique_ptr<i2p::Stream> reopened
             = client->connect(server->routingHost(), kDial);
         CHECK(reopened != nullptr);
-        reopened->writeAll(sent.data(), sent.size());
+        reopened->writeAll(bazarish::viewOf(sent));
         std::string back(sent.size(), '\0');
-        reopened->readExact(back.data(), back.size());
+        reopened->readExact(bazarish::bufferOf(back));
         again.join();
         CHECK(back == sent);
         std::printf("same address after the restart, and it streams again\n");

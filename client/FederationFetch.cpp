@@ -93,9 +93,9 @@ FetchOutcome askResolver(bazarish::i2p::Stream& stream, const std::string& host,
                           : std::map<std::string, std::string>{
                                 {"Content-Type", "application/octet-stream"}};
     const std::string head = buildI2pHttpRequest(method, host, path, headers, payload.size());
-    stream.writeAll(head.data(), head.size());
+    stream.writeAll(viewOf(head));
     if (!payload.empty()) {
-        stream.writeAll(payload.data(), payload.size());
+        stream.writeAll(viewOf(payload));
     }
     const I2pHttpResponse answer = readI2pHttpResponse(stream, kMaxResolverAnswerBytes);
 
@@ -215,8 +215,8 @@ std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
     const std::string body = nlohmann::json{{"challenge", challenge}, {"blob", blob}}.dump();
     const std::string head = buildI2pHttpRequest("POST", callback.host, callback.path,
         {{"Content-Type", "application/json"}}, body.size());
-    stream->writeAll(head.data(), head.size());
-    stream->writeAll(body.data(), body.size());
+    stream->writeAll(viewOf(head));
+    stream->writeAll(viewOf(body));
     sayStage(FetchStage::eWaiting);
     return readI2pHttpHead(*stream).status;
 }
@@ -237,7 +237,7 @@ std::optional<std::string> getLoginChallengeOverI2p(bazarish::i2p::Router& route
     }
     stream->setReadTimeout(std::chrono::seconds(kReplySeconds));
     const std::string head = buildI2pHttpRequest("GET", address.host, address.path, {}, 0);
-    stream->writeAll(head.data(), head.size());
+    stream->writeAll(viewOf(head));
     sayStage(FetchStage::eWaiting);
     const I2pHttpResponse response = readI2pHttpResponse(*stream, service::kLoginChallengeMax);
     if (response.status != kI2pHttpOk) {

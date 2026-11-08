@@ -46,23 +46,21 @@ std::string expiringTypesSql()
 
 class Query {
 public:
-    explicit Query(sqlite3* const db)
-        : db_(db)
+    explicit Query(const SqliteHandle& db)
+        : db_(*db)
     {
     }
-    ~Query() { sqlite3_finalize(stmt_); }
-
-    Query(const Query&) = delete;
-    Query& operator=(const Query&) = delete;
 
     bool prepare(const std::string& sql)
     {
-        sqlite3_finalize(stmt_);
-        stmt_ = nullptr;
+        stmt_.reset();
         bound_ = 0;
-        if (sqlite3_prepare_v2(db_, sql.c_str(), static_cast<int>(sql.size()), &stmt_, nullptr)
-            != SQLITE_OK) {
-            log::warn("transcript: {}", sqlite3_errmsg(db_));
+        sqlite3_stmt* prepared = nullptr;
+        const int status = sqlite3_prepare_v2(
+            &db_, sql.c_str(), static_cast<int>(sql.size()), &prepared, nullptr);
+        stmt_.reset(prepared);
+        if (status != SQLITE_OK) {
+            log::warn("transcript: {}", sqlite3_errmsg(&db_));
             return false;
         }
         return true;
@@ -71,20 +69,20 @@ public:
     void bind(const std::string& value)
     {
         sqlite3_bind_text(
-            stmt_, ++bound_, value.data(), static_cast<int>(value.size()), SQLITE_TRANSIENT);
+            stmt_.get(), ++bound_, value.data(), static_cast<int>(value.size()), SQLITE_TRANSIENT);
     }
     void bind(const char* const value) { bind(std::string(value)); }
-    void bind(const std::int64_t value) { sqlite3_bind_int64(stmt_, ++bound_, value); }
-    void bind(const int value) { sqlite3_bind_int(stmt_, ++bound_, value); }
+    void bind(const std::int64_t value) { sqlite3_bind_int64(stmt_.get(), ++bound_, value); }
+    void bind(const int value) { sqlite3_bind_int(stmt_.get(), ++bound_, value); }
 
     bool exec()
     {
-        const int status = sqlite3_step(stmt_);
+        const int status = sqlite3_step(stmt_.get());
         if (status != SQLITE_DONE && status != SQLITE_ROW) {
-            log::warn("transcript: {}", sqlite3_errmsg(db_));
+            log::warn("transcript: {}", sqlite3_errmsg(&db_));
             return false;
         }
-        changes_ = sqlite3_changes(db_);
+        changes_ = sqlite3_changes(&db_);
         stepped_ = status == SQLITE_ROW;
         return true;
     }
@@ -97,33 +95,33 @@ public:
             stepped_ = false;
             return true;
         }
-        return sqlite3_step(stmt_) == SQLITE_ROW;
+        return sqlite3_step(stmt_.get()) == SQLITE_ROW;
     }
 
     std::string text(const int column) const
     {
-        const unsigned char* const value = sqlite3_column_text(stmt_, column);
+        const unsigned char* const value = sqlite3_column_text(stmt_.get(), column);
         return value == nullptr ? std::string() : std::string(reinterpret_cast<const char*>(value));
     }
-    std::int64_t number(const int column) const { return sqlite3_column_int64(stmt_, column); }
-    bool flag(const int column) const { return sqlite3_column_int(stmt_, column) != 0; }
+    std::int64_t number(const int column) const { return sqlite3_column_int64(stmt_.get(), column); }
+    bool flag(const int column) const { return sqlite3_column_int(stmt_.get(), column) != 0; }
     bool isNull(const int column) const
     {
-        return sqlite3_column_type(stmt_, column) == SQLITE_NULL;
+        return sqlite3_column_type(stmt_.get(), column) == SQLITE_NULL;
     }
     Bytes blob(const int column) const
     {
-        const auto* const value = static_cast<const std::uint8_t*>(sqlite3_column_blob(stmt_, column));
-        const int size = sqlite3_column_bytes(stmt_, column);
+        const auto* const value = static_cast<const std::uint8_t*>(sqlite3_column_blob(stmt_.get(), column));
+        const int size = sqlite3_column_bytes(stmt_.get(), column);
         return value == nullptr ? Bytes() : Bytes(value, value + size);
     }
 
-    std::int64_t lastInsertId() const { return sqlite3_last_insert_rowid(db_); }
+    std::int64_t lastInsertId() const { return sqlite3_last_insert_rowid(&db_); }
     int changes() const { return changes_; }
 
 private:
-    sqlite3* db_ = nullptr;
-    sqlite3_stmt* stmt_ = nullptr;
+    sqlite3& db_;
+    StatementHandle stmt_;
     int bound_ = 0;
     int changes_ = 0;
     bool stepped_ = false;
@@ -131,7 +129,7 @@ private:
 
 class Transaction {
 public:
-    explicit Transaction(sqlite3* const db)
+    explicit Transaction(const SqliteHandle& db)
         : db_(db)
     {
         Query begin(db_);
@@ -161,7 +159,7 @@ public:
     }
 
 private:
-    sqlite3* db_ = nullptr;
+    const SqliteHandle& db_;
     bool begun_ = false;
     bool committed_ = false;
 };
@@ -246,7 +244,7 @@ std::int64_t readNumber(Query& query)
 }
 
 // One process writes while another reads, and a reader must never hold the writer up.
-bool takesWriteAheadLog(sqlite3* const db)
+bool takesWriteAheadLog(const SqliteHandle& db)
 {
     Query journal(db);
     return journal.exec("PRAGMA journal_mode = WAL") && journal.text(0) == "wal";
@@ -290,8 +288,7 @@ TranscriptReader::~TranscriptReader()
 
 void TranscriptReader::close()
 {
-    sqlite3_close(db_);
-    db_ = nullptr;
+    db_.reset();
     path_.clear();
 }
 
@@ -1241,7 +1238,7 @@ bool TranscriptStore::removeMediaOfMessage(const std::string& e2eId)
 
 bool TranscriptStore::failed()
 {
-    lastError_ = sqlite3_errmsg(db_);
+    lastError_ = sqlite3_errmsg(db_.get());
     return false;
 }
 
@@ -1401,12 +1398,12 @@ bool TranscriptStore::rebuild(std::string& reason)
     }
     Query vacuum(db_);
     if (!vacuum.exec("VACUUM")) {
-        reason = sqlite3_errmsg(db_);
+        reason = sqlite3_errmsg(db_.get());
         return false;
     }
     Query checkpoint(db_);
     if (!checkpoint.exec("PRAGMA wal_checkpoint(TRUNCATE)")) {
-        reason = sqlite3_errmsg(db_);
+        reason = sqlite3_errmsg(db_.get());
         return false;
     }
     if (checkpoint.number(0) != 0) {

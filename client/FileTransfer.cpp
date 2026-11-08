@@ -49,16 +49,17 @@ public:
         }
     }
 
-    void append(const void* data, const std::size_t size)
+    void append(const ByteView data)
     {
-        if (size == 0) {
+        if (data.empty()) {
             return;
         }
-        out_.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+        out_.write(
+            reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
         if (!out_) {
             throw std::runtime_error("failed to write " + utf8OfPath(path_));
         }
-        size_ += size;
+        size_ += data.size();
     }
 
     std::uint64_t size() const { return size_; }
@@ -85,11 +86,11 @@ PreparedFile prepareFile(FileInput& input, const fs::path& ciphertextPath, Trans
     PreparedFile prepared;
     prepared.key = toHex(randomBytes(32));
     prepared.header = cms::sealWithPasswordDetached(
-        [&input, &stop](void* const buffer, const std::size_t size) {
+        [&input, &stop](const ByteBuffer buffer) {
             if (stop.requested()) {
                 throw std::runtime_error("transfer cancelled");
             }
-            return input.read(buffer, size);
+            return input.read(buffer);
         },
         ciphertextPath, prepared.key);
     prepared.ciphertextPath = ciphertextPath;
@@ -145,12 +146,12 @@ public:
         }
     }
 
-    void append(const void* data, const std::size_t size) override
+    void append(const ByteView data) override
     {
-        if (part_.size() > offered_ || size > offered_ - part_.size()) {
+        if (part_.size() > offered_ || data.size() > offered_ - part_.size()) {
             throw OfferBroken("sender sent more than it offered");
         }
-        part_.append(data, size);
+        part_.append(data);
         if (onProgress_) {
             onProgress_(part_.size(), offered_);
         }
@@ -173,9 +174,10 @@ public:
         }
     }
 
-    void write(const void* data, const std::size_t size) override
+    void write(const ByteView data) override
     {
-        out_.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+        out_.write(
+            reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
         if (!out_) {
             throw std::runtime_error("failed to write " + utf8OfPath(path_));
         }
@@ -214,9 +216,9 @@ public:
         }
     }
 
-    std::size_t read(void* const buffer, const std::size_t size) override
+    std::size_t read(const ByteBuffer buffer) override
     {
-        in_.read(static_cast<char*>(buffer), static_cast<std::streamsize>(size));
+        in_.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
         if (in_.bad()) {
             throw std::runtime_error("failed to read " + utf8OfPath(path_));
         }
@@ -336,9 +338,9 @@ void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer,
         try {
             Sha256 plain;
             cms::unsealWithPasswordDetached(offer.header, partPath, offer.key,
-                [&out, &plain](const void* data, const std::size_t size) {
-                    plain.update(data, size);
-                    out->write(data, size);
+                [&out, &plain](const ByteView data) {
+                    plain.update(data);
+                    out->write(data);
                 });
             out->finish();
             if (toHex(plain.digest()) != announcedSha256) {
@@ -358,6 +360,7 @@ void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer,
 }
 
 constexpr int kDrainSeconds = 120;
+constexpr std::size_t kDrainReadBytes = 64;
 constexpr std::size_t kMaxQueuedBytes = 128 * 1024;
 constexpr int kQueuePollMillis = 100;
 
@@ -387,32 +390,33 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
         try {
             stream->setReadTimeout(std::chrono::seconds(kDrainSeconds));
             std::array<std::uint8_t, 8> header{};
-            stream->readExact(header.data(), header.size());
+            stream->readExact(header);
             const std::uint64_t offset = decodeBigEndian64(header);
             if (offset > total) {
                 stream->close();
                 continue;
             }
             encodeBigEndian64(total, header);
-            stream->writeAll(header.data(), header.size());
+            stream->writeAll(header);
 
             std::ifstream in(ciphertextPath, std::ios::binary);
             if (!in) {
                 throw std::runtime_error("failed to open " + ciphertextPath.string());
             }
             in.seekg(static_cast<std::streamoff>(offset));
-            std::vector<char> buffer(kChunkBytes);
+            Bytes buffer(kChunkBytes);
             std::uint64_t sent = offset;
             while (sent < total) {
                 if (stop.requested()) {
                     return false;
                 }
-                in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+                in.read(reinterpret_cast<char*>(buffer.data()),
+                    static_cast<std::streamsize>(buffer.size()));
                 const std::streamsize got = in.gcount();
                 if (got <= 0) {
                     break;
                 }
-                stream->writeAll(buffer.data(), static_cast<std::size_t>(got));
+                stream->writeAll(ByteView(buffer).first(static_cast<std::size_t>(got)));
                 sent += static_cast<std::uint64_t>(got);
                 while (stream->pendingBytes() > kMaxQueuedBytes) {
                     if (stop.requested()) {
@@ -428,7 +432,7 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
                 }
             }
             if (sent >= total) {
-                std::array<char, 64> drain{};
+                std::array<unsigned char, kDrainReadBytes> drain{};
                 const auto until = std::chrono::steady_clock::now()
                     + std::chrono::seconds(kDrainSeconds);
                 while (std::chrono::steady_clock::now() < until) {
@@ -436,7 +440,7 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
                         onProgress(onTheWire(sent, stream->pendingBytes()), total);
                     }
                     try {
-                        if (stream->readSome(drain.data(), drain.size()) == 0) {
+                        if (stream->readSome(drain) == 0) {
                             break;
                         }
                     } catch (const std::exception& error) {
@@ -501,19 +505,19 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
               stream->setReadTimeout(std::chrono::seconds(kSenderQuietSeconds));
               std::array<std::uint8_t, 8> header{};
               encodeBigEndian64(offset, header);
-              stream->writeAll(header.data(), header.size());
-              stream->readExact(header.data(), header.size());
+              stream->writeAll(header);
+              stream->readExact(header);
               const std::uint64_t declared = decodeBigEndian64(header);
               sink.total(declared);
 
               std::vector<std::uint8_t> buffer(kChunkBytes);
               std::uint64_t received = offset;
               while (declared == 0 || received < declared) {
-                  const std::size_t got = stream->readSome(buffer.data(), buffer.size());
+                  const std::size_t got = stream->readSome(buffer);
                   if (got == 0) {
                       break;
                   }
-                  sink.append(buffer.data(), got);
+                  sink.append(ByteView(buffer).first(got));
                   received += got;
               }
               stream->close();

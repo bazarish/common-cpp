@@ -84,9 +84,9 @@ public:
     Stream& operator=(const Stream&) = delete;
 
     void setReadTimeout(int seconds);
-    std::size_t readSome(void* buffer, std::size_t size);
-    void readExact(void* buffer, std::size_t size);
-    void writeAll(const void* data, std::size_t size);
+    std::size_t readSome(ByteBuffer buffer);
+    void readExact(ByteBuffer buffer);
+    void writeAll(ByteView data);
     std::size_t pendingBytes() const;
     void close();
 
@@ -117,9 +117,8 @@ public:
     std::unique_ptr<Stream> accept(
         std::string& peerDestination, std::chrono::milliseconds timeout);
 
-    void sendDatagram(const std::string& destination, const void* data, std::size_t size);
-    std::vector<std::uint8_t> receiveDatagram(
-        std::string* peerDestination, std::chrono::milliseconds timeout);
+    void sendDatagram(const std::string& destination, ByteView data);
+    i2p::Datagram receiveDatagram(std::chrono::milliseconds timeout);
 
 private:
     struct Impl;

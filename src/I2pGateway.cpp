@@ -98,7 +98,7 @@ struct Pending {
     Bytes request;
 };
 
-class GatewayStream;
+class StreamState;
 class GatewayEndpoint;
 
 class Link {
@@ -114,14 +114,13 @@ public:
     std::optional<Frame> await(
         const std::shared_ptr<Pending>& pending, std::uint32_t ref, std::chrono::seconds timeout);
     void forget(std::uint32_t id);
-    void remember(std::uint32_t id, GatewayStream* stream);
+    void remember(std::uint32_t id, const std::shared_ptr<StreamState>& stream);
+    void release(std::uint32_t id);
     void endStreamsOf(std::uint32_t endpoint);
     // Answers every call still waiting with nothing, as when the gateway is not there.
     void abandonCalls();
 
     mutable std::mutex mutex;
-    // Held while a frame is handed to a stream: a stream is erased from `streams` only under it.
-    std::mutex delivering;
     gateway::Ids ids_;
     http::SocketPtr control;
     Bytes sessionKey;
@@ -130,7 +129,9 @@ public:
     std::map<std::uint32_t, std::weak_ptr<GatewayEndpoint>> endpoints;
     // A status can reach the control socket before the create's answer reaches the one it went on.
     std::map<std::uint32_t, std::optional<Frame>> creating;
-    std::map<std::uint32_t, GatewayStream*> streams;
+    std::map<std::uint32_t, std::weak_ptr<StreamState>> streams;
+    // Frames reach the streams one at a time, whichever socket they came on.
+    std::mutex delivering;
     std::map<std::uint32_t, http::SocketPtr> flows;
     std::set<std::uint32_t> orphaned;
     std::deque<Bytes> waiting;
@@ -152,16 +153,16 @@ public:
 
 class GatewayRouter;
 
-class GatewayStream : public StreamBackend {
+// What the router hands frames to while the stream it belongs to may be going away.
+class StreamState {
 public:
-    GatewayStream(std::shared_ptr<Link> link, std::uint32_t id, std::uint32_t endpoint);
-    ~GatewayStream() override;
+    StreamState(std::shared_ptr<Link> link, std::uint32_t id, std::uint32_t endpoint);
 
-    void setReadTimeout(std::chrono::seconds timeout) override { readTimeout_ = timeout; }
-    std::size_t readSome(void* buffer, std::size_t size) override;
-    void writeAll(const void* data, std::size_t size) override;
-    std::size_t pendingBytes() const override;
-    void close() override;
+    void setReadTimeout(std::chrono::seconds timeout) { readTimeout_ = timeout; }
+    std::size_t readSome(ByteBuffer buffer);
+    void writeAll(ByteView data);
+    std::size_t pendingBytes() const;
+    void close();
 
     std::uint32_t id() const { return id_; }
     std::uint32_t endpoint() const { return endpoint_; }
@@ -190,6 +191,26 @@ private:
     bool finished_ = false;
     bool closed_ = false;
     bool endWhenDrained_ = false;
+};
+
+class GatewayStream final : public StreamBackend {
+public:
+    GatewayStream(const std::shared_ptr<Link>& link, std::uint32_t id, std::uint32_t endpoint);
+    ~GatewayStream() override;
+
+    void setReadTimeout(const std::chrono::seconds timeout) override
+    {
+        state_->setReadTimeout(timeout);
+    }
+    std::size_t readSome(const ByteBuffer buffer) override { return state_->readSome(buffer); }
+    void writeAll(const ByteView data) override { state_->writeAll(data); }
+    std::size_t pendingBytes() const override { return state_->pendingBytes(); }
+    void close() override { state_->close(); }
+    void reset() { state_->reset(); }
+
+private:
+    const std::shared_ptr<Link> link_;
+    const std::shared_ptr<StreamState> state_;
 };
 
 class GatewayEndpoint : public EndpointBackend {
@@ -230,15 +251,15 @@ public:
         }
     }
 
-    void sendDatagram(const std::string&, const void*, std::size_t) override
+    void sendDatagram(const std::string&, ByteView) override
     {
         notWithAGateway("a repliable datagram");
     }
-    std::vector<std::uint8_t> receiveDatagram(std::string&, std::chrono::milliseconds) override
+    Datagram receiveDatagram(std::chrono::milliseconds) override
     {
         notWithAGateway("a repliable datagram");
     }
-    void sendRawDatagram(const std::string& host, const void* data, std::size_t size) override;
+    void sendRawDatagram(const std::string& host, ByteView data) override;
     std::vector<std::uint8_t> receiveRawDatagram(std::chrono::milliseconds timeout) override;
 
     void stop() override;
@@ -376,22 +397,29 @@ private:
     std::atomic<bool> openFailing_{false};
 };
 
-GatewayStream::GatewayStream(
+StreamState::StreamState(
     std::shared_ptr<Link> link, const std::uint32_t id, const std::uint32_t endpoint)
     : link_(std::move(link))
     , id_(id)
     , endpoint_(endpoint)
 {
-    link_->remember(id_, this);
+}
+
+GatewayStream::GatewayStream(
+    const std::shared_ptr<Link>& link, const std::uint32_t id, const std::uint32_t endpoint)
+    : link_(link)
+    , state_(std::make_shared<StreamState>(link, id, endpoint))
+{
+    link_->remember(id, state_);
 }
 
 GatewayStream::~GatewayStream()
 {
-    close();
-    link_->remember(id_, nullptr);
+    state_->close();
+    link_->release(state_->id());
 }
 
-void GatewayStream::arrived(const Bytes& data)
+void StreamState::arrived(const Bytes& data)
 {
     book_.tookIn(data.size());
     {
@@ -401,7 +429,7 @@ void GatewayStream::arrived(const Bytes& data)
     arrived_.notify_all();
 }
 
-void GatewayStream::farSideFinished()
+void StreamState::farSideFinished()
 {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -411,13 +439,13 @@ void GatewayStream::farSideFinished()
     arrived_.notify_all();
 }
 
-bool GatewayStream::givenUp() const
+bool StreamState::givenUp() const
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     return closed_;
 }
 
-void GatewayStream::reset()
+void StreamState::reset()
 {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -428,7 +456,7 @@ void GatewayStream::reset()
     arrived_.notify_all();
 }
 
-std::size_t GatewayStream::readSome(void* const buffer, const std::size_t size)
+std::size_t StreamState::readSome(const ByteBuffer buffer)
 {
     std::unique_lock<std::mutex> lock(mutex_);
     if (!waitWithin(arrived_, lock, readTimeout_,
@@ -440,9 +468,8 @@ std::size_t GatewayStream::readSome(void* const buffer, const std::size_t size)
     if (inbox_.empty()) {
         return 0;
     }
-    const std::size_t got = std::min(size, inbox_.size());
-    unsigned char* const at = static_cast<unsigned char*>(buffer);
-    std::copy(inbox_.begin(), inbox_.begin() + static_cast<std::ptrdiff_t>(got), at);
+    const std::size_t got = std::min(buffer.size(), inbox_.size());
+    std::copy(inbox_.begin(), inbox_.begin() + static_cast<std::ptrdiff_t>(got), buffer.begin());
     inbox_.erase(inbox_.begin(), inbox_.begin() + static_cast<std::ptrdiff_t>(got));
     lock.unlock();
 
@@ -456,32 +483,31 @@ std::size_t GatewayStream::readSome(void* const buffer, const std::size_t size)
     return got;
 }
 
-void GatewayStream::writeAll(const void* const data, const std::size_t size)
+void StreamState::writeAll(const ByteView data)
 {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         if (closed_) {
             throw std::runtime_error("bazarish::i2p: the stream is closed");
         }
-        const unsigned char* const at = static_cast<const unsigned char*>(data);
-        outbox_.insert(outbox_.end(), at, at + size);
+        outbox_.insert(outbox_.end(), data.begin(), data.end());
     }
     drain();
 }
 
-std::vector<Bytes> GatewayStream::replayFrames(const std::uint64_t peerReceived)
+std::vector<Bytes> StreamState::replayFrames(const std::uint64_t peerReceived)
 {
     const Bytes again = book_.replay(peerReceived);
     std::vector<Bytes> frames;
     for (std::size_t at = 0; at < again.size(); at += gateway::kMaxBodyBytes) {
         const std::size_t piece = std::min(gateway::kMaxBodyBytes, again.size() - at);
         frames.push_back(gateway::encode(
-            FrameType::eStreamData, id_, again.data() + at, piece));
+            FrameType::eStreamData, id_, ByteView(again).subspan(at, piece)));
     }
     return frames;
 }
 
-void GatewayStream::drain()
+void StreamState::drain()
 {
     // The link locks its own mutex and then a stream's, so this one is never held into it.
     const std::lock_guard<std::mutex> sending(sendMutex_);
@@ -496,7 +522,7 @@ void GatewayStream::drain()
                 break;
             }
             const Bytes chunk(outbox_.begin(), outbox_.begin() + static_cast<std::ptrdiff_t>(piece));
-            book_.wrote(chunk.data(), chunk.size());
+            book_.wrote(chunk);
             frames.push_back(gateway::encode(FrameType::eStreamData, id_, chunk));
             outbox_.erase(outbox_.begin(), outbox_.begin() + static_cast<std::ptrdiff_t>(piece));
         }
@@ -520,7 +546,7 @@ void GatewayStream::drain()
     }
 }
 
-std::size_t GatewayStream::pendingBytes() const
+std::size_t StreamState::pendingBytes() const
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {
@@ -529,13 +555,13 @@ std::size_t GatewayStream::pendingBytes() const
     return outbox_.size() + book_.pending();
 }
 
-void GatewayStream::creditedBy(const std::uint64_t total)
+void StreamState::creditedBy(const std::uint64_t total)
 {
     book_.peerCredited(total);
     drain();
 }
 
-void GatewayStream::close()
+void StreamState::close()
 {
     bool tell = false;
     {
@@ -661,8 +687,7 @@ std::unique_ptr<StreamBackend> GatewayEndpoint::accept(
     return caller;
 }
 
-void GatewayEndpoint::sendRawDatagram(
-    const std::string& host, const void* const data, const std::size_t size)
+void GatewayEndpoint::sendRawDatagram(const std::string& host, const ByteView data)
 {
     if (!raw_) {
         notWithAGateway("a datagram on a destination that carries streams");
@@ -670,10 +695,10 @@ void GatewayEndpoint::sendRawDatagram(
     if (stopped_.load()) {
         return;
     }
-    if (size > gateway::rawPayloadRoom(host)) {
+    if (data.size() > gateway::rawPayloadRoom(host)) {
         return;
     }
-    const Bytes frame = gateway::encodeRawSend(id_, host, data, size);
+    const Bytes frame = gateway::encodeRawSend(id_, host, data);
     const http::SocketPtr out = link_->socketFor(id_);
     if (out) {
         out->send(frame);
@@ -915,7 +940,11 @@ void GatewayRouter::openControl()
                 alive[one.value("id", 0U)] = one.value("received", std::uint64_t{0});
             }
         }
-        for (const auto& [streamId, stream] : link_->streams) {
+        for (const auto& [streamId, held] : link_->streams) {
+            const std::shared_ptr<StreamState> stream = held.lock();
+            if (stream == nullptr) {
+                continue;
+            }
             const auto found = alive.find(streamId);
             if (found == alive.end()) {
                 // Still being opened: the open goes again below, so the gateway has not lost it.
@@ -1008,18 +1037,20 @@ void GatewayRouter::closeControl()
 
 void GatewayRouter::abandon()
 {
-    std::vector<GatewayStream*> stranded;
+    std::vector<std::shared_ptr<StreamState>> stranded;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         if (link_->waiting.empty() && link_->streams.empty()) {
             return;
         }
         link_->waiting.clear();
-        for (const auto& [id, stream] : link_->streams) {
+        for (const auto& [id, held] : link_->streams) {
             (void)id;
-            stranded.push_back(stream);
+            if (std::shared_ptr<StreamState> stream = held.lock()) {
+                stranded.push_back(std::move(stream));
+            }
         }
-        for (GatewayStream* const stream : stranded) {
+        for (const std::shared_ptr<StreamState>& stream : stranded) {
             stream->reset();
         }
     }
@@ -1213,13 +1244,14 @@ void GatewayRouter::reattachOrphans()
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         for (auto at = link_->orphaned.begin(); at != link_->orphaned.end();) {
-            const auto stream = link_->streams.find(*at);
-            if (stream != link_->streams.end()) {
-                if (stream->second->givenUp()) {
+            const auto found = link_->streams.find(*at);
+            if (found != link_->streams.end()) {
+                const std::shared_ptr<StreamState> stream = found->second.lock();
+                if (stream == nullptr || stream->givenUp()) {
                     at = link_->orphaned.erase(at);
                     continue;
                 }
-                again.emplace_back(*at, stream->second->received());
+                again.emplace_back(*at, stream->received());
                 ++at;
                 continue;
             }
@@ -1286,16 +1318,16 @@ std::optional<Frame> Link::await(const std::shared_ptr<Pending>& pending,
     return answer;
 }
 
-void Link::remember(const std::uint32_t id, GatewayStream* const stream)
+void Link::remember(const std::uint32_t id, const std::shared_ptr<StreamState>& stream)
 {
-    if (stream == nullptr) {
-        const std::lock_guard<std::mutex> handing(delivering);
-        const std::lock_guard<std::mutex> lock(mutex);
-        streams.erase(id);
-        return;
-    }
     const std::lock_guard<std::mutex> lock(mutex);
     streams[id] = stream;
+}
+
+void Link::release(const std::uint32_t id)
+{
+    const std::lock_guard<std::mutex> lock(mutex);
+    streams.erase(id);
 }
 
 void Link::endStreamsOf(const std::uint32_t endpoint)
@@ -1303,8 +1335,9 @@ void Link::endStreamsOf(const std::uint32_t endpoint)
     std::vector<std::shared_ptr<Pending>> dials;
     {
         const std::lock_guard<std::mutex> lock(mutex);
-        for (const auto& [id, stream] : streams) {
-            if (stream->endpoint() != endpoint) {
+        for (const auto& [id, held] : streams) {
+            const std::shared_ptr<StreamState> stream = held.lock();
+            if (stream == nullptr || stream->endpoint() != endpoint) {
                 continue;
             }
             stream->reset();
@@ -1480,7 +1513,7 @@ void GatewayRouter::arrived(
 {
     link_->lastArrival.store(millisNow());
     try {
-        dispatch(gateway::decode(message.data(), message.size()));
+        dispatch(gateway::decode(message));
     } catch (const std::exception& error) {
         bazarish::log::warn("i2p: the gateway sent something unreadable: {}", error.what());
     }
@@ -1594,14 +1627,17 @@ void GatewayRouter::dispatch(const Frame& frame)
 void GatewayRouter::deliver(const Frame& frame)
 {
     const std::lock_guard<std::mutex> handing(link_->delivering);
-    GatewayStream* stream = nullptr;
+    std::shared_ptr<StreamState> stream;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         const auto found = link_->streams.find(frame.ref);
         if (found == link_->streams.end()) {
             return;
         }
-        stream = found->second;
+        stream = found->second.lock();
+    }
+    if (stream == nullptr) {
+        return;
     }
     switch (frame.type) {
         case FrameType::eStreamData:

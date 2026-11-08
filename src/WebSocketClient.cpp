@@ -74,6 +74,7 @@ public:
             return;
         }
         if (thread_.get_id() == std::this_thread::get_id()) {
+            // ownership: allowed - the socket's last owner was its own thread, which ends here.
             thread_.detach();
             return;
         }
@@ -192,17 +193,18 @@ private:
 
     void writeNext()
     {
-        const std::vector<unsigned char>* next = nullptr;
+        // A deque keeps its front in place while others are pushed behind it.
+        asio::const_buffer next;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             if (queue_.empty() || !open_.load()) {
                 writing_ = false;
                 return;
             }
-            next = &queue_.front();
+            next = asio::buffer(queue_.front());
         }
         stream_->binary(true);
-        stream_->async_write(asio::buffer(*next),
+        stream_->async_write(next,
             [self = this->shared_from_this()](
                 const boost::system::error_code& error, std::size_t) {
                 {

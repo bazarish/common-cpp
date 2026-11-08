@@ -85,7 +85,7 @@ Bytes sha256File(const std::filesystem::path& path);
 class Sha256 {
 public:
     Sha256();
-    void update(const void* data, std::size_t size);
+    void update(ByteView data);
     Bytes digest();
 
 private:

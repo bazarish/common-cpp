@@ -5,6 +5,8 @@
 #include "bazarish/Crypto.hpp"
 #include "bazarish/PrivateFile.hpp"
 
+#include "OpenSslHandles.hpp"
+
 #include <openssl/bio.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
@@ -25,20 +27,9 @@ constexpr const char* kSubject = "bazarish";
 constexpr long kValiditySeconds = 10 * 365 * 24 * 60 * 60;
 constexpr std::size_t kSerialBytes = 16;
 
-struct X509Deleter {
-    void operator()(X509* certificate) const { X509_free(certificate); }
-};
-using X509Ptr = std::unique_ptr<X509, X509Deleter>;
-
-struct BioDeleter {
-    void operator()(BIO* bio) const { BIO_free(bio); }
-};
-using BioPtr = std::unique_ptr<BIO, BioDeleter>;
-
-struct OpenSslFree {
-    void operator()(unsigned char* block) const { OPENSSL_free(block); }
-};
-using BlockPtr = std::unique_ptr<unsigned char, OpenSslFree>;
+using ossl::BioPtr;
+using ossl::BlockPtr;
+using ossl::X509Ptr;
 
 std::string pinOfSpki(X509* const certificate)
 {
@@ -77,8 +68,8 @@ X509Ptr issueSelfSigned(const Key& key)
         throw std::runtime_error("tls: cannot set the certificate version");
     }
     const Bytes serial = randomBytes(kSerialBytes);
-    const std::unique_ptr<BIGNUM, decltype(&BN_free)> number(
-        BN_bin2bn(serial.data(), static_cast<int>(serial.size()), nullptr), BN_free);
+    const ossl::BignumPtr number(
+        BN_bin2bn(serial.data(), static_cast<int>(serial.size()), nullptr));
     if (!number
         || BN_to_ASN1_INTEGER(number.get(), X509_get_serialNumber(certificate.get())) == nullptr) {
         throw std::runtime_error("tls: cannot set the certificate serial");

@@ -4,6 +4,8 @@
 #include <bazarish/Bytes.hpp>
 
 #include <cstdint>
+#include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -20,33 +22,27 @@ inline constexpr int kCallSamplesPerFrame = kCallSampleRate / 1000 * kCallFrameM
 class AudioEncoder {
 public:
     explicit AudioEncoder(int bitrateBps = 0);
-    ~AudioEncoder();
 
-    AudioEncoder(AudioEncoder&& other) noexcept;
-    AudioEncoder& operator=(AudioEncoder&& other) noexcept;
-    AudioEncoder(const AudioEncoder&) = delete;
-    AudioEncoder& operator=(const AudioEncoder&) = delete;
-
-    Bytes encode(const std::int16_t* pcm, int samples);
+    Bytes encode(std::span<const std::int16_t> pcm);
 
 private:
-    OpusEncoder* encoder_;
+    struct Destroy {
+        void operator()(OpusEncoder* encoder) const;
+    };
+    std::unique_ptr<OpusEncoder, Destroy> encoder_;
 };
 
 class AudioDecoder {
 public:
     AudioDecoder();
-    ~AudioDecoder();
-
-    AudioDecoder(AudioDecoder&& other) noexcept;
-    AudioDecoder& operator=(AudioDecoder&& other) noexcept;
-    AudioDecoder(const AudioDecoder&) = delete;
-    AudioDecoder& operator=(const AudioDecoder&) = delete;
 
     std::vector<std::int16_t> decode(const Bytes& packet);
 
 private:
-    OpusDecoder* decoder_;
+    struct Destroy {
+        void operator()(OpusDecoder* decoder) const;
+    };
+    std::unique_ptr<OpusDecoder, Destroy> decoder_;
 };
 
 Bytes packOpusFrames(const std::vector<Bytes>& frames);
@@ -69,7 +65,7 @@ class TimeStretch {
 public:
     TimeStretch(std::vector<std::int16_t> pcm, double speed);
 
-    std::size_t read(std::int16_t* out, std::size_t want);
+    std::size_t read(std::span<std::int16_t> out);
 
 private:
     bool step();

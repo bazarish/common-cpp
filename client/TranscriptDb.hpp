@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include "KeyedDatabase.hpp"
+
 #include <bazarish/Bytes.hpp>
 
 #include <cstdint>
@@ -10,8 +12,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-struct sqlite3;
 
 namespace bazarish::client {
 
@@ -155,7 +155,7 @@ public:
 protected:
     bool hasMediaTable() const;
 
-    sqlite3* db_ = nullptr;
+    SqliteHandle db_;
     std::filesystem::path path_;
 };
 

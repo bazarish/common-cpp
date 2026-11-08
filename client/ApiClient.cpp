@@ -394,7 +394,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
         try {
             const std::string head = buildI2pHttpRequest(
                 method, facade.host, path, headers, bodyLen, /*keepAlive=*/true);
-            i2pStream_->writeAll(head.data(), head.size());
+            i2pStream_->writeAll(viewOf(head));
             if (bodyLen > 0 && writeBody) {
                 writeBody(*i2pStream_);
             }
@@ -461,9 +461,9 @@ ApiResponse ApiClient::del(const std::string& path, const nlohmann::json& body)
     return send("DELETE", path, {}, encoded, contentType);
 }
 
-void ApiClient::setWireLog(WireLog* const log)
+void ApiClient::setWireLog(std::shared_ptr<WireLog> log)
 {
-    wireLog_ = log;
+    wireLog_ = std::move(log);
 }
 
 void ApiClient::noteWire(const std::string& method, const std::string& path,
@@ -618,7 +618,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
             const std::optional<ApiResponse> response
                 = i2pExchange(facade, method, path, i2pHeaders, body.size(),
                     [&body](bazarish::i2p::Stream& stream) {
-                        stream.writeAll(body.data(), body.size());
+                        stream.writeAll(body);
                     },
                     readTimeoutSeconds);
             if (!response) {

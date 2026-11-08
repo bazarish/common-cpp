@@ -87,7 +87,7 @@ private:
             raw->close();
             return;
         }
-        answer(channel, gateway::decode(opened->data(), opened->size()));
+        answer(channel, gateway::decode(*opened));
     }
 
     static void answer(const http::SocketPtr& socket, const gateway::Frame& frame)

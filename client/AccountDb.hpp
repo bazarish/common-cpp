@@ -1,23 +1,19 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include "KeyedDatabase.hpp"
+
 #include <bazarish/Bytes.hpp>
 
 #include <filesystem>
 #include <optional>
 #include <string>
 
-struct sqlite3;
-
 namespace bazarish::client {
 
 class AccountDb {
 public:
     AccountDb(const std::filesystem::path& file, const std::string& passphrase);
-    ~AccountDb();
-
-    AccountDb(const AccountDb&) = delete;
-    AccountDb& operator=(const AccountDb&) = delete;
 
     std::optional<Bytes> get(const std::string& name) const;
     std::string text(const std::string& name) const;
@@ -30,7 +26,7 @@ public:
 
 private:
     std::filesystem::path file_;
-    sqlite3* db_ = nullptr;
+    Database db_;
 };
 
 }  // namespace bazarish::client

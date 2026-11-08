@@ -143,20 +143,17 @@ public:
     {
     }
 
-    void writeAll(const void* const data, const std::size_t size) override
-    {
-        const auto* const in = static_cast<const char*>(data);
-        written_.append(in, size);
-    }
+    void writeAll(const ByteView data) override { written_.append(data.begin(), data.end()); }
 
-    void readExact(void* const buffer, const std::size_t size) override
+    void readExact(const ByteBuffer buffer) override
     {
         if (reply_.empty()) {
             reply_ = serve();
         }
-        CHECK(sent_ + size <= reply_.size());
-        std::memcpy(buffer, reply_.data() + sent_, size);
-        sent_ += size;
+        CHECK(sent_ + buffer.size() <= reply_.size());
+        const ByteView from = viewOf(reply_).subspan(sent_, buffer.size());
+        std::copy(from.begin(), from.end(), buffer.begin());
+        sent_ += buffer.size();
     }
 
     void close() override {}

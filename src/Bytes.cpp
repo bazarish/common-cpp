@@ -150,6 +150,16 @@ Bytes fromBase64Url(const std::string& text)
     return fromBase64(standard);
 }
 
+ByteView viewOf(const std::string_view text)
+{
+    return {reinterpret_cast<const unsigned char*>(text.data()), text.size()};
+}
+
+ByteBuffer bufferOf(std::string& text)
+{
+    return {reinterpret_cast<unsigned char*>(text.data()), text.size()};
+}
+
 Bytes randomBytes(const std::size_t count)
 {
     Bytes out(count);

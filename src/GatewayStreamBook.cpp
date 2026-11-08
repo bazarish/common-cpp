@@ -12,21 +12,18 @@ std::size_t StreamBook::room() const
             - static_cast<std::size_t>(outstanding);
 }
 
-void StreamBook::wrote(const void* const data, const std::size_t size)
+void StreamBook::wrote(const ByteView data)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     const std::uint64_t outstanding = sent_ - credited_;
     const std::size_t free = outstanding >= kStreamWindowBytes
         ? 0
         : kStreamWindowBytes - static_cast<std::size_t>(outstanding);
-    if (size > free) {
+    if (data.size() > free) {
         throw ProtocolError(Fault::eInternal, "a write past the window this stream was granted");
     }
-    if (size > 0) {
-        const unsigned char* const at = static_cast<const unsigned char*>(data);
-        retained_.insert(retained_.end(), at, at + size);
-    }
-    sent_ += size;
+    retained_.insert(retained_.end(), data.begin(), data.end());
+    sent_ += data.size();
 }
 
 void StreamBook::peerCredited(const std::uint64_t total)

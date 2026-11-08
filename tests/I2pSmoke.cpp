@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include <bazarish/I2p.hpp>
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -12,6 +13,7 @@
 using namespace std::chrono;
 
 constexpr int kQuietHoldSeconds = 30;
+constexpr std::size_t kEchoBytes = 256;
 constexpr int kReadDeadlineSeconds = 3;
 constexpr int kDeadlineSlackSeconds = 10;
 
@@ -49,25 +51,24 @@ int main(int argc, char** argv)
         std::string peer;
         auto s = server->accept(peer, seconds(300));
         if (!s) { return; }
-        char buf[256];
-        const std::size_t n = s->readSome(buf, sizeof buf);
-        s->writeAll(buf, n);
+        std::array<unsigned char, kEchoBytes> buf{};
+        const std::size_t n = s->readSome(buf);
+        s->writeAll(bazarish::ByteView(buf).first(n));
         s->close();
     });
     std::thread datagramEcho([&] {
-        std::string peer;
-        auto payload = server->receiveDatagram(peer, milliseconds(300000));
-        if (!payload.empty()) { server->sendDatagram(peer, payload.data(), payload.size()); }
+        const auto got = server->receiveDatagram(milliseconds(300000));
+        if (!got.data.empty()) { server->sendDatagram(got.from, got.data); }
     });
 
     std::string streamResult = "<none>";
     if (auto cs = client->connect(server->routingHost(), seconds(240)))
     {
         const std::string ping = "wrapper-stream-ping";
-        cs->writeAll(ping.data(), ping.size());
-        char buf[256];
-        const std::size_t n = cs->readSome(buf, sizeof buf);
-        streamResult.assign(buf, n);
+        cs->writeAll(bazarish::viewOf(ping));
+        std::array<unsigned char, kEchoBytes> buf{};
+        const std::size_t n = cs->readSome(buf);
+        streamResult.assign(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(n));
         cs->close();
     }
     std::printf("[smoke] STREAM echo: \"%s\"\n", streamResult.c_str());
@@ -84,11 +85,11 @@ int main(int argc, char** argv)
     {
         cs->setReadTimeout(seconds(kReadDeadlineSeconds));
         const std::string ping = "wrapper-quiet-ping";
-        cs->writeAll(ping.data(), ping.size());
+        cs->writeAll(bazarish::viewOf(ping));
         const auto started = steady_clock::now();
-        char buf[256];
+        std::array<unsigned char, kEchoBytes> buf{};
         try {
-            const std::size_t n = cs->readSome(buf, sizeof buf);
+            const std::size_t n = cs->readSome(buf);
             deadlineResult = "read returned " + std::to_string(n) + " bytes";
         } catch (const std::exception& error) {
             const auto waited = duration_cast<seconds>(steady_clock::now() - started).count();
@@ -105,10 +106,9 @@ int main(int argc, char** argv)
     std::string datagramResult = "<none>";
     {
         const std::string ping = "wrapper-datagram-ping";
-        client->sendDatagram(server->routingHost(), ping.data(), ping.size());
-        std::string peer;
-        const auto got = client->receiveDatagram(peer, milliseconds(180000));
-        if (!got.empty()) { datagramResult.assign(got.begin(), got.end()); }
+        client->sendDatagram(server->routingHost(), bazarish::viewOf(ping));
+        const auto got = client->receiveDatagram(milliseconds(180000));
+        if (!got.data.empty()) { datagramResult.assign(got.data.begin(), got.data.end()); }
     }
     std::printf("[smoke] DATAGRAM echo: \"%s\"\n", datagramResult.c_str());
 

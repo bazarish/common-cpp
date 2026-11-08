@@ -12,7 +12,7 @@ namespace {
 
 void write(StreamBook& book, const std::string& text)
 {
-    book.wrote(text.data(), text.size());
+    book.wrote(viewOf(text));
 }
 
 std::string text(const Bytes& bytes)
@@ -62,7 +62,7 @@ int main()
     StreamBook bulk;
     const std::string chunk(1024, 'x');
     for (int i = 0; i < 16; ++i) {
-        bulk.wrote(chunk.data(), chunk.size());
+        bulk.wrote(viewOf(chunk));
     }
     CHECK(bulk.sent() == 16 * 1024);
     bulk.peerCredited(16 * 1024);
@@ -72,12 +72,12 @@ int main()
 
     StreamBook tight;
     const std::string wholeWindow(kStreamWindowBytes, 'y');
-    tight.wrote(wholeWindow.data(), wholeWindow.size());
+    tight.wrote(viewOf(wholeWindow));
     CHECK(tight.room() == 0);
-    CHECK_THROWS(tight.wrote(chunk.data(), 1));
+    CHECK_THROWS(tight.wrote(viewOf(chunk).first(1)));
     tight.peerCredited(1);
     CHECK(tight.room() == 1);
-    tight.wrote(chunk.data(), 1);
+    tight.wrote(viewOf(chunk).first(1));
     CHECK(tight.room() == 0);
 
     StreamBook inbound;

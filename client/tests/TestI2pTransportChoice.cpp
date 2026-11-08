@@ -32,7 +32,7 @@ int main()
     CHECK(!set);
 
     retireI2pRouter();
-    CHECK(sharedI2pRouterIfRunning() == nullptr);
+    CHECK(!sharedI2pRouterIfRunning().has_value());
     CHECK_THROWS((void)sharedI2pRouter(dataDir));
     CHECK(!applyI2pTransport([]() {}));
 
