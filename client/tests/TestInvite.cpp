@@ -25,8 +25,7 @@ namespace fs = std::filesystem;
 fs::path uniqueAccountFile(const std::string& tag)
 {
     const fs::path dir
-        = fs::temp_directory_path() / ("bazarish-test-" + tag + "-" + toHex(randomBytes(8)));
-    fs::create_directories(dir);
+        = testutil::freshDir("test-" + tag);
     return dir / "account.db";
 }
 
@@ -43,7 +42,7 @@ int main()
 
     const Descriptor descriptor{user.fingerprint(), userDest};
     const std::string uri = encodeDescriptor(descriptor);
-    CHECK(uri.rfind("https://bazari.sh/#invite?", 0) == 0);
+    CHECK(uri.starts_with("https://bazari.sh/#invite?"));
 
     const Descriptor decoded = parseDescriptor(uri);
     CHECK(decoded.fingerprint == user.fingerprint());
@@ -80,9 +79,9 @@ int main()
     CHECK_THROWS(Session::open(fileC));
     CHECK(Session::open(fileC, "new at-rest")->fingerprint() == fingerprintA);
 
-    fs::remove_all(fileA);
-    fs::remove_all(fileB);
-    fs::remove_all(fileC);
+    fs::remove_all(fileA.parent_path());
+    fs::remove_all(fileB.parent_path());
+    fs::remove_all(fileC.parent_path());
     fs::remove_all(bundle.parent_path());
 
     std::fprintf(stderr, "TestInvite passed\n");

@@ -58,7 +58,7 @@ bool namesEtag(const std::string& header, const std::string& etag)
         const std::size_t comma = header.find(',', at);
         std::string tag = trimmed(
             header.substr(at, comma == std::string::npos ? comma : comma - at));
-        if (tag.rfind("W/", 0) == 0) {
+        if (tag.starts_with("W/")) {
             tag = tag.substr(2);
         }
         if (tag == "*" || tag == etag) {

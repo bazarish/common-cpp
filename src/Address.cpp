@@ -18,6 +18,63 @@ bool isAliasChar(const char c)
     return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
 }
 
+char asciiLowerChar(const char c)
+{
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+bool allAliasChars(const std::string_view text)
+{
+    for (const char c : text) {
+        if (!isAliasChar(asciiLowerChar(c))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string lowered(const std::string_view text)
+{
+    std::string out;
+    out.reserve(text.size());
+    for (const char c : text) {
+        out.push_back(asciiLowerChar(c));
+    }
+    return out;
+}
+
+std::string_view withoutSigil(const std::string_view typed)
+{
+    return (!typed.empty() && typed.front() == bazarish::kAliasSigil) ? typed.substr(1) : typed;
+}
+
+std::optional<bazarish::AliasProblem> nameProblem(const std::string_view name)
+{
+    if (name.size() < bazarish::kAliasMinLength || name.size() > bazarish::kAliasMaxLength) {
+        return bazarish::AliasProblem::eNameLength;
+    }
+    if (!allAliasChars(name)) {
+        return bazarish::AliasProblem::eNameChars;
+    }
+    return std::nullopt;
+}
+
+std::string problemText(const bazarish::AliasProblem problem)
+{
+    switch (problem) {
+    case bazarish::AliasProblem::eNameLength:
+        return "alias must be " + std::to_string(bazarish::kAliasMinLength) + "-"
+            + std::to_string(bazarish::kAliasMaxLength) + " characters";
+    case bazarish::AliasProblem::eNameChars: return "alias may contain only a-z and 0-9";
+    case bazarish::AliasProblem::eWordLength:
+        return "an alias word is at most " + std::to_string(bazarish::kAliasWordMaxLength)
+            + " characters";
+    case bazarish::AliasProblem::eWordChars: return "an alias word may contain only a-z and 0-9";
+    case bazarish::AliasProblem::eWordEmpty: return "nothing follows the dash of an alias word";
+    }
+    throw std::logic_error("unknown alias problem");
+}
+
 }  // namespace
 
 namespace bazarish {
@@ -55,56 +112,62 @@ bool isAlias(const std::string& text)
     return true;
 }
 
+std::optional<AliasProblem> aliasWordProblem(const std::string_view word)
+{
+    if (word.size() > kAliasWordMaxLength) {
+        return AliasProblem::eWordLength;
+    }
+    if (!allAliasChars(word)) {
+        return AliasProblem::eWordChars;
+    }
+    return std::nullopt;
+}
+
+std::optional<AliasProblem> aliasQueryProblem(const std::string_view typed)
+{
+    const std::string_view query = withoutSigil(typed);
+    const std::size_t separator = query.find(kAliasWordSeparator);
+    if (const std::optional<AliasProblem> name = nameProblem(query.substr(0, separator)); name) {
+        return name;
+    }
+    if (separator == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const std::string_view word = query.substr(separator + 1);
+    if (word.empty()) {
+        return AliasProblem::eWordEmpty;
+    }
+    return aliasWordProblem(word);
+}
+
 std::string normalizeAlias(const std::string& typed)
 {
-    const std::string_view name = (!typed.empty() && typed.front() == kAliasSigil)
-        ? std::string_view(typed).substr(1)
-        : std::string_view(typed);
-    if (name.size() < kAliasMinLength || name.size() > kAliasMaxLength) {
-        throw std::runtime_error("alias must be " + std::to_string(kAliasMinLength) + "-"
-            + std::to_string(kAliasMaxLength) + " characters");
+    const std::string_view name = withoutSigil(typed);
+    if (const std::optional<AliasProblem> problem = nameProblem(name); problem) {
+        throw std::runtime_error(problemText(*problem));
     }
-    std::string normalized;
-    normalized.reserve(name.size());
-    for (const char c : name) {
-        normalized.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c);
-    }
-    if (!isAlias(normalized)) {
-        throw std::runtime_error("alias may contain only a-z and 0-9");
-    }
-    return normalized;
+    return lowered(name);
 }
 
 std::string normalizeAliasWord(const std::string& typed)
 {
-    if (typed.size() > kAliasWordMaxLength) {
-        throw std::runtime_error(
-            "an alias word is at most " + std::to_string(kAliasWordMaxLength) + " characters");
+    if (const std::optional<AliasProblem> problem = aliasWordProblem(typed); problem) {
+        throw std::runtime_error(problemText(*problem));
     }
-    std::string normalized;
-    normalized.reserve(typed.size());
-    for (const char c : typed) {
-        const char lower = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-        if (!isAliasChar(lower)) {
-            throw std::runtime_error("an alias word may contain only a-z and 0-9");
-        }
-        normalized.push_back(lower);
-    }
-    return normalized;
+    return lowered(typed);
 }
 
 AliasQuery parseAliasQuery(const std::string& typed)
 {
-    const std::size_t sigil = (!typed.empty() && typed.front() == kAliasSigil) ? 1 : 0;
-    const std::size_t separator = typed.find(kAliasWordSeparator, sigil);
-    if (separator == std::string::npos) {
-        return {normalizeAlias(typed.substr(sigil)), {}};
+    if (const std::optional<AliasProblem> problem = aliasQueryProblem(typed); problem) {
+        throw std::runtime_error(problemText(*problem));
     }
-    const std::string word = normalizeAliasWord(typed.substr(separator + 1));
-    if (word.empty()) {
-        throw std::runtime_error("nothing follows the dash of an alias word");
+    const std::string_view query = withoutSigil(typed);
+    const std::size_t separator = query.find(kAliasWordSeparator);
+    if (separator == std::string_view::npos) {
+        return {lowered(query), {}};
     }
-    return {normalizeAlias(typed.substr(sigil, separator - sigil)), word};
+    return {lowered(query.substr(0, separator)), lowered(query.substr(separator + 1))};
 }
 
 std::string aliasQueryText(const AliasQuery& query)

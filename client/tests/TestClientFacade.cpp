@@ -13,7 +13,7 @@ using namespace bazarish::client;
 
 namespace {
 
-const std::string kI2pHost = "abc.b32.i2p";
+const std::string kI2pHost = "ukeu3k5oycgaauneqgtnvselmt4yemvoilkln7jpvamvfx7dnkdq.b32.i2p";
 
 void testParse()
 {
@@ -52,7 +52,7 @@ void testServerLink()
     link.facades = {kI2pHost, "127.0.0.1:18482"};
     const std::string uri = bazarish::encodeServerDescriptor(
         {link.serverFingerprint, link.facades, link.reseedUrls});
-    CHECK(uri.rfind("https://bazari.sh/#server?v=1&", 0) == 0);
+    CHECK(uri.starts_with("https://bazari.sh/#server?v=1&"));
     CHECK(uri.find("fp=" + link.serverFingerprint) != std::string::npos);
     CHECK(uri.find("facade=" + kI2pHost) != std::string::npos);
     CHECK(uri.find("facade=127.0.0.1:18482") != std::string::npos);

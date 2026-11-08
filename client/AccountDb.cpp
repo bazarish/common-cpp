@@ -5,6 +5,7 @@
 #include "KeyedDatabase.hpp"
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/JsonRead.hpp>
 #include <bazarish/PathText.hpp>
 
 #include <stdexcept>
@@ -70,6 +71,17 @@ void AccountDb::erase(const std::string& name)
     Statement statement(db_, "DELETE FROM state WHERE name = ?");
     statement.bind(1, name);
     static_cast<void>(statement.step());
+}
+
+nlohmann::json AccountDb::document(const std::string& name) const
+{
+    const std::optional<Bytes> value = get(name);
+    return value.has_value() ? parseJson(*value) : nlohmann::json::object();
+}
+
+void AccountDb::putDocument(const std::string& name, const nlohmann::json& value)
+{
+    putText(name, value.dump());
 }
 
 bool AccountDb::has(const std::string& name) const

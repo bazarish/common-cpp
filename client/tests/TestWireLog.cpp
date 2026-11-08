@@ -51,7 +51,7 @@ void testConcurrentRecordAndSnapshot()
     });
     for (int round = 0; round < 200; ++round) {
         for (const WireEvent& event : log.snapshot()) {
-            CHECK(event.what.rfind("line ", 0) == 0);
+            CHECK(event.what.starts_with("line "));
             CHECK(event.status == "200");
             CHECK(event.atMillis > 0);
         }

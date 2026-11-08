@@ -6,6 +6,9 @@
 #include <bazarish/I2pHttp.hpp>
 #include <bazarish/PairLink.hpp>
 
+#include "I2pRouter.hpp"
+#include "PacedSend.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -32,12 +35,6 @@ inline constexpr int kPairAcceptPollSeconds = 5;
 inline constexpr int kPairRequestQuietSeconds = 60;
 inline constexpr int kPairPeerQuietSeconds = 120;
 inline constexpr int kPairDrainSeconds = 60;
-inline constexpr std::size_t kPairDrainProbeBytes = 64;
-inline constexpr std::size_t kPairChunkBytes = 64 * 1024;
-inline constexpr std::size_t kPairQueuedBytesCap = 128 * 1024;
-inline constexpr int kPairQueuePollMillis = 100;
-inline constexpr int kPairOwnTunnelsSeconds = 180;
-inline constexpr int kPairDialSeconds = 90;
 inline constexpr char kPairingOwner[] = "pairing";
 
 class PairingThroughGateway : public std::runtime_error {
@@ -80,59 +77,43 @@ struct PairFetchResult {
     int triesLeft = 0;
 };
 
-inline std::uint64_t pairOnTheWire(const std::uint64_t written, const std::size_t queued)
-{
-    return written > queued ? written - queued : 0;
-}
-
 template <class Stream>
 bool writePairBundle(Stream& stream, const Bytes& bundle, const PairProgressFn& onProgress,
     const std::atomic<bool>& cancel)
 {
     const std::uint64_t total = bundle.size();
-    const std::string head = pairBundleHead(bundle.size());
-    stream.writeAll(viewOf(head));
+    const std::function<void(std::uint64_t)> progress
+        = [&onProgress, total](const std::uint64_t done) {
+              if (onProgress) {
+                  onProgress(done, total);
+              }
+          };
+    const std::function<bool()> stopped = [&cancel]() { return cancel.load(); };
+    stream.writeAll(viewOf(pairBundleHead(bundle.size())));
     std::uint64_t sent = 0;
     while (sent < total) {
-        if (cancel.load()) {
+        if (stopped()) {
             return false;
         }
         const std::size_t chunk
-            = static_cast<std::size_t>(std::min<std::uint64_t>(kPairChunkBytes, total - sent));
+            = static_cast<std::size_t>(std::min<std::uint64_t>(kPacedChunkBytes, total - sent));
         stream.writeAll(ByteView(bundle).subspan(static_cast<std::size_t>(sent), chunk));
         sent += chunk;
-        while (stream.pendingBytes() > kPairQueuedBytesCap) {
-            if (cancel.load()) {
-                return false;
-            }
-            if (onProgress) {
-                onProgress(pairOnTheWire(sent, stream.pendingBytes()), total);
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(kPairQueuePollMillis));
-        }
-        if (onProgress) {
-            onProgress(pairOnTheWire(sent, stream.pendingBytes()), total);
+        if (!waitForRoom(stream, sent, stopped, progress)) {
+            return false;
         }
     }
-    std::array<unsigned char, kPairDrainProbeBytes> drain{};
-    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(kPairDrainSeconds);
-    while (std::chrono::steady_clock::now() < until) {
-        if (onProgress) {
-            onProgress(pairOnTheWire(sent, stream.pendingBytes()), total);
-        }
-        try {
-            if (stream.readSome(drain) != 0) {
-                continue;
-            }
-        } catch (const std::exception& error) {
-            notePairingTrouble(std::string("the other device did not close: ") + error.what());
-        }
-        if (onProgress) {
-            onProgress(total, total);
-        }
-        return true;
+    std::string brokenBecause;
+    const DrainOutcome drained = drainUntilClosed(
+        stream, sent, std::chrono::seconds(kPairDrainSeconds), progress, brokenBecause);
+    if (drained == DrainOutcome::eTimedOut) {
+        return false;
     }
-    return false;
+    if (drained == DrainOutcome::eBroken) {
+        notePairingTrouble("the other device did not close: " + brokenBecause);
+    }
+    progress(total);
+    return true;
 }
 
 template <class Endpoint>
@@ -199,7 +180,7 @@ Bytes readPairBundle(Stream& stream, const I2pHttpHead& head, const PairProgress
     if (onProgress) {
         onProgress(bundle.size(), total);
     }
-    std::vector<unsigned char> buffer(kPairChunkBytes);
+    std::vector<unsigned char> buffer(kPacedChunkBytes);
     while (bundle.size() < total) {
         if (cancel.load()) {
             throw std::runtime_error("pairing stopped");
@@ -222,10 +203,10 @@ template <class Endpoint>
 PairFetchResult fetchPairBundle(Endpoint& endpoint, const std::string& dest,
     const std::string& code, const PairProgressFn& onProgress, const std::atomic<bool>& cancel)
 {
-    if (!endpoint.waitReady(std::chrono::seconds(kPairOwnTunnelsSeconds))) {
+    if (!endpoint.waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
         throw std::runtime_error("this device could not build I2P tunnels");
     }
-    const auto stream = endpoint.connect(dest, std::chrono::seconds(kPairDialSeconds));
+    const auto stream = endpoint.connect(dest, std::chrono::seconds(kDialSeconds));
     if (!stream) {
         throw std::runtime_error("cannot reach the other device");
     }

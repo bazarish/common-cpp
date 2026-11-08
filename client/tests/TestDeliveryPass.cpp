@@ -122,19 +122,6 @@ struct Mock {
     int resolverUpdateCalls = 0;
 };
 
-bool waitFor(const std::function<bool()>& done)
-{
-    constexpr int kWaitMs = 5000;
-    constexpr int kPollMs = 10;
-    for (int waited = 0; waited < kWaitMs; waited += kPollMs) {
-        if (done()) {
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(kPollMs));
-    }
-    return done();
-}
-
 class MockServerStream final : public DeliveryStream {
 public:
     MockServerStream(Mock& mock, const Key& signingKey)
@@ -145,15 +132,16 @@ public:
 
     void writeAll(const ByteView data) override { written_.append(data.begin(), data.end()); }
 
-    void readExact(const ByteBuffer buffer) override
+    std::size_t readSome(const ByteBuffer buffer) override
     {
         if (reply_.empty()) {
             reply_ = serve();
         }
-        CHECK(sent_ + buffer.size() <= reply_.size());
-        const ByteView from = viewOf(reply_).subspan(sent_, buffer.size());
+        const ByteView from
+            = viewOf(reply_).subspan(sent_, std::min(buffer.size(), reply_.size() - sent_));
         std::copy(from.begin(), from.end(), buffer.begin());
-        sent_ += buffer.size();
+        sent_ += from.size();
+        return from.size();
     }
 
     void close() override {}
@@ -426,10 +414,9 @@ int main()
         resolverDelegated, static_cast<std::int64_t>(std::time(nullptr)) - 60,
         static_cast<std::int64_t>(std::time(nullptr)) + 30 * 24 * 3600);
 
-    const fs::path aDir = fs::temp_directory_path() / "bz-pass-a";
-    const fs::path bDir = fs::temp_directory_path() / "bz-pass-b";
-    fs::remove_all(aDir);
-    fs::remove_all(bDir);
+    const fs::path scratch = testutil::freshDir("pass");
+    const fs::path aDir = scratch / "a.db";
+    const fs::path bDir = scratch / "b.db";
 
     int bobSent = 0;
     int aliceSent = 0;
@@ -442,7 +429,7 @@ int main()
         bob->setResolverCoordinate(resolver);
         const Identity aliceIdentity
             = Identity::fromPrivatePem(AccountDb(aDir, std::string{}).text("identity.pem"));
-        const fs::path earlyBundle = fs::temp_directory_path() / "bz-pass-early.bundle";
+        const fs::path earlyBundle = scratch / "bz-pass-early.bundle";
         fs::remove(earlyBundle);
         alice->exportAccount(earlyBundle, "bundle-password");
         {
@@ -559,7 +546,7 @@ int main()
         CHECK(alice->hasContact(bob->fingerprint()));
         CHECK(bob->hasContact(alice->fingerprint()));
 
-        CHECK(waitFor([&]() {
+        CHECK(testutil::waitFor([&]() {
             alice->sync();
             return alice->canWriteTo(bob->fingerprint());
         }));
@@ -679,7 +666,7 @@ int main()
             const auto logHas = [](const std::vector<WireEvent>& events,
                                     const std::string& whatPrefix, const std::string& status) {
                 for (const WireEvent& event : events) {
-                    if (event.what.rfind(whatPrefix, 0) == 0
+                    if (event.what.starts_with(whatPrefix)
                         && (status.empty() || event.status == status)) {
                         return true;
                     }
@@ -687,7 +674,7 @@ int main()
                 return false;
             };
             alice->sendMessage(bob->fingerprint(), "logged");
-            CHECK(waitFor([&]() { return logHas(alice->connectionLog(), "text to", "stored"); }));
+            CHECK(testutil::waitFor([&]() { return logHas(alice->connectionLog(), "text to", "stored"); }));
             const std::vector<WireEvent> aliceLog = alice->connectionLog();
             CHECK(logHas(aliceLog, "text to", "sending"));
             CHECK(logHas(aliceLog, "POST /v1/messaging/", "200"));
@@ -703,7 +690,7 @@ int main()
                 return m.mailbox[bob->fingerprint()].size();
             }();
             alice->sendMessage(bob->fingerprint(), "outlives a failed ack");
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
                 return m.mailbox[bob->fingerprint()].size() > waiting;
             }));
@@ -732,7 +719,7 @@ int main()
             const Bytes opus{'O', 'p', 'u', 's'};
             alice->sendVoice(bob->fingerprint(), opus, 2500);
             bool heard = false;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     if (item.contentType == "audio") {
                         heard = true;
@@ -747,14 +734,14 @@ int main()
         }
 
         {
-            const fs::path forwardedFile = fs::temp_directory_path() / "bz-pass-forwarded.txt";
+            const fs::path forwardedFile = scratch / "bz-pass-forwarded.txt";
             std::ofstream(forwardedFile) << "fwd";
             alice->sendPicture(
                 bob->fingerprint(), Bytes{'P', 'N', 'G'}, "p.png", "image/png", {}, {}, {}, true);
             alice->sendFile(bob->fingerprint(), forwardedFile.string(), {}, {}, {}, true);
             alice->sendPicture(bob->fingerprint(), Bytes{'J', 'P', 'G'}, "own.jpg", "image/jpeg");
             std::map<std::string, bool> marks;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     if (item.contentType == "image" || item.contentType == "file") {
                         marks[item.attachmentName] = item.forwarded;
@@ -791,14 +778,14 @@ int main()
                 std::chrono::system_clock::now().time_since_epoch())
                                                .count();
             bob->requestFile(alice->fingerprint(), "never-announced", toHex(sha256(Bytes{'u'})),
-                fileTargetAt(fs::temp_directory_path() / "bz-pass-unanswered.bin"));
+                fileTargetAt(scratch / "bz-pass-unanswered.bin"));
             bob->expireFileRequests(askedAtMs);
             CHECK(failures() == 0);
             bob->expireFileRequests(askedAtMs + kPastTheAnswerWindowMs);
             CHECK(failures() == 1);
             bob->expireFileRequests(askedAtMs + kPastTheAnswerWindowMs);
             CHECK(failures() == 1);
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
                 return m.mailbox[alice->fingerprint()].size() >= before + 2;
             }));
@@ -816,7 +803,7 @@ int main()
         {
             alice->setAvatar(Bytes(kAvatarMaxBytes, 'a'), "image/jpeg");
             std::size_t received = 0;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     if (item.contentType == "avatar") {
                         received = item.avatarData.size();
@@ -834,7 +821,7 @@ int main()
             };
             alice->sendInteractive(bob->fingerprint(), "pick one", keyboard);
             std::string received;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     if (item.contentType == "text" && item.text == "pick one") {
                         received = item.keyboardJson;
@@ -875,7 +862,7 @@ int main()
                     return m.mailbox[bob->fingerprint()].size();
                 }();
                 alice->sendMessage(bob->fingerprint(), text);
-                CHECK(waitFor([&]() {
+                CHECK(testutil::waitFor([&]() {
                     std::lock_guard<std::mutex> lock(m.mu);
                     return m.mailbox[bob->fingerprint()].size() > before;
                 }));
@@ -896,12 +883,12 @@ int main()
 
         {
             alice->replaceOwnAddress();
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 alice->flushPendingEchoes();
                 return alice->routingFanout().contacts.empty();
             }));
             bool sawRouting = false;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     CHECK(item.contentType != "unsupported");
                     if (item.contentType == "contact.routing") {
@@ -938,7 +925,7 @@ int main()
             CHECK(alice->routingFanout().contacts.empty());
             bob->sendMessage(alice->fingerprint(), "on the new server");
             bool arrived = false;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : alice->sync()) {
                     arrived = arrived || item.text == "on the new server";
                 }
@@ -962,7 +949,7 @@ int main()
             CHECK_THROWS(alice->sendChatTimer(bob->fingerprint(), kSecondsPerHour + 1));
             alice->sendChatTimer(bob->fingerprint(), kDaysPerWeek * kSecondsPerDay);
             bool sawTimer = false;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     if (item.contentType == "chat.timer") {
                         sawTimer = true;
@@ -992,7 +979,7 @@ int main()
             for (std::size_t i = 0; i < kBacklog; ++i) {
                 bob->sendMessage(alice->fingerprint(), kBacklogText + std::to_string(i));
             }
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 std::lock_guard<std::mutex> lock(m.mu);
                 return m.mailbox[alice->fingerprint()].size() >= kBacklog;
             }));
@@ -1005,7 +992,7 @@ int main()
             }
             std::size_t taken = 0;
             for (const IncomingMessage& item : alice->sync()) {
-                taken += item.text.rfind(kBacklogText, 0) == 0 ? 1 : 0;
+                taken += item.text.starts_with(kBacklogText) ? 1 : 0;
             }
             CHECK(taken == kBacklog);
             std::lock_guard<std::mutex> lock(m.mu);
@@ -1029,7 +1016,7 @@ int main()
                     return m.mailbox[bob->fingerprint()].size();
                 }();
                 alice->sendMessage(bob->fingerprint(), text);
-                CHECK(waitFor([&]() {
+                CHECK(testutil::waitFor([&]() {
                     std::lock_guard<std::mutex> lock(m.mu);
                     return m.mailbox[bob->fingerprint()].size() > before;
                 }));
@@ -1045,7 +1032,7 @@ int main()
 
             alice->setDeviceSync(true);
             sendToBob("told to the other devices");
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 alice->flushPendingEchoes();
                 return deviceItems() > quiet;
             }));
@@ -1086,7 +1073,7 @@ int main()
 
             std::map<std::string, IncomingMessage> seen;
             std::vector<std::string> order;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     const std::string key = item.contentType == "text" ? item.text : item.contentType;
                     seen[key] = item;
@@ -1141,7 +1128,7 @@ int main()
             alice->relayPosts(bob->fingerprint(), {post, again});
             alice->relayPosts(bob->fingerprint(), {post, again, later});
             bool sawLater = false;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     sawLater = sawLater || item.text == "only in the longer one";
                 }
@@ -1152,7 +1139,7 @@ int main()
             alice->setGroupBlockSource({});
             alice->sendMessage(bob->fingerprint(), "no longer a group");
             bool plain = false;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     if (item.text == "no longer a group") {
                         plain = true;
@@ -1299,7 +1286,7 @@ int main()
             }
 
             bob->sendMessage(alice->fingerprint(), "after the unblock");
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : alice->sync()) {
                     if (item.text == "after the unblock") {
                         return true;
@@ -1387,7 +1374,7 @@ int main()
         }
 
         {
-            const fs::path cDir = fs::temp_directory_path() / "bz-pass-c";
+            const fs::path cDir = scratch / "bz-pass-c";
             fs::remove(cDir);
             const std::unique_ptr<Session> carol = Session::create(cDir, AccountKind::eUser, endpoint, std::string{});
             {
@@ -1415,7 +1402,7 @@ int main()
         }
 
         {
-            const fs::path dDir = fs::temp_directory_path() / "bz-pass-d";
+            const fs::path dDir = scratch / "bz-pass-d";
             fs::remove(dDir);
             const std::unique_ptr<Session> dana = Session::create(dDir, AccountKind::eUser, endpoint, std::string{});
             {
@@ -1443,7 +1430,7 @@ int main()
             const std::size_t beforeRequests = heldForAlice();
             CHECK(beforeRequests == beforeAdding + 1);
             CHECK(alice->hasContact(dana->fingerprint()));
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 dana->sync();
                 return dana->contactIsPending(alice->fingerprint());
             }));
@@ -1458,8 +1445,8 @@ int main()
             CHECK(dana->contactIsPending(alice->fingerprint()));
             CHECK(dana->contactAcceptInFlight(alice->fingerprint()));
             dana->acceptContactRequest(alice->fingerprint());
-            CHECK(waitFor([&]() { return heldForAlice() > beforeRequests; }));
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() { return heldForAlice() > beforeRequests; }));
+            CHECK(testutil::waitFor([&]() {
                 dana->sync();
                 return !dana->contactIsPending(alice->fingerprint());
             }));
@@ -1470,24 +1457,24 @@ int main()
             CHECK(!alice->hasContact(dana->fingerprint()));
             const std::size_t beforeReturn = heldForAlice();
             alice->addByInvite(dana->inviteUri(), "me again");
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 dana->sync();
                 return dana->contactAcceptInFlight(alice->fingerprint());
             }));
-            CHECK(waitFor([&]() { return heldForAlice() > beforeReturn; }));
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() { return heldForAlice() > beforeReturn; }));
+            CHECK(testutil::waitFor([&]() {
                 dana->sync();
                 return !dana->contactIsPending(alice->fingerprint());
             }));
             CHECK(!dana->contactIsPending(alice->fingerprint()));
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 alice->sync();
                 return alice->canWriteTo(dana->fingerprint());
             }));
         }
 
         {
-            const fs::path eDir = fs::temp_directory_path() / "bz-pass-e";
+            const fs::path eDir = scratch / "bz-pass-e";
             fs::remove(eDir);
             const std::unique_ptr<Session> erin = Session::create(eDir, AccountKind::eUser, endpoint, std::string{});
             {
@@ -1526,13 +1513,13 @@ int main()
             alice->setOutboundCourier(courierFor());
             alice->sendContactRequest(erin->fingerprint(), "resent-request", "are you there",
                 DeliveryWatch{}, /*waitForOutcome=*/true);
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 erin->sync();
                 return erin->hasContact(alice->fingerprint());
             }));
             CHECK(erin->contactIsPending(alice->fingerprint()));
             erin->acceptContactRequest(alice->fingerprint());
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 alice->sync();
                 return alice->canWriteTo(erin->fingerprint());
             }));
@@ -1542,14 +1529,14 @@ int main()
         {
             const Bytes face = {0xFF, 0xD8, 0xFF, 0xE0, 'b', 'o', 'b'};
             bob->setAvatar(face, "image/jpeg");
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 alice->sync();
                 return !alice->contactAvatar(bob->fingerprint()).empty();
             }));
             CHECK(alice->contactAvatar(bob->fingerprint()) == face);
             alice->renameContact(bob->fingerprint(), "Bob of the book");
 
-            const fs::path secondDir = fs::temp_directory_path() / "bz-pass-a-second.db";
+            const fs::path secondDir = scratch / "second.db";
             fs::remove(secondDir);
             Session::importAccount(earlyBundle, secondDir, "bundle-password");
             const std::unique_ptr<Session> second = Session::open(secondDir, std::string{});
@@ -1558,7 +1545,7 @@ int main()
 
             second->sync();
             alice->sync();
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 second->sync();
                 return second->hasContact(bob->fingerprint());
             }));
@@ -1567,7 +1554,7 @@ int main()
             CHECK(second->contactAvatar(bob->fingerprint()) == face);
             CHECK(second->canWriteTo(bob->fingerprint()));
             alice->publishRouting();
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 second->sync();
                 return second->hasI2pDestination();
             }));
@@ -1576,17 +1563,17 @@ int main()
             CHECK(second->addressKeys().signingPem == alice->addressKeys().signingPem);
             alice->issueAddressKeys();
             alice->publishRouting();
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 second->sync();
                 return second->addressKeys().sealingPem == alice->addressKeys().sealingPem;
             }));
             CHECK(second->addressKeys().signingPem == alice->addressKeys().signingPem);
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 alice->flushPendingEchoes();
                 return alice->routingFanout().contacts.empty();
             }));
             bool bobHeardKeys = false;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     bobHeardKeys = bobHeardKeys || item.contentType == "contact.routing";
                 }
@@ -1594,7 +1581,7 @@ int main()
             }));
             bob->sendMessage(alice->fingerprint(), "hello, second device");
             bool sawBob = false;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : second->sync()) {
                     sawBob = sawBob || item.text == "hello, second device";
                 }
@@ -1603,7 +1590,7 @@ int main()
             CHECK(sawBob);
 
             {
-                const fs::path fDir = fs::temp_directory_path() / "bz-pass-f";
+                const fs::path fDir = scratch / "bz-pass-f";
                 fs::remove(fDir);
                 const std::unique_ptr<Session> finn = Session::create(fDir, AccountKind::eUser, endpoint, std::string{});
                 {
@@ -1617,19 +1604,19 @@ int main()
 
                 alice->addByInvite(finn->inviteUri(), "added on one device");
                 alice->renameContact(finn->fingerprint(), "Finn of the phone");
-                CHECK(waitFor([&]() {
+                CHECK(testutil::waitFor([&]() {
                     second->sync();
                     return second->hasContact(finn->fingerprint());
                 }));
                 CHECK(second->hasContact(finn->fingerprint()));
-                CHECK(waitFor([&]() {
+                CHECK(testutil::waitFor([&]() {
                     finn->sync();
                     return finn->contactIsPending(alice->fingerprint());
                 }));
                 finn->acceptContactRequest(alice->fingerprint());
                 finn->sendMessage(alice->fingerprint(), "seen on the other device too");
                 bool sawFinn = false;
-                CHECK(waitFor([&]() {
+                CHECK(testutil::waitFor([&]() {
                     for (const IncomingMessage& item : second->sync()) {
                         sawFinn = sawFinn || item.text == "seen on the other device too";
                     }
@@ -1643,19 +1630,19 @@ int main()
                 Bytes huge(200 * 1024, 0x41);
                 std::copy(kJpegOpening.begin(), kJpegOpening.end(), huge.begin());
                 bob->setAvatar(huge, "image/jpeg");
-                CHECK(waitFor([&]() {
+                CHECK(testutil::waitFor([&]() {
                     alice->sync();
                     return alice->contactAvatar(bob->fingerprint()) == huge;
                 }));
                 CHECK(alice->contactAvatar(bob->fingerprint()) == huge);
 
-                const fs::path thirdDir = fs::temp_directory_path() / "bz-pass-a-third.db";
+                const fs::path thirdDir = scratch / "third.db";
                 fs::remove(thirdDir);
                 Session::importAccount(earlyBundle, thirdDir, "bundle-password");
                 const std::unique_ptr<Session> third = Session::open(thirdDir, std::string{});
                 third->sync();
                 alice->sync();
-                CHECK(waitFor([&]() {
+                CHECK(testutil::waitFor([&]() {
                     third->sync();
                     return third->hasContact(bob->fingerprint());
                 }));
@@ -1680,12 +1667,12 @@ int main()
             CHECK(second->contactDisplayName(bob->fingerprint()) == "Bob of the book");
 
             CHECK(alice->canWriteTo(bob->fingerprint()));
-            const fs::path laterBundle = fs::temp_directory_path() / "bz-pass-later.bundle";
+            const fs::path laterBundle = scratch / "bz-pass-later.bundle";
             fs::remove(laterBundle);
             alice->exportAccount(laterBundle, "bundle-password");
             CHECK(alice->canWriteTo(bob->fingerprint()));
 
-            const fs::path fourthDir = fs::temp_directory_path() / "bz-pass-a-fourth.db";
+            const fs::path fourthDir = scratch / "fourth.db";
             fs::remove(fourthDir);
             Session::importAccount(laterBundle, fourthDir, "bundle-password");
             const std::unique_ptr<Session> fourth = Session::open(fourthDir, std::string{});
@@ -1875,7 +1862,7 @@ int main()
             alice->announceNewRouting();
             const std::size_t queued = alice->routingFanout().contacts.size();
             CHECK(queued > 0);
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 alice->flushPendingEchoes();
                 return static_cast<std::size_t>(refused) == queued;
             }));
@@ -1895,7 +1882,7 @@ int main()
             constexpr std::chrono::seconds kServingWithin{60};
             constexpr std::chrono::seconds kStopWithin{2};
             constexpr std::chrono::milliseconds kServingPoll{50};
-            const fs::path gDir = fs::temp_directory_path() / "bz-pass-g";
+            const fs::path gDir = scratch / "bz-pass-g";
             fs::remove(gDir);
             std::unique_ptr<Session> gail
                 = Session::create(gDir, AccountKind::eUser, endpoint, std::string{});
@@ -1910,27 +1897,27 @@ int main()
             gail->addByInvite(bob->inviteUri(), "a file for you");
             bob->sync();
             bob->acceptContactRequest(gail->fingerprint());
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 gail->sync();
                 return gail->canWriteTo(bob->fingerprint());
             }));
 
-            const fs::path scratch = gDir.parent_path() / ".transfers";
-            const auto servingFiles = [&scratch]() {
+            const fs::path transfers = gDir.parent_path() / ".transfers";
+            const auto servingFiles = [&transfers]() {
                 std::set<std::string> names;
-                if (!fs::exists(scratch)) {
+                if (!fs::exists(transfers)) {
                     return names;
                 }
-                for (const fs::directory_entry& entry : fs::directory_iterator(scratch)) {
+                for (const fs::directory_entry& entry : fs::directory_iterator(transfers)) {
                     const std::string name = entry.path().filename().string();
-                    if (name.rfind("file-serve-", 0) == 0) {
+                    if (name.starts_with("file-serve-")) {
                         names.insert(name);
                     }
                 }
                 return names;
             };
             const std::set<std::string> earlier = servingFiles();
-            const fs::path offered = fs::temp_directory_path() / "bz-pass-offered.bin";
+            const fs::path offered = scratch / "bz-pass-offered.bin";
             std::ofstream(offered, std::ios::binary) << "a file nobody comes for";
             std::atomic<int> waiting{0};
             gail->setTransferHandler([&waiting](const TransferEvent& event) {
@@ -1946,7 +1933,7 @@ int main()
             });
             gail->sendFile(bob->fingerprint(), offered.string());
             IncomingMessage announced;
-            CHECK(waitFor([&]() {
+            CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     if (item.contentType == "file"
                         && item.attachmentName == offered.filename().string()) {
@@ -1956,7 +1943,7 @@ int main()
                 return !announced.e2eId.empty();
             }));
             const FileTarget copy
-                = fileTargetAt(fs::temp_directory_path() / "bz-pass-offered-copy.bin");
+                = fileTargetAt(scratch / "bz-pass-offered-copy.bin");
             bob->requestFile(gail->fingerprint(), announced.e2eId, announced.attachmentRef, copy);
 
             const Identity gailIdentity
@@ -2026,7 +2013,7 @@ int main()
             gail.reset();
             CHECK(std::chrono::steady_clock::now() - stopping < kStopWithin);
             for (const std::string& name : held) {
-                CHECK(!fs::exists(scratch / name));
+                CHECK(!fs::exists(transfers / name));
             }
             bob->setTransferHandler({});
             fs::remove(offered);
@@ -2045,8 +2032,7 @@ int main()
 
     server.stop();
     gatewayServer.stop();
-    fs::remove_all(aDir);
-    fs::remove_all(bDir);
+    fs::remove_all(scratch);
 
     std::fprintf(stderr, "TestDeliveryPass passed (bob sent %d, alice sent %d)\n", bobSent, aliceSent);
     return 0;

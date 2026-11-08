@@ -1,15 +1,15 @@
 // Bazarish project (c) 2026
 #include "Client.hpp"
 
+#include <bazarish/Clock.hpp>
 #include <bazarish/Errors.hpp>
-#include <bazarish/Log.hpp>
-#include <bazarish/Hybrid.hpp>
 #include <bazarish/Hmac.hpp>
 #include <bazarish/I2pAddress.hpp>
-#include <bazarish/Limits.hpp>
-#include <bazarish/ResolvePuzzle.hpp>
-#include <bazarish/Resolve.hpp>
 #include <bazarish/JsonRead.hpp>
+#include <bazarish/Limits.hpp>
+#include <bazarish/Log.hpp>
+#include <bazarish/Resolve.hpp>
+#include <bazarish/ResolvePuzzle.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -23,11 +23,6 @@ namespace bazarish::client {
 
 namespace {
 
-std::int64_t nowSeconds()
-{
-    return static_cast<std::int64_t>(std::time(nullptr));
-}
-
 }  // namespace
 
 namespace {
@@ -37,7 +32,7 @@ constexpr std::string_view kWebPageScheme = "https://";
 
 bool isWebPage(const std::string& link)
 {
-    return link.size() > kWebPageScheme.size() && link.rfind(kWebPageScheme, 0) == 0
+    return link.size() > kWebPageScheme.size() && link.starts_with(kWebPageScheme)
         && link.find_first_of("/?#", kWebPageScheme.size()) != kWebPageScheme.size();
 }
 
@@ -63,21 +58,6 @@ Bytes cardQueryBytes(const CardFetchQuery& query)
 }
 
 }  // namespace
-
-Bytes sealDeliveryEnvelope(const std::string& deliveryClass, const std::string& mailbox,
-    const std::string& deliveryId, const Bytes& pass, const Key& recipientSealingKey)
-{
-    nlohmann::json inner = {
-        {"class", deliveryClass},
-        {"mailbox", mailbox},
-        {"deliveryId", deliveryId},
-    };
-    if (!pass.empty()) {
-        inner["pass"] = toBase64(pass);
-    }
-    const std::string text = inner.dump();
-    return hybrid::seal(Bytes(text.begin(), text.end()), recipientSealingKey);
-}
 
 Client::Client(Identity identity, std::string clientId, ServerEndpoint endpoint,
     std::filesystem::path i2pDataDir)

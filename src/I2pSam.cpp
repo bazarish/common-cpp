@@ -14,6 +14,8 @@
 
 namespace bazarish::i2p {
 
+using backend::DestTag;
+
 namespace {
 
 constexpr auto kDestinationReadyTimeout = std::chrono::seconds(180);
@@ -81,7 +83,7 @@ public:
         , publicDestination_(config.keys.value().publicBase64())
         , hostAddress_(i2p::routingHost(publicDestination_, config.blinded))
         , keysBlob_(config.keys.value().blob())
-        , label_(config.label)
+        , tag_(config.label, config.owner)
     {
         builder_ = std::thread([this]() { build(); });
     }
@@ -93,7 +95,7 @@ public:
             builder_.join();
         }
         bazarish::log::info("i2p: closing destination {} ({})",
-            label_.empty() ? std::string("unnamed") : label_, hostAddress_);
+            tag_.named(), hostAddress_);
     }
 
     bool ready() const override
@@ -189,23 +191,13 @@ public:
         return datagrams(sam::Style::eRaw)->receiveDatagram(timeout).data;
     }
 
-    std::string label() const
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        return label_;
-    }
+    std::string label() const { return tag_.label(); }
 
-    std::string owner() const
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        return owner_;
-    }
+    std::string owner() const { return tag_.owner(); }
 
     void retag(std::string label, std::string owner)
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        label_ = std::move(label);
-        owner_ = std::move(owner);
+        tag_.retag(std::move(label), std::move(owner));
     }
 
     bool published() const { return config_.published; }
@@ -228,7 +220,7 @@ private:
                     if (!told) {
                         bazarish::log::info("i2p: destination {} is still held by the router; "
                                             "waiting for it to let go",
-                            label_.empty() ? std::string("unnamed") : label_);
+                            tag_.named());
                         told = true;
                     }
                 }
@@ -241,7 +233,7 @@ private:
             const std::lock_guard<std::mutex> lock(mutex_);
             failure_ = error.what();
             bazarish::log::warn("i2p: destination {} did not come up: {}",
-                label_.empty() ? std::string("unnamed") : label_, failure_);
+                tag_.named(), failure_);
         }
         ready_.notify_all();
     }
@@ -282,8 +274,7 @@ private:
     std::condition_variable ready_;
     std::shared_ptr<sam::Session> streams_;
     std::string failure_;
-    std::string label_;
-    std::string owner_;
+    DestTag tag_;
     std::thread builder_;
 
     std::mutex datagramMutex_;

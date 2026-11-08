@@ -137,8 +137,8 @@ void testReadingSettings()
 
 void testSettingKeepsTheFileMode()
 {
-    const std::filesystem::path path
-        = std::filesystem::temp_directory_path() / "bazarish-config-mode-test.json";
+    const std::filesystem::path dir = testutil::freshDir("config-mode");
+    const std::filesystem::path path = dir / "config.json";
     for (const std::filesystem::perms mode :
         {std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
             std::filesystem::perms::owner_read | std::filesystem::perms::owner_write
@@ -150,7 +150,7 @@ void testSettingKeepsTheFileMode()
         CHECK(std::filesystem::status(path).permissions() == recorded);
         CHECK(ConfigFile(path).read().at("registration").at("requireApproval") == true);
     }
-    std::filesystem::remove(path);
+    std::filesystem::remove_all(dir);
 }
 
 }  // namespace

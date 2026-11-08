@@ -138,8 +138,7 @@ private:
 int main()
 {
     const std::filesystem::path root
-        = std::filesystem::temp_directory_path() / "bazarish-ws-tls-duplex-test";
-    std::filesystem::remove_all(root);
+        = testutil::freshDir("ws-tls-duplex-test");
     std::filesystem::create_directories(root);
     const tls::Credential credential = tls::selfSigned(root);
 

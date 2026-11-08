@@ -51,7 +51,9 @@ add_library(bazarish_common STATIC
     src/I2p.cpp
     src/I2pGateway.cpp
     src/I2pSam.cpp
+    src/DeliveryEnvelope.cpp
     src/Descriptor.cpp
+    src/Percent.cpp
     src/ServerDescriptor.cpp
     src/PairLink.cpp
     src/Resolve.cpp
@@ -69,11 +71,13 @@ add_library(bazarish_common STATIC
     src/RawPathChooser.cpp
     src/HttpServer.cpp
     src/WebSocketClient.cpp
+    src/Zip.cpp
     src/Hmac.cpp
     src/Portal.cpp
     src/PortalSession.cpp
     src/LoginChallenge.cpp
     src/Tls.cpp
+    src/TlsContext.cpp
 )
 add_library(Bazarish::Common ALIAS bazarish_common)
 
@@ -224,6 +228,11 @@ if(BAZARISH_WITH_CLIENT)
         ${SQLCIPHER_LIBRARY} OpenSSL::Crypto)
     target_link_libraries(bazarish_client PRIVATE ${OPUS_LIBRARY})
     target_compile_options(bazarish_client PRIVATE -Wall -Wextra -Werror)
+    # libc++ before 20 keeps std::jthread and std::stop_token behind this switch.
+    if(ANDROID)
+        target_compile_options(bazarish_client PUBLIC -fexperimental-library)
+        target_link_options(bazarish_client PUBLIC -fexperimental-library)
+    endif()
 
     function(bazarish_client_add_test name)
         add_executable(${name} client/tests/${name}.cpp)
@@ -273,3 +282,7 @@ endif()
     bazarish_client_add_test(TestDeliveryPass)
     bazarish_client_add_test(TestWireLog)
 endif()
+
+add_library(bazarish_test_util INTERFACE)
+target_include_directories(bazarish_test_util INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+target_link_libraries(bazarish_test_util INTERFACE bazarish_common)

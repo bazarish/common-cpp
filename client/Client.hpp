@@ -96,9 +96,6 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-Bytes sealDeliveryEnvelope(const std::string& deliveryClass, const std::string& mailbox,
-    const std::string& deliveryId, const Bytes& pass, const Key& recipientSealingKey);
-
 std::string deliveryIdFor(
     const std::string& secretKey, const std::string& e2eId, const std::string& mailbox);
 

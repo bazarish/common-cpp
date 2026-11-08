@@ -31,8 +31,7 @@ fs::perms permsOf(const fs::path& file)
 
 int main()
 {
-    const fs::path root = fs::temp_directory_path() / "bazarish-test-private-file";
-    fs::remove_all(root);
+    const fs::path root = testutil::freshDir("test-private-file");
     fs::create_directories(root);
 
     const fs::path key = root / "key.pem";
@@ -82,10 +81,20 @@ int main()
         std::size_t left = 0;
         for (const fs::directory_entry& entry : fs::directory_iterator(root)) {
             const std::string name = entry.path().filename().string();
-            left += name.rfind("shared.json.", 0) == 0 ? 1 : 0;
+            left += name.starts_with("shared.json.") ? 1 : 0;
         }
         CHECK(left == 0);
     }
+
+    writePrivateFile(root / "bytes.bin", std::string("\0\x01\xFF", 3));
+    CHECK(readFileBytes(root / "bytes.bin") == (Bytes{0x00, 0x01, 0xFF}));
+    bool named = false;
+    try {
+        (void)readFileBytes(root / "absent.bin");
+    } catch (const std::exception& error) {
+        named = std::string(error.what()).find("absent.bin") != std::string::npos;
+    }
+    CHECK(named);
 
     fs::remove_all(root);
     std::fprintf(stderr, "TestPrivateFile passed\n");

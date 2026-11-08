@@ -37,11 +37,6 @@ Placement placeReceived(const std::int64_t sentAtMs, const std::int64_t arrivalM
     return {written, std::max(written, floor)};
 }
 
-bool startsWith(const std::string& text, const char* const prefix)
-{
-    return text.rfind(prefix, 0) == 0;
-}
-
 }  // namespace
 
 TranscriptIngest::TranscriptIngest(TranscriptStore& store, OwnFingerprintFn ownFingerprint,
@@ -96,7 +91,7 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
     if (!incomingId.empty() && store_.idForKey(peer, incomingId, message.sentByUs) != 0) {
         return true;
     }
-    if (startsWith(type, kTypeCallPrefix)) {
+    if (type.starts_with(kTypeCallPrefix)) {
         return true;
     }
     if (!message.sentByUs && !noteGroupBlock(message)) {

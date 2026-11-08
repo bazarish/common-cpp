@@ -164,7 +164,7 @@ std::string readHeadFrom(const int fd)
 
 std::size_t readBodyFrom(const int fd, const std::size_t expected, std::string& body)
 {
-    std::vector<char> buffer(kPairChunkBytes);
+    std::vector<char> buffer(kPacedChunkBytes);
     while (body.size() < expected) {
         const ssize_t got = ::read(fd, buffer.data(), buffer.size());
         if (got <= 0) {
@@ -325,10 +325,10 @@ int main()
 
     {
         std::atomic<bool> cancel{false};
-        std::atomic<std::size_t> pending{kPairQueuedBytesCap + 1};
+        std::atomic<std::size_t> pending{kPacedQueueCap + 1};
         FakeEndpoint endpoint(&cancel);
         const int reader = wireInto(endpoint, &pending);
-        const Bytes big = patternOf(2 * kPairChunkBytes + 1);
+        const Bytes big = patternOf(2 * kPacedChunkBytes + 1);
 
         PairServeResult result;
         std::thread serving([&]() {
@@ -354,13 +354,13 @@ int main()
 
     {
         std::atomic<bool> cancel{false};
-        std::atomic<std::size_t> pending{kPairQueuedBytesCap + 1};
+        std::atomic<std::size_t> pending{kPacedQueueCap + 1};
         FakeEndpoint endpoint(&cancel);
         const int reader = wireInto(endpoint, &pending);
 
         PairServeResult result;
         std::thread serving([&]() {
-            result = servePairBundle(endpoint, patternOf(2 * kPairChunkBytes), code, nullptr,
+            result = servePairBundle(endpoint, patternOf(2 * kPacedChunkBytes), code, nullptr,
                 nullptr, cancel);
         });
 
@@ -429,7 +429,7 @@ int main()
     {
         std::atomic<bool> cancel{false};
         FakeEndpoint endpoint(nullptr);
-        const Bytes big = patternOf(3 * kPairChunkBytes);
+        const Bytes big = patternOf(3 * kPacedChunkBytes);
         const std::string body(big.begin(), big.end());
         (void)cannedInto(endpoint, pairBundleHead(big.size()) + body, true);
         std::uint64_t lastSeen = 0;
@@ -485,8 +485,7 @@ int main()
 
     {
         const std::filesystem::path dir
-            = std::filesystem::temp_directory_path() / "bazarish-pair-reseed";
-        std::filesystem::remove_all(dir);
+            = testutil::freshDir("pair-reseed");
         std::filesystem::create_directories(dir);
 
         CHECK(!applyLinkReseed(dir, {}));

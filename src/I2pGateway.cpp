@@ -56,19 +56,11 @@ std::int64_t millisNow()
         .count();
 }
 
-std::uint64_t drawBetween(const std::uint64_t low, const std::uint64_t high)
-{
-    if (high <= low) {
-        return low;
-    }
-    return low + randomBelow(high - low + 1);
-}
-
 std::chrono::milliseconds drawBetween(
     const std::chrono::milliseconds low, const std::chrono::milliseconds high)
 {
     return std::chrono::milliseconds(static_cast<std::int64_t>(
-        drawBetween(static_cast<std::uint64_t>(low.count()),
+        randomBetween(static_cast<std::uint64_t>(low.count()),
             static_cast<std::uint64_t>(high.count()))));
 }
 
@@ -269,21 +261,11 @@ public:
     std::uint32_t id() const { return id_; }
     bool raw() const { return raw_; }
     bool published() const { return published_; }
-    std::string label() const
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        return label_;
-    }
-    std::string owner() const
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        return owner_;
-    }
+    std::string label() const { return tag_.label(); }
+    std::string owner() const { return tag_.owner(); }
     void retag(std::string label, std::string owner)
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        label_ = std::move(label);
-        owner_ = std::move(owner);
+        tag_.retag(std::move(label), std::move(owner));
     }
     void statusChanged(bool ready, int in, int out, int leases, bool localRoute);
     void datagramArrived(std::vector<std::uint8_t> payload);
@@ -299,8 +281,7 @@ private:
     std::string host_;
     bool raw_;
     bool published_;
-    std::string label_;
-    std::string owner_;
+    DestTag tag_;
     std::string target_;
     const std::optional<Keys> master_;
     std::atomic<bool> ready_{false};
@@ -584,8 +565,7 @@ GatewayEndpoint::GatewayEndpoint(std::shared_ptr<Link> link, const std::uint32_t
     , host_(std::move(host))
     , raw_(raw)
     , published_(published)
-    , label_(std::move(label))
-    , owner_(std::move(owner))
+    , tag_(std::move(label), std::move(owner))
     , target_(std::move(target))
     , master_(std::move(master))
 {
@@ -1078,7 +1058,7 @@ bool GatewayRouter::quiet() const
 void GatewayRouter::decoy()
 {
     const Bytes noise = randomBytes(static_cast<std::size_t>(
-        drawBetween(gateway::kDecoyRequestMinBytes, gateway::kDecoyRequestMaxBytes)));
+        randomBetween(gateway::kDecoyRequestMinBytes, gateway::kDecoyRequestMaxBytes)));
     (void)http::probeHost(dialFor(), std::string(noise.begin(), noise.end()));
 }
 

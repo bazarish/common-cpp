@@ -214,6 +214,19 @@ std::string verifyRequest(const Headers& headers, const std::int64_t now,
     return verifyRequestDigest(headers, now, method, path, toHex(sha256(body)), clientId);
 }
 
+namespace {
+
+void requireFirstUse(const Headers& headers, const std::int64_t now, ReplayCache& replayCache)
+{
+    const std::int64_t timestamp
+        = std::strtoll(requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
+    if (!replayCache.checkAndRecord(requireHeader(headers, kHeaderNonce), timestamp, now)) {
+        throw std::runtime_error("auth request replay detected");
+    }
+}
+
+}  // namespace
+
 std::string authorizeRequest(const Headers& headers, const std::int64_t now,
     const std::string& method, const std::string& path, const Bytes& body,
     const std::vector<std::string>& authorizedFingerprints, ReplayCache& replayCache)
@@ -221,12 +234,7 @@ std::string authorizeRequest(const Headers& headers, const std::int64_t now,
     const std::string caller = verifyRequest(headers, now, method, path, body);
     for (const std::string& fingerprint : authorizedFingerprints) {
         if (!fingerprint.empty() && fingerprint == caller) {
-            const std::int64_t timestamp
-                = std::strtoll(requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
-            if (!replayCache.checkAndRecord(
-                    requireHeader(headers, kHeaderNonce), timestamp, now)) {
-                throw std::runtime_error("auth request replay detected");
-            }
+            requireFirstUse(headers, now, replayCache);
             return caller;
         }
     }
@@ -261,11 +269,7 @@ std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
 {
     const std::string fingerprint
         = verifyRequestDigest(headers, now, method, path, bodySha256Hex, clientId);
-    const std::int64_t timestamp
-        = std::strtoll(requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
-    if (!replayCache.checkAndRecord(requireHeader(headers, kHeaderNonce), timestamp, now)) {
-        throw std::runtime_error("auth request replay detected");
-    }
+    requireFirstUse(headers, now, replayCache);
     return fingerprint;
 }
 

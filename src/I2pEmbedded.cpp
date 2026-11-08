@@ -60,6 +60,9 @@
 namespace i2pd = ::i2p;
 
 namespace bazarish::i2p {
+
+using backend::DestTag;
+
 namespace {
 
 constexpr i2pd::data::SigningKeyType kSigType = i2pd::data::SIGNING_KEY_TYPE_EDDSA_SHA512_ED25519;
@@ -392,36 +395,6 @@ void EmbeddedStream::close()
         stream->AsyncClose();
     }
 }
-
-class DestTag {
-public:
-    DestTag(std::string label, std::string owner)
-        : label_(std::move(label))
-        , owner_(std::move(owner))
-    {
-    }
-    std::string label() const
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        return label_;
-    }
-    std::string owner() const
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        return owner_;
-    }
-    void retag(std::string label, std::string owner)
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        label_ = std::move(label);
-        owner_ = std::move(owner);
-    }
-
-private:
-    mutable std::mutex mutex_;
-    std::string label_;
-    std::string owner_;
-};
 
 namespace {
 

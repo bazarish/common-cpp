@@ -29,7 +29,7 @@ public:
     {
     }
 
-    void readExact(const ByteBuffer buffer) override { stream_->readExact(buffer); }
+    std::size_t readSome(const ByteBuffer buffer) override { return stream_->readSome(buffer); }
 
     void writeAll(const ByteView data) override { stream_->writeAll(data); }
 

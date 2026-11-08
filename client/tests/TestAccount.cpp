@@ -26,7 +26,7 @@ int main()
 {
     namespace fs = std::filesystem;
     const fs::path root
-        = fs::temp_directory_path() / ("bazarish-accounts-" + toHex(randomBytes(8)));
+        = testutil::freshDir("accounts");
 
     AccountManager manager(root);
     CHECK(manager.list().empty());
@@ -134,8 +134,7 @@ int main()
         };
 
         const fs::path scratch
-            = fs::temp_directory_path() / ("bazarish-export-" + toHex(randomBytes(8)));
-        fs::create_directories(scratch);
+            = testutil::freshDir("export");
         const fs::path bundle = scratch / "acetone.bundle";
         const Bytes face = {'P', 'N', 'G', 0x01, 0x02, 0x03};
         sa->setAvatar(face, "image/png");
@@ -156,7 +155,7 @@ int main()
             CHECK(importedPlain->fingerprint() == a.fingerprint);
 
             const fs::path root2
-                = fs::temp_directory_path() / ("bazarish-accounts-" + toHex(randomBytes(8)));
+                = testutil::freshDir("accounts");
             AccountManager manager2(root2);
             const AccountInfo imp1 = manager2.import("", bundle, "bundle-pw");
             CHECK(imp1.id != "Acetone");
@@ -182,7 +181,7 @@ int main()
             CHECK(manager2.list().size() == 4);
             const auto noImportLeft = [&root2]() {
                 for (const fs::directory_entry& entry : fs::directory_iterator(root2)) {
-                    CHECK(entry.path().filename().string().rfind(".import-", 0) != 0);
+                    CHECK(!entry.path().filename().string().starts_with(".import-"));
                 }
             };
             manager2.discardInterruptedImports();

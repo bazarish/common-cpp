@@ -1,5 +1,8 @@
 // Bazarish project (c) 2026
 #include "bazarish/ServerDescriptor.hpp"
+#include "bazarish/Percent.hpp"
+
+#include "bazarish/I2pAddress.hpp"
 
 #include "bazarish/Links.hpp"
 #include "bazarish/Address.hpp"
@@ -35,30 +38,19 @@ bool allowFacadeWithoutI2pForDevPurposes()
     return g_allowFacadeWithoutI2p.load();
 }
 
-namespace {
-
-bool isI2pHost(const std::string& host)
-{
-    static const std::string kSuffix = ".b32.i2p";
-    return host.size() >= kSuffix.size()
-        && host.compare(host.size() - kSuffix.size(), kSuffix.size(), kSuffix) == 0;
-}
-
-}  // namespace
-
 bool isI2pUrl(const std::string& url)
 {
     const std::size_t schemeEnd = url.find("://");
     const std::size_t hostStart = schemeEnd == std::string::npos ? 0 : schemeEnd + 3;
     const std::size_t hostEnd = url.find_first_of(":/", hostStart);
-    return isI2pHost(url.substr(
+    return isB32I2pHost(url.substr(
         hostStart, hostEnd == std::string::npos ? std::string::npos : hostEnd - hostStart));
 }
 
 bool isI2pFacadeAddress(const std::string& address)
 {
     return address.find('/') == std::string::npos
-        && isI2pHost(address.substr(0, address.find(':')));
+        && isB32I2pHost(address.substr(0, address.find(':')));
 }
 
 std::string encodeServerDescriptor(const ServerDescriptor& descriptor)
@@ -85,16 +77,11 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
     bool haveVersion = false;
     bool haveFingerprint = false;
 
-    std::size_t pos = 0;
-    while (pos < query.size()) {
-        const std::size_t amp = query.find('&', pos);
-        const std::string pair = query.substr(pos, amp == std::string::npos ? amp : amp - pos);
-        const std::size_t eq = pair.find('=');
-        if (eq == std::string::npos) {
-            throw std::invalid_argument("malformed server descriptor query");
-        }
-        const std::string key = pair.substr(0, eq);
-        const std::string value = pair.substr(eq + 1);
+    const std::optional<std::vector<QueryField>> fields = queryFields(query);
+    if (!fields.has_value()) {
+        throw std::invalid_argument("malformed server descriptor query");
+    }
+    for (const auto& [key, value] : *fields) {
         if (key == "v") {
             version = value;
             haveVersion = true;
@@ -127,10 +114,6 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
                 descriptor.reseeds.push_back(value);
             }
         }
-        if (amp == std::string::npos) {
-            break;
-        }
-        pos = amp + 1;
     }
 
     if (!haveVersion || version != "1") {

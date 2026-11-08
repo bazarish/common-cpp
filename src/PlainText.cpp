@@ -60,7 +60,7 @@ bool isWindowsDevice(std::string_view name)
     }
     return std::any_of(kNumberedWindowsDevices.begin(), kNumberedWindowsDevices.end(),
         [&stem](const std::string_view prefix) {
-            return stem.size() == prefix.size() + 1 && stem.rfind(prefix, 0) == 0
+            return stem.size() == prefix.size() + 1 && stem.starts_with(prefix)
                 && std::isdigit(static_cast<unsigned char>(stem.back())) && stem.back() != '0';
         });
 }
@@ -149,6 +149,16 @@ std::string safeFileName(const std::string_view offered)
             + extension;
     }
     return name;
+}
+
+std::string asciiLower(std::string text)
+{
+    for (char& c : text) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+    return text;
 }
 
 }  // namespace bazarish

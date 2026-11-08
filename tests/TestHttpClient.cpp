@@ -82,7 +82,7 @@ int main()
         http::Response answer;
         answer.contentType = "text/plain";
         const std::string authorization = request.header("authorization");
-        if (authorization.rfind("Digest ", 0) != 0) {
+        if (!authorization.starts_with("Digest ")) {
             answer.status = 401;
             answer.headers["WWW-Authenticate"]
                 = R"(Digest realm="monero-wallet-rpc", nonce="abc123", qop="auth")";

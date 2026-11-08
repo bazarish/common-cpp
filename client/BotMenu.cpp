@@ -79,7 +79,7 @@ nlohmann::json botMenuItemsJson(const std::vector<BotMenuItem>& items)
 bool carriesMenuId(const std::string& type)
 {
     static const std::set<std::string> kAnswered{
-        "text", "image", "audio", "file", "bot.command", "bot.callback"};
+        kTypeText, kTypeImage, kTypeAudio, kTypeFile, kTypeBotCommand, kTypeBotCallback};
     return kAnswered.find(type) != kAnswered.end();
 }
 

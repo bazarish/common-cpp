@@ -15,6 +15,7 @@
 #include <bazarish/AccountKind.hpp>
 #include <bazarish/AliasMaintenance.hpp>
 #include <bazarish/Bytes.hpp>
+#include <bazarish/Clock.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/I2p.hpp>
 #include <bazarish/Limits.hpp>
@@ -121,8 +122,6 @@ struct RelayedPost {
     bool fromHost = false;
 };
 
-inline constexpr std::int64_t kSecondsPerHour = 3600;
-inline constexpr std::int64_t kSecondsPerDay = 24 * kSecondsPerHour;
 inline constexpr std::int64_t kDaysPerWeek = 7;
 // A month for the auto-delete timer.
 inline constexpr std::int64_t kDaysPerMonth = 30;

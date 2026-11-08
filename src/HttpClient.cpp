@@ -3,6 +3,8 @@
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Log.hpp>
+#include <bazarish/PlainText.hpp>
+#include <bazarish/TlsContext.hpp>
 #include "bazarish/Tls.hpp"
 
 #include <utility>
@@ -34,11 +36,11 @@ Url parseUrl(const std::string& url)
 {
     std::string rest = url;
     Url parsed;
-    if (const std::string scheme = "https://"; rest.rfind(scheme, 0) == 0) {
+    if (const std::string scheme = "https://"; rest.starts_with(scheme)) {
         rest = rest.substr(scheme.size());
         parsed.tls = true;
         parsed.port = kDefaultHttpsPort;
-    } else if (const std::string plain = "http://"; rest.rfind(plain, 0) == 0) {
+    } else if (const std::string plain = "http://"; rest.starts_with(plain)) {
         rest = rest.substr(plain.size());
     }
     if (const auto slash = rest.find('/'); slash != std::string::npos) {
@@ -66,13 +68,6 @@ constexpr int kHttpVersion11 = 11;
 constexpr int kUnauthorizedStatus = 401;
 constexpr const char* kFirstNonceCount = "00000001";
 constexpr std::size_t kClientNonceBytes = 8;
-
-std::string lowercased(std::string text)
-{
-    std::transform(text.begin(), text.end(), text.begin(),
-        [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return text;
-}
 
 enum class Phase { eConnect, eWrite, eRead };
 
@@ -104,7 +99,7 @@ ClientResponse fromBeast(const beasthttp::response<beasthttp::string_body>& in)
     out.status = static_cast<int>(in.result_int());
     out.body = in.body();
     for (const auto& field : in) {
-        out.headers[lowercased(std::string(field.name_string()))] = std::string(field.value());
+        out.headers[asciiLower(std::string(field.name_string()))] = std::string(field.value());
     }
     if (in.count(beasthttp::field::content_type) > 0) {
         out.contentType = std::string(in[beasthttp::field::content_type]);
@@ -212,7 +207,7 @@ asio::awaitable<ClientResponse> exchangeAuthorized(Stream& stream, const std::st
         co_return answer;
     }
     const auto challenge = answer.headers.find("www-authenticate");
-    if (challenge == answer.headers.end() || challenge->second.rfind("Digest", 0) != 0) {
+    if (challenge == answer.headers.end() || !challenge->second.starts_with("Digest")) {
         co_return answer;
     }
     ClientRequest authorized = request;
@@ -231,13 +226,7 @@ asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const s
         const auto endpoints
             = co_await resolver.async_resolve(host, std::to_string(port), asio::use_awaitable);
         if (options.tls) {
-            ssl::context context(ssl::context::tls_client);
-            context.set_options(ssl::context::default_workarounds | ssl::context::no_sslv2
-                | ssl::context::no_sslv3);
-            if (!options.certificate.empty()) {
-                context.use_certificate_chain_file(options.certificate);
-                context.use_private_key_file(options.key, ssl::context::pem);
-            }
+            ssl::context context = bazarish::tls::clientContext(options.certificate, options.key);
             beast::ssl_stream<beast::tcp_stream> stream(executor, context);
             if (!options.pin.empty()) {
                 stream.set_verify_mode(ssl::verify_none);

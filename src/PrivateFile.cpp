@@ -162,6 +162,15 @@ std::string readFileText(const fs::path& path)
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
+Bytes readFileBytes(const fs::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw std::runtime_error("failed to open " + path.string());
+    }
+    return Bytes(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
 void writeFileAtomic(const fs::path& path, const std::string_view bytes)
 {
     writeFileAtomic(path, bytes, kUsual);

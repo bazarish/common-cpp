@@ -18,7 +18,13 @@ namespace bazarish::client {
 
 bazarish::i2p::Router& sharedI2pRouter(const std::filesystem::path& dataDir);
 
+// How long a fresh destination may take to build its tunnels, and a dial to another one.
+inline constexpr int kOwnTunnelsSeconds = 180;
+inline constexpr int kDialSeconds = 90;
+
 std::optional<std::reference_wrapper<bazarish::i2p::Router>> sharedI2pRouterIfRunning();
+// Throws while the shared router is not running or still builds its tunnels.
+bazarish::i2p::Router& readySharedI2pRouter();
 
 std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest(bazarish::i2p::Privacy privacy);
 // A published datagram destination for presence watching; it gets its reader key when taken.
@@ -44,12 +50,30 @@ enum class I2pBootstrap {
 I2pBootstrap bootstrapI2pRouter(const std::filesystem::path& dataDir);
 std::size_t knownRouterCount(const std::filesystem::path& dataDir);
 
-using ConnectProgressFn = std::function<void(int percent, const std::string& text)>;
+// In the order a first connection passes them; the interface words each one itself.
+enum class ConnectMilestone {
+    eRouterStarting,
+    eBuiltInReseeds,
+    eTunnelsBuilding,
+    eTunnelsStillBuilding,
+    eServerLookup,
+    eServerReached,
+    eRegistering,
+    eRegisteringDevice,
+    eCheckingAddress,
+    ePublishingDestination,
+    eDelegating,
+    ePublishingCard,
+    eSyncingDevices,
+};
+int connectPercent(ConnectMilestone milestone);
+
+using ConnectProgressFn = std::function<void(ConnectMilestone milestone)>;
 // Keyed by the owner the account's destinations carry: each account sees its own progress.
 void setConnectProgressSink(const std::string& owner, ConnectProgressFn sink);
-void reportConnectProgress(const std::string& owner, int percent, const std::string& text);
+void reportConnectProgress(const std::string& owner, ConnectMilestone milestone);
 // For the router itself, which every account connecting through it waits on.
-void reportConnectProgressToAll(int percent, const std::string& text);
+void reportConnectProgressToAll(ConnectMilestone milestone);
 
 void setSamTransport(std::string host, int port);
 

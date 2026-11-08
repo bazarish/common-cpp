@@ -3,10 +3,11 @@
 
 #include "I2pRouter.hpp"
 
+#include <bazarish/Clock.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Hybrid.hpp>
-#include <bazarish/Log.hpp>
 #include <bazarish/JsonRead.hpp>
+#include <bazarish/Log.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -48,13 +49,6 @@ constexpr milliseconds kReceiveSlice{250};
 constexpr char kPresenceAddressLabel[] = "Presence address";
 constexpr char kPresenceWatcherLabel[] = "Presence watcher";
 constexpr PresenceState kCarried{true, false};
-
-std::int64_t unixNow()
-{
-    return std::chrono::duration_cast<seconds>(
-        std::chrono::system_clock::now().time_since_epoch())
-        .count();
-}
 
 Bytes nonceFor(const std::uint8_t direction, const std::uint64_t sequence)
 {
@@ -420,7 +414,7 @@ struct Presence::Impl {
     void sendWatch(Outgoing& outgoing, const Clock::time_point now)
     {
         const PresenceWatch watch{
-            outgoing.id, outgoing.key, account.fingerprint, watcher->link->host(), unixNow()};
+            outgoing.id, outgoing.key, account.fingerprint, watcher->link->host(), nowSeconds()};
         send(*watcher, outgoing.host,
             presenceWatchFrame(watch, identity.classical(), Key::fromPublicDer(outgoing.sealingKeyDer)));
         if (outgoing.firstSent == Clock::time_point{}) {
@@ -490,7 +484,7 @@ struct Presence::Impl {
             return;
         }
         const std::int64_t sentAt = content.value("sentAt", std::int64_t{0});
-        if (sentAt < unixNow() - kWatchSkewSeconds || sentAt > unixNow() + kWatchSkewSeconds) {
+        if (sentAt < nowSeconds() - kWatchSkewSeconds || sentAt > nowSeconds() + kWatchSkewSeconds) {
             return;
         }
         Incoming sub;

@@ -29,17 +29,13 @@ public:
     SocketStream(const SocketStream&) = delete;
     SocketStream& operator=(const SocketStream&) = delete;
 
-    void readExact(const bazarish::ByteBuffer buffer)
+    std::size_t readSome(const bazarish::ByteBuffer buffer)
     {
-        std::size_t got = 0;
-        while (got < buffer.size()) {
-            const bazarish::ByteBuffer rest = buffer.subspan(got);
-            const ssize_t n = ::read(fd_, rest.data(), rest.size());
-            if (n <= 0) {
-                throw std::runtime_error("socket closed before readExact completed");
-            }
-            got += static_cast<std::size_t>(n);
+        const ssize_t n = ::read(fd_, buffer.data(), buffer.size());
+        if (n < 0) {
+            throw std::runtime_error("socket read failed");
         }
+        return static_cast<std::size_t>(n);
     }
 
     void writeAll(const bazarish::ByteView data)
@@ -130,7 +126,7 @@ int main()
         });
         bool refused = false;
         try {
-            (void)detail::readFederationHeaderLine(reader);
+            (void)detail::FrameReader<SocketStream>(reader).line();
         } catch (const std::exception&) {
             refused = true;
         }
@@ -147,11 +143,11 @@ int main()
         const Bytes payload(kPayloadBytes, 0x33);
 
         std::thread peer([&server, &payload]() {
-            const nlohmann::json header
-                = nlohmann::json::parse(detail::readFederationHeaderLine(server));
+            detail::FrameReader<SocketStream> in(server);
+            const nlohmann::json header = nlohmann::json::parse(in.line());
             CHECK(header.at("len") == payload.size());
             Bytes received(header.at("len").get<std::size_t>());
-            server.readExact(received);
+            in.read(bazarish::ByteBuffer(received));
             CHECK(received == payload);
             detail::writeFederationHeaderLine(server,
                 nlohmann::json({{"delivered", true}, {"deliveryId", "round-trip"}}).dump());

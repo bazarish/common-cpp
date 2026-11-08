@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/PairLink.hpp"
+#include "bazarish/Percent.hpp"
 
 #include "bazarish/Links.hpp"
 #include "bazarish/I2p.hpp"
@@ -30,16 +31,11 @@ PairLink parsePairLink(const std::string& uri)
     bool haveVersion = false;
     bool haveDest = false;
 
-    std::size_t pos = 0;
-    while (pos < query.size()) {
-        const std::size_t amp = query.find('&', pos);
-        const std::string pair = query.substr(pos, amp == std::string::npos ? amp : amp - pos);
-        const std::size_t eq = pair.find('=');
-        if (eq == std::string::npos) {
-            throw std::invalid_argument("malformed pair link query");
-        }
-        const std::string key = pair.substr(0, eq);
-        const std::string value = pair.substr(eq + 1);
+    const std::optional<std::vector<QueryField>> fields = queryFields(query);
+    if (!fields.has_value()) {
+        throw std::invalid_argument("malformed pair link query");
+    }
+    for (const auto& [key, value] : *fields) {
         if (key == "v") {
             version = value;
             haveVersion = true;
@@ -55,10 +51,6 @@ PairLink parsePairLink(const std::string& uri)
                 link.reseeds.push_back(value);
             }
         }
-        if (amp == std::string::npos) {
-            break;
-        }
-        pos = amp + 1;
     }
 
     if (!haveVersion || version != "1") {

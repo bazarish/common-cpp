@@ -38,10 +38,9 @@ int main()
         for (int i = 0; i < 100000; ++i) {
             bigPlain.push_back(static_cast<unsigned char>(i * 11 + 5));
         }
-        const std::filesystem::path plainPath
-            = std::filesystem::temp_directory_path() / "bz-test-seal.in";
-        const std::filesystem::path contentPath
-            = std::filesystem::temp_directory_path() / "bz-test-seal.content";
+        const std::filesystem::path dir = testutil::freshDir("seal");
+        const std::filesystem::path plainPath = dir / "seal.in";
+        const std::filesystem::path contentPath = dir / "seal.content";
         {
             std::ofstream out(plainPath, std::ios::binary);
             out.write(reinterpret_cast<const char*>(bigPlain.data()),
@@ -77,8 +76,7 @@ int main()
         CHECK_THROWS(unsealed(header, password));
 
         CHECK_THROWS(sealed(""));
-        std::filesystem::remove(plainPath);
-        std::filesystem::remove(contentPath);
+        std::filesystem::remove_all(dir);
     }
 
     return 0;

@@ -13,19 +13,6 @@
 
 namespace bazarish::client {
 
-namespace {
-
-bazarish::i2p::Router& readyRouter()
-{
-    const auto running = sharedI2pRouterIfRunning();
-    if (!running.has_value() || !running->get().ready()) {
-        throw std::runtime_error("the I2P router is still building tunnels");
-    }
-    return running->get();
-}
-
-}  // namespace
-
 LoginSigner::LoginSigner(Identity identity, std::string owner)
     : identity_(std::move(identity))
     , owner_(std::move(owner))
@@ -57,7 +44,7 @@ std::optional<int> LoginSigner::send(const std::string& challenge) const
     if (!callback) {
         throw std::runtime_error("this challenge names no address to send the signature to");
     }
-    bazarish::i2p::Router& router = readyRouter();
+    bazarish::i2p::Router& router = readySharedI2pRouter();
     const std::string blob = sign(challenge);
     log::info("sending a login signature to {}", log::redact(callback->host));
     return postLoginOverI2p(
@@ -71,7 +58,7 @@ std::optional<std::string> LoginSigner::fetch(
     if (!address) {
         throw std::runtime_error("this is not a link to a challenge");
     }
-    bazarish::i2p::Router& router = readyRouter();
+    bazarish::i2p::Router& router = readySharedI2pRouter();
     log::info("fetching a login challenge from {}", log::redact(address->host));
     const std::optional<std::string> challenge
         = getLoginChallengeOverI2p(router, *address, tunnelPrivacy(), owner_, cancelled);

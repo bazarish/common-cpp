@@ -13,9 +13,7 @@ namespace fs = std::filesystem;
 
 int main()
 {
-    const fs::path dir = fs::temp_directory_path() / "bazarish-i2p-proxy-test";
-    fs::remove_all(dir);
-    fs::create_directories(dir);
+    const fs::path dir = testutil::freshDir("i2p-proxy");
 
     bazarish::i2p::setI2pLogging(true);
     bazarish::i2p::RouterConfig config = bazarish::i2p::offlineRouter(dir);

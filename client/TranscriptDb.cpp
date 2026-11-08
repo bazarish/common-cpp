@@ -4,10 +4,11 @@
 #include "AccountKey.hpp"
 #include "KeyedDatabase.hpp"
 #include "MediaKeys.hpp"
+#include "MessageTypes.hpp"
 
 #include <bazarish/Clock.hpp>
-#include <bazarish/Log.hpp>
 #include <bazarish/JsonRead.hpp>
+#include <bazarish/Log.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -25,10 +26,9 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr std::int64_t kMsPerSecond = 1000;
 
 // What the auto-delete timer takes away: what people wrote and sent, never a service note.
-constexpr std::array<const char*, 4> kExpiringTypes{"text", "image", "audio", "file"};
+constexpr std::array<const char*, 4> kExpiringTypes{kTypeText, kTypeImage, kTypeAudio, kTypeFile};
 
 bool expires(const std::string& type)
 {
@@ -407,7 +407,8 @@ std::int64_t TranscriptStore::append(const StoredMessage& message)
     const std::int64_t id = query.lastInsertId();
     if (message.outgoing && expires(message.type)) {
         const std::int64_t seconds = chatTimer(message.peer);
-        if (seconds > 0 && !stampExpiry(id, message.peer, message.ts + seconds * kMsPerSecond)) {
+        if (seconds > 0
+            && !stampExpiry(id, message.peer, message.ts + seconds * kMillisPerSecond)) {
             return 0;
         }
     }
@@ -506,9 +507,10 @@ StoredMessage TranscriptReader::nextVoiceAfter(
 {
     Query query(db_);
     query.prepare("SELECT " + kMessageColumns
-        + " FROM messages WHERE peer = ? AND id > ? AND type = 'audio' ORDER BY id ASC LIMIT 1");
+        + " FROM messages WHERE peer = ? AND id > ? AND type = ? ORDER BY id ASC LIMIT 1");
     query.bind(peer);
     query.bind(afterId);
+    query.bind(kTypeAudio);
     return readOneMessage(query);
 }
 
@@ -517,12 +519,13 @@ StoredMessage TranscriptReader::pictureBeside(
 {
     Query query(db_);
     query.prepare("SELECT " + kMessageColumns
-        + (later ? " FROM messages WHERE peer = ? AND id > ? AND type = 'image'"
+        + (later ? " FROM messages WHERE peer = ? AND id > ? AND type = ?"
                    " ORDER BY id ASC LIMIT 1"
-                 : " FROM messages WHERE peer = ? AND id < ? AND type = 'image'"
+                 : " FROM messages WHERE peer = ? AND id < ? AND type = ?"
                    " ORDER BY id DESC LIMIT 1"));
     query.bind(peer);
     query.bind(id);
+    query.bind(kTypeImage);
     return readOneMessage(query);
 }
 
@@ -941,9 +944,12 @@ LastMessage TranscriptReader::lastMessage(const std::string& peer) const
     query.prepare("SELECT text, type, attName, (SELECT author FROM group_posts g"
                   " WHERE g.peer = messages.peer AND g.e2eId = messages.e2eId)"
                   " FROM messages WHERE peer = ?"
-                  " AND (text != '' OR type IN ('file','image','audio'))"
+                  " AND (text != '' OR type IN (?, ?, ?))"
                   " ORDER BY orderKey DESC, id DESC LIMIT 1");
     query.bind(peer);
+    query.bind(kTypeFile);
+    query.bind(kTypeImage);
+    query.bind(kTypeAudio);
     if (!query.exec() || !query.next()) {
         return {};
     }
@@ -1006,10 +1012,11 @@ bool TranscriptStore::applyReadThrough(const std::string& peer, const std::int64
     query.prepare("INSERT OR REPLACE INTO read_state (peer, last_read_id) VALUES (?,"
                   " max(coalesce((SELECT last_read_id FROM read_state WHERE peer = ?), 0),"
                   " coalesce((SELECT MAX(id) FROM messages WHERE peer = ? AND outgoing = 0"
-                  " AND type != 'system' AND ts <= ?), 0)))");
+                  " AND type != ? AND ts <= ?), 0)))");
     query.bind(peer);
     query.bind(peer);
     query.bind(peer);
+    query.bind(kTypeSystem);
     query.bind(sentAtMs);
     if (!query.exec() || !stampNewlyRead(peer, before, lastReadId(peer)) || !change.commit()) {
         return failed();
@@ -1040,7 +1047,7 @@ bool TranscriptStore::stampNewlyRead(
                   " SELECT id, peer, ? FROM messages WHERE peer = ? AND outgoing = 0"
                   " AND id > ? AND id <= ? AND type IN ("
         + expiringTypesSql() + ")");
-    query.bind(nowMillis() + seconds * kMsPerSecond);
+    query.bind(nowMillis() + seconds * kMillisPerSecond);
     query.bind(peer);
     query.bind(afterId);
     query.bind(uptoId);
@@ -1142,9 +1149,10 @@ int TranscriptReader::unreadCount(const std::string& peer) const
 {
     Query query(db_);
     query.prepare("SELECT COUNT(*) FROM messages WHERE peer = ? AND outgoing = 0"
-                  " AND type != 'system' AND id >"
+                  " AND type != ? AND id >"
                   " (SELECT COALESCE(MAX(last_read_id), 0) FROM read_state WHERE peer = ?)");
     query.bind(peer);
+    query.bind(kTypeSystem);
     query.bind(peer);
     return static_cast<int>(readNumber(query));
 }
@@ -1153,9 +1161,10 @@ int TranscriptReader::unreadTotal() const
 {
     Query query(db_);
     query.prepare("SELECT COALESCE(SUM((SELECT COUNT(*) FROM messages m WHERE m.peer = p.peer"
-                  " AND m.outgoing = 0 AND m.type != 'system' AND m.id > (SELECT"
+                  " AND m.outgoing = 0 AND m.type != ? AND m.id > (SELECT"
                   " COALESCE(MAX(last_read_id), 0) FROM read_state r WHERE r.peer = p.peer))), 0)"
                   " FROM (SELECT DISTINCT peer FROM messages) p");
+    query.bind(kTypeSystem);
     return static_cast<int>(readNumber(query));
 }
 
@@ -1163,9 +1172,10 @@ std::int64_t TranscriptReader::firstUnreadId(const std::string& peer) const
 {
     Query query(db_);
     query.prepare("SELECT MIN(id) FROM messages WHERE peer = ? AND outgoing = 0"
-                  " AND type != 'system' AND id >"
+                  " AND type != ? AND id >"
                   " (SELECT COALESCE(MAX(last_read_id), 0) FROM read_state WHERE peer = ?)");
     query.bind(peer);
+    query.bind(kTypeSystem);
     query.bind(peer);
     if (!query.exec() || !query.next() || query.isNull(0)) {
         return 0;

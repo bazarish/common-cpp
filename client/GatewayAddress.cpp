@@ -2,6 +2,8 @@
 #include "GatewayAddress.hpp"
 
 #include <bazarish/Address.hpp>
+#include <bazarish/Percent.hpp>
+#include <bazarish/ConfigFile.hpp>
 #include <bazarish/GatewayChannel.hpp>
 #include <bazarish/GatewayProtocol.hpp>
 #include <bazarish/Links.hpp>
@@ -23,7 +25,6 @@ constexpr const char* kSecure = "https://";
 constexpr const char* kPlain = "http://";
 constexpr int kHttpsPort = 443;
 constexpr int kHttpPort = 80;
-constexpr int kHighestPort = 65535;
 constexpr char kQueryUnsafe[] = "&# \t\r\n";
 constexpr char kDigits[] = "0123456789";
 
@@ -56,7 +57,7 @@ std::optional<int> portOf(const std::string& number)
         return std::nullopt;
     }
     const long port = std::strtol(number.c_str(), nullptr, 10);
-    if (port <= 0 || port > kHighestPort) {
+    if (port <= 0 || port > kMaxPort) {
         return std::nullopt;
     }
     return static_cast<int>(port);
@@ -68,9 +69,9 @@ std::optional<GatewayAddress> GatewayAddress::parse(const std::string& text)
 {
     GatewayAddress address;
     std::string rest;
-    if (text.rfind(kSecure, 0) == 0) {
+    if (text.starts_with(kSecure)) {
         rest = text.substr(std::string(kSecure).size());
-    } else if (text.rfind(kPlain, 0) == 0) {
+    } else if (text.starts_with(kPlain)) {
         address.tls = false;
         rest = text.substr(std::string(kPlain).size());
     } else {
@@ -151,16 +152,11 @@ std::optional<GatewayAddress> GatewayAddress::fromLink(const std::string& link)
     std::string version;
     std::string url;
     std::string fingerprint;
-    std::size_t pos = 0;
-    while (pos <= query.size()) {
-        const std::size_t amp = query.find('&', pos);
-        const std::string pair = query.substr(pos, amp == std::string::npos ? amp : amp - pos);
-        const std::size_t eq = pair.find('=');
-        if (eq == std::string::npos) {
-            return std::nullopt;
-        }
-        const std::string key = pair.substr(0, eq);
-        const std::string value = pair.substr(eq + 1);
+    const std::optional<std::vector<QueryField>> fields = queryFields(query);
+    if (!fields.has_value()) {
+        return std::nullopt;
+    }
+    for (const auto& [key, value] : *fields) {
         if (key == "v") {
             version = value;
         } else if (key == "url") {
@@ -168,10 +164,6 @@ std::optional<GatewayAddress> GatewayAddress::fromLink(const std::string& link)
         } else if (key == "fp") {
             fingerprint = value;
         }
-        if (amp == std::string::npos) {
-            break;
-        }
-        pos = amp + 1;
     }
     if (version != kGatewayLinkVersion || url.empty()
         || url.find_first_of(kQueryUnsafe) != std::string::npos) {

@@ -104,15 +104,15 @@ int main()
         for (int i = 0; i < 200000; ++i) {
             blob.push_back(static_cast<unsigned char>(i * 7 + 3));
         }
-        const std::filesystem::path tmp
-            = std::filesystem::temp_directory_path() / "bz-test-sha256file.bin";
+        const std::filesystem::path dir = testutil::freshDir("sha256file");
+        const std::filesystem::path tmp = dir / "blob.bin";
         {
             std::ofstream out(tmp, std::ios::binary);
             out.write(reinterpret_cast<const char*>(blob.data()),
                 static_cast<std::streamsize>(blob.size()));
         }
         CHECK(sha256File(tmp) == sha256(blob));
-        std::filesystem::remove(tmp);
+        std::filesystem::remove_all(dir);
         CHECK_THROWS(sha256File(std::filesystem::temp_directory_path() / "bz-no-such-file.bin"));
     }
 

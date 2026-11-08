@@ -19,7 +19,7 @@ int main()
     const ServerDescriptor original{fp, {i2pA, i2pB},
         {"https://relay.example.org:8443/s/9f3c", "https://seed.example.net/"}};
     const std::string uri = encodeServerDescriptor(original);
-    CHECK(uri.rfind("https://bazari.sh/#server?v=1&", 0) == 0);
+    CHECK(uri.starts_with("https://bazari.sh/#server?v=1&"));
     CHECK(parseServerDescriptor("bazarish://" + uri.substr(std::string("https://bazari.sh/#").size()))
               .fingerprint
         == parseServerDescriptor(uri).fingerprint);

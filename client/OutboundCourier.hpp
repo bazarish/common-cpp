@@ -24,7 +24,7 @@ namespace bazarish::client {
 class DeliveryStream {
 public:
     virtual ~DeliveryStream() = default;
-    virtual void readExact(ByteBuffer buffer) = 0;
+    virtual std::size_t readSome(ByteBuffer buffer) = 0;
     virtual void writeAll(ByteView data) = 0;
     virtual void close() = 0;
 };

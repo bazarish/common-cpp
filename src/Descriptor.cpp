@@ -2,6 +2,7 @@
 #include "bazarish/Descriptor.hpp"
 
 #include "bazarish/Links.hpp"
+#include "bazarish/Percent.hpp"
 #include "bazarish/Address.hpp"
 #include "bazarish/Crypto.hpp"
 #include "bazarish/I2pAddress.hpp"
@@ -9,60 +10,6 @@
 #include <map>
 #include <stdexcept>
 #include <string>
-
-namespace {
-
-std::string percentEncode(const std::string& value)
-{
-    static const char kHex[] = "0123456789ABCDEF";
-    std::string out;
-    out.reserve(value.size());
-    for (const unsigned char c : value) {
-        const bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
-            || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
-        if (unreserved) {
-            out.push_back(static_cast<char>(c));
-        } else {
-            out.push_back('%');
-            out.push_back(kHex[c >> 4]);
-            out.push_back(kHex[c & 0x0F]);
-        }
-    }
-    return out;
-}
-
-std::string percentDecode(const std::string& value)
-{
-    const auto hexValue = [](const char c) -> int {
-        if (c >= '0' && c <= '9') {
-            return c - '0';
-        }
-        if (c >= 'A' && c <= 'F') {
-            return c - 'A' + 10;
-        }
-        if (c >= 'a' && c <= 'f') {
-            return c - 'a' + 10;
-        }
-        return -1;
-    };
-    std::string out;
-    out.reserve(value.size());
-    for (std::size_t i = 0; i < value.size(); ++i) {
-        if (value[i] == '%' && i + 2 < value.size()) {
-            const int hi = hexValue(value[i + 1]);
-            const int lo = hexValue(value[i + 2]);
-            if (hi >= 0 && lo >= 0) {
-                out.push_back(static_cast<char>((hi << 4) | lo));
-                i += 2;
-                continue;
-            }
-        }
-        out.push_back(value[i]);
-    }
-    return out;
-}
-
-}  // namespace
 
 namespace bazarish {
 
@@ -83,19 +30,12 @@ Descriptor parseDescriptor(const std::string& uri)
     }
 
     std::map<std::string, std::string> params;
-    std::size_t pos = 0;
-    while (pos < query.size()) {
-        const std::size_t amp = query.find('&', pos);
-        const std::string pair = query.substr(pos, amp == std::string::npos ? amp : amp - pos);
-        const std::size_t eq = pair.find('=');
-        if (eq == std::string::npos) {
-            throw std::invalid_argument("malformed descriptor query");
-        }
-        params[pair.substr(0, eq)] = pair.substr(eq + 1);
-        if (amp == std::string::npos) {
-            break;
-        }
-        pos = amp + 1;
+    const std::optional<std::vector<QueryField>> fields = queryFields(query);
+    if (!fields.has_value()) {
+        throw std::invalid_argument("malformed descriptor query");
+    }
+    for (const auto& [key, value] : *fields) {
+        params[key] = value;
     }
 
     const auto need = [&params](const char* key) -> const std::string& {

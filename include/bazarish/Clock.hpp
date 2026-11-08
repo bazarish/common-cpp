@@ -19,6 +19,7 @@ inline std::int64_t nowMillis()
         .count();
 }
 
+inline constexpr std::int64_t kMillisPerSecond = 1000;
 inline constexpr std::int64_t kSecondsPerMinute = 60;
 inline constexpr std::int64_t kSecondsPerHour = 60 * kSecondsPerMinute;
 inline constexpr std::int64_t kSecondsPerDay = 24 * kSecondsPerHour;

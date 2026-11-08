@@ -19,4 +19,7 @@ inline constexpr std::size_t kMaxFileNameBytes = 255;
 // A file name a peer offered, as one plain name that stays in the folder it is saved to.
 std::string safeFileName(std::string_view offered);
 
+// Only A-Z change, whatever the locale: header names, hosts and other protocol words.
+std::string asciiLower(std::string text);
+
 }  // namespace bazarish

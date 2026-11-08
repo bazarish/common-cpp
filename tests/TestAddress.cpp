@@ -46,6 +46,19 @@ int main()
     CHECK_THROWS(parseAliasQuery("alice-se-cret"));
     CHECK_THROWS(parseAliasQuery("alice-sec.ret"));
     CHECK_THROWS(parseAliasQuery("alice-" + std::string(kAliasWordMaxLength + 1, 'w')));
+    CHECK_THROWS(parseAliasQuery("!!alice"));
+
+    CHECK(!aliasQueryProblem("!Alice-Secret42").has_value());
+    CHECK(aliasQueryProblem("") == AliasProblem::eNameLength);
+    CHECK(aliasQueryProblem("-secret") == AliasProblem::eNameLength);
+    CHECK(aliasQueryProblem(std::string(kAliasMaxLength + 1, 'a')) == AliasProblem::eNameLength);
+    CHECK(aliasQueryProblem("ali.ce") == AliasProblem::eNameChars);
+    CHECK(aliasQueryProblem("alice-") == AliasProblem::eWordEmpty);
+    CHECK(aliasQueryProblem("alice-se-cret") == AliasProblem::eWordChars);
+    CHECK(aliasQueryProblem("alice-" + std::string(kAliasWordMaxLength + 1, 'w'))
+        == AliasProblem::eWordLength);
+    CHECK(!aliasWordProblem("").has_value());
+    CHECK(aliasWordProblem("w.rd") == AliasProblem::eWordChars);
     CHECK(normalizeAliasWord("").empty());
     CHECK(normalizeAliasWord("WoRd") == "word");
 

@@ -154,7 +154,7 @@ AccountManager::AccountManager(fs::path root)
 void AccountManager::discardInterruptedImports()
 {
     for (const fs::directory_entry& entry : fs::directory_iterator(root_)) {
-        if (entry.path().filename().string().rfind(kImportPrefix, 0) == 0) {
+        if (entry.path().filename().string().starts_with(kImportPrefix)) {
             fs::remove(entry.path());
         }
     }

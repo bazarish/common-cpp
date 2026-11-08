@@ -92,24 +92,6 @@ private:
 };
 
 template <class Stream>
-std::string readFederationHeaderLine(Stream& stream)
-{
-    std::string line;
-    std::array<unsigned char, 1> c{};
-    while (true) {
-        stream.readExact(ByteBuffer(c));
-        if (c[0] == '\n') {
-            break;
-        }
-        line.push_back(static_cast<char>(c[0]));
-        if (line.size() > kMaxFederationHeaderLineBytes) {
-            throw std::runtime_error("federation header line too long");
-        }
-    }
-    return line;
-}
-
-template <class Stream>
 void writeFederationHeaderLine(Stream& stream, const std::string& line)
 {
     const std::string framed = line + "\n";
@@ -131,7 +113,7 @@ FederationDeliverResult federationSendDeliver(
     if (!payload.empty()) {
         stream.writeAll(ByteView(payload));
     }
-    return parseFederationDeliverReply(detail::readFederationHeaderLine(stream));
+    return parseFederationDeliverReply(detail::FrameReader<Stream>(stream).line());
 }
 
 template <class Stream>
@@ -139,7 +121,7 @@ FederationFetchResult federationSendFetch(
     Stream& stream, const std::string& op, const Bytes& sealed)
 {
     detail::writeFederationHeaderLine(stream, buildFederationFetchHeader(op, sealed));
-    return parseFederationFetchReply(detail::readFederationHeaderLine(stream));
+    return parseFederationFetchReply(detail::FrameReader<Stream>(stream).line());
 }
 
 }  // namespace bazarish

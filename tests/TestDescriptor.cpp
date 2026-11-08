@@ -20,7 +20,7 @@ int main()
 
     const Descriptor original{fp, srv};
     const std::string uri = encodeDescriptor(original);
-    CHECK(uri.rfind("https://bazari.sh/#invite?v=1&", 0) == 0);
+    CHECK(uri.starts_with("https://bazari.sh/#invite?v=1&"));
     CHECK(parseDescriptor("bazarish://" + uri.substr(std::string("https://bazari.sh/#").size()))
               .dest
         == parseDescriptor(uri).dest);

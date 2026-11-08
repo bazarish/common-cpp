@@ -40,7 +40,7 @@ public:
         written_.insert(written_.end(), data.begin(), data.end());
     }
 
-    void readExact(const ByteBuffer buffer) override
+    std::size_t readSome(const ByteBuffer buffer) override
     {
         if (!answer_) {
             throw std::runtime_error("no answer");
@@ -48,10 +48,11 @@ public:
         if (sent_ == 0) {
             reply_.push_back('\n');
         }
-        CHECK(sent_ + buffer.size() <= reply_.size());
-        const ByteView from = viewOf(reply_).subspan(sent_, buffer.size());
+        const ByteView from
+            = viewOf(reply_).subspan(sent_, std::min(buffer.size(), reply_.size() - sent_));
         std::copy(from.begin(), from.end(), buffer.begin());
-        sent_ += buffer.size();
+        sent_ += from.size();
+        return from.size();
     }
 
     void close() override { answer_ = false; }
@@ -70,7 +71,7 @@ class SilentStream final : public DeliveryStream {
 public:
     void writeAll(ByteView) override {}
 
-    void readExact(ByteBuffer) override
+    std::size_t readSome(ByteBuffer) override
     {
         std::unique_lock<std::mutex> lock(mutex_);
         closedCv_.wait(lock, [this]() { return closed_; });
@@ -224,7 +225,7 @@ int main()
             quickSchedule());
         OutboundCourier::Task task = taskTo(dest, "d-3");
         task.onPhase = [&retries](const std::string& phase) {
-            if (phase.rfind(kPhaseRetryPrefix, 0) == 0) {
+            if (phase.starts_with(kPhaseRetryPrefix)) {
                 retries.push_back(phase);
             }
         };
@@ -252,7 +253,7 @@ int main()
             schedule);
         OutboundCourier::Task task = taskTo(dest, "d-budget");
         task.onPhase = [&retries](const std::string& phase) {
-            if (phase.rfind(kPhaseRetryPrefix, 0) == 0) {
+            if (phase.starts_with(kPhaseRetryPrefix)) {
                 retries.push_back(phase);
             }
         };

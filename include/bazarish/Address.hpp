@@ -2,7 +2,9 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace bazarish {
 
@@ -30,6 +32,11 @@ struct AliasQuery {
 AliasQuery parseAliasQuery(const std::string& typed);
 // An empty word is allowed and means none.
 std::string normalizeAliasWord(const std::string& typed);
+
+// Why typed text is not an alias query, so a caller can say it in its own words.
+enum class AliasProblem { eNameLength, eNameChars, eWordLength, eWordChars, eWordEmpty };
+std::optional<AliasProblem> aliasQueryProblem(std::string_view typed);
+std::optional<AliasProblem> aliasWordProblem(std::string_view word);
 std::string aliasQueryText(const AliasQuery& query);
 
 }  // namespace bazarish

@@ -31,7 +31,7 @@ void testHappyPathAndReplay()
     const std::int64_t t = 5000;
 
     const std::string challenge = portal.issue(t);
-    CHECK(challenge.rfind("bazarish://sign?c=", 0) == 0);
+    CHECK(challenge.starts_with("bazarish://sign?c="));
     const std::string blob = signLoginBlob(identity, t, challenge);
     const std::string onWeb
         = "https://bazari.sh/#" + challenge.substr(std::string("bazarish://").size());

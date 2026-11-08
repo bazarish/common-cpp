@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "FileTransfer.hpp"
 
+#include "PacedSend.hpp"
+
 #include <bazarish/Cms.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Log.hpp>
@@ -19,24 +21,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr std::size_t kChunkBytes = 64 * 1024;
 constexpr int kMaxStalledAttempts = 5;
-
-void encodeBigEndian64(const std::uint64_t value, std::array<std::uint8_t, 8>& out)
-{
-    for (std::size_t i = 0; i < 8; ++i) {
-        out[i] = static_cast<std::uint8_t>((value >> (56 - 8 * i)) & 0xFF);
-    }
-}
-
-std::uint64_t decodeBigEndian64(const std::array<std::uint8_t, 8>& in)
-{
-    std::uint64_t value = 0;
-    for (const std::uint8_t byte : in) {
-        value = (value << 8) | byte;
-    }
-    return value;
-}
 
 class PartialFile {
 public:
@@ -360,22 +345,19 @@ void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer,
 }
 
 constexpr int kDrainSeconds = 120;
-constexpr std::size_t kDrainReadBytes = 64;
-constexpr std::size_t kMaxQueuedBytes = 128 * 1024;
-constexpr int kQueuePollMillis = 100;
-
-namespace {
-std::uint64_t onTheWire(const std::uint64_t written, const std::size_t queued)
-{
-    return written > queued ? written - queued : 0;
-}
-}  // namespace
 
 bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath,
     const std::chrono::seconds window, TransferStop& stop, const TransferProgressFn& onProgress)
 {
     const std::uint64_t total = fs::file_size(ciphertextPath);
     const auto deadline = std::chrono::steady_clock::now() + window;
+    const std::function<bool()> stopped = [&stop]() { return stop.requested(); };
+    const std::function<void(std::uint64_t)> progress
+        = [&onProgress, total](const std::uint64_t done) {
+              if (onProgress) {
+                  onProgress(done, total);
+              }
+          };
 
     while (std::chrono::steady_clock::now() < deadline) {
         if (stop.requested()) {
@@ -389,14 +371,14 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
         }
         try {
             stream->setReadTimeout(std::chrono::seconds(kDrainSeconds));
-            std::array<std::uint8_t, 8> header{};
+            std::array<std::uint8_t, sizeof(std::uint64_t)> header{};
             stream->readExact(header);
-            const std::uint64_t offset = decodeBigEndian64(header);
+            const std::uint64_t offset = getBigEndian(header);
             if (offset > total) {
                 stream->close();
                 continue;
             }
-            encodeBigEndian64(total, header);
+            putBigEndian(header, total);
             stream->writeAll(header);
 
             std::ifstream in(ciphertextPath, std::ios::binary);
@@ -404,7 +386,7 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
                 throw std::runtime_error("failed to open " + ciphertextPath.string());
             }
             in.seekg(static_cast<std::streamoff>(offset));
-            Bytes buffer(kChunkBytes);
+            Bytes buffer(kPacedChunkBytes);
             std::uint64_t sent = offset;
             while (sent < total) {
                 if (stop.requested()) {
@@ -418,35 +400,16 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
                 }
                 stream->writeAll(ByteView(buffer).first(static_cast<std::size_t>(got)));
                 sent += static_cast<std::uint64_t>(got);
-                while (stream->pendingBytes() > kMaxQueuedBytes) {
-                    if (stop.requested()) {
-                        return false;
-                    }
-                    if (onProgress) {
-                        onProgress(onTheWire(sent, stream->pendingBytes()), total);
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(kQueuePollMillis));
-                }
-                if (onProgress) {
-                    onProgress(onTheWire(sent, stream->pendingBytes()), total);
+                if (!waitForRoom(*stream, sent, stopped, progress)) {
+                    return false;
                 }
             }
             if (sent >= total) {
-                std::array<unsigned char, kDrainReadBytes> drain{};
-                const auto until = std::chrono::steady_clock::now()
-                    + std::chrono::seconds(kDrainSeconds);
-                while (std::chrono::steady_clock::now() < until) {
-                    if (onProgress) {
-                        onProgress(onTheWire(sent, stream->pendingBytes()), total);
-                    }
-                    try {
-                        if (stream->readSome(drain) == 0) {
-                            break;
-                        }
-                    } catch (const std::exception& error) {
-                        log::debug("file-serve: the receiver did not close: {}", error.what());
-                        break;
-                    }
+                std::string brokenBecause;
+                if (drainUntilClosed(*stream, sent, std::chrono::seconds(kDrainSeconds), progress,
+                        brokenBecause)
+                    == DrainOutcome::eBroken) {
+                    log::debug("file-serve: the receiver did not close: {}", brokenBecause);
                 }
                 if (onProgress) {
                     onProgress(total, total);
@@ -503,14 +466,14 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
               }
 
               stream->setReadTimeout(std::chrono::seconds(kSenderQuietSeconds));
-              std::array<std::uint8_t, 8> header{};
-              encodeBigEndian64(offset, header);
+              std::array<std::uint8_t, sizeof(std::uint64_t)> header{};
+              putBigEndian(header, offset);
               stream->writeAll(header);
               stream->readExact(header);
-              const std::uint64_t declared = decodeBigEndian64(header);
+              const std::uint64_t declared = getBigEndian(header);
               sink.total(declared);
 
-              std::vector<std::uint8_t> buffer(kChunkBytes);
+              std::vector<std::uint8_t> buffer(kPacedChunkBytes);
               std::uint64_t received = offset;
               while (declared == 0 || received < declared) {
                   const std::size_t got = stream->readSome(buffer);

@@ -13,6 +13,7 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -376,6 +377,15 @@ std::optional<std::reference_wrapper<bazarish::i2p::Router>> sharedI2pRouterIfRu
     return std::ref(*router);
 }
 
+bazarish::i2p::Router& readySharedI2pRouter()
+{
+    const auto running = sharedI2pRouterIfRunning();
+    if (!running.has_value() || !running->get().ready()) {
+        throw std::runtime_error("the I2P router is still building tunnels");
+    }
+    return running->get();
+}
+
 std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(const std::string& owner,
     const bazarish::i2p::Privacy privacy, const std::string& facadeHost)
 {
@@ -497,8 +507,6 @@ void restartI2pRouter()
 
 namespace {
 
-// The interface filters this stage as monotonic: the retry must not report less than the start.
-constexpr int kRouterStartPercent = 30;
 // What i2pd itself spends on a reseed before it gives up (RESEED_GIVEUP_TIMEOUT).
 constexpr int kReseedWaitSeconds = 180;
 constexpr int kReseedPollSeconds = 3;
@@ -545,7 +553,7 @@ I2pBootstrap reseedPass(bazarish::i2p::Router& router)
     }
     bazarish::log::warn(
         "i2p: the configured reseed produced no network database; starting with the built-in list");
-    reportConnectProgressToAll(kRouterStartPercent, "Starting with the built-in reseeds");
+    reportConnectProgressToAll(ConnectMilestone::eBuiltInReseeds);
     setReseedUrls({});
     router.setReseedUrls({});
     restartI2pRouter();
@@ -581,7 +589,28 @@ void setConnectProgressSink(const std::string& owner, ConnectProgressFn sink)
     }
 }
 
-void reportConnectProgress(const std::string& owner, const int percent, const std::string& text)
+int connectPercent(const ConnectMilestone milestone)
+{
+    // The interface filters progress as monotonic: a retry must not report less than its start.
+    switch (milestone) {
+    case ConnectMilestone::eRouterStarting: return 30;
+    case ConnectMilestone::eBuiltInReseeds: return 30;
+    case ConnectMilestone::eTunnelsBuilding: return 40;
+    case ConnectMilestone::eTunnelsStillBuilding: return 40;
+    case ConnectMilestone::eServerLookup: return 55;
+    case ConnectMilestone::eRegistering: return 60;
+    case ConnectMilestone::eServerReached: return 65;
+    case ConnectMilestone::eRegisteringDevice: return 70;
+    case ConnectMilestone::eCheckingAddress: return 83;
+    case ConnectMilestone::ePublishingDestination: return 85;
+    case ConnectMilestone::eDelegating: return 88;
+    case ConnectMilestone::ePublishingCard: return 92;
+    case ConnectMilestone::eSyncingDevices: return 96;
+    }
+    throw std::logic_error("no share of the connection for this milestone");
+}
+
+void reportConnectProgress(const std::string& owner, const ConnectMilestone milestone)
 {
     ConnectProgressFn sink;
     {
@@ -592,11 +621,11 @@ void reportConnectProgress(const std::string& owner, const int percent, const st
         }
     }
     if (sink) {
-        sink(percent, text);
+        sink(milestone);
     }
 }
 
-void reportConnectProgressToAll(const int percent, const std::string& text)
+void reportConnectProgressToAll(const ConnectMilestone milestone)
 {
     std::vector<ConnectProgressFn> sinks;
     {
@@ -606,7 +635,7 @@ void reportConnectProgressToAll(const int percent, const std::string& text)
         }
     }
     for (const ConnectProgressFn& sink : sinks) {
-        sink(percent, text);
+        sink(milestone);
     }
 }
 

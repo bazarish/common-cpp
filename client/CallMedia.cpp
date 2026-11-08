@@ -33,33 +33,18 @@ Bytes makeNonce(const std::uint8_t role, const std::uint8_t track, const std::ui
     nonce[0] = role;
     nonce[1] = track;
     nonce[kHeardFlagOffset] = heardPeer ? 1 : 0;
-    for (int i = 0; i < 8; ++i) {
-        nonce[kNonceSize - 1 - i] = static_cast<unsigned char>((sequence >> (8 * i)) & 0xff);
-    }
+    putBigEndian(ByteBuffer(nonce).last(sizeof(sequence)), sequence);
     return nonce;
 }
 
 float frameLevel(const std::vector<std::int16_t>& pcm)
 {
-    if (pcm.empty()) {
-        return 0.0F;
-    }
-    constexpr double kFullScale = 32768.0;
-    double square = 0.0;
-    for (const std::int16_t sample : pcm) {
-        const double value = static_cast<double>(sample) / kFullScale;
-        square += value * value;
-    }
-    return static_cast<float>(std::sqrt(square / static_cast<double>(pcm.size())));
+    return static_cast<float>(pcmRms(pcm));
 }
 
 std::uint64_t sequenceFromNonce(const Bytes& nonce)
 {
-    std::uint64_t sequence = 0;
-    for (int i = 0; i < 8; ++i) {
-        sequence = (sequence << 8) | nonce[kNonceSize - 8 + i];
-    }
-    return sequence;
+    return getBigEndian(ByteView(nonce).last(sizeof(std::uint64_t)));
 }
 
 }  // namespace

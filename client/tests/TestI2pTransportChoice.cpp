@@ -14,9 +14,7 @@ using namespace bazarish::client;
 
 int main()
 {
-    const std::filesystem::path dataDir
-        = std::filesystem::temp_directory_path() / "bazarish-transport-choice";
-    std::filesystem::remove_all(dataDir);
+    const std::filesystem::path dataDir = testutil::freshDir("transport-choice");
 
     CHECK(applyI2pTransport([]() { refuseI2pTransport("the saved gateway is not usable"); }));
     CHECK_THROWS((void)sharedI2pRouter(dataDir));

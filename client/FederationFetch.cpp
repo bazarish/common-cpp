@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "FederationFetch.hpp"
 
+#include "AttemptBudget.hpp"
 #include "I2pRouter.hpp"
 
 #include <bazarish/Address.hpp>
@@ -23,12 +24,9 @@
 
 namespace bazarish::client {
 
-constexpr int kOwnTunnelsSeconds = 180;
-constexpr int kDialSeconds = 90;
 constexpr int kReplySeconds = 90;
 constexpr int kFetchAttempts = 3;
 constexpr const char* kResolveOp = "resolve";
-constexpr int kHttpOk = 200;
 constexpr int kLeastDialSeconds = 10;
 constexpr int kLeastReplySeconds = 20;
 constexpr int kFetchRetryGapSeconds[kFetchAttempts - 1] = {2, 6};
@@ -73,6 +71,29 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(bazarish::i2p::Router
 
 enum class Face { eFederationFrame, eResolverHttp };
 
+void sendI2pHttpRequest(bazarish::i2p::Stream& stream, const std::string& method,
+    const std::string& host, const std::string& path,
+    const std::map<std::string, std::string>& headers, const std::string& body)
+{
+    stream.writeAll(viewOf(buildI2pHttpRequest(method, host, path, headers, body.size())));
+    if (!body.empty()) {
+        stream.writeAll(viewOf(body));
+    }
+}
+
+// Null when the host is not reached in time; the read deadline is set for what follows.
+std::unique_ptr<bazarish::i2p::Stream> dialI2pHttp(bazarish::i2p::Endpoint& endpoint,
+    const std::string& host, const std::chrono::seconds dialFor,
+    const std::chrono::seconds waitFor)
+{
+    sayStage(FetchStage::eReaching);
+    std::unique_ptr<bazarish::i2p::Stream> stream = endpoint.connect(host, dialFor);
+    if (stream) {
+        stream->setReadTimeout(waitFor);
+    }
+    return stream;
+}
+
 FetchOutcome askResolver(bazarish::i2p::Stream& stream, const std::string& host,
     const std::string& op, const Bytes& body)
 {
@@ -92,15 +113,11 @@ FetchOutcome askResolver(bazarish::i2p::Stream& stream, const std::string& host,
         = payload.empty() ? std::map<std::string, std::string>{}
                           : std::map<std::string, std::string>{
                                 {"Content-Type", "application/octet-stream"}};
-    const std::string head = buildI2pHttpRequest(method, host, path, headers, payload.size());
-    stream.writeAll(viewOf(head));
-    if (!payload.empty()) {
-        stream.writeAll(viewOf(payload));
-    }
+    sendI2pHttpRequest(stream, method, host, path, headers, payload);
     const I2pHttpResponse answer = readI2pHttpResponse(stream, kMaxResolverAnswerBytes);
 
     FetchOutcome outcome;
-    outcome.ok = answer.status == kHttpOk;
+    outcome.ok = answer.status == kI2pHttpOk;
     if (outcome.ok) {
         outcome.sealed.assign(answer.body.begin(), answer.body.end());
         return outcome;
@@ -122,15 +139,14 @@ FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& des
     const std::string& op, const Bytes& sealed, const std::chrono::seconds dialFor,
     const std::chrono::seconds waitFor, std::chrono::seconds& dialTook, const Face face)
 {
-    sayStage(FetchStage::eReaching);
     const auto dialStarted = std::chrono::steady_clock::now();
-    auto stream = endpoint.connect(dest, dialFor);
+    const std::unique_ptr<bazarish::i2p::Stream> stream
+        = dialI2pHttp(endpoint, dest, dialFor, waitFor);
     dialTook = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - dialStarted);
     if (!stream) {
         throw std::runtime_error("federation fetch: cannot reach " + dest);
     }
-    stream->setReadTimeout(waitFor);
 
     sayStage(FetchStage::eWaiting);
     if (face == Face::eResolverHttp) {
@@ -147,12 +163,10 @@ FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& des
 FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& dest,
     const std::string& op, const Bytes& sealed, const Face face)
 {
-    const auto deadline
-        = std::chrono::steady_clock::now() + std::chrono::seconds(kFetchRunSeconds);
+    const AttemptBudget budget{std::chrono::seconds(kFetchRunSeconds)};
     std::chrono::seconds dialTook{kDialSeconds};
     for (int attempt = 1;; ++attempt) {
-        const auto left = std::chrono::duration_cast<std::chrono::seconds>(
-            deadline - std::chrono::steady_clock::now());
+        const std::chrono::seconds left = budget.left();
         try {
             return fetchOnce(endpoint, dest, op, sealed,
                 std::min(left, std::chrono::seconds(kDialSeconds)),
@@ -163,8 +177,7 @@ FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& des
                 : std::chrono::seconds(0);
             const auto next = std::max(dialTook, std::chrono::seconds(kLeastDialSeconds))
                 + std::chrono::seconds(kLeastReplySeconds);
-            if (attempt >= kFetchAttempts
-                || std::chrono::steady_clock::now() + gap + next > deadline) {
+            if (attempt >= kFetchAttempts || !budget.pays(gap, next)) {
                 throw;
             }
             sayStage(FetchStage::eAskingAgain);
@@ -206,17 +219,14 @@ std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
         = takeThrowawayDest(router, privacy, owner, callback.host, kSignInLabel);
-    sayStage(FetchStage::eReaching);
-    const auto stream = endpoint->connect(callback.host, std::chrono::seconds(kDialSeconds));
+    const auto stream = dialI2pHttp(*endpoint, callback.host, std::chrono::seconds(kDialSeconds),
+        std::chrono::seconds(kReplySeconds));
     if (!stream) {
         return std::nullopt;
     }
-    stream->setReadTimeout(std::chrono::seconds(kReplySeconds));
-    const std::string body = nlohmann::json{{"challenge", challenge}, {"blob", blob}}.dump();
-    const std::string head = buildI2pHttpRequest("POST", callback.host, callback.path,
-        {{"Content-Type", "application/json"}}, body.size());
-    stream->writeAll(viewOf(head));
-    stream->writeAll(viewOf(body));
+    sendI2pHttpRequest(*stream, "POST", callback.host, callback.path,
+        {{"Content-Type", "application/json"}},
+        nlohmann::json{{"challenge", challenge}, {"blob", blob}}.dump());
     sayStage(FetchStage::eWaiting);
     return readI2pHttpHead(*stream).status;
 }
@@ -230,14 +240,12 @@ std::optional<std::string> getLoginChallengeOverI2p(bazarish::i2p::Router& route
     if (cancelled.load()) {
         return std::nullopt;
     }
-    sayStage(FetchStage::eReaching);
-    const auto stream = endpoint->connect(address.host, std::chrono::seconds(kDialSeconds));
+    const auto stream = dialI2pHttp(*endpoint, address.host, std::chrono::seconds(kDialSeconds),
+        std::chrono::seconds(kReplySeconds));
     if (!stream || cancelled.load()) {
         return std::nullopt;
     }
-    stream->setReadTimeout(std::chrono::seconds(kReplySeconds));
-    const std::string head = buildI2pHttpRequest("GET", address.host, address.path, {}, 0);
-    stream->writeAll(viewOf(head));
+    sendI2pHttpRequest(*stream, "GET", address.host, address.path, {}, {});
     sayStage(FetchStage::eWaiting);
     const I2pHttpResponse response = readI2pHttpResponse(*stream, service::kLoginChallengeMax);
     if (response.status != kI2pHttpOk) {

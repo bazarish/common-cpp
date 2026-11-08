@@ -5,13 +5,14 @@
 
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
-#include <bazarish/Hybrid.hpp>
 #include <bazarish/Crypto.hpp>
-#include <bazarish/ServerDescriptor.hpp>
-#include <bazarish/Pass.hpp>
+#include <bazarish/DeliveryEnvelope.hpp>
 #include <bazarish/Errors.hpp>
+#include <bazarish/Hybrid.hpp>
+#include <bazarish/Pass.hpp>
 #include <bazarish/Resolve.hpp>
 #include <bazarish/ResolvePuzzle.hpp>
+#include <bazarish/ServerDescriptor.hpp>
 
 #include <bazarish/HttpServer.hpp>
 
@@ -357,8 +358,8 @@ int main()
     {
         const Key recipientSealing = Key::fromPublicDer(servingSealing.publicDer());
         const Bytes pass = Bytes(kDeliveryPassSize, 0x33);
-        const Bytes sealed
-            = sealDeliveryEnvelope("content", bob.fingerprint(), "msg-1", pass, recipientSealing);
+        const Bytes sealed = sealDeliveryEnvelope(
+            DeliveryEnvelope{"content", bob.fingerprint(), "msg-1", pass}, recipientSealing);
         const Bytes plain = hybrid::unseal(sealed, servingSealing);
         const nlohmann::json inner = nlohmann::json::parse(plain.begin(), plain.end());
         CHECK(inner.at("class") == "content");

@@ -52,7 +52,7 @@ LoginCallback parseI2pPlace(const std::string& address, const std::string& what)
     if (address.size() > kLoginCallbackMax) {
         throw std::runtime_error("the " + what + " is too long");
     }
-    if (address.rfind(kLoginCallbackScheme, 0) != 0) {
+    if (!address.starts_with(kLoginCallbackScheme)) {
         throw std::runtime_error("the " + what + " is not an http address");
     }
     const std::string rest = address.substr(std::string(kLoginCallbackScheme).size());
@@ -85,7 +85,7 @@ std::string encodeLoginChallenge(const std::string& envelope)
 std::string decodeLoginChallenge(const std::string& challenge)
 {
     const std::string query = linkQuery(challenge, kSignKind);
-    if (query.rfind(kLoginChallengeField, 0) != 0) {
+    if (!query.starts_with(kLoginChallengeField)) {
         throw std::runtime_error("it is not a sign link");
     }
     const std::string encoded = query.substr(std::string_view(kLoginChallengeField).size());
@@ -170,7 +170,7 @@ std::optional<LoginCallback> readLoginCallback(const std::string& challenge)
 std::optional<LoginCallback> readLoginChallengeLink(const std::string& link)
 {
     const std::string query = linkQuery(link, kSignKind);
-    if (query.rfind(kLoginLinkField, 0) != 0) {
+    if (!query.starts_with(kLoginLinkField)) {
         return std::nullopt;
     }
     return parseI2pPlace(

@@ -5,11 +5,14 @@
 
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
-#include <bazarish/Tunnel.hpp>
-#include <bazarish/Log.hpp>
-#include <bazarish/ServerDescriptor.hpp>
+#include <bazarish/Clock.hpp>
+#include <bazarish/ConfigFile.hpp>
+#include <bazarish/I2pAddress.hpp>
 #include <bazarish/I2pHttp.hpp>
 #include <bazarish/Limits.hpp>
+#include <bazarish/Log.hpp>
+#include <bazarish/ServerDescriptor.hpp>
+#include <bazarish/Tunnel.hpp>
 
 #include <bazarish/HttpClient.hpp>
 #include <bazarish/JsonRead.hpp>
@@ -27,12 +30,6 @@ namespace bazarish::client {
 
 namespace {
 
-std::int64_t nowSeconds()
-{
-    return static_cast<std::int64_t>(std::time(nullptr));
-}
-
-constexpr int kMaxPort = 65535;
 constexpr int kPlainHttpPort = 80;
 constexpr std::size_t kShownHostChars = 12;
 
@@ -159,10 +156,7 @@ ApiClient::ApiClient(const Identity& identity, std::string clientId, ServerEndpo
 
 bool ApiClient::facadeIsI2p(const Facade& facade)
 {
-    static const std::string kSuffix = ".b32.i2p";
-    const std::string& host = facade.host;
-    return host.size() >= kSuffix.size()
-        && host.compare(host.size() - kSuffix.size(), kSuffix.size(), kSuffix) == 0;
+    return isB32I2pHost(facade.host);
 }
 
 bool ApiClient::facadeIsOwnLoopback(const Facade& facade)
@@ -213,7 +207,7 @@ std::int64_t ApiClient::sessionBackoffSeconds(const int httpStatus)
 
 ApiClient::Tunnel& ApiClient::tunnelFor(const std::string& path)
 {
-    return path.rfind(kServiceNodePrefix, 0) == 0 ? serviceNode_ : messaging_;
+    return path.starts_with(kServiceNodePrefix) ? serviceNode_ : messaging_;
 }
 
 void ApiClient::ensureSealingKeyLocked(Tunnel& tunnel)
@@ -332,14 +326,14 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     const std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody,
     const int readTimeoutSeconds)
 {
-    reportConnectProgress(destinationOwner_, 30, "Starting the I2P router");
+    reportConnectProgress(destinationOwner_, ConnectMilestone::eRouterStarting);
     setReseedUrls(endpoint_.reseeds);
     if (bootstrapI2pRouter(i2pDataDir_) == I2pBootstrap::eEmpty) {
         return std::nullopt;
     }
     gatewayRefusal_.clear();
     const auto buildLink = [&]() {
-        reportConnectProgress(destinationOwner_, 40, "Building your I2P tunnels");
+        reportConnectProgress(destinationOwner_, ConnectMilestone::eTunnelsBuilding);
         i2pStream_.reset();
         try {
             i2pOut_ = facadeLinkFor(destinationOwner_, tunnelPrivacy(), facade.host);
@@ -362,7 +356,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
         return std::nullopt;
     }
     if (!i2pOut_->waitReady(std::chrono::seconds(kOutboundReadySeconds))) {
-        reportConnectProgress(destinationOwner_, 40, "I2P tunnels are still building");
+        reportConnectProgress(destinationOwner_, ConnectMilestone::eTunnelsStillBuilding);
         return std::nullopt;
     }
     if (i2pStream_
@@ -372,7 +366,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     for (int attempt = 0; attempt < kKeepAliveAttempts; ++attempt) {
         const bool reused = static_cast<bool>(i2pStream_);
         if (!reused) {
-            reportConnectProgress(destinationOwner_, 55, "Looking up the server's I2P address");
+            reportConnectProgress(destinationOwner_, ConnectMilestone::eServerLookup);
             i2pStream_ = i2pOut_->connect(facade.host, std::chrono::seconds(kFacadeDialSeconds));
             // A gateway that replaced its session under the dial lost the link; no facade refused.
             if (!i2pStream_ && i2pOut_->lost()) {
@@ -387,7 +381,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
                 return std::nullopt;
             }
         }
-        reportConnectProgress(destinationOwner_, 65, "Connected to the server over I2P");
+        reportConnectProgress(destinationOwner_, ConnectMilestone::eServerReached);
         i2pStream_->setReadTimeout(std::chrono::seconds(readTimeoutSeconds));
         const auto askedAt = std::chrono::steady_clock::now();
         i2pStreamUsedAt_ = askedAt;

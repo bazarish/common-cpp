@@ -9,49 +9,9 @@ namespace bazarish::gateway {
 
 namespace {
 
-constexpr int kBitsPerByte = 8;
-constexpr std::uint32_t kByteMask = 0xFF;
 constexpr std::uint32_t kIdStep = 2;
 constexpr std::size_t kCreditBytes = 8;
 constexpr std::size_t kHostLengthBytes = 2;
-
-void appendBigEndian32(Bytes& out, const std::uint32_t value)
-{
-    out.push_back(static_cast<unsigned char>((value >> (3 * kBitsPerByte)) & kByteMask));
-    out.push_back(static_cast<unsigned char>((value >> (2 * kBitsPerByte)) & kByteMask));
-    out.push_back(static_cast<unsigned char>((value >> kBitsPerByte) & kByteMask));
-    out.push_back(static_cast<unsigned char>(value & kByteMask));
-}
-
-void appendBigEndian64(Bytes& out, const std::uint64_t value)
-{
-    for (int shift = 7; shift >= 0; --shift) {
-        out.push_back(static_cast<unsigned char>((value >> (shift * kBitsPerByte)) & kByteMask));
-    }
-}
-
-std::uint64_t readBigEndian64(const unsigned char* const at)
-{
-    std::uint64_t value = 0;
-    for (std::size_t i = 0; i < sizeof(std::uint64_t); ++i) {
-        value = (value << kBitsPerByte) | static_cast<std::uint64_t>(at[i]);
-    }
-    return value;
-}
-
-std::uint32_t readBigEndian32(const unsigned char* const at)
-{
-    return (static_cast<std::uint32_t>(at[0]) << (3 * kBitsPerByte))
-        | (static_cast<std::uint32_t>(at[1]) << (2 * kBitsPerByte))
-        | (static_cast<std::uint32_t>(at[2]) << kBitsPerByte)
-        | static_cast<std::uint32_t>(at[3]);
-}
-
-std::uint16_t readBigEndian16(const unsigned char* const at)
-{
-    return static_cast<std::uint16_t>(
-        (static_cast<std::uint16_t>(at[0]) << kBitsPerByte) | static_cast<std::uint16_t>(at[1]));
-}
 
 bool carriesJson(const FrameType type)
 {
@@ -160,7 +120,7 @@ Bytes encode(const FrameType type, const std::uint32_t ref, const ByteView body)
     Bytes out;
     out.reserve(kFrameHeaderBytes + body.size());
     out.push_back(static_cast<unsigned char>(type));
-    appendBigEndian32(out, ref);
+    appendBigEndian(out, ref, sizeof(std::uint32_t));
     if (!body.empty()) {
         out.insert(out.end(), body.begin(), body.end());
     }
@@ -187,7 +147,7 @@ Frame decode(const ByteView data)
     }
     Frame frame;
     frame.type = type.value();
-    frame.ref = readBigEndian32(data.subspan(1).data());
+    frame.ref = static_cast<std::uint32_t>(getBigEndian(data.subspan(1, sizeof(std::uint32_t))));
     const ByteView body = data.subspan(kFrameHeaderBytes);
     frame.body.assign(body.begin(), body.end());
     return frame;
@@ -210,7 +170,7 @@ Bytes encodeCredit(const std::uint32_t stream, const std::uint64_t total)
 {
     Bytes body;
     body.reserve(kCreditBytes);
-    appendBigEndian64(body, total);
+    appendBigEndian(body, total, sizeof(std::uint64_t));
     return encode(FrameType::eStreamCredit, stream, body);
 }
 
@@ -219,7 +179,7 @@ std::uint64_t decodeCredit(const Frame& frame)
     if (frame.type != FrameType::eStreamCredit || frame.body.size() != kCreditBytes) {
         throw ProtocolError(Fault::eBadFrame, "a credit is one count and nothing else");
     }
-    return readBigEndian64(frame.body.data());
+    return getBigEndian(frame.body);
 }
 
 Bytes encodeRawSend(const std::uint32_t endpoint, const std::string& host, const ByteView data)
@@ -229,8 +189,7 @@ Bytes encodeRawSend(const std::uint32_t endpoint, const std::string& host, const
     }
     const std::uint16_t length = static_cast<std::uint16_t>(host.size());
     Bytes body(kHostLengthBytes + host.size() + data.size());
-    body[0] = static_cast<unsigned char>((length >> kBitsPerByte) & kByteMask);
-    body[1] = static_cast<unsigned char>(length & kByteMask);
+    putBigEndian(ByteBuffer(body).first(kHostLengthBytes), length);
     const auto hostAt = body.begin() + kHostLengthBytes;
     std::copy(data.begin(), data.end(), std::copy(host.begin(), host.end(), hostAt));
     return encode(FrameType::eRawSend, endpoint, body);
@@ -247,7 +206,7 @@ RawSend decodeRawSend(const Frame& frame)
     if (frame.type != FrameType::eRawSend || frame.body.size() < kHostLengthBytes) {
         throw ProtocolError(Fault::eBadFrame, "not a datagram going out");
     }
-    const std::size_t length = readBigEndian16(frame.body.data());
+    const std::size_t length = getBigEndian(ByteView(frame.body).first(kHostLengthBytes));
     if (length == 0 || frame.body.size() < kHostLengthBytes + length) {
         throw ProtocolError(Fault::eBadFrame, "a datagram names one destination");
     }

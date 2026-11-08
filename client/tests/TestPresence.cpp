@@ -370,15 +370,6 @@ bool typeUntilSeen(Presence& typist, const std::string& peer, Observer& watcher,
     return false;
 }
 
-bool waitUntil(const std::function<bool()>& done)
-{
-    const auto deadline = std::chrono::steady_clock::now() + kSettle;
-    while (!done() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(kPoll);
-    }
-    return done();
-}
-
 PresenceNet netFor(FakeNet& net)
 {
     return [&net](const PresenceLinkConfig& config) -> std::unique_ptr<PresenceLink> {
@@ -429,7 +420,7 @@ int main()
     const std::uint64_t beforeLoss = net.newestGeneration(alice.dest);
     const std::size_t lossMark = bobSees.history(alice.fp()).size();
     net.lose(alice.dest);
-    CHECK(waitUntil([&]() { return net.newestGeneration(alice.dest) > beforeLoss; }));
+    CHECK(testutil::waitFor([&]() { return net.newestGeneration(alice.dest) > beforeLoss; }));
     alice1.watch({bob.fp()});
     CHECK(typeUntilSeen(alice1, bob.fp(), bobSees, alice.fp()));
     CHECK(!bobSees.sawSince(alice.fp(), lossMark, kOffline));
@@ -438,7 +429,7 @@ int main()
     CHECK(aliceSees.waitFor(bob.fp(), kOnline));
 
     alice2.setFocused(true);
-    CHECK(waitUntil([&]() { return net.holdersOf(alice.dest) == 2; }));
+    CHECK(testutil::waitFor([&]() { return net.holdersOf(alice.dest) == 2; }));
     const std::size_t secondMark = bobSees.history(alice.fp()).size();
     for (int round = 0; round < kTypingRounds; ++round) {
         alice2.typed(bob.fp());
@@ -448,13 +439,13 @@ int main()
 
     const std::size_t moveMark = bobSees.history(alice.fp()).size();
     alice1.setFocused(false);
-    CHECK(waitUntil([&]() { return net.holdersOf(alice.dest) == 1; }));
+    CHECK(testutil::waitFor([&]() { return net.holdersOf(alice.dest) == 1; }));
     CHECK(typeUntilSeen(alice2, bob.fp(), bobSees, alice.fp()));
     CHECK(!bobSees.sawSince(alice.fp(), moveMark, kOffline));
 
     alice2.setFocused(false);
     CHECK(bobSees.waitFor(alice.fp(), kOffline));
-    CHECK(waitUntil([&]() { return net.holdersOf(alice.dest) == 0; }));
+    CHECK(testutil::waitFor([&]() { return net.holdersOf(alice.dest) == 0; }));
 
     {
         Observer carolSees;
@@ -475,7 +466,7 @@ int main()
     alice1.setShown(false);
     CHECK(aliceSees.waitFor(bob.fp(), kOffline));
     CHECK(bobSees.waitFor(alice.fp(), kOffline));
-    CHECK(waitUntil([&]() { return net.holdersOf(alice.dest) == 0; }));
+    CHECK(testutil::waitFor([&]() { return net.holdersOf(alice.dest) == 0; }));
     const std::size_t watchersHidden = net.watchersOf(alice.presence);
     std::this_thread::sleep_for(kKnockWait);
     CHECK(net.watchersOf(alice.presence) == watchersHidden);
@@ -487,7 +478,7 @@ int main()
     alice1.setFocused(true);
     alice2.setFocused(true);
     CHECK(bobSees.waitFor(alice.fp(), kOnline));
-    CHECK(waitUntil([&]() { return net.holdersOf(alice.dest) == 2; }));
+    CHECK(testutil::waitFor([&]() { return net.holdersOf(alice.dest) == 2; }));
     alice1.setFocused(false);
     alice2.setFocused(false);
     CHECK(bobSees.waitFor(alice.fp(), kOffline));
@@ -529,7 +520,7 @@ int main()
         CHECK(erinSees.waitFor(frank.fp(), kOnline));
         CHECK(frankSees.waitFor(erin.fp(), kOnline));
         frank2.setFocused(false);
-        CHECK(waitUntil([&]() { return net.holdersOf(frank.dest) == 0; }));
+        CHECK(testutil::waitFor([&]() { return net.holdersOf(frank.dest) == 0; }));
         std::this_thread::sleep_for(kAwayBeforeReturn);
         frank2.setFocused(true);
         CHECK(typeUntilSeen(frank2, erin.fp(), erinSees, frank.fp()));
@@ -589,7 +580,7 @@ int main()
 
     CHECK(bobSees.waitFor(alice.fp(), kOnline));
     alice1.setContacts({});
-    CHECK(waitUntil([&]() { return net.holdersOf(alice.dest) == 0; }));
+    CHECK(testutil::waitFor([&]() { return net.holdersOf(alice.dest) == 0; }));
     CHECK(bobSees.waitFor(alice.fp(), kOffline));
     alice1.setFocused(false);
 
@@ -602,7 +593,7 @@ int main()
     }
     alice1.setContacts(crowd);
     alice1.setFocused(true);
-    CHECK(waitUntil([&]() { return net.readersOf(alice.dest) == i2p::kMaxLeaseSetReaders; }));
+    CHECK(testutil::waitFor([&]() { return net.readersOf(alice.dest) == i2p::kMaxLeaseSetReaders; }));
     alice1.setFocused(false);
 
     {
@@ -611,7 +602,7 @@ int main()
         hal1.setContacts({gwen.contact()});
         hal1.setFocused(true);
         hal1.watch({gwen.fp()});
-        CHECK(waitUntil([&]() { return net.watchersOf(hal.presence) == kWatchersPerFocus; }));
+        CHECK(testutil::waitFor([&]() { return net.watchersOf(hal.presence) == kWatchersPerFocus; }));
         std::this_thread::sleep_for(kQuietWatch);
         CHECK(halSees.of(gwen.fp()) == kOffline);
         CHECK(net.watchersOf(hal.presence) == kWatchersPerFocus);

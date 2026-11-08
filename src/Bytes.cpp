@@ -10,22 +10,11 @@
 
 namespace {
 
+constexpr int kDecimalDigits = 10;
+constexpr std::uint64_t kLowByte = 0xFF;
+
 constexpr char kHexDigits[] = "0123456789abcdef";
 constexpr char kBase32Digits[] = "abcdefghijklmnopqrstuvwxyz234567";
-
-int hexValue(const char c)
-{
-    if (c >= '0' && c <= '9') {
-        return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-        return c - 'a' + 10;
-    }
-    if (c >= 'A' && c <= 'F') {
-        return c - 'A' + 10;
-    }
-    return -1;
-}
 
 }  // namespace
 
@@ -50,8 +39,8 @@ Bytes fromHex(const std::string& text)
     Bytes out;
     out.reserve(text.size() / 2);
     for (std::size_t i = 0; i < text.size(); i += 2) {
-        const int high = hexValue(text[i]);
-        const int low = hexValue(text[i + 1]);
+        const int high = hexDigitValue(text[i]);
+        const int low = hexDigitValue(text[i + 1]);
         if (high < 0 || low < 0) {
             throw std::invalid_argument("invalid hex character");
         }
@@ -155,9 +144,46 @@ ByteView viewOf(const std::string_view text)
     return {reinterpret_cast<const unsigned char*>(text.data()), text.size()};
 }
 
+void putBigEndian(const ByteBuffer field, std::uint64_t value)
+{
+    for (auto at = field.rbegin(); at != field.rend(); ++at) {
+        *at = static_cast<unsigned char>(value & kLowByte);
+        value >>= CHAR_BIT;
+    }
+}
+
+std::uint64_t getBigEndian(const ByteView field)
+{
+    std::uint64_t value = 0;
+    for (const unsigned char byte : field) {
+        value = (value << CHAR_BIT) | byte;
+    }
+    return value;
+}
+
+void appendBigEndian(Bytes& out, const std::uint64_t value, const std::size_t width)
+{
+    out.resize(out.size() + width);
+    putBigEndian(ByteBuffer(out).last(width), value);
+}
+
 ByteBuffer bufferOf(std::string& text)
 {
     return {reinterpret_cast<unsigned char*>(text.data()), text.size()};
+}
+
+int hexDigitValue(const char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + kDecimalDigits;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + kDecimalDigits;
+    }
+    return -1;
 }
 
 Bytes randomBytes(const std::size_t count)
@@ -167,6 +193,21 @@ Bytes randomBytes(const std::size_t count)
         throw std::runtime_error("RAND_bytes failed");
     }
     return out;
+}
+
+std::uint64_t randomBetween(const std::uint64_t low, const std::uint64_t high)
+{
+    if (high <= low) {
+        return low;
+    }
+    if (high - low == std::numeric_limits<std::uint64_t>::max()) {
+        std::uint64_t value = 0;
+        for (const std::uint8_t byte : randomBytes(sizeof(std::uint64_t))) {
+            value = (value << CHAR_BIT) | byte;
+        }
+        return value;
+    }
+    return low + randomBelow(high - low + 1);
 }
 
 std::uint64_t randomBelow(const std::uint64_t bound)

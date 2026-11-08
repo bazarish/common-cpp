@@ -40,8 +40,7 @@ http::Request asking(const std::string& ifNoneMatch)
 int main()
 {
     const std::filesystem::path dir
-        = std::filesystem::temp_directory_path() / "bazarish-web-assets-test";
-    std::filesystem::remove_all(dir);
+        = testutil::freshDir("web-assets-test");
     std::filesystem::create_directories(dir);
     write(dir / "page.html", "<p>{{note}}</p>");
     write(dir / "style.css", "body { color: #d7dbd8; }");

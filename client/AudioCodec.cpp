@@ -14,7 +14,6 @@ namespace {
 
 constexpr int kMaxPacketBytes = 4000;
 
-constexpr double kFullScale = 32768.0;
 
 constexpr int kStretchWindowMs = 30;
 constexpr int kStretchSearchMs = 5;
@@ -190,7 +189,7 @@ std::size_t TimeStretch::read(const std::span<std::int16_t> out)
         for (std::size_t i = 0; i < take; ++i) {
             const double value = std::round(pending_[i]);
             out[produced + i] = static_cast<std::int16_t>(
-                std::clamp(value, -kFullScale, kFullScale - 1));
+                std::clamp(value, -kPcmFullScale, kPcmFullScale - 1));
         }
         pending_.erase(pending_.begin(), pending_.begin() + static_cast<std::ptrdiff_t>(take));
         ready_ -= take;
@@ -212,13 +211,7 @@ std::vector<std::uint8_t> voiceWaveform(const Bytes& packed, const int bars)
     std::vector<double> frameLevels;
     frameLevels.reserve(frames.size());
     for (const Bytes& frame : frames) {
-        const std::vector<std::int16_t> pcm = decoder.decode(frame);
-        double sum = 0.0;
-        for (const std::int16_t sample : pcm) {
-            const double value = static_cast<double>(sample) / kFullScale;
-            sum += value * value;
-        }
-        frameLevels.push_back(pcm.empty() ? 0.0 : std::sqrt(sum / static_cast<double>(pcm.size())));
+        frameLevels.push_back(pcmRms(decoder.decode(frame)));
     }
 
     std::vector<double> barLevels(static_cast<std::size_t>(bars), 0.0);
@@ -249,23 +242,33 @@ std::string voiceWaveformHex(const Bytes& packed)
     return hex;
 }
 
+double pcmRms(const std::span<const std::int16_t> pcm)
+{
+    if (pcm.empty()) {
+        return 0.0;
+    }
+    double square = 0.0;
+    for (const std::int16_t sample : pcm) {
+        const double value = static_cast<double>(sample) / kPcmFullScale;
+        square += value * value;
+    }
+    return std::sqrt(square / static_cast<double>(pcm.size()));
+}
+
 void normalizeVoicePcm(std::vector<std::int16_t>& pcm)
 {
     if (pcm.empty()) {
         return;
     }
-    double square = 0.0;
     std::int32_t peak = 0;
     for (const std::int16_t sample : pcm) {
-        const double value = static_cast<double>(sample) / kFullScale;
-        square += value * value;
         peak = std::max(peak, std::abs(static_cast<std::int32_t>(sample)));
     }
-    const double rms = std::sqrt(square / static_cast<double>(pcm.size()));
+    const double rms = pcmRms(pcm);
     if (rms < kVoiceSilenceRms || peak == 0) {
         return;
     }
-    const double peakScale = static_cast<double>(peak) / kFullScale;
+    const double peakScale = static_cast<double>(peak) / kPcmFullScale;
     const double gain = std::min({kVoiceTargetRms / rms, kVoiceTargetPeak / peakScale,
         kVoiceMaxGain});
     for (std::int16_t& sample : pcm) {

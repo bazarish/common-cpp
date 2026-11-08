@@ -90,11 +90,12 @@ void testLoadMaster()
 void testSessionLoadsDat()
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / ("bazarish-i2pload-" + toHex(randomBytes(8)));
+    const fs::path dir = testutil::freshDir("i2pload");
+    const fs::path profile = dir / "account.db";
     const I2pMasterKey existing = generateI2pMaster();
 
     {
-        const std::unique_ptr<Session> session = Session::create(dir, AccountKind::eUser, "pw", "carol");
+        const std::unique_ptr<Session> session = Session::create(profile, AccountKind::eUser, "pw", "carol");
         CHECK(!session->hasI2pDestination());
         const std::string address = session->loadI2pDestination(existing.privateKeys);
         CHECK(address == existing.host);
@@ -109,7 +110,7 @@ void testSessionLoadsDat()
         CHECK(threw);
     }
     {
-        const std::unique_ptr<Session> session = Session::open(dir, "pw");
+        const std::unique_ptr<Session> session = Session::open(profile, "pw");
         CHECK(session->i2pAddress() == existing.host);
     }
     fs::remove_all(dir);
@@ -118,11 +119,12 @@ void testSessionLoadsDat()
 void testSessionPersistsAndDelegates()
 {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / ("bazarish-i2p-" + toHex(randomBytes(8)));
+    const fs::path dir = testutil::freshDir("i2p");
+    const fs::path profile = dir / "account.db";
 
     std::string address;
     {
-        const std::unique_ptr<Session> session = Session::create(dir, AccountKind::eUser, "pw", "alice");
+        const std::unique_ptr<Session> session = Session::create(profile, AccountKind::eUser, "pw", "alice");
         CHECK(!session->hasI2pDestination());
         address = session->ensureI2pDestination();
         CHECK(address.size() == kB33HostLen);
@@ -134,7 +136,7 @@ void testSessionPersistsAndDelegates()
         CHECK(i2pDelegationExpires(session->i2pTransient()) == expires);
     }
     {
-        const std::unique_ptr<Session> session = Session::open(dir, "pw");
+        const std::unique_ptr<Session> session = Session::open(profile, "pw");
         CHECK(session->hasI2pDestination());
         CHECK(session->i2pAddress() == address);
         CHECK(i2pRoutingHost(session->i2pTransient()) == address);

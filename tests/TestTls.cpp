@@ -37,8 +37,7 @@ http::ClientOptions pinned(const std::string& pin)
 
 int main()
 {
-    const fs::path root = fs::temp_directory_path() / ("bazarish-tls-" + toHex(randomBytes(8)));
-    fs::create_directories(root);
+    const fs::path root = testutil::freshDir("tls");
 
     const tls::Credential made = tls::selfSigned(root);
     CHECK(fs::exists(made.certificate));

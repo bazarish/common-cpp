@@ -12,9 +12,7 @@ namespace fs = std::filesystem;
 
 int main()
 {
-    const fs::path dir = fs::temp_directory_path() / "bazarish-i2p-reseed-test";
-    fs::remove_all(dir);
-    fs::create_directories(dir);
+    const fs::path dir = testutil::freshDir("i2p-reseed");
     const std::string archive = (dir / "no-reseed.su3").string();
 
     bazarish::i2p::setI2pLogging(true);

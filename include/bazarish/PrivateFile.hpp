@@ -10,6 +10,7 @@
 namespace bazarish {
 
 std::string readFileText(const std::filesystem::path& path);
+Bytes readFileBytes(const std::filesystem::path& path);
 
 void writeFileAtomic(const std::filesystem::path& path, std::string_view bytes);
 void writeFileAtomic(const std::filesystem::path& path, const Bytes& bytes);

@@ -136,7 +136,7 @@ public:
         for (int waited = 0; waited < kWaitSeconds * 1000 / kPollSliceMs; ++waited) {
             int seen = 0;
             for (const std::string& line : commands()) {
-                if (line.rfind(prefix, 0) == 0 && ++seen == nth) {
+                if (line.starts_with(prefix) && ++seen == nth) {
                     return line;
                 }
             }
@@ -268,9 +268,9 @@ private:
                 const std::lock_guard<std::mutex> lock(mutex_);
                 commands_.push_back(line);
             }
-            if (line.rfind("HELLO VERSION", 0) == 0) {
+            if (line.starts_with("HELLO VERSION")) {
                 writeAll(fd, "HELLO REPLY RESULT=OK VERSION=3.3\n");
-            } else if (line.rfind("SESSION CREATE", 0) == 0) {
+            } else if (line.starts_with("SESSION CREATE")) {
                 const std::string port = valueOf(line, "PORT");
                 if (!port.empty()) {
                     clientUdpPort_ = static_cast<std::uint16_t>(std::stoi(port));
@@ -281,14 +281,14 @@ private:
                     break;
                 }
                 writeAll(fd, "SESSION STATUS RESULT=OK DESTINATION=" + kPrivateKeys + "\n");
-            } else if (line.rfind("NAMING LOOKUP", 0) == 0) {
+            } else if (line.starts_with("NAMING LOOKUP")) {
                 writeAll(fd, "NAMING REPLY RESULT=OK NAME=ME VALUE=" + kDestination + "\n");
-            } else if (line.rfind("DEST GENERATE", 0) == 0) {
+            } else if (line.starts_with("DEST GENERATE")) {
                 writeAll(fd, "DEST REPLY PUB=" + kDestination + " PRIV=" + kPrivateKeys + "\n");
-            } else if (line.rfind("STREAM FORWARD", 0) == 0) {
+            } else if (line.starts_with("STREAM FORWARD")) {
                 forwardPort_ = static_cast<std::uint16_t>(std::stoi(valueOf(line, "PORT")));
                 writeAll(fd, "STREAM STATUS RESULT=OK\n");
-            } else if (line.rfind("STREAM CONNECT", 0) == 0) {
+            } else if (line.starts_with("STREAM CONNECT")) {
                 std::string status;
                 {
                     const std::lock_guard<std::mutex> lock(mutex_);
@@ -514,7 +514,7 @@ void testRawDatagrams()
     const std::string payload = "audio frame";
     session.sendDatagram(kB33, viewOf(payload));
     const std::string handed = router.takeDatagram();
-    CHECK(handed.rfind("3.0 ", 0) == 0);
+    CHECK(handed.starts_with("3.0 "));
     CHECK(contains(handed, " " + kB33 + "\n" + payload));
 
     router.forwardDatagram(payload);

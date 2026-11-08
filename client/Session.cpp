@@ -14,23 +14,24 @@
 #include "I2pRouter.hpp"
 
 #include <bazarish/Address.hpp>
-#include <bazarish/PathText.hpp>
 #include <bazarish/Certificates.hpp>
-#include <bazarish/Cms.hpp>
-#include <bazarish/Hybrid.hpp>
-#include <bazarish/Descriptor.hpp>
-#include <bazarish/Resolve.hpp>
-#include <bazarish/Errors.hpp>
-#include <bazarish/Limits.hpp>
-#include <bazarish/PrivateFile.hpp>
-#include <bazarish/Padding.hpp>
-#include <bazarish/Pass.hpp>
-#include <bazarish/PlainText.hpp>
 #include <bazarish/Clock.hpp>
-#include <bazarish/Log.hpp>
-#include <bazarish/Reactions.hpp>
+#include <bazarish/Cms.hpp>
+#include <bazarish/DeliveryEnvelope.hpp>
+#include <bazarish/Descriptor.hpp>
+#include <bazarish/Errors.hpp>
+#include <bazarish/Hybrid.hpp>
 #include <bazarish/I2pAddress.hpp>
 #include <bazarish/JsonRead.hpp>
+#include <bazarish/Limits.hpp>
+#include <bazarish/Log.hpp>
+#include <bazarish/Padding.hpp>
+#include <bazarish/Pass.hpp>
+#include <bazarish/PathText.hpp>
+#include <bazarish/PlainText.hpp>
+#include <bazarish/PrivateFile.hpp>
+#include <bazarish/Reactions.hpp>
+#include <bazarish/Resolve.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -139,11 +140,6 @@ void applyPresence(Contact& contact, const AccountKind kind, const std::string& 
     validateB32I2pHost(presenceDest);
     contact.presenceKeyB64 = presenceKeyB64;
     contact.presenceDest = presenceDest;
-}
-
-std::int64_t nowSeconds()
-{
-    return static_cast<std::int64_t>(std::time(nullptr));
 }
 
 nlohmann::json readBundle(const Bytes& plain)
@@ -309,16 +305,6 @@ std::vector<nlohmann::json> decodedBody(const Bytes& bytes)
         messages.push_back(std::move(item));
     }
     return messages;
-}
-
-bazarish::i2p::Router& routerForAdd()
-{
-    const auto running = sharedI2pRouterIfRunning();
-    if (!running.has_value() || !running->get().ready()) {
-        throw std::runtime_error(
-            "adding a contact needs the I2P router; it is still building tunnels");
-    }
-    return running->get();
 }
 
 void addReplyAndForward(
@@ -1033,7 +1019,7 @@ void Session::registerAccount()
         if (error.code != ErrorCode::eAccountUnknown) {
             throw;
         }
-        reportConnectProgress(destinationOwner(), 60, "Registering with this server");
+        reportConnectProgress(destinationOwner(), ConnectMilestone::eRegistering);
         client_->registerHere();
         result = client_->publishCard(cardContent(), serving, currentCardIssuedAt());
     }
@@ -1043,16 +1029,16 @@ void Session::registerAccount()
         bazarish::log::info("account awaiting operator approval: no mailbox until then");
         return;
     }
-    reportConnectProgress(destinationOwner(), 70, "Registered; registering this device");
+    reportConnectProgress(destinationOwner(), ConnectMilestone::eRegisteringDevice);
     client_->registerThisClient();
     registerEveryPass();
 
-    reportConnectProgress(destinationOwner(), 83, "Checking the address your server serves");
+    reportConnectProgress(destinationOwner(), ConnectMilestone::eCheckingAddress);
     if (!reconcileI2pAddress()) {
         bazarish::log::warn("this server serves an address this device has no keys for");
         return;
     }
-    reportConnectProgress(destinationOwner(), 85, "Publishing your own destination");
+    reportConnectProgress(destinationOwner(), ConnectMilestone::ePublishingDestination);
     const bool movedOnRouting = delegateRouting();
     if (movedOnCard || movedOnRouting) {
         announceNewRouting();
@@ -1091,13 +1077,13 @@ bool Session::delegateRouting()
         throw std::runtime_error("not registered: nothing to publish routing into");
     }
     const std::int64_t expires = renewI2pTransient(delegationDays_);
-    reportConnectProgress(destinationOwner(), 88, "Delegating your destination to the server");
+    reportConnectProgress(destinationOwner(), ConnectMilestone::eDelegating);
     DestinationInfo serving
         = client_->sendI2pTransient(i2pTransientBase64(), expires, addressKeys());
     serving.servingSealingKeyDer = servingSealingDer();
-    reportConnectProgress(destinationOwner(), 92, "Publishing your contact card");
+    reportConnectProgress(destinationOwner(), ConnectMilestone::ePublishingCard);
     const bool moved = storeCard(client_->publishCard(cardContent(), serving, currentCardIssuedAt()));
-    reportConnectProgress(destinationOwner(), 96, "Syncing your address to your other devices");
+    reportConnectProgress(destinationOwner(), ConnectMilestone::eSyncingDevices);
     try {
         syncI2pMasterToSelf();
     } catch (const std::exception& error) {
@@ -1475,13 +1461,10 @@ void Session::requireSwitchedOn() const
 void Session::sendSelf(nlohmann::json inner)
 {
     requireSwitchedOn();
-    inner["v"] = kMessageFormatVersion;
-    inner["id"] = toHex(randomBytes(16));
-    inner["from"] = fingerprint();
-    inner["sentAt"] = nowMillis();
-    inner["device"] = client_->clientId();
     const std::string kind = inner.value("type", std::string());
-    submitSignedToSelf(inner, kind);
+    nlohmann::json sealed = envelope(kind, newMessageId(), std::move(inner));
+    sealed["device"] = client_->clientId();
+    submitSignedToSelf(sealed, kind);
 }
 
 void Session::syncChatPinToSelf(const std::string& peerFingerprint, bool pinned)
@@ -1983,7 +1966,10 @@ bool Session::deliver(const std::string& toDest, const Key& servingSealingKey,
     if (task.peerName.empty() && !mailbox.empty()) {
         task.peerName = mailbox.substr(0, std::min(mailbox.size(), kShortFingerprintChars));
     }
-    task.sealed = sealDeliveryEnvelope(kind, mailbox, deliveryId, pass, servingSealingKey);
+    task.sealed = sealDeliveryEnvelope(
+        DeliveryEnvelope{kind, mailbox, deliveryId,
+            pass.empty() ? std::nullopt : std::optional<Bytes>(pass)},
+        servingSealingKey);
     task.payload = payload;
     task.deliveryId = deliveryId;
     task.onPhase = watch.onPhase;
@@ -2068,7 +2054,7 @@ FetchTransport Session::fetchTransport() const
         return fetchTransportOverride_;
     }
     return [this](const std::string& toDest, const std::string& op, const Bytes& sealed) {
-        return federationFetchOverI2p(routerForAdd(), toDest, op, sealed, tunnelPrivacy(),
+        return federationFetchOverI2p(readySharedI2pRouter(), toDest, op, sealed, tunnelPrivacy(),
             destinationOwner());
     };
 }
@@ -2129,14 +2115,14 @@ Session::ContactCardResolved Session::resolveContactCard(const ContactFetchConte
         const FetchTransport transport = [&context](const std::string& toDest,
                                              const std::string& op,
                                              const Bytes& sealed) -> FetchOutcome {
-            return federationFetchOverI2p(routerForAdd(), toDest, op, sealed, context.privacy,
+            return federationFetchOverI2p(readySharedI2pRouter(), toDest, op, sealed, context.privacy,
                 context.destinationOwner);
         };
 
         const FetchTransport toRegistry = [&context](const std::string& host,
                                               const std::string& op,
                                               const Bytes& body) -> FetchOutcome {
-            return resolverFetchOverI2p(routerForAdd(), host, op, body, context.privacy,
+            return resolverFetchOverI2p(readySharedI2pRouter(), host, op, body, context.privacy,
                 context.destinationOwner);
         };
 
@@ -2209,11 +2195,8 @@ void Session::forgetUnansweredContact(const std::string& peerFingerprint)
 
 std::vector<Session::PendingContactAdd> Session::pendingContactAdds() const
 {
-    if (!db_->has(kPendingAddsKey)) {
-        return {};
-    }
     std::vector<PendingContactAdd> pending;
-    const nlohmann::json stored = parseJson(db_->text(kPendingAddsKey));
+    const nlohmann::json stored = db_->document(kPendingAddsKey);
     for (const auto& [opId, entry] : stored.items()) {
         PendingContactAdd add;
         add.opId = opId;
@@ -2231,52 +2214,39 @@ void Session::noteChosenName(const std::string& peerFingerprint, const std::stri
     if (peerFingerprint.empty() || name.empty()) {
         return;
     }
-    nlohmann::json stored = db_->has(kChosenNamesKey)
-        ? parseJson(db_->text(kChosenNamesKey))
-        : nlohmann::json::object();
+    nlohmann::json stored = db_->document(kChosenNamesKey);
     stored[peerFingerprint] = name;
-    db_->putText(kChosenNamesKey, stored.dump());
+    db_->putDocument(kChosenNamesKey, stored);
 }
 
 std::string Session::chosenName(const std::string& peerFingerprint) const
 {
-    if (!db_->has(kChosenNamesKey)) {
-        return {};
-    }
-    const nlohmann::json stored = parseJson(db_->text(kChosenNamesKey));
-    return stored.value(peerFingerprint, std::string());
+    return db_->document(kChosenNamesKey).value(peerFingerprint, std::string());
 }
 
 void Session::forgetChosenName(const std::string& peerFingerprint)
 {
-    if (!db_->has(kChosenNamesKey)) {
-        return;
-    }
-    nlohmann::json stored = parseJson(db_->text(kChosenNamesKey));
+    nlohmann::json stored = db_->document(kChosenNamesKey);
     if (stored.erase(peerFingerprint) > 0) {
-        db_->putText(kChosenNamesKey, stored.dump());
+        db_->putDocument(kChosenNamesKey, stored);
     }
 }
 
 void Session::notePendingContactAdd(const PendingContactAdd& pending)
 {
-    nlohmann::json stored = db_->has(kPendingAddsKey)
-        ? parseJson(db_->text(kPendingAddsKey))
-        : nlohmann::json::object();
+    nlohmann::json stored = db_->document(kPendingAddsKey);
     stored[pending.opId] = {{"byAlias", pending.request.byAlias},
         {"uriOrAlias", pending.request.uriOrAlias}, {"intro", pending.request.introText},
         {"requestId", pending.request.requestId}};
-    db_->putText(kPendingAddsKey, stored.dump());
+    db_->putDocument(kPendingAddsKey, stored);
 }
 
 void Session::forgetPendingContactAdd(const std::string& opId)
 {
-    if (!db_->has(kPendingAddsKey)) {
-        return;
+    nlohmann::json stored = db_->document(kPendingAddsKey);
+    if (stored.erase(opId) > 0) {
+        db_->putDocument(kPendingAddsKey, stored);
     }
-    nlohmann::json stored = parseJson(db_->text(kPendingAddsKey));
-    stored.erase(opId);
-    db_->putText(kPendingAddsKey, stored.dump());
 }
 
 void Session::setResolverCoordinate(ResolverCoordinate coordinate)
@@ -2325,7 +2295,7 @@ void Session::recordRequestedContact(const std::string& peerFingerprint,
     }
     if (text.size() > kMaxContactGreetingBytes) {
         throw std::runtime_error("the introduction may be at most "
-            + std::to_string(kMaxContactGreetingBytes) + " characters");
+            + std::to_string(kMaxContactGreetingBytes) + " bytes");
     }
     const Key peerPrekey = info.card.sealingKey();
     const Key peerServingKey = info.card.servingSealingKey();
@@ -3671,7 +3641,7 @@ std::vector<IncomingMessage> Session::takeIn(
                     } else if (type == "call.invite" || type == "call.accept" || type == "call.decline"
                         || type == "call.end" || type == "call.ring" || type == "call.taken") {
                         handleCallSignal(type, message.fromFingerprint, body, message);
-                    } else if (type.rfind("device.", 0) == 0
+                    } else if (type.starts_with("device.")
                         && message.fromFingerprint != fingerprint()) {
                         bazarish::log::warn("sync: dropping a device message from {}",
                             bazarish::log::redact(message.fromFingerprint));
@@ -5002,11 +4972,7 @@ bool tellAliasesWhereWeAre(const Session::AliasErrandContext& context, const Ide
 
 FetchTransport heldDestFor(const bazarish::i2p::Privacy privacy, const std::string& owner)
 {
-    const auto running = sharedI2pRouterIfRunning();
-    if (!running.has_value() || !running->get().ready()) {
-        throw std::runtime_error("The I2P router is still building tunnels.");
-    }
-    return resolverHeldDest(running->get(), privacy, owner);
+    return resolverHeldDest(readySharedI2pRouter(), privacy, owner);
 }
 
 }  // namespace

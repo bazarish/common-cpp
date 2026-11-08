@@ -37,9 +37,7 @@ StoredMessage line(const std::string& peer, const std::string& type, const std::
 
 int main()
 {
-    const fs::path root = fs::temp_directory_path() / "bazarish-test-transcript";
-    fs::remove_all(root);
-    fs::create_directories(root);
+    const fs::path root = testutil::freshDir("transcript");
     const fs::path file = root / "account.db";
 
     {

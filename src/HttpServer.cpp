@@ -2,8 +2,12 @@
 #include <bazarish/HttpServer.hpp>
 
 #include <bazarish/Errors.hpp>
+#include <bazarish/HttpResponses.hpp>
 #include <bazarish/Log.hpp>
+#include <bazarish/Percent.hpp>
+#include <bazarish/PlainText.hpp>
 #include <bazarish/Tls.hpp>
+#include <bazarish/TlsContext.hpp>
 #include <bazarish/WebSocket.hpp>
 
 #include <utility>
@@ -41,54 +45,19 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 using asio::ip::tcp;
 
-constexpr std::size_t kEscapeDigits = 2;
-constexpr int kHexBase = 16;
 constexpr int kForbidden = 403;
 constexpr int kMisdirected = 421;
 
-std::string lowered(std::string text)
-{
-    std::transform(text.begin(), text.end(), text.begin(),
-        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return text;
-}
-
-std::string urlDecoded(const std::string& text)
-{
-    std::string out;
-    out.reserve(text.size());
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '+') {
-            out.push_back(' ');
-            continue;
-        }
-        if (text[i] == '%' && i + kEscapeDigits < text.size()
-            && std::isxdigit(static_cast<unsigned char>(text[i + 1])) != 0
-            && std::isxdigit(static_cast<unsigned char>(text[i + 2])) != 0) {
-            out.push_back(static_cast<char>(
-                std::stoi(text.substr(i + 1, kEscapeDigits), nullptr, kHexBase)));
-            i += kEscapeDigits;
-            continue;
-        }
-        out.push_back(text[i]);
-    }
-    return out;
-}
-
 std::string valueFrom(const std::string& encoded, const std::string& key)
 {
-    std::string rest = encoded;
-    while (!rest.empty()) {
-        const std::size_t amp = rest.find('&');
-        const std::string pair = rest.substr(0, amp);
-        const std::size_t eq = pair.find('=');
-        if (eq != std::string::npos && pair.substr(0, eq) == key) {
-            return urlDecoded(pair.substr(eq + 1));
+    const std::optional<std::vector<QueryField>> fields = queryFields(encoded);
+    if (!fields.has_value()) {
+        return {};
+    }
+    for (const QueryField& field : *fields) {
+        if (field.key == key) {
+            return formDecode(field.value);
         }
-        if (amp == std::string::npos) {
-            break;
-        }
-        rest = rest.substr(amp + 1);
     }
     return {};
 }
@@ -375,7 +344,7 @@ asio::awaitable<void> runSocket(std::shared_ptr<SocketImpl> socket, Request requ
 
 std::string hostName(const std::string& hostHeader)
 {
-    const std::string host = lowered(hostHeader);
+    const std::string host = asciiLower(hostHeader);
     if (!host.empty() && host.front() == '[') {
         return host.substr(0, host.find(']') + 1);
     }
@@ -399,7 +368,7 @@ bool crossSiteWrite(const Request& request)
 
 std::string Request::header(const std::string& name) const
 {
-    const auto found = headers.find(lowered(name));
+    const auto found = headers.find(asciiLower(name));
     return found == headers.end() ? std::string() : found->second;
 }
 
@@ -431,7 +400,7 @@ std::string Request::cookie(const std::string& name) const
 
 bool Request::hasHeader(const std::string& name) const
 {
-    return headers.find(lowered(name)) != headers.end();
+    return headers.find(asciiLower(name)) != headers.end();
 }
 
 std::string Request::query(const std::string& key) const
@@ -446,7 +415,7 @@ std::string Request::param(const std::string& key) const
     if (!fromQuery.empty()) {
         return fromQuery;
     }
-    if (lowered(header("content-type")).rfind("application/x-www-form-urlencoded", 0) != 0) {
+    if (!asciiLower(header("content-type")).starts_with("application/x-www-form-urlencoded")) {
         return {};
     }
     return valueFrom(body, key);
@@ -468,7 +437,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         : options(std::move(o))
     {
         for (std::string& host : options.hosts) {
-            host = lowered(host);
+            host = asciiLower(host);
         }
     }
 
@@ -484,8 +453,7 @@ std::optional<Resolved> Server::Impl::resolve(const Request& request) const
 {
     const auto refusal = [](const int status, const std::string& why) {
         return Resolved{[status, why](const Request&, Responder) -> std::optional<Response> {
-                            return Response{status, "application/json", {},
-                                makeErrorEnvelope(ErrorCode::eRequestFailed, why).dump()};
+                            return errorResponse(status, ErrorCode::eRequestFailed, why);
                         },
             {}};
     };
@@ -534,7 +502,7 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
             request.path
                 = mark == std::string::npos ? request.target : request.target.substr(0, mark);
             for (const auto& field : parsed) {
-                request.headers[lowered(std::string(field.name_string()))]
+                request.headers[asciiLower(std::string(field.name_string()))]
                     = std::string(field.value());
             }
             request.body = parsed.body();
@@ -560,8 +528,7 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                         } catch (const std::exception& error) {
                             bazarish::log::warn(
                                 "upgrade check for {} threw: {}", request.path, error.what());
-                            refusal = Response{500, "application/json", {},
-                                makeErrorEnvelope(ErrorCode::eRequestFailed, "internal error").dump()};
+                            refusal = errorResponse(500, ErrorCode::eRequestFailed, "internal error");
                         }
                     }
                     if (refusal.has_value()) {
@@ -644,8 +611,7 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                         immediate = handler(request, respond);
                     } catch (const std::exception& error) {
                         bazarish::log::warn("handler for {} threw: {}", request.path, error.what());
-                        immediate = Response{500, "application/json",
-                            {}, makeErrorEnvelope(ErrorCode::eRequestFailed, "internal error").dump()};
+                        immediate = errorResponse(500, ErrorCode::eRequestFailed, "internal error");
                     }
                     if (!immediate.has_value()) {
                         while (!answered->load()) {
@@ -803,8 +769,7 @@ std::optional<Response> operatorRefusal(const Request& request, const std::int64
         return std::nullopt;
     } catch (const std::exception& error) {
         log::debug("an operator call was refused: {}", error.what());
-        return Response{403, "application/json", {},
-            makeErrorEnvelope(ErrorCode::eRequestFailed, error.what()).dump()};
+        return errorResponse(403, ErrorCode::eRequestFailed, error.what());
     }
 }
 
@@ -821,10 +786,7 @@ void Server::dispatch(const Request& request, Responder respond)
 {
     std::optional<Resolved> resolved = impl_->resolve(request);
     if (!resolved) {
-        Response missing;
-        missing.status = 404;
-        missing.body = makeErrorEnvelope(ErrorCode::eRequestFailed, "no such route").dump();
-        respond(std::move(missing));
+        respond(errorResponse(404, ErrorCode::eRequestFailed, "no such route"));
         return;
     }
     Request routed = request;
@@ -834,8 +796,7 @@ void Server::dispatch(const Request& request, Responder respond)
         answered = resolved->handler(routed, respond);
     } catch (const std::exception& error) {
         log::warn("handler for {} threw: {}", request.path, error.what());
-        answered = Response{500, "application/json", {},
-            makeErrorEnvelope(ErrorCode::eRequestFailed, "internal error").dump()};
+        answered = errorResponse(500, ErrorCode::eRequestFailed, "internal error");
     }
     if (answered.has_value()) {
         respond(std::move(*answered));
@@ -868,11 +829,8 @@ int Server::start()
 {
     if (!impl_->options.certificate.empty()) {
         namespace ssl = boost::asio::ssl;
-        impl_->tls = std::make_unique<ssl::context>(ssl::context::tls_server);
-        impl_->tls->set_options(ssl::context::default_workarounds | ssl::context::no_sslv2
-            | ssl::context::no_sslv3);
-        impl_->tls->use_certificate_chain_file(impl_->options.certificate);
-        impl_->tls->use_private_key_file(impl_->options.key, ssl::context::pem);
+        impl_->tls = std::make_unique<ssl::context>(
+            tls::serverContext(impl_->options.certificate, impl_->options.key));
         if (!impl_->options.clientPins.empty()) {
             impl_->tls->set_verify_mode(ssl::verify_peer | ssl::verify_fail_if_no_peer_cert);
             impl_->tls->set_verify_callback([](bool, ssl::verify_context&) { return true; });
@@ -921,6 +879,16 @@ asio::any_io_executor Server::executor() const
 int Server::port() const
 {
     return impl_->acceptor ? impl_->acceptor->local_endpoint().port() : 0;
+}
+
+Response jsonResponse(const nlohmann::json& body, const int status)
+{
+    return Response{status, "application/json", {}, body.dump()};
+}
+
+Response errorResponse(const int status, const ErrorCode code, const std::string& message)
+{
+    return Response{status, "application/json", {}, makeErrorEnvelope(code, message).dump()};
 }
 
 }  // namespace bazarish::http

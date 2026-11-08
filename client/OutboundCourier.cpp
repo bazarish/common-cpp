@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "OutboundCourier.hpp"
 
+#include "AttemptBudget.hpp"
+
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Errors.hpp>
 #include <bazarish/FederationFrame.hpp>
@@ -190,8 +192,7 @@ OutboundCourier::Outcome OutboundCourier::deliverNow(const Task& task)
         local.errorMessage = *failure;
         return local;
     }
-    const std::chrono::steady_clock::time_point deadline
-        = std::chrono::steady_clock::now() + schedule_.run;
+    const AttemptBudget budget(schedule_.run);
     Outcome outcome;
     int made = 0;
     bool sentWithoutReply = false;
@@ -200,7 +201,7 @@ OutboundCourier::Outcome OutboundCourier::deliverNow(const Task& task)
             ? schedule_.retryDelays.at(std::min<std::size_t>(
                   static_cast<std::size_t>(number) - 2, schedule_.retryDelays.size() - 1))
             : std::chrono::seconds{0};
-        if (std::chrono::steady_clock::now() + gap + schedule_.dial > deadline) {
+        if (!budget.pays(gap, schedule_.dial)) {
             break;
         }
         if (number > 1) {
@@ -215,7 +216,7 @@ OutboundCourier::Outcome OutboundCourier::deliverNow(const Task& task)
         ++made;
         bool reachable = false;
         bool sent = false;
-        outcome = attempt(task, deadline, reachable, sent);
+        outcome = attempt(task, budget.deadline(), reachable, sent);
         sentWithoutReply = sentWithoutReply || (sent && !reachable);
         if (reachable) {
             return outcome;
