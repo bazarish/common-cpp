@@ -154,14 +154,16 @@ void testEveryPlaceIsSigned()
 void testConsumerChangedWhileRunning()
 {
     const Identity identity = Identity::generate();
-    LoginChallenge portal("portal-secret", panel());
+    LoginConsumer current = panel();
+    LoginChallenge portal(
+        "portal-secret", LoginChallenge::ConsumerFn([&current]() { return current; }));
     const std::int64_t t = 5000;
 
     const std::string before = portal.issue(t);
     const std::string blobBefore = signLoginBlob(identity, t, before);
 
     const LoginConsumer renamed{"Bazarish alpha", {"https://alpha.example"}, "Administrator"};
-    portal.setConsumer(renamed);
+    current = renamed;
     CHECK(portal.consumer() == renamed);
 
     const std::string after = portal.issue(t);
@@ -173,8 +175,8 @@ void testConsumerChangedWhileRunning()
 
     LoginConsumer roleless = renamed;
     roleless.role.clear();
-    CHECK_THROWS(portal.setConsumer(roleless));
-    CHECK(portal.consumer() == renamed);
+    current = roleless;
+    CHECK_THROWS(portal.issue(t));
 }
 
 void testChallengePastedAsBlob()

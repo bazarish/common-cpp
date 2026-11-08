@@ -146,6 +146,9 @@ private:
     std::chrono::steady_clock::time_point i2pStreamUsedAt_;
     std::size_t activeFacade_ = 0;
     mutable std::mutex netMutex_;
+    // Apart from netMutex_, which a request holds for minutes: a release must not wait for it.
+    std::mutex linkMutex_;
+    std::weak_ptr<bazarish::i2p::Endpoint> link_;
 };
 
 }  // namespace bazarish::client

@@ -4,6 +4,7 @@
 #include <bazarish/Portal.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -12,6 +13,11 @@ namespace bazarish::service {
 
 class LoginChallenge {
 public:
+    // Asked on every challenge and every check, so a changed setting is taken at once.
+    using ConsumerFn = std::function<LoginConsumer()>;
+
+    LoginChallenge(std::string secret, ConsumerFn consumer,
+        std::int64_t windowSeconds = kLoginWindowSeconds);
     LoginChallenge(std::string secret, LoginConsumer consumer,
         std::int64_t windowSeconds = kLoginWindowSeconds);
 
@@ -21,15 +27,13 @@ public:
         const std::string& challenge, const std::string& loginBlob, std::int64_t now);
 
     LoginConsumer consumer() const;
-    void setConsumer(LoginConsumer consumer);
 
 private:
     void pruneExpired(std::int64_t now);
     std::string currentCanonical() const;
 
     std::string secret_;
-    LoginConsumer consumer_;
-    std::string canonicalConsumer_;
+    const ConsumerFn consumer_;
     std::int64_t windowSeconds_;
     mutable std::mutex mutex_;
     std::unordered_map<std::string, std::int64_t> consumed_;

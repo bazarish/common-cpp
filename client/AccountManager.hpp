@@ -4,6 +4,7 @@
 #include "Session.hpp"
 
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,8 @@ public:
     static std::filesystem::path defaultRoot();
 
     explicit AccountManager(std::filesystem::path root);
+    // What an import left when the process stopped under it; called once, before any import.
+    void discardInterruptedImports();
 
     std::vector<AccountInfo> list() const;
     bool exists(const std::string& id) const;
@@ -44,6 +47,7 @@ public:
 
 private:
     std::filesystem::path root_;
+    std::mutex importMutex_;
 };
 
 }  // namespace bazarish::client

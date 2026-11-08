@@ -146,10 +146,10 @@ std::mutex& progressMutex()
     return mutex;
 }
 
-ConnectProgressFn& progressSink()
+std::map<std::string, ConnectProgressFn>& progressSinks()
 {
-    static ConnectProgressFn sink;
-    return sink;
+    static std::map<std::string, ConnectProgressFn> sinks;
+    return sinks;
 }
 
 std::mutex& reseedsMutex()
@@ -532,7 +532,7 @@ I2pBootstrap reseedPass(bazarish::i2p::Router& router)
     }
     bazarish::log::warn(
         "i2p: the configured reseed produced no network database; starting with the built-in list");
-    reportConnectProgress(kRouterStartPercent, "Starting with the built-in reseeds");
+    reportConnectProgressToAll(kRouterStartPercent, "Starting with the built-in reseeds");
     setReseedUrls({});
     router.setReseedUrls({});
     restartI2pRouter();
@@ -558,20 +558,41 @@ I2pBootstrap bootstrapI2pRouter(const std::filesystem::path& dataDir)
     return outcome;
 }
 
-void setConnectProgressSink(ConnectProgressFn sink)
+void setConnectProgressSink(const std::string& owner, ConnectProgressFn sink)
 {
     const std::lock_guard<std::mutex> lock(progressMutex());
-    progressSink() = std::move(sink);
+    if (sink) {
+        progressSinks()[owner] = std::move(sink);
+    } else {
+        progressSinks().erase(owner);
+    }
 }
 
-void reportConnectProgress(const int percent, const std::string& text)
+void reportConnectProgress(const std::string& owner, const int percent, const std::string& text)
 {
     ConnectProgressFn sink;
     {
         const std::lock_guard<std::mutex> lock(progressMutex());
-        sink = progressSink();
+        const auto found = progressSinks().find(owner);
+        if (found != progressSinks().end()) {
+            sink = found->second;
+        }
     }
     if (sink) {
+        sink(percent, text);
+    }
+}
+
+void reportConnectProgressToAll(const int percent, const std::string& text)
+{
+    std::vector<ConnectProgressFn> sinks;
+    {
+        const std::lock_guard<std::mutex> lock(progressMutex());
+        for (const auto& [owner, sink] : progressSinks()) {
+            sinks.push_back(sink);
+        }
+    }
+    for (const ConnectProgressFn& sink : sinks) {
         sink(percent, text);
     }
 }

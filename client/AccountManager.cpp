@@ -28,6 +28,10 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr const char* kFileSuffix = ".db";
+// An import in progress: a name of its own each, and one list() never takes for an account.
+constexpr const char* kImportPrefix = ".import-";
+constexpr const char* kImportSuffix = ".part";
+constexpr std::size_t kImportNameBytes = 8;
 
 void movePair(const fs::path& from, const fs::path& to)
 {
@@ -147,6 +151,15 @@ AccountManager::AccountManager(fs::path root)
     fs::create_directories(root_);
 }
 
+void AccountManager::discardInterruptedImports()
+{
+    for (const fs::directory_entry& entry : fs::directory_iterator(root_)) {
+        if (entry.path().filename().string().rfind(kImportPrefix, 0) == 0) {
+            fs::remove(entry.path());
+        }
+    }
+}
+
 fs::path AccountManager::fileFor(const std::string& id) const
 {
     return root_ / (id + kFileSuffix);
@@ -198,8 +211,9 @@ std::unique_ptr<Session> AccountManager::open(const std::string& id, const std::
 AccountInfo AccountManager::import(const std::string& name, const Bytes& bundle,
     const std::string& password, const std::string& atRestPassphrase)
 {
-    const fs::path tmp = root_ / ".import-tmp.db";
-    removePair(tmp);
+    const fs::path tmp
+        = root_ / (kImportPrefix + toHex(randomBytes(kImportNameBytes)) + kImportSuffix);
+    const std::lock_guard<std::mutex> lock(importMutex_);
     std::string id;
     try {
         Session::importAccountBytes(bundle, tmp, password, atRestPassphrase);

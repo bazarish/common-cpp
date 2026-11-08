@@ -103,8 +103,9 @@ public:
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
 
-    const std::string& publicDestination() const;
-    const std::string& privateKeys() const;
+    // By value: a rebuilt session replaces them under its lock.
+    std::string publicDestination() const;
+    std::string privateKeys() const;
     std::string routingHost() const;
 
     bool alive() const;

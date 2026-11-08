@@ -302,9 +302,14 @@ void ApiClient::setDestinationOwner(std::string owner)
 
 void ApiClient::releaseI2pLink()
 {
-    const std::lock_guard<std::mutex> lock(netMutex_);
-    i2pStream_.reset();
-    i2pOut_.reset();
+    std::shared_ptr<bazarish::i2p::Endpoint> link;
+    {
+        const std::lock_guard<std::mutex> lock(linkMutex_);
+        link = link_.lock();
+    }
+    if (link) {
+        link->stop();
+    }
 }
 
 std::string ApiClient::gatewayRefusal() const
@@ -327,14 +332,14 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     const std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody,
     const int readTimeoutSeconds)
 {
-    reportConnectProgress(30, "Starting the I2P router");
+    reportConnectProgress(destinationOwner_, 30, "Starting the I2P router");
     setReseedUrls(endpoint_.reseeds);
     if (bootstrapI2pRouter(i2pDataDir_) == I2pBootstrap::eEmpty) {
         return std::nullopt;
     }
     gatewayRefusal_.clear();
     const auto buildLink = [&]() {
-        reportConnectProgress(40, "Building your I2P tunnels");
+        reportConnectProgress(destinationOwner_, 40, "Building your I2P tunnels");
         i2pStream_.reset();
         try {
             i2pOut_ = facadeLinkFor(destinationOwner_, tunnelPrivacy(), facade.host);
@@ -343,6 +348,10 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
             throw;
         }
         i2pOutHost_ = facade.host;
+        {
+            const std::lock_guard<std::mutex> lock(linkMutex_);
+            link_ = i2pOut_;
+        }
         return static_cast<bool>(i2pOut_);
     };
     if (i2pOut_ && (i2pOut_->lost() || i2pOutHost_ != facade.host)) {
@@ -353,7 +362,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
         return std::nullopt;
     }
     if (!i2pOut_->waitReady(std::chrono::seconds(kOutboundReadySeconds))) {
-        reportConnectProgress(40, "I2P tunnels are still building");
+        reportConnectProgress(destinationOwner_, 40, "I2P tunnels are still building");
         return std::nullopt;
     }
     if (i2pStream_
@@ -363,7 +372,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     for (int attempt = 0; attempt < kKeepAliveAttempts; ++attempt) {
         const bool reused = static_cast<bool>(i2pStream_);
         if (!reused) {
-            reportConnectProgress(55, "Looking up the server's I2P address");
+            reportConnectProgress(destinationOwner_, 55, "Looking up the server's I2P address");
             i2pStream_ = i2pOut_->connect(facade.host, std::chrono::seconds(kFacadeDialSeconds));
             // A gateway that replaced its session under the dial lost the link; no facade refused.
             if (!i2pStream_ && i2pOut_->lost()) {
@@ -378,7 +387,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
                 return std::nullopt;
             }
         }
-        reportConnectProgress(65, "Connected to the server over I2P");
+        reportConnectProgress(destinationOwner_, 65, "Connected to the server over I2P");
         i2pStream_->setReadTimeout(std::chrono::seconds(readTimeoutSeconds));
         const auto askedAt = std::chrono::steady_clock::now();
         i2pStreamUsedAt_ = askedAt;

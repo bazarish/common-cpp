@@ -13,6 +13,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <system_error>
@@ -58,6 +59,21 @@ struct Cached {
 };
 std::mutex g_cacheMutex;
 std::map<fs::path, Cached> g_cache;
+// One per database, held from looking for its key to making it: two first opens make one key.
+std::map<fs::path, std::weak_ptr<std::mutex>> g_pathLocks;
+
+std::shared_ptr<std::mutex> pathLock(const fs::path& databaseFile)
+{
+    const std::lock_guard<std::mutex> lock(g_cacheMutex);
+    std::erase_if(g_pathLocks, [](const auto& entry) { return entry.second.expired(); });
+    std::weak_ptr<std::mutex>& held = g_pathLocks[databaseFile];
+    std::shared_ptr<std::mutex> mutex = held.lock();
+    if (!mutex) {
+        mutex = std::make_shared<std::mutex>();
+        held = mutex;
+    }
+    return mutex;
+}
 
 Bytes verifierOf(const std::string& passphrase)
 {
@@ -244,6 +260,8 @@ fs::path sidecarFor(const fs::path& databaseFile)
 Bytes keyFor(const fs::path& databaseFile, const std::string& passphrase)
 {
     const Bytes verifier = verifierOf(passphrase);
+    const std::shared_ptr<std::mutex> forThisFile = pathLock(databaseFile);
+    const std::lock_guard<std::mutex> making(*forThisFile);
     {
         const std::lock_guard<std::mutex> lock(g_cacheMutex);
         const auto found = g_cache.find(databaseFile);

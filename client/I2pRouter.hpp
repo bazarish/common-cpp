@@ -45,8 +45,11 @@ I2pBootstrap bootstrapI2pRouter(const std::filesystem::path& dataDir);
 std::size_t knownRouterCount(const std::filesystem::path& dataDir);
 
 using ConnectProgressFn = std::function<void(int percent, const std::string& text)>;
-void setConnectProgressSink(ConnectProgressFn sink);
-void reportConnectProgress(int percent, const std::string& text);
+// Keyed by the owner the account's destinations carry: each account sees its own progress.
+void setConnectProgressSink(const std::string& owner, ConnectProgressFn sink);
+void reportConnectProgress(const std::string& owner, int percent, const std::string& text);
+// For the router itself, which every account connecting through it waits on.
+void reportConnectProgressToAll(int percent, const std::string& text);
 
 void setSamTransport(std::string host, int port);
 

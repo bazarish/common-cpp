@@ -822,19 +822,21 @@ Session::~Session()
     }
 }
 
-const std::string& Session::publicDestination() const
+std::string Session::publicDestination() const
 {
+    const std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->publicDestination;
 }
 
-const std::string& Session::privateKeys() const
+std::string Session::privateKeys() const
 {
+    const std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->privateKeys;
 }
 
 std::string Session::routingHost() const
 {
-    return i2p::routingHost(impl_->publicDestination, impl_->config.blinded);
+    return i2p::routingHost(publicDestination(), impl_->config.blinded);
 }
 
 bool Session::alive() const

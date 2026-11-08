@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "bazarish/PrivateFile.hpp"
 
+#include "bazarish/Bytes.hpp"
+
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
@@ -65,17 +67,18 @@ void syncFile(const fs::path& path)
 }
 #endif
 
+constexpr std::size_t kTemporarySuffixBytes = 8;
 constexpr fs::perms kOwnerOnly = fs::perms::owner_read | fs::perms::owner_write;
 constexpr fs::perms kUsual = fs::perms::owner_read | fs::perms::owner_write
     | fs::perms::group_read | fs::perms::group_write | fs::perms::others_read
     | fs::perms::others_write;
 
-// A temporary left by a crash is replaced, never reused with whatever permissions it had.
+// A name of its own per write: two writers of one path never share, or delete, a temporary.
 fs::path writtenTemporary(const fs::path& path, const std::string_view bytes, const fs::perms perms)
 {
-    const fs::path temporary = path.parent_path() / (path.filename().string() + ".tmp");
+    const fs::path temporary = path.parent_path()
+        / (path.filename().string() + "." + toHex(randomBytes(kTemporarySuffixBytes)) + ".tmp");
     std::error_code ec;
-    fs::remove(temporary, ec);
 #ifdef _WIN32
     std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
     if (!out) {

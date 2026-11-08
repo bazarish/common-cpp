@@ -28,32 +28,29 @@ std::string tagFor(const std::string& secret, const std::string& nonce, const st
 }  // namespace
 
 LoginChallenge::LoginChallenge(
-    std::string secret, LoginConsumer consumer, const std::int64_t windowSeconds)
+    std::string secret, ConsumerFn consumer, const std::int64_t windowSeconds)
     : secret_(std::move(secret))
     , consumer_(std::move(consumer))
-    , canonicalConsumer_(canonicalConsumer(consumer_))
     , windowSeconds_(windowSeconds)
+{
+    (void)canonicalConsumer(consumer_());
+}
+
+LoginChallenge::LoginChallenge(
+    std::string secret, LoginConsumer consumer, const std::int64_t windowSeconds)
+    : LoginChallenge(std::move(secret),
+          ConsumerFn([fixed = std::move(consumer)]() { return fixed; }), windowSeconds)
 {
 }
 
 LoginConsumer LoginChallenge::consumer() const
 {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return consumer_;
-}
-
-void LoginChallenge::setConsumer(LoginConsumer consumer)
-{
-    std::string canonical = canonicalConsumer(consumer);
-    const std::lock_guard<std::mutex> lock(mutex_);
-    consumer_ = std::move(consumer);
-    canonicalConsumer_ = std::move(canonical);
+    return consumer_();
 }
 
 std::string LoginChallenge::currentCanonical() const
 {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return canonicalConsumer_;
+    return canonicalConsumer(consumer_());
 }
 
 std::string LoginChallenge::issue(const std::int64_t now, const std::string& callback)

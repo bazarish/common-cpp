@@ -1033,7 +1033,7 @@ void Session::registerAccount()
         if (error.code != ErrorCode::eAccountUnknown) {
             throw;
         }
-        reportConnectProgress(60, "Registering with this server");
+        reportConnectProgress(destinationOwner(), 60, "Registering with this server");
         client_->registerHere();
         result = client_->publishCard(cardContent(), serving, currentCardIssuedAt());
     }
@@ -1043,16 +1043,16 @@ void Session::registerAccount()
         bazarish::log::info("account awaiting operator approval: no mailbox until then");
         return;
     }
-    reportConnectProgress(70, "Registered; registering this device");
+    reportConnectProgress(destinationOwner(), 70, "Registered; registering this device");
     client_->registerThisClient();
     registerEveryPass();
 
-    reportConnectProgress(83, "Checking the address your server serves");
+    reportConnectProgress(destinationOwner(), 83, "Checking the address your server serves");
     if (!reconcileI2pAddress()) {
         bazarish::log::warn("this server serves an address this device has no keys for");
         return;
     }
-    reportConnectProgress(85, "Publishing your own destination");
+    reportConnectProgress(destinationOwner(), 85, "Publishing your own destination");
     const bool movedOnRouting = delegateRouting();
     if (movedOnCard || movedOnRouting) {
         announceNewRouting();
@@ -1091,13 +1091,13 @@ bool Session::delegateRouting()
         throw std::runtime_error("not registered: nothing to publish routing into");
     }
     const std::int64_t expires = renewI2pTransient(delegationDays_);
-    reportConnectProgress(88, "Delegating your destination to the server");
+    reportConnectProgress(destinationOwner(), 88, "Delegating your destination to the server");
     DestinationInfo serving
         = client_->sendI2pTransient(i2pTransientBase64(), expires, addressKeys());
     serving.servingSealingKeyDer = servingSealingDer();
-    reportConnectProgress(92, "Publishing your contact card");
+    reportConnectProgress(destinationOwner(), 92, "Publishing your contact card");
     const bool moved = storeCard(client_->publishCard(cardContent(), serving, currentCardIssuedAt()));
-    reportConnectProgress(96, "Syncing your address to your other devices");
+    reportConnectProgress(destinationOwner(), 96, "Syncing your address to your other devices");
     try {
         syncI2pMasterToSelf();
     } catch (const std::exception& error) {
@@ -3011,8 +3011,8 @@ void Session::unsend(const std::string& e2eId)
 
 void Session::releaseI2pLinks()
 {
-    client_->releaseI2pLink();
     stopFacadeLinkFor(destinationOwner());
+    client_->releaseI2pLink();
 }
 
 void Session::serveRequestedFile(const std::string& peerFingerprint, const std::string& fileId,

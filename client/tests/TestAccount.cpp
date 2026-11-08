@@ -15,6 +15,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
@@ -165,7 +166,27 @@ int main()
             CHECK(imp2.id != imp1.id);
             CHECK(imp2.name == "Acetone");
             CHECK(manager2.list().size() == 2);
-            CHECK(!fs::exists(root2 / ".import-tmp.db"));
+            {
+                AccountInfo racedA;
+                AccountInfo racedB;
+                std::thread first([&]() { racedA = manager2.import("", bundle, "bundle-pw"); });
+                std::thread second([&]() { racedB = manager2.import("", bundle, "bundle-pw"); });
+                first.join();
+                second.join();
+                CHECK(racedA.id != racedB.id);
+                CHECK(manager2.open(racedA.id)->fingerprint() == a.fingerprint);
+                CHECK(manager2.open(racedB.id)->fingerprint() == a.fingerprint);
+            }
+            CHECK(manager2.list().size() == 4);
+            std::ofstream(root2 / ".import-cut.part") << "left by a stop mid-import";
+            CHECK(manager2.list().size() == 4);
+            const auto noImportLeft = [&root2]() {
+                for (const fs::directory_entry& entry : fs::directory_iterator(root2)) {
+                    CHECK(entry.path().filename().string().rfind(".import-", 0) != 0);
+                }
+            };
+            manager2.discardInterruptedImports();
+            noImportLeft();
 
             sa->ensureI2pDestination();
             const AddressKeys addressKeys = sa->addressKeys();
@@ -188,15 +209,15 @@ int main()
             const AccountInfo imp3 = manager2.import("", sealed, "bundle-pw");
             CHECK(imp3.name == "Acetone");
             CHECK(imp3.fingerprint == a.fingerprint);
-            CHECK(manager2.list().size() == 3);
-            CHECK(!fs::exists(root2 / ".import-tmp.db"));
+            CHECK(manager2.list().size() == 5);
+            noImportLeft();
 
             const std::string headerOnly = R"({"v":1})";
             const Bytes sealedHeaderOnly = cms::sealWithPassword(
                 Bytes(headerOnly.begin(), headerOnly.end()), "bundle-pw");
             CHECK_THROWS(manager2.import("", sealedHeaderOnly, "bundle-pw"));
-            CHECK(manager2.list().size() == 3);
-            CHECK(!fs::exists(root2 / ".import-tmp.db"));
+            CHECK(manager2.list().size() == 5);
+            noImportLeft();
             fs::remove_all(root2);
 
             const auto copyOfPlainAccount = [&scratch](const std::string& name) {
