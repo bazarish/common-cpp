@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/WebAssets.hpp"
+#include "bazarish/PathText.hpp"
 
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
@@ -86,13 +87,13 @@ WebAssets::WebAssets(std::filesystem::path directory)
     : directory_(std::move(directory))
 {
     if (!std::filesystem::is_directory(directory_)) {
-        throw std::runtime_error("web assets directory not found: " + directory_.string());
+        throw std::runtime_error("web assets directory not found: " + utf8OfPath(directory_));
     }
     const std::lock_guard<std::mutex> lock(mutex_);
     for (const std::filesystem::directory_entry& entry :
         std::filesystem::directory_iterator(directory_)) {
         if (entry.is_regular_file() && entry.path().extension() == kTemplateExtension) {
-            cache_.emplace(entry.path().filename().string(),
+            cache_.emplace(utf8OfPath(entry.path().filename()),
                 loadFile(entry.path(), kTemplateContentType));
         }
     }
@@ -110,7 +111,7 @@ const WebAssets::File& WebAssets::file(const std::string& name)
     if (cached != cache_.end()) {
         return cached->second;
     }
-    const auto type = contentTypes().find(asked.extension().string());
+    const auto type = contentTypes().find(utf8OfPath(asked.extension()));
     if (type == contentTypes().end()) {
         throw std::runtime_error("this type of file is not served: " + name);
     }
@@ -149,10 +150,10 @@ std::vector<std::string> WebAssets::published() const
         if (!entry.is_regular_file()) {
             continue;
         }
-        if (contentTypes().count(entry.path().extension().string()) == 0) {
+        if (contentTypes().count(utf8OfPath(entry.path().extension())) == 0) {
             continue;
         }
-        names.push_back(entry.path().filename().string());
+        names.push_back(utf8OfPath(entry.path().filename()));
     }
     return names;
 }

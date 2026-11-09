@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/PrivateFile.hpp"
+#include "bazarish/PathText.hpp"
 
 #include "bazarish/Bytes.hpp"
 
@@ -15,6 +16,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <stdexcept>
 #include <system_error>
 
@@ -26,7 +28,7 @@ namespace {
 
 [[noreturn]] void failedToSync(const fs::path& path, const int error)
 {
-    throw std::runtime_error("cannot flush " + path.string() + " to disk: " + std::strerror(error));
+    throw std::runtime_error("cannot flush " + utf8OfPath(path) + " to disk: " + std::strerror(error));
 }
 
 #ifndef _WIN32
@@ -76,33 +78,33 @@ constexpr fs::perms kUsual = fs::perms::owner_read | fs::perms::owner_write
 // A name of its own per write: two writers of one path never share, or delete, a temporary.
 fs::path writtenTemporary(const fs::path& path, const std::string_view bytes, const fs::perms perms)
 {
-    const fs::path temporary = path.parent_path()
-        / (path.filename().string() + "." + toHex(randomBytes(kTemporarySuffixBytes)) + ".tmp");
+    fs::path temporary = path;
+    temporary += "." + toHex(randomBytes(kTemporarySuffixBytes)) + ".tmp";
     std::error_code ec;
 #ifdef _WIN32
     std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
     if (!out) {
-        throw std::runtime_error("failed to open " + temporary.string());
+        throw std::runtime_error("failed to open " + utf8OfPath(temporary));
     }
     if (!bytes.empty()) {
         out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     }
     out.close();
     if (!out) {
-        throw std::runtime_error("failed to write " + temporary.string());
+        throw std::runtime_error("failed to write " + utf8OfPath(temporary));
     }
     fs::permissions(temporary, perms, fs::perm_options::replace, ec);
     if (ec) {
         fs::remove(temporary, ec);
         throw std::runtime_error(
-            "cannot set permissions on " + temporary.string() + ": " + ec.message());
+            "cannot set permissions on " + utf8OfPath(temporary) + ": " + ec.message());
     }
     syncFile(temporary);
 #else
     const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
         static_cast<mode_t>(perms));
     if (fd < 0) {
-        throw std::runtime_error("failed to open " + temporary.string() + ": " + std::strerror(errno));
+        throw std::runtime_error("failed to open " + utf8OfPath(temporary) + ": " + std::strerror(errno));
     }
     std::size_t written = 0;
     while (written < bytes.size()) {
@@ -114,7 +116,7 @@ fs::path writtenTemporary(const fs::path& path, const std::string_view bytes, co
             const int error = errno;
             ::close(fd);
             fs::remove(temporary, ec);
-            throw std::runtime_error("failed to write " + temporary.string() + ": " + std::strerror(error));
+            throw std::runtime_error("failed to write " + utf8OfPath(temporary) + ": " + std::strerror(error));
         }
         written += static_cast<std::size_t>(step);
     }
@@ -129,13 +131,19 @@ fs::path writtenTemporary(const fs::path& path, const std::string_view bytes, co
     return temporary;
 }
 
+// Windows refuses to replace a file while another thread is replacing it.
+std::mutex replacing;
+
 void putInPlace(const fs::path& temporary, const fs::path& path)
 {
     std::error_code ec;
-    fs::rename(temporary, path, ec);
+    {
+        const std::lock_guard<std::mutex> lock(replacing);
+        fs::rename(temporary, path, ec);
+    }
     if (ec) {
         fs::remove(temporary, ec);
-        throw std::runtime_error("cannot put " + path.string() + " in place: " + ec.message());
+        throw std::runtime_error("cannot put " + utf8OfPath(path) + " in place: " + ec.message());
     }
     const fs::path parent = path.parent_path();
     syncDirectory(parent.empty() ? fs::path(".") : parent);
@@ -157,7 +165,7 @@ std::string readFileText(const fs::path& path)
 {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        throw std::runtime_error("failed to open " + path.string());
+        throw std::runtime_error("failed to open " + utf8OfPath(path));
     }
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
@@ -166,7 +174,7 @@ Bytes readFileBytes(const fs::path& path)
 {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        throw std::runtime_error("failed to open " + path.string());
+        throw std::runtime_error("failed to open " + utf8OfPath(path));
     }
     return Bytes(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }

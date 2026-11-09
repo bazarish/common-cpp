@@ -69,13 +69,13 @@ void copyKeyedDatabase(const std::filesystem::path& from, const std::filesystem:
 {
     const SqliteHandle source = openKeyed(from, key);
     if (source == nullptr) {
-        throw std::runtime_error("database copy: " + from.string() + " does not open");
+        throw std::runtime_error("database copy: " + utf8OfPath(from) + " does not open");
     }
     std::error_code absent;
     std::filesystem::remove(to, absent);
     const SqliteHandle target = openKeyed(to, key);
     if (target == nullptr) {
-        throw std::runtime_error("database copy: " + to.string() + " does not open");
+        throw std::runtime_error("database copy: " + utf8OfPath(to) + " does not open");
     }
     std::unique_ptr<sqlite3_backup, BackupFinish> backup(
         sqlite3_backup_init(target.get(), "main", source.get(), "main"));

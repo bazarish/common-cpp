@@ -55,6 +55,11 @@ int main()
         captured.append(buffer, read);
     }
     std::fclose(in);
+    // Windows will not remove a file stderr still holds open.
+    if (std::fclose(stderr) != 0) {
+        std::printf("FAIL: could not close the captured stderr\n");
+        return 1;
+    }
     std::filesystem::remove_all(dir);
 
     const bool ok = captured.find("unit: listening on 127.0.0.1:8080\n") != std::string::npos

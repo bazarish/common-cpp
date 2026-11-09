@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "AccountKey.hpp"
+#include "bazarish/PathText.hpp"
 
 #include <bazarish/Argon2.hpp>
 #include <bazarish/Crypto.hpp>
@@ -154,17 +155,17 @@ Sidecar read(const fs::path& file)
     const std::uintmax_t size = fs::file_size(file, failed);
     if (failed) {
         throw std::runtime_error(
-            "account key: could not read " + file.string() + ": " + failed.message());
+            "account key: could not read " + utf8OfPath(file) + ": " + failed.message());
     }
     if (size != kSidecarBytes) {
-        throw std::runtime_error("account key: " + file.string() + " is not a key file: "
+        throw std::runtime_error("account key: " + utf8OfPath(file) + " is not a key file: "
             + std::to_string(size) + " bytes, and the record is " + std::to_string(kSidecarBytes));
     }
     std::ifstream in(file, std::ios::binary);
     std::array<char, sizeof kMagic> magic{};
     in.read(magic.data(), magic.size());
     if (!in || std::memcmp(magic.data(), kMagic, sizeof kMagic) != 0) {
-        throw std::runtime_error("account key: " + file.string() + " is not a key file");
+        throw std::runtime_error("account key: " + utf8OfPath(file) + " is not a key file");
     }
     Sidecar sidecar;
     for (std::uint32_t* const value : {&sidecar.memoryKiB, &sidecar.passes}) {
@@ -180,10 +181,10 @@ Sidecar read(const fs::path& file)
     in.read(reinterpret_cast<char*>(sidecar.sealed.data()), sidecar.sealed.size());
     in.read(reinterpret_cast<char*>(sidecar.tag.data()), sidecar.tag.size());
     if (!in) {
-        throw std::runtime_error("account key: " + file.string() + " could not be read in full");
+        throw std::runtime_error("account key: " + utf8OfPath(file) + " could not be read in full");
     }
     if (sidecar.memoryKiB > kMaxMemoryKiB || sidecar.passes > kMaxPasses) {
-        throw std::runtime_error("account key: " + file.string() + " asks for a derivation cost "
+        throw std::runtime_error("account key: " + utf8OfPath(file) + " asks for a derivation cost "
             + "this build refuses: " + std::to_string(sidecar.memoryKiB) + " KiB over "
             + std::to_string(sidecar.passes) + " passes");
     }

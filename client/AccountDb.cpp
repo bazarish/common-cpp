@@ -23,7 +23,7 @@ SqliteHandle opened(const fs::path& file, const std::string& passphrase)
     }
     SqliteHandle db = openKeyed(file, accountkey::keyFor(file, passphrase));
     if (db == nullptr) {
-        throw std::runtime_error("account database: " + file.string() + " is unreadable");
+        throw std::runtime_error("account database: " + utf8OfPath(file) + " is unreadable");
     }
     return db;
 }

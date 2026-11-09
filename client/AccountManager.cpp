@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "AccountManager.hpp"
+#include "bazarish/PathText.hpp"
 
 #include "AccountDb.hpp"
 #include "AccountKey.hpp"
@@ -154,7 +155,7 @@ AccountManager::AccountManager(fs::path root)
 void AccountManager::discardInterruptedImports()
 {
     for (const fs::directory_entry& entry : fs::directory_iterator(root_)) {
-        if (entry.path().filename().string().starts_with(kImportPrefix)) {
+        if (utf8OfPath(entry.path().filename()).starts_with(kImportPrefix)) {
             fs::remove(entry.path());
         }
     }
@@ -180,7 +181,7 @@ std::vector<AccountInfo> AccountManager::list() const
         if (!entry.is_regular_file() || entry.path().extension() != kFileSuffix) {
             continue;
         }
-        accounts.push_back(readInfo(entry.path().stem().string(), entry.path()));
+        accounts.push_back(readInfo(utf8OfPath(entry.path().stem()), entry.path()));
     }
     return accounts;
 }

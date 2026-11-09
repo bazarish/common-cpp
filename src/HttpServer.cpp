@@ -613,14 +613,14 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                     const std::weak_ptr<Impl> alive = weak_from_this();
                     const std::weak_ptr<asio::steady_timer> waiting = parked;
                     // Weak: an answer that comes after the server is gone has nobody to go to.
-                    Responder respond = [waiting, answer, executor, answered, alive](
-                                            Response response) {
+                    // No executor kept: a strand outliving its io_context frees into a dead service.
+                    Responder respond = [waiting, answer, answered, alive](Response response) {
                         *answer = std::move(response);
                         answered->store(true);
                         const std::shared_ptr<Impl> server = alive.lock();
                         const std::shared_ptr<asio::steady_timer> timer = waiting.lock();
                         if (server && timer) {
-                            asio::post(executor,
+                            asio::post(timer->get_executor(),
                                 [timer]() { timer->expires_at(std::chrono::steady_clock::now()); });
                         }
                     };
@@ -866,6 +866,7 @@ int Server::start()
     impl_->acceptor->set_option(asio::socket_base::reuse_address(true));
     impl_->acceptor->bind(endpoint);
     impl_->acceptor->listen(asio::socket_base::max_listen_connections);
+    const int port = impl_->acceptor->local_endpoint().port();
     asio::co_spawn(impl_->io, impl_->accept(), asio::detached);
     {
         const std::lock_guard<std::mutex> lock(impl_->lifecycleMutex);
@@ -873,7 +874,7 @@ int Server::start()
             impl_->workers.emplace_back([this]() { impl_->io.run(); });
         }
     }
-    return impl_->acceptor->local_endpoint().port();
+    return port;
 }
 
 void Server::stop()
@@ -883,8 +884,6 @@ void Server::stop()
         return;
     }
     impl_->stopping.store(true);
-    boost::system::error_code ignored;
-    impl_->acceptor->close(ignored);
     impl_->io.stop();
     for (std::thread& worker : impl_->workers) {
         if (worker.joinable()) {
@@ -892,6 +891,9 @@ void Server::stop()
         }
     }
     impl_->workers.clear();
+    // Only now: a worker may have been starting an accept on it.
+    boost::system::error_code ignored;
+    impl_->acceptor->close(ignored);
 }
 
 asio::any_io_executor Server::executor() const

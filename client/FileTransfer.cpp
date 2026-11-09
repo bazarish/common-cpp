@@ -383,7 +383,7 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
 
             std::ifstream in(ciphertextPath, std::ios::binary);
             if (!in) {
-                throw std::runtime_error("failed to open " + ciphertextPath.string());
+                throw std::runtime_error("failed to open " + utf8OfPath(ciphertextPath));
             }
             in.seekg(static_cast<std::streamoff>(offset));
             Bytes buffer(kPacedChunkBytes);

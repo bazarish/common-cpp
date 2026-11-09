@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/Crypto.hpp"
+#include "bazarish/PathText.hpp"
 
 #include "OpenSslHandles.hpp"
 #include "bazarish/JsonRead.hpp"
@@ -472,7 +473,7 @@ Bytes sha256File(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
-        throw std::runtime_error("cannot open file for hashing: " + path.string());
+        throw std::runtime_error("cannot open file for hashing: " + utf8OfPath(path));
     }
     Sha256 hash;
     std::array<unsigned char, kHashChunkBytes> buffer;
@@ -481,7 +482,7 @@ Bytes sha256File(const std::filesystem::path& path)
         hash.update(ByteView(buffer).first(static_cast<std::size_t>(input.gcount())));
     }
     if (input.bad()) {
-        throw std::runtime_error("read error while hashing: " + path.string());
+        throw std::runtime_error("read error while hashing: " + utf8OfPath(path));
     }
     return hash.digest();
 }

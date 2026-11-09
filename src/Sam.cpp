@@ -122,14 +122,6 @@ void setTimeoutOption(const Socket socket, const int option, const int seconds)
     }
 }
 
-std::ptrdiff_t socketSendTo(const Socket socket, const void* const data,
-    const std::size_t size, const sockaddr_in& address)
-{
-    return ::sendto(static_cast<SOCKET>(socket), static_cast<const char*>(data),
-        static_cast<int>(size), kNoSignal, reinterpret_cast<const sockaddr*>(&address),
-        sizeof address);
-}
-
 bool socketReadable(const Socket socket, const int timeoutMs)
 {
     WSAPOLLFD watched{};
@@ -205,13 +197,6 @@ void setTimeoutOption(const Socket socket, const int option, const int seconds)
         != 0) {
         throw Error(Result::eI2pError, "SAM: could not set socket timeouts");
     }
-}
-
-std::ptrdiff_t socketSendTo(const Socket socket, const void* const data,
-    const std::size_t size, const sockaddr_in& address)
-{
-    return ::sendto(static_cast<int>(socket), data, size, kNoSignal,
-        reinterpret_cast<const sockaddr*>(&address), sizeof address);
 }
 
 bool socketReadable(const Socket socket, const int timeoutMs)
@@ -891,10 +876,7 @@ void Session::sendDatagram(const std::string& destination, const ByteView data)
     packet.insert(packet.end(), header.begin(), header.end());
     packet.insert(packet.end(), data.begin(), data.end());
 
-    const sockaddr_in addr
-        = loopbackAddress(impl_->router.host, impl_->router.resolvedDatagramPort());
-    const std::ptrdiff_t sent
-        = socketSendTo(impl_->datagrams.get(), packet.data(), packet.size(), addr);
+    const std::ptrdiff_t sent = socketWrite(impl_->datagrams.get(), packet.data(), packet.size());
     if (sent < 0) {
         throw Error(Result::eI2pError, "SAM: could not hand the datagram to the router");
     }

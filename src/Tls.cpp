@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/Tls.hpp"
+#include "bazarish/PathText.hpp"
 
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
@@ -47,11 +48,11 @@ X509Ptr readCertificate(const fs::path& path)
     const std::string pem = readFileText(path);
     const BioPtr bio(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
     if (!bio) {
-        throw std::runtime_error("tls: cannot read " + path.string());
+        throw std::runtime_error("tls: cannot read " + utf8OfPath(path));
     }
     X509Ptr certificate(PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
     if (!certificate) {
-        throw std::runtime_error("tls: " + path.string() + " is not a certificate");
+        throw std::runtime_error("tls: " + utf8OfPath(path) + " is not a certificate");
     }
     return certificate;
 }

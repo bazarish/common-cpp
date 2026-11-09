@@ -213,7 +213,7 @@ constexpr int kPublishPollSeconds = 2;
 
 std::string guessMime(const fs::path& path)
 {
-    const std::string ext = path.extension().string();
+    const std::string ext = utf8OfPath(path.extension());
     if (ext == ".jpg" || ext == ".jpeg") {
         return "image/jpeg";
     }
@@ -719,7 +719,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     session->passphrase_ = passphrase;
     session->name_ = meta.value("name", std::string{});
     if (isBlank(session->name_)) {
-        session->name_ = accountFile.stem().string();
+        session->name_ = utf8OfPath(accountFile.stem());
         session->persistMeta();
     }
     session->client_->setDestinationOwner(session->destinationOwner());

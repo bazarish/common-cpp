@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/Cms.hpp"
+#include "bazarish/PathText.hpp"
 
 #include "OpenSslHandles.hpp"
 
@@ -46,18 +47,18 @@ BioPtr makeInputBio(const Bytes& data)
 
 BioPtr makeReadFileBio(const std::filesystem::path& path)
 {
-    BioPtr bio(BIO_new_file(path.string().c_str(), "rb"));
+    BioPtr bio(BIO_new_file(bazarish::utf8OfPath(path).c_str(), "rb"));
     if (bio == nullptr) {
-        throw std::runtime_error("BIO_new_file (read) failed: " + path.string());
+        throw std::runtime_error("BIO_new_file (read) failed: " + bazarish::utf8OfPath(path));
     }
     return bio;
 }
 
 BioPtr makeWriteFileBio(const std::filesystem::path& path)
 {
-    BioPtr bio(BIO_new_file(path.string().c_str(), "wb"));
+    BioPtr bio(BIO_new_file(bazarish::utf8OfPath(path).c_str(), "wb"));
     if (bio == nullptr) {
-        throw std::runtime_error("BIO_new_file (write) failed: " + path.string());
+        throw std::runtime_error("BIO_new_file (write) failed: " + bazarish::utf8OfPath(path));
     }
     return bio;
 }
@@ -182,7 +183,7 @@ Bytes sealWithPasswordDetached(const PlainReadFn& read, const std::filesystem::p
             break;
         }
         if (BIO_write(chain.get(), buffer.data(), got) != got) {
-            throw std::runtime_error("writing " + contentPath.string() + " failed");
+            throw std::runtime_error("writing " + bazarish::utf8OfPath(contentPath) + " failed");
         }
     }
     if (BIO_flush(chain.get()) != 1) {
@@ -244,7 +245,7 @@ void unsealWithPasswordDetached(const Bytes& header, const std::filesystem::path
     for (;;) {
         const int got = BIO_read(chain.get(), buffer.data(), static_cast<int>(buffer.size()));
         if (got < 0) {
-            throw std::runtime_error("reading " + contentPath.string() + " failed");
+            throw std::runtime_error("reading " + bazarish::utf8OfPath(contentPath) + " failed");
         }
         if (got == 0) {
             break;
