@@ -62,3 +62,8 @@ file here.
   ahead of time cannot otherwise read the encrypted lease sets that list an
   account it is later given to; presence watches from such a warm destination.
   Drop this patch if/when a setter is merged upstream.
+- `0005-libi2pd-banlist-timer-before-service.patch` - `~Transports` deletes its
+  three raw timers and then the `io_context`, but the ban-list timer is a
+  `unique_ptr` member and was destroyed after its `io_context`: a use-after-free at
+  every process exit that ran the router (ASan, 2026-11-09). Drop this patch when
+  upstream resets it before deleting the service.

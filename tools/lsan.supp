@@ -1,0 +1,2 @@
+# i2pd: an SSU2 receive in flight when the router stops owns its packet; asio drops the handler, the packet never returns to the pool.
+leak:i2p::transport::SSU2Server::Receive

@@ -1,0 +1,12 @@
+diff --git a/libi2pd/Transports.cpp b/libi2pd/Transports.cpp
+index e42f083b..b78e90e9 100644
+--- a/libi2pd/Transports.cpp
++++ b/libi2pd/Transports.cpp
+@@ -187,6 +187,7 @@ namespace transport
+ 			delete m_PeerCleanupTimer; m_PeerCleanupTimer = nullptr;
+ 			delete m_PeerTestTimer; m_PeerTestTimer = nullptr;
+ 			delete m_UpdateBandwidthTimer; m_UpdateBandwidthTimer = nullptr;
++			m_BanListCleanupTimer.reset ();
+ 			delete m_Work; m_Work = nullptr;
+ 			delete m_Service; m_Service = nullptr;
+ 		}

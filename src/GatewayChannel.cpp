@@ -268,7 +268,9 @@ struct Opening {
     std::mutex mutex;
     std::condition_variable arrived;
     std::deque<Bytes> early;
-    std::shared_ptr<ChannelSocket> channel;
+    // Weak: the socket's callbacks hold the opening, and the channel holds the socket.
+    std::weak_ptr<ChannelSocket> channel;
+    bool established = false;
     bool closed = false;
     ChannelMessageFn onMessage;
     ChannelClosedFn onClosed;
@@ -303,12 +305,15 @@ ChannelOpened openChannel(const http::SocketDial& dial, const std::string& finge
             std::shared_ptr<ChannelSocket> channel;
             {
                 const std::lock_guard<std::mutex> lock(opening->mutex);
-                channel = opening->channel;
-                if (channel == nullptr) {
+                if (!opening->established) {
                     opening->early.emplace_back(message.begin(), message.end());
                     opening->arrived.notify_all();
                     return;
                 }
+                channel = opening->channel.lock();
+            }
+            if (channel == nullptr) {
+                return;
             }
             const std::optional<Bytes> opened
                 = channel->openRecord(Bytes(message.begin(), message.end()));
@@ -324,7 +329,7 @@ ChannelOpened openChannel(const http::SocketDial& dial, const std::string& finge
             {
                 const std::lock_guard<std::mutex> lock(opening->mutex);
                 opening->closed = true;
-                channel = opening->channel;
+                channel = opening->channel.lock();
             }
             opening->arrived.notify_all();
             if (channel != nullptr) {
@@ -410,6 +415,7 @@ ChannelOpened openChannel(const http::SocketDial& dial, const std::string& finge
         const std::lock_guard<std::mutex> lock(opening->mutex);
         outOfTurn = !opening->early.empty();
         opening->channel = channel;
+        opening->established = true;
     }
     if (outOfTurn) {
         return fail("the gateway spoke before the client's first frame");
