@@ -38,25 +38,26 @@ Bytes deriveSessionKey(const Bytes& secret, const std::string& sessionId);
 
 std::string sessionHandle(const Bytes& secret, std::uint64_t seq);
 
+// The signed target is the request target as sent: the path, and ?query when it has one.
 Headers macRequest(const std::string& handle, const Bytes& sessionKey, std::uint64_t seq,
-    std::int64_t timestamp, const std::string& method, const std::string& path, const Bytes& body,
+    std::int64_t timestamp, const std::string& method, const std::string& target, const Bytes& body,
     const std::string& clientId = {});
 
 std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, std::int64_t now,
-    const std::string& method, const std::string& path, const Bytes& body,
+    const std::string& method, const std::string& target, const Bytes& body,
     const std::string& clientId = {});
 
 bool hasSessionHeaders(const Headers& headers);
 
 std::string makeCanonicalString(std::int64_t timestamp, const std::string& method,
-    const std::string& path, const Bytes& body, const std::string& clientId = {});
+    const std::string& target, const Bytes& body, const std::string& clientId = {});
 
 Headers signRequest(const Identity& identity, std::int64_t timestamp,
-    const std::string& method, const std::string& path, const Bytes& body,
+    const std::string& method, const std::string& target, const Bytes& body,
     const std::string& clientId = {});
 
 std::string verifyRequest(const Headers& headers, std::int64_t now, const std::string& method,
-    const std::string& path, const Bytes& body, const std::string& clientId = {});
+    const std::string& target, const Bytes& body, const std::string& clientId = {});
 
 class ReplayCache {
 public:
@@ -69,11 +70,11 @@ private:
 };
 
 std::string authorizeRequest(const Headers& headers, std::int64_t now,
-    const std::string& method, const std::string& path, const Bytes& body,
+    const std::string& method, const std::string& target, const Bytes& body,
     const std::vector<std::string>& authorizedFingerprints, ReplayCache& replayCache);
 
 std::string verifyRequest(const Headers& headers, std::int64_t now, const std::string& method,
-    const std::string& path, const Bytes& body, ReplayCache& replayCache,
+    const std::string& target, const Bytes& body, ReplayCache& replayCache,
     const std::string& clientId = {});
 
 }  // namespace bazarish::auth

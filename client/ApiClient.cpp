@@ -522,7 +522,8 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     const auto macHeaders = [&]() {
         const std::uint64_t seq = tunnel.sessionSeq + 1;
         const auth::Headers mac = auth::macRequest(auth::sessionHandle(tunnel.sessionSecret, seq),
-            tunnel.sessionKey, seq, nowSeconds(), method, path, body, clientId_);
+            tunnel.sessionKey, seq, nowSeconds(), method, query.empty() ? path : path + "?" + query,
+            body, clientId_);
         std::map<std::string, std::string> headers(mac.begin(), mac.end());
         headers.emplace(auth::kHeaderClient, clientId_);
         return headers;

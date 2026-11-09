@@ -783,7 +783,7 @@ std::optional<Response> operatorRefusal(const Request& request, const std::int64
     const std::vector<std::string>& operators, auth::ReplayCache& replayCache)
 {
     try {
-        auth::authorizeRequest(collectAuthHeaders(request), now, request.method, request.path,
+        auth::authorizeRequest(collectAuthHeaders(request), now, request.method, request.target,
             Bytes(request.body.begin(), request.body.end()), operators, replayCache);
         return std::nullopt;
     } catch (const std::exception& error) {
