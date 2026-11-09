@@ -360,6 +360,13 @@ public:
     std::optional<Bytes> picture(const std::string& e2eId) const;
     void putVoice(const std::string& e2eId, const Bytes& bytes);
     std::optional<Bytes> voice(const std::string& e2eId) const;
+    // A file small enough to have travelled inside its message; none for a transferred one.
+    std::optional<Bytes> fileBytes(const std::string& e2eId) const;
+
+    // A file of at most kMaxMediaBytes carried inside its message, with no transfer.
+    void sendFileBytes(const std::string& peerFingerprint, const std::string& name,
+        const Bytes& bytes, const std::string& e2eId = {}, const DeliveryWatch& watch = {},
+        const std::string& replyTo = {}, bool forwarded = false);
 
     std::vector<Client::DeviceEntry> devices();
     void retireDevice(const std::string& clientId);
@@ -850,6 +857,7 @@ private:
     std::shared_ptr<Outbound> outbound_ = std::make_shared<Outbound>();
     bool deviceSync_ = true;
     GroupBlockSource groupBlockSource_;
+    void putFile(const std::string& e2eId, const Bytes& bytes);
     void announceTransfer(const std::string& type, const std::string& peerFingerprint,
         const std::string& location, const std::string& e2eId, const DeliveryWatch& watch,
         const std::string& replyTo, bool forwarded);

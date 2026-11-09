@@ -117,8 +117,9 @@ void seal(const Bytes& wrapping, Sidecar& sidecar, const Bytes& key)
 
 bool unseal(const Bytes& wrapping, const Sidecar& sidecar, Bytes& key)
 {
-    Bytes sealed(sidecar.sealed.begin(), sidecar.sealed.end());
-    sealed.insert(sealed.end(), sidecar.tag.begin(), sidecar.tag.end());
+    Bytes sealed(sidecar.sealed.size() + sidecar.tag.size());
+    const auto tagAt = std::copy(sidecar.sealed.begin(), sidecar.sealed.end(), sealed.begin());
+    std::copy(sidecar.tag.begin(), sidecar.tag.end(), tagAt);
     std::optional<Bytes> opened
         = aeadOpen(wrapping, Bytes(sidecar.nonce.begin(), sidecar.nonce.end()), sealed);
     if (!opened.has_value()) {

@@ -807,10 +807,14 @@ int main()
             alice->sendFile(bob->fingerprint(), forwardedFile.string(), {}, {}, {}, true);
             alice->sendPicture(bob->fingerprint(), Bytes{'J', 'P', 'G'}, "own.jpg", "image/jpeg");
             std::map<std::string, bool> marks;
+            std::string forwardedId;
             CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     if (item.contentType == "image" || item.contentType == "file") {
                         marks[item.attachmentName] = item.forwarded;
+                    }
+                    if (item.attachmentName == "bz-pass-forwarded.txt") {
+                        forwardedId = item.e2eId;
                     }
                 }
                 return marks.size() >= 3;
@@ -818,6 +822,10 @@ int main()
             CHECK(marks.size() == 3);
             CHECK(marks["p.png"]);
             CHECK(marks["bz-pass-forwarded.txt"]);
+            fs::remove(forwardedFile);
+            const std::optional<Bytes> carried = bob->fileBytes(forwardedId);
+            CHECK(carried.has_value());
+            CHECK(std::string(carried->begin(), carried->end()) == "fwd");
             CHECK(!marks["own.jpg"]);
             fs::remove(forwardedFile);
         }
@@ -1262,13 +1270,19 @@ int main()
             }
             CHECK(sawSaved);
 
-            bool refused = false;
-            try {
-                alice->sendFile(alice->fingerprint(), (aDir / "meta").string(), "", {}, "");
-            } catch (const std::exception&) {
-                refused = true;
-            }
-            CHECK(refused);
+            const fs::path tooBig = scratch / "bz-pass-saved-big.bin";
+            std::ofstream(tooBig, std::ios::binary) << std::string(kMaxMediaBytes + 1, 'b');
+            CHECK_THROWS(alice->sendFile(alice->fingerprint(), tooBig.string(), "", {}, ""));
+            fs::remove(tooBig);
+
+            const fs::path note = scratch / "bz-pass-saved-note.txt";
+            std::ofstream(note, std::ios::binary) << "kept with the message";
+            const std::string noteId = "00112233445566778899aabbccddeeff";
+            alice->sendFile(alice->fingerprint(), note.string(), noteId);
+            fs::remove(note);
+            const std::optional<Bytes> kept = alice->fileBytes(noteId);
+            CHECK(kept.has_value());
+            CHECK(std::string(kept->begin(), kept->end()) == "kept with the message");
         }
 
         {
@@ -1465,6 +1479,61 @@ int main()
             std::printf("TestDeliveryPass: the largest contact request is %zu bytes\n", largest);
             CHECK(largest <= kMaxContactRequestBytes);
             CHECK(kMaxContactRequestBytes - largest < 64);
+        }
+
+        {
+            const fs::path fDir = scratch / "bz-pass-heaviest";
+            fs::remove(fDir);
+            const std::unique_ptr<Session> fiona
+                = Session::create(fDir, AccountKind::eUser, endpoint, std::string{});
+            {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.destFor[fiona->fingerprint()]
+                    = "ilkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+            }
+            fiona->registerAccount();
+            fiona->setFetchTransport(directDial);
+            fiona->setOutboundCourier(courierFor());
+            addByInvite(*alice, fiona->inviteUri(), "the heaviest picture");
+            CHECK(testutil::waitFor([&]() {
+                fiona->sync();
+                return fiona->contactIsPending(alice->fingerprint());
+            }));
+            const auto heldForAlice = [&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[alice->fingerprint()].size();
+            };
+            const std::size_t before = heldForAlice();
+            fiona->sendPicture(alice->fingerprint(), Bytes(kMaxPictureBytes, 0x7b),
+                std::string(kMaxMediaNameBytes, 'n'), std::string(kMaxMediaMimeBytes, 'm'), {}, {},
+                std::string(kMaxMessageIdBytes, 'r'), true);
+            CHECK(testutil::waitFor([&]() { return heldForAlice() > before; }));
+            const std::size_t heaviest = [&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[alice->fingerprint()].back().payload.size();
+            }();
+            std::printf("TestDeliveryPass: the heaviest picture message is %zu bytes\n", heaviest);
+            constexpr std::size_t kHeaviestSlackBytes = 64;
+            CHECK(heaviest <= kMaxMessagePayloadBytes);
+            CHECK(kMaxMessagePayloadBytes - heaviest < kHeaviestSlackBytes);
+            const std::size_t beforeFile = heldForAlice();
+            fiona->sendFileBytes(alice->fingerprint(), std::string(kMaxMediaNameBytes, 'f'),
+                Bytes(kMaxMediaBytes, 0x7c), {}, {}, std::string(kMaxMessageIdBytes, 'r'), true);
+            CHECK(testutil::waitFor([&]() { return heldForAlice() > beforeFile; }));
+            const std::size_t heaviestFile = [&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[alice->fingerprint()].back().payload.size();
+            }();
+            std::printf("TestDeliveryPass: the heaviest file message is %zu bytes\n", heaviestFile);
+            CHECK(heaviestFile <= kMaxMessagePayloadBytes);
+            CHECK_THROWS(fiona->sendFileBytes(
+                alice->fingerprint(), "over.txt", Bytes(kMaxMediaBytes + 1, 1)));
+            CHECK_THROWS(fiona->sendPicture(alice->fingerprint(), Bytes(kMaxPictureBytes + 1, 1),
+                "over.png", "image/png"));
+            CHECK_THROWS(fiona->sendPicture(alice->fingerprint(), Bytes{1},
+                std::string(kMaxMediaNameBytes + 1, 'n'), "image/png"));
+            CHECK_THROWS(fiona->sendMessage(alice->fingerprint(), "long reply", {}, {},
+                std::string(kMaxMessageIdBytes + 1, 'r')));
         }
 
         {
@@ -1984,7 +2053,8 @@ int main()
             };
             const std::set<std::string> earlier = servingFiles();
             const fs::path offered = scratch / "bz-pass-offered.bin";
-            std::ofstream(offered, std::ios::binary) << "a file nobody comes for";
+            std::ofstream(offered, std::ios::binary)
+                << std::string(kMaxMediaBytes + 1, 'o');
             std::atomic<int> waiting{0};
             gail->setTransferHandler([&waiting](const TransferEvent& event) {
                 if (event.stage == TransferStage::eWaiting) {

@@ -279,6 +279,8 @@ std::string mediaOfRows(const std::string& rowCondition)
     return std::string("DELETE FROM state WHERE name IN (SELECT '") + kPictureKeyPrefix
         + "' || e2eId FROM messages WHERE e2eId != '' AND (" + rowCondition
         + ") UNION ALL SELECT '" + kVoiceKeyPrefix
+        + "' || e2eId FROM messages WHERE e2eId != '' AND (" + rowCondition
+        + ") UNION ALL SELECT '" + kFileKeyPrefix
         + "' || e2eId FROM messages WHERE e2eId != '' AND (" + rowCondition + "))";
 }
 
@@ -1222,9 +1224,10 @@ bool TranscriptStore::removeMediaOfMessage(const std::string& e2eId)
         return true;
     }
     Query query(db_);
-    query.prepare("DELETE FROM state WHERE name = ? OR name = ?");
+    query.prepare("DELETE FROM state WHERE name = ? OR name = ? OR name = ?");
     query.bind(kPictureKeyPrefix + e2eId);
     query.bind(kVoiceKeyPrefix + e2eId);
+    query.bind(kFileKeyPrefix + e2eId);
     return query.exec() || failed();
 }
 
@@ -1271,11 +1274,13 @@ std::vector<ChatWeight> TranscriptReader::chatWeights() const
     const std::string joins = media
         ? std::string(" LEFT JOIN state AS p ON m.e2eId != '' AND p.name = '") + kPictureKeyPrefix
             + "' || m.e2eId LEFT JOIN state AS v ON m.e2eId != '' AND v.name = '"
-            + kVoiceKeyPrefix + "' || m.e2eId"
+            + kVoiceKeyPrefix + "' || m.e2eId LEFT JOIN state AS f ON m.e2eId != '' AND f.name = '"
+            + kFileKeyPrefix + "' || m.e2eId"
         : std::string();
     const std::string sums = media
-        ? "TOTAL(COALESCE(LENGTH(p.value), 0) + COALESCE(LENGTH(v.value), 0)),"
-          " TOTAL((p.name IS NOT NULL) + (v.name IS NOT NULL))"
+        ? "TOTAL(COALESCE(LENGTH(p.value), 0) + COALESCE(LENGTH(v.value), 0)"
+          " + COALESCE(LENGTH(f.value), 0)),"
+          " TOTAL((p.name IS NOT NULL) + (v.name IS NOT NULL) + (f.name IS NOT NULL))"
         : "0, 0";
     Query query(db_);
     if (!query.exec("SELECT m.peer, COUNT(*), TOTAL(" + messageBytesExpression() + "), " + sums

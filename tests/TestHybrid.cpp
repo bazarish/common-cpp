@@ -3,6 +3,8 @@
 
 #include "TestUtil.hpp"
 
+#include "bazarish/Limits.hpp"
+
 #include <cstddef>
 #include <exception>
 #include <stdexcept>
@@ -33,6 +35,17 @@ Bytes bytesOf(const nlohmann::json& value)
 
 int main()
 {
+    {
+        constexpr std::size_t kLargeBodyFrom = 64 * 1024;
+        const Key recipient = Key::generateSealing();
+        for (const std::size_t size : {std::size_t{0}, std::size_t{1}, kLargeBodyFrom - 1,
+                 kLargeBodyFrom, kMaxSealedBodyBytes}) {
+            const std::size_t sealed = hybrid::seal(Bytes(size, 0x2a), recipient).size();
+            CHECK(sealed <= size + kHybridSealOverheadBytes);
+            CHECK(size < kLargeBodyFrom || sealed == size + kHybridSealOverheadBytes);
+        }
+    }
+
     const Identity identity = Identity::generate();
     CHECK(identity.classical().isA(kClassicalSigningAlgorithm));
     CHECK(identity.pq().isA(kPqSigningAlgorithm));

@@ -258,16 +258,19 @@ nlohmann::json audioBody(const std::int64_t durationMs, const Bytes& opus)
     };
 }
 
-bool echoesToOwnDevices(const std::string& type)
+// DeviceSync.md: what carries its own bytes is echoed; a transferred file's stay on this device.
+bool echoesToOwnDevices(const nlohmann::json& inner)
 {
     static const std::set<std::string> kEchoed{
         "text", "image", "audio", "edit", "delete", "reaction", "chat.clear", "chat.timer"};
+    const std::string type = inner.value("type", std::string());
+    if (type == kTypeFile) {
+        return inner.at("file").contains("data");
+    }
     return kEchoed.find(type) != kEchoed.end();
 }
 
-constexpr std::size_t kSealOverheadAllowance = 8 * 1024;
-
-constexpr std::size_t kMessageCeiling = kMaxMessagePayloadBytes - kSealOverheadAllowance;
+constexpr std::size_t kMessageCeiling = kMaxSealedBodyBytes;
 // Messages.md: an envelope's delivery id is derived from the ids of all its messages.
 constexpr const char* kEnvelopeIdSeparator = ",";
 
@@ -315,6 +318,10 @@ std::vector<nlohmann::json> decodedBody(const Bytes& bytes)
 void addReplyAndForward(
     nlohmann::json& inner, const std::string& replyTo, const bool forwarded)
 {
+    if (replyTo.size() > kMaxMessageIdBytes) {
+        throw std::invalid_argument(
+            "a reply names a message id of at most " + std::to_string(kMaxMessageIdBytes) + " bytes");
+    }
     if (!replyTo.empty()) {
         inner["replyTo"] = replyTo;
     }
@@ -2299,6 +2306,20 @@ void Session::sendFile(const std::string& peerFingerprint, const std::string& lo
     const std::string& e2eId, const DeliveryWatch& watch, const std::string& replyTo,
     const bool forwarded)
 {
+    const std::string name = files_->name(location);
+    if (name.size() <= kMaxMediaNameBytes) {
+        const std::unique_ptr<FileInput> input = files_->open(location);
+        Bytes whole;
+        std::array<unsigned char, kHashChunkBytes> buffer{};
+        for (std::size_t got = input->read(buffer); got > 0 && whole.size() <= kMaxMediaBytes;
+             got = input->read(buffer)) {
+            whole.insert(whole.end(), buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(got));
+        }
+        if (whole.size() <= kMaxMediaBytes) {
+            sendFileBytes(peerFingerprint, name, whole, e2eId, watch, replyTo, forwarded);
+            return;
+        }
+    }
     if (isSavedChat(peerFingerprint)) {
         throw std::runtime_error("a file cannot be kept in Saved messages: its bytes travel"
             " between the two devices in a conversation, so there would be nothing to open"
@@ -2319,6 +2340,10 @@ void Session::sendPicture(const std::string& peerFingerprint, const Bytes& bytes
         throw std::invalid_argument(
             "a picture is at most " + std::to_string(kMaxPictureBytes) + " bytes");
     }
+    if (name.size() > kMaxMediaNameBytes || mime.size() > kMaxMediaMimeBytes) {
+        throw std::invalid_argument("a picture's name and type are at most "
+            + std::to_string(kMaxMediaNameBytes) + " bytes each");
+    }
 
     const std::string id = e2eId.empty() ? newMessageId() : e2eId;
     putPicture(id, bytes);
@@ -2334,6 +2359,10 @@ void Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
 {
     if (opus.empty()) {
         throw std::runtime_error("there is nothing recorded to send");
+    }
+    if (opus.size() > kMaxVoiceBytes) {
+        throw std::invalid_argument(
+            "a voice message is at most " + std::to_string(kMaxVoiceBytes) + " bytes");
     }
     const std::string id = e2eId.empty() ? newMessageId() : e2eId;
     putVoice(id, opus);
@@ -2378,6 +2407,31 @@ RelayFitter Session::relayFitter() const
 void Session::sendGroupState(const std::string& peerFingerprint, const DeliveryWatch& watch)
 {
     sendContent(peerFingerprint, envelope(kTypeGroupState, newMessageId(), nlohmann::json::object()), watch);
+}
+
+void Session::sendFileBytes(const std::string& peerFingerprint, const std::string& name,
+    const Bytes& bytes, const std::string& e2eId, const DeliveryWatch& watch,
+    const std::string& replyTo, const bool forwarded)
+{
+    if (bytes.size() > kMaxMediaBytes || name.size() > kMaxMediaNameBytes) {
+        throw std::invalid_argument("a file inside a message is at most "
+            + std::to_string(kMaxMediaBytes) + " bytes, its name at most "
+            + std::to_string(kMaxMediaNameBytes));
+    }
+    const std::string id = e2eId.empty() ? newMessageId() : e2eId;
+    putFile(id, bytes);
+    nlohmann::json inner = envelope(kTypeFile, id, {
+        {"file",
+            {
+                {"name", name},
+                {"size", bytes.size()},
+                {"sha256", toHex(sha256(bytes))},
+                {"mime", guessMime(pathFromUtf8(name))},
+                {"data", nlohmann::json::binary(bytes)},
+            }},
+    });
+    addReplyAndForward(inner, replyTo, forwarded);
+    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
 }
 
 void Session::announceTransfer(const std::string& type, const std::string& peerFingerprint,
@@ -3118,7 +3172,7 @@ void Session::sendContents(const std::string& peerFingerprint, std::vector<nlohm
         if (menuId && carriesMenuId(inner.value("type", std::string()))) {
             inner["menuId"] = *menuId;
         }
-        if (echoesToOwnDevices(inner.value("type", std::string()))) {
+        if (echoesToOwnDevices(inner)) {
             echoPayloads.push_back(inner);
         }
     }
@@ -3470,6 +3524,16 @@ std::vector<IncomingMessage> Session::takeIn(
                         message.attachmentName = offeredName(file.value("name", std::string()));
                         message.attachmentMime = file.value("mime", std::string());
                         message.attachmentSize = file.value("size", std::uint64_t{0});
+                        if (file.contains("data")) {
+                            const nlohmann::json::binary_t& data = file.at("data").get_binary();
+                            const Bytes carried(data.begin(), data.end());
+                            if (carried.size() != message.attachmentSize
+                                || toHex(sha256(carried)) != message.attachmentRef) {
+                                throw std::runtime_error(
+                                    "a file inside a message does not match its size or digest");
+                            }
+                            putFile(message.e2eId, carried);
+                        }
                     } else if (type == "file.request") {
                         message.contentType = type;
                         const std::int64_t askedAt = body.value("sentAt", std::int64_t{0});
@@ -3971,6 +4035,19 @@ void Session::putPicture(const std::string& e2eId, const Bytes& bytes)
 std::optional<Bytes> Session::picture(const std::string& e2eId) const
 {
     return db_->get(pictureKey(e2eId));
+}
+
+void Session::putFile(const std::string& e2eId, const Bytes& bytes)
+{
+    if (db_->has(kFileKeyPrefix + e2eId)) {
+        return;
+    }
+    db_->put(kFileKeyPrefix + e2eId, bytes);
+}
+
+std::optional<Bytes> Session::fileBytes(const std::string& e2eId) const
+{
+    return db_->get(kFileKeyPrefix + e2eId);
 }
 
 void Session::putVoice(const std::string& e2eId, const Bytes& bytes)
