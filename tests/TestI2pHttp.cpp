@@ -10,6 +10,7 @@
 #include <exception>
 #include <csignal>
 #include <thread>
+#include <utility>
 #include <string>
 #include <sys/types.h>
 
@@ -27,9 +28,20 @@ namespace {
 
 class FdStream {
 public:
-    explicit FdStream(int fd) : fd_(fd) {}
-    FdStream(FdStream&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
-    ~FdStream() { if (fd_ >= 0) { ::close(fd_); } }
+    FdStream(int fd, std::thread feeder) : fd_(fd), feeder_(std::move(feeder)) {}
+    FdStream(FdStream&& other) noexcept : fd_(other.fd_), feeder_(std::move(other.feeder_))
+    {
+        other.fd_ = -1;
+    }
+    ~FdStream()
+    {
+        if (fd_ >= 0) {
+            ::close(fd_);
+        }
+        if (feeder_.joinable()) {
+            feeder_.join();
+        }
+    }
     FdStream(const FdStream&) = delete;
     FdStream& operator=(const FdStream&) = delete;
 
@@ -41,6 +53,7 @@ public:
 
 private:
     int fd_;
+    std::thread feeder_;
 };
 
 // A socketpair holds 8 KiB on the BSDs, less than these cases feed through one.
@@ -59,8 +72,7 @@ FdStream streamFrom(const std::string& data)
         }
         ::close(fd);
     });
-    feeder.detach();
-    return FdStream(fds[0]);
+    return FdStream(fds[0], std::move(feeder));
 }
 
 constexpr std::size_t kSomeBodyBound = 64 * 1024;

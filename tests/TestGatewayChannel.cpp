@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/GatewayChannel.hpp"
+#include "bazarish/JsonRead.hpp"
 #include "bazarish/Hybrid.hpp"
 
 #include "TestUtil.hpp"
@@ -18,7 +19,7 @@ constexpr std::size_t kFraming = 64;
 
 std::size_t widest(const Bytes& sent, const Bytes& paddedBody)
 {
-    const nlohmann::json framed = nlohmann::json::from_cbor(paddedBody);
+    const nlohmann::json framed = bazarish::parseCbor(paddedBody);
     return sent.size() - framed.at(1).get_binary().size() + kHandshakePadMax + kFraming;
 }
 

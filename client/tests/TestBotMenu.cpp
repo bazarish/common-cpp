@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "BotMenu.hpp"
+#include "bazarish/JsonRead.hpp"
 
 #include "TestUtil.hpp"
 
@@ -41,7 +42,7 @@ int main()
     CHECK_THROWS(botMenuFromJson(envelopeOf(-1, oneItem("A", "a"))));
     CHECK_THROWS(botMenuFromJson(
         {{"menuId", std::numeric_limits<std::uint64_t>::max()}, {"items", oneItem("A", "a")}}));
-    CHECK(botMenuFromJson(nlohmann::json::from_cbor(nlohmann::json::to_cbor(
+    CHECK(botMenuFromJson(bazarish::parseCbor(nlohmann::json::to_cbor(
                               envelopeOf(kMaxBotMenuId, oneItem("A", "a")))))
               .id
         == kMaxBotMenuId);

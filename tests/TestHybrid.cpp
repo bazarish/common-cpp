@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/Hybrid.hpp"
+#include "bazarish/JsonRead.hpp"
 
 #include "TestUtil.hpp"
 
@@ -16,8 +17,7 @@ namespace {
 
 nlohmann::json decode(const Bytes& frame)
 {
-    return nlohmann::json::from_cbor(
-        frame, true, true, nlohmann::json::cbor_tag_handler_t::error);
+    return bazarish::parseCbor(frame);
 }
 
 Bytes encode(const nlohmann::json& frame)
