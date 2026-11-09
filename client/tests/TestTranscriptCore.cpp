@@ -78,6 +78,12 @@ int main()
         CHECK(store.advanceStatus(sentId, static_cast<int>(DeliveryState::eFailed)) == true);
         CHECK(statusOf(sentId) == static_cast<int>(DeliveryState::eFailed));
 
+        const Bytes shot(kPictureBytes / 4, 0x5c);
+        CHECK(store.keepMedia(kPictureKeyPrefix + std::string("unsent"), shot));
+        CHECK(store.media(kPictureKeyPrefix + std::string("unsent")) == shot);
+        CHECK(store.keepMedia(kPictureKeyPrefix + std::string("unsent"), Bytes{1, 2, 3}));
+        CHECK(store.media(kPictureKeyPrefix + std::string("unsent")) == shot);
+
         const DatabaseFootprint before = store.footprint();
         CHECK(before.freeBytes >= static_cast<std::int64_t>(kPictureBytes / 2));
         std::string reason;

@@ -73,6 +73,11 @@ public:
     }
     void bind(const char* const value) { bind(std::string(value)); }
     void bind(const std::int64_t value) { sqlite3_bind_int64(stmt_.get(), ++bound_, value); }
+    void bind(const Bytes& value)
+    {
+        sqlite3_bind_blob(
+            stmt_.get(), ++bound_, value.data(), static_cast<int>(value.size()), SQLITE_TRANSIENT);
+    }
     void bind(const int value) { sqlite3_bind_int(stmt_.get(), ++bound_, value); }
 
     bool exec()
@@ -643,6 +648,15 @@ Bytes TranscriptReader::media(const std::string& key) const
         return {};
     }
     return query.blob(0);
+}
+
+bool TranscriptStore::keepMedia(const std::string& key, const Bytes& bytes)
+{
+    Query query(db_);
+    query.prepare("INSERT OR IGNORE INTO state (name, value) VALUES (?, ?)");
+    query.bind(key);
+    query.bind(bytes);
+    return query.exec() || failed();
 }
 
 bool TranscriptStore::setHasPicture(const std::int64_t id, const bool has)

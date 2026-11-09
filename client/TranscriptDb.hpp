@@ -172,6 +172,8 @@ public:
         int readStatus, int minStatus, int maxStatus);
     [[nodiscard]] bool setSavedPath(std::int64_t id, const std::string& path);
     [[nodiscard]] bool setHasPicture(std::int64_t id, bool has);
+    // Kept with the message it belongs to, so a retry finds it however the first try ended.
+    [[nodiscard]] bool keepMedia(const std::string& key, const Bytes& bytes);
     [[nodiscard]] bool editContent(
         std::int64_t id, const std::string& text, const std::string& keyboard);
     [[nodiscard]] bool setType(std::int64_t id, const std::string& type);
