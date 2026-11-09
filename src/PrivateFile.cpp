@@ -79,7 +79,9 @@ constexpr fs::perms kUsual = fs::perms::owner_read | fs::perms::owner_write
 fs::path writtenTemporary(const fs::path& path, const std::string_view bytes, const fs::perms perms)
 {
     fs::path temporary = path;
-    temporary += "." + toHex(randomBytes(kTemporarySuffixBytes)) + ".tmp";
+    temporary += ".";
+    temporary += toHex(randomBytes(kTemporarySuffixBytes));
+    temporary += ".tmp";
     std::error_code ec;
 #ifdef _WIN32
     std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
