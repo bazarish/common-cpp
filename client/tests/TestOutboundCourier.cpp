@@ -63,7 +63,7 @@ private:
     Bytes written_;
     std::string reply_;
     std::size_t sent_ = 0;
-    bool answer_ = true;
+    std::atomic<bool> answer_{true};
 };
 
 // What a stream into a lease set whose tunnels are gone does: takes everything, answers nothing.

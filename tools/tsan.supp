@@ -13,3 +13,11 @@ race:i2p::log::Log::Stop
 race:i2p::tunnel::Tunnels::GetExploratoryPool
 race:i2p::tunnel::TunnelPool::SetActive
 race:i2p::tunnel::TunnelPool::SetLocalDestination
+# i2pd keeps the log level in a plain field; the operator switches it while the router runs.
+race:i2p::log::Log::SetLogLevel
+# Qt and the glib loop under it are not built with TSan, so their own locking is invisible to it.
+race:libQt6Core.so
+race:libQt6Gui.so
+race:libQt6Qml.so
+race:libQt6Quick.so
+race:libglib-2.0.so
