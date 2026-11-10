@@ -281,9 +281,9 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
         return true;
     }
 
-    if (message.text.empty() && message.callbackData.empty() && message.attachmentName.empty()
-        && message.attachmentRef.empty() && message.attachmentSize == 0
-        && message.keyboardJson.empty()) {
+    if (type != kTypeContactRequest && message.text.empty() && message.callbackData.empty()
+        && message.attachmentName.empty() && message.attachmentRef.empty()
+        && message.attachmentSize == 0 && message.keyboardJson.empty()) {
         log::info("silent control message ({}) not shown", type);
         return true;
     }
