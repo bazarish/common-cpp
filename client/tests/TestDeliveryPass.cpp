@@ -281,6 +281,14 @@ int main()
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
             std::lock_guard<std::mutex> lock(m.mu);
+            if (m.certFor.count(caller) == 0) {
+                response.status = 404;
+                respondJson(response,
+                    {{"error",
+                        {{"code", "ACCOUNT_UNKNOWN"},
+                            {"message", "this server serves no such account"}}}});
+                return;
+            }
             const bool delegated = m.delegated.count(caller) > 0;
             respondJson(response, {{"dest", delegated ? m.destFor[caller] : std::string()}});
         }));

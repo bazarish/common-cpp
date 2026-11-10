@@ -543,10 +543,12 @@ std::unique_ptr<Session> Session::create(const fs::path& accountFile, const Acco
 
 void Session::connectServer(const ServerEndpoint& endpoint)
 {
-    client_ = std::make_unique<Client>(
-        Identity::fromPrivatePem(client_->identity().privatePem()), client_->clientId(), endpoint,
-        i2pDirFor(accountPath_));
-    client_->setDestinationOwner(destinationOwner());
+    if (endpoint != client_->endpoint()) {
+        client_ = std::make_unique<Client>(
+            Identity::fromPrivatePem(client_->identity().privatePem()), client_->clientId(),
+            endpoint, i2pDirFor(accountPath_));
+        client_->setDestinationOwner(destinationOwner());
+    }
     persistMeta();
 }
 
@@ -4821,7 +4823,14 @@ bool Session::refreshOwnCard()
 
 DestinationInfo Session::servedOrOwnDestination()
 {
-    DestinationInfo serving = client_->myDestination();
+    DestinationInfo serving;
+    try {
+        serving = client_->myDestination();
+    } catch (const ApiError& error) {
+        if (error.code != ErrorCode::eAccountUnknown) {
+            throw;
+        }
+    }
     if (serving.dest.empty()) {
         serving.dest = ownRoutingHost();
     }

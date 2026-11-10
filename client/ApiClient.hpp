@@ -29,6 +29,8 @@ namespace bazarish::client {
 struct Facade {
     std::string host;
     int port = 0;
+
+    bool operator==(const Facade&) const = default;
 };
 
 Facade parseFacadeAddress(const std::string& address);
@@ -38,6 +40,8 @@ struct ServerEndpoint {
     std::string serverFingerprint;
     std::vector<Facade> facades;
     std::vector<std::string> reseeds;
+
+    bool operator==(const ServerEndpoint&) const = default;
 };
 
 inline constexpr const char* kEventsPath = "/v1/messaging/events";
