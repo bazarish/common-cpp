@@ -37,8 +37,10 @@ file here.
 
 - `0001-libi2pd-log-callback-sink.patch` - adds an `eLogCallback` log destination
   (a `std::function` sink) so an embedder can route i2pd logging into its own log
-  system with the severity preserved. Drop this patch if/when the feature is
-  merged upstream.
+  system with the severity preserved, and `api::StartI2P(LogSink)`, which puts the
+  sink in place before the log thread starts (set afterwards, the thread reads the
+  destination while it changes). Drop this patch if/when the feature is merged
+  upstream.
 - `0002-libi2pd-optional-leaseset-key-persistence.patch` - adds the I2CP parameter
   `i2cp.persistLeaseSetKeys` (default true, i.e. today's behaviour). With it set
   to false a published destination keeps its leaseset encryption keys in memory

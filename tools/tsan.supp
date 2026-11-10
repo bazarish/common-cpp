@@ -1,0 +1,15 @@
+# i2pd stops its services with plain flags and timers that the service threads read while StopI2P clears them.
+race:i2p::util::RunnableService::StopIOService
+race:i2p::data::NetDb::Stop
+race:i2p::data::NetDbRequests::Stop
+race:i2p::tunnel::Tunnels::Stop
+race:i2p::tunnel::TransitTunnels::Stop
+race:i2p::transport::Transports::IsRunning
+race:i2p::transport::SSU2Server::Stop
+race:i2p::transport::NTCP2Server::Stop
+race:i2p::RouterContext::Stop
+race:i2p::log::Log::Stop
+# i2pd swaps its exploratory pool and a pool's active flag and destination without a lock.
+race:i2p::tunnel::Tunnels::GetExploratoryPool
+race:i2p::tunnel::TunnelPool::SetActive
+race:i2p::tunnel::TunnelPool::SetLocalDestination

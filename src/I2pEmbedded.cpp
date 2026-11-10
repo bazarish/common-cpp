@@ -1103,9 +1103,7 @@ void EmbeddedRouter::start()
 {
     const std::lock_guard<std::mutex> lock(lifecycleMutex);
     if (started) { return; }
-    // Without a stream i2pd opens <app>.log in its data dir; this one discards until the switch.
-    i2pd::api::StartI2P(std::make_shared<std::ostream>(nullptr));
-    i2pd::log::Logger().SendTo([](LogLevel level, const std::string& text)
+    i2pd::api::StartI2P([](LogLevel level, const std::string& text)
     {
         if (!i2pLogging()) { return; }
         bazarish::log::emit(mapLevel(level), text);
