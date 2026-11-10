@@ -372,8 +372,6 @@ public:
     void retireDevice(const std::string& clientId);
     void closeAccountOnServer();
 
-    PortalInfo serverPortalInfo();
-
     std::string ensureI2pDestination();
     // A master from outside the account gets address keys of its own.
     std::string loadI2pDestination(const Bytes& privateKeysDat);

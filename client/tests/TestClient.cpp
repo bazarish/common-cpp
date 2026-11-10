@@ -120,13 +120,6 @@ int main()
                 {"registrationMessage", ""}});
         }));
 
-    server.get("/v1/account/portal",
-        stub([&](const http::Request&, http::Response& response) {
-            respondJson(response, {{"message", ""},
-                {"links", {"file:///x", "smb://h/s", "javascript:1", "https://", "https:///p",
-                              "http://plain.example", "https://ok.example/page"}}});
-        }));
-
     server.get("/v1/messaging/destination",
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
@@ -277,7 +270,6 @@ int main()
     endpoint.facades = {Facade{"127.0.0.1", port}};
 
     Client client(Identity::fromPrivatePem(alice.privatePem()), "client01", endpoint);
-    CHECK(client.fetchPortalInfo().links == std::vector<std::string>{"https://ok.example/page"});
 
     {
         const Key aliceSealing = Key::generateSealing();

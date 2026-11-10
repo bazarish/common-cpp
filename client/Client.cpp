@@ -32,14 +32,6 @@ namespace {
 namespace {
 
 constexpr unsigned kMaxPuzzleThreads = 4;
-constexpr std::string_view kWebPageScheme = "https://";
-
-bool isWebPage(const std::string& link)
-{
-    return link.size() > kWebPageScheme.size() && link.starts_with(kWebPageScheme)
-        && link.find_first_of("/?#", kWebPageScheme.size()) != kWebPageScheme.size();
-}
-
 unsigned puzzleThreads()
 {
     return std::clamp(std::thread::hardware_concurrency(), 1u, kMaxPuzzleThreads);
@@ -139,22 +131,6 @@ PublishResult Client::publishCard(const ContactCard& content, const Bytes& cardK
 void Client::closeAccount()
 {
     api_.del("/v1/account/registration");
-}
-
-PortalInfo Client::fetchPortalInfo()
-{
-    const ApiResponse response = api_.get("/v1/account/portal");
-    const nlohmann::json body = response.json();
-    PortalInfo info;
-    info.message = body.value("message", std::string());
-    if (const auto links = body.find("links"); links != body.end() && links->is_array()) {
-        for (const nlohmann::json& link : *links) {
-            if (link.is_string() && isWebPage(link.get<std::string>())) {
-                info.links.push_back(link.get<std::string>());
-            }
-        }
-    }
-    return info;
 }
 
 void Client::registerHere()

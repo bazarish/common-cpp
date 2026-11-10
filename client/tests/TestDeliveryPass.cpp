@@ -106,6 +106,7 @@ struct Mock {
     std::map<std::string, std::string> certFor;  // fingerprint -> contact card (base64 DER)
     std::map<std::string, Bytes> cardKeyFor;
     std::set<std::string> delegated;
+    std::set<std::string> signedUp;
     struct Item {
         std::string id;
         std::string cls;
@@ -302,6 +303,14 @@ int main()
               CHECK(card.fingerprint() == caller);
               {
                   std::lock_guard<std::mutex> lock(m.mu);
+                  if (m.signedUp.count(caller) == 0) {
+                      response.status = 404;
+                      respondJson(response,
+                          {{"error",
+                              {{"code", "ACCOUNT_UNKNOWN"},
+                                  {"message", "no pending registration"}}}});
+                      return;
+                  }
                   const auto held = m.certFor.find(caller);
                   if (held != m.certFor.end() && !held->second.empty()) {
                       const ContactCard previous = ContactCard::verify(fromBase64(held->second));
@@ -324,6 +333,14 @@ int main()
                   {"registrationMessage", ""}});
           };
     server.post("/v1/account/card", stub(handlePublishCard));
+
+    server.post("/v1/account/registration",
+        stub([&](const http::Request& request, http::Response& response) {
+            const std::string caller = requireCaller(request);
+            std::lock_guard<std::mutex> lock(m.mu);
+            m.signedUp.insert(caller);
+            respondJson(response, {{"ok", true}, {"requiresApproval", false}});
+        }));
 
     server.post("/v1/account/i2p-dest",
         stub([&](const http::Request& request, http::Response& response) {
@@ -493,6 +510,11 @@ int main()
 
         alice->registerAccount();
         bob->registerAccount();
+        {
+            std::lock_guard<std::mutex> lock(m.mu);
+            CHECK(m.signedUp.count(alice->fingerprint()) == 1);
+            CHECK(m.signedUp.count(bob->fingerprint()) == 1);
+        }
 
         CHECK(!alice->inviteUri().empty());
         CHECK(alice->inviteUri().find(m.destFor[alice->fingerprint()]) != std::string::npos);

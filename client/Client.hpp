@@ -75,11 +75,6 @@ struct FetchedItem {
 // One past the last entry one fetch carries; always takes begin.
 std::size_t fetchBatchEnd(const std::vector<PendingEntry>& entries, std::size_t begin);
 
-struct PortalInfo {
-    std::string message;
-    std::vector<std::string> links;
-};
-
 struct FetchOutcome {
     bool ok = false;
     Bytes sealed;
@@ -120,7 +115,6 @@ public:
         const DestinationInfo& serving, std::int64_t notBefore);
 
     void closeAccount();
-    PortalInfo fetchPortalInfo();
     void registerHere();
     // An empty transient takes the address offline; one that is not comes with the address's keys.
     DestinationInfo sendI2pTransient(

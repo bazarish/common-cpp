@@ -990,11 +990,6 @@ void Session::persistContacts() const
     db_->putText("contacts", contactsToJson().dump());
 }
 
-PortalInfo Session::serverPortalInfo()
-{
-    return client_->fetchPortalInfo();
-}
-
 void Session::registerAccount()
 {
     requireSwitchedOn();
