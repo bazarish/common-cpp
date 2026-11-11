@@ -21,9 +21,9 @@ namespace bazarish::i2p::backend {
 // A running destination can be renamed.
 class DestTag {
 public:
-    DestTag(std::string label, std::string owner)
+    DestTag(std::string label, std::string accountLabel)
         : label_(std::move(label))
-        , owner_(std::move(owner))
+        , accountLabel_(std::move(accountLabel))
     {
     }
     std::string label() const
@@ -31,27 +31,27 @@ public:
         const std::lock_guard<std::mutex> lock(mutex_);
         return label_;
     }
-    std::string owner() const
+    std::string accountLabel() const
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        return owner_;
+        return accountLabel_;
     }
     std::string named() const
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         return label_.empty() ? std::string("unnamed") : label_;
     }
-    void retag(std::string label, std::string owner)
+    void retag(std::string label, std::string accountLabel)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         label_ = std::move(label);
-        owner_ = std::move(owner);
+        accountLabel_ = std::move(accountLabel);
     }
 
 private:
     mutable std::mutex mutex_;
     std::string label_;
-    std::string owner_;
+    std::string accountLabel_;
 };
 
 class StreamBackend {
@@ -122,7 +122,7 @@ public:
 
     virtual std::shared_ptr<EndpointBackend> createEndpoint(const EndpointConfig& config) = 0;
     virtual void retagEndpoint(
-        const EndpointBackend& endpoint, std::string label, std::string owner)
+        const EndpointBackend& endpoint, std::string label, std::string accountLabel)
         = 0;
 };
 

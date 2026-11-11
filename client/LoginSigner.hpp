@@ -14,7 +14,7 @@ std::string signLoginChallenge(const Identity& identity, const std::string& chal
 
 class LoginSigner {
 public:
-    LoginSigner(Identity identity, std::string owner);
+    LoginSigner(Identity identity, std::string accountLabel);
 
     std::string sign(const std::string& challenge) const;
 
@@ -27,7 +27,7 @@ public:
 
 private:
     Identity identity_;
-    std::string owner_;
+    std::string accountLabel_;
 };
 
 }  // namespace bazarish::client

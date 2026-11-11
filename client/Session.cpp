@@ -529,7 +529,7 @@ std::unique_ptr<Session> Session::create(const fs::path& accountFile, const Acco
     if (kind == AccountKind::eUser) {
         session->presenceDest_ = i2pRoutingHost(session->presenceDestKeys_);
     }
-    session->client_->setDestinationOwner(session->destinationOwner());
+    session->client_->setAccountLabel(session->accountLabel());
     return session;
 }
 
@@ -547,7 +547,7 @@ void Session::connectServer(const ServerEndpoint& endpoint)
         client_ = std::make_unique<Client>(
             Identity::fromPrivatePem(client_->identity().privatePem()), client_->clientId(),
             endpoint, i2pDirFor(accountPath_));
-        client_->setDestinationOwner(destinationOwner());
+        client_->setAccountLabel(accountLabel());
     }
     persistMeta();
 }
@@ -724,7 +724,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
         session->name_ = utf8OfPath(accountFile.stem());
         session->persistMeta();
     }
-    session->client_->setDestinationOwner(session->destinationOwner());
+    session->client_->setAccountLabel(session->accountLabel());
     session->loadSentFiles();
 
     const auto loadBlob = [&session](const std::string& name) -> Bytes {
@@ -783,7 +783,7 @@ void Session::setDisplayName(const std::string& name)
         return;
     }
     name_ = name;
-    client_->setDestinationOwner(destinationOwner());
+    client_->setAccountLabel(accountLabel());
     persistMeta();
     try {
         sendSelf({
@@ -1800,7 +1800,7 @@ std::string Session::signLogin(const std::string& challenge) const
 std::shared_ptr<LoginSigner> Session::loginSigner() const
 {
     return std::make_shared<LoginSigner>(
-        Identity::fromPrivatePem(client_->identity().privatePem()), destinationOwner());
+        Identity::fromPrivatePem(client_->identity().privatePem()), accountLabel());
 }
 
 Bytes Session::passIdFor(const std::string& peerFingerprint) const
@@ -1967,7 +1967,7 @@ OutboundCourier& Session::outboundCourier()
 {
     const std::lock_guard<std::mutex> lock(outbound_->mutex);
     if (!outbound_->courier) {
-        outbound_->leases = std::make_unique<OutboundLeases>(i2pRouter(), destinationOwner());
+        outbound_->leases = std::make_unique<OutboundLeases>(i2pRouter(), accountLabel());
         OutboundLeases& leases = *outbound_->leases;
         leases.setAddressing(outbound_->addressing);
         outbound_->courier = std::make_unique<OutboundCourier>(
@@ -2018,7 +2018,7 @@ Session::ContactFetchContext Session::contactFetchContext() const
     ctx.i2pDataDir = i2pDirFor(accountPath_);
     ctx.resolver = resolverCoordinate_;
     ctx.privacy = tunnelPrivacy();
-    ctx.destinationOwner = destinationOwner();
+    ctx.accountLabel = accountLabel();
     ctx.transport = fetchTransportOverride_;
     return ctx;
 }
@@ -2028,7 +2028,7 @@ std::unique_ptr<Client> Session::makeEventClient(const ContactFetchContext& cont
     std::unique_ptr<Client> waiter = std::make_unique<Client>(
         Identity::fromPrivatePem(context.identityPem), context.clientId, context.endpoint,
         context.i2pDataDir);
-    waiter->setDestinationOwner(context.destinationOwner);
+    waiter->setAccountLabel(context.accountLabel);
     return waiter;
 }
 
@@ -2059,14 +2059,14 @@ Session::ContactCardResolved Session::resolveContactCard(const ContactFetchConte
             : FetchTransport([&context](const std::string& toDest, const std::string& op,
                                  const Bytes& sealed) -> FetchOutcome {
                   return federationFetchOverI2p(readySharedI2pRouter(), toDest, op, sealed,
-                      context.privacy, context.destinationOwner);
+                      context.privacy, context.accountLabel);
               });
 
         const FetchTransport toRegistry = [&context](const std::string& host,
                                               const std::string& op,
                                               const Bytes& body) -> FetchOutcome {
             return resolverFetchOverI2p(readySharedI2pRouter(), host, op, body, context.privacy,
-                context.destinationOwner);
+                context.accountLabel);
         };
 
         if (request.byAlias) {
@@ -2986,9 +2986,9 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
     const fs::path routerDir = i2pDirFor(accountPath_);
     const std::vector<std::string> reseeds = client_->endpoint().reseeds;
     const bazarish::i2p::Privacy privacy = tunnelPrivacy();
-    const std::string owner = destinationOwner();
-    startTransferWorker([registry, routerDir, reseeds, privacy, owner, peerFingerprint, fileId,
-                            serveId, forAsk, source, files, ciphertextPath, stop]() {
+    startTransferWorker([registry, routerDir, reseeds, privacy, accountLabel = accountLabel(),
+                            peerFingerprint, fileId, serveId, forAsk, source, files, ciphertextPath,
+                            stop]() {
         const auto emit = [&registry, &fileId, &peerFingerprint](const TransferState state,
                               const std::uint64_t bytes, const std::uint64_t total,
                               const std::string& error, const TransferStage stage) {
@@ -3006,7 +3006,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             config.tunnelQuantity = bazarish::i2p::kDefaultTunnelQuantity;
             config.label = "File upload";
             config.bulk = true;
-            config.owner = owner;
+            config.accountLabel = accountLabel;
             const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
                 = sharedI2pRouter(routerDir).createEndpoint(config);
             stop->watch(endpoint);
@@ -3092,9 +3092,8 @@ void Session::startAnnouncedFetch(
     const fs::path routerDir = i2pDirFor(accountPath_);
     const std::vector<std::string> reseeds = client_->endpoint().reseeds;
     const bazarish::i2p::Privacy privacy = tunnelPrivacy();
-    const std::string owner = destinationOwner();
-    startTransferWorker([registry, routerDir, reseeds, privacy, owner, offer, target,
-                            announcedSha256, stop, peer]() {
+    startTransferWorker([registry, routerDir, reseeds, privacy, accountLabel = accountLabel(),
+                            offer, target, announcedSha256, stop, peer]() {
         try {
             emitTransferTo(*registry, TransferEvent{offer.fileId, peer, TransferState::eRequested,
                                           0, 0, {}, TransferStage::eConnecting});
@@ -3106,7 +3105,7 @@ void Session::startAnnouncedFetch(
                                                   TransferState::eRunning, got, total, {},
                                                   TransferStage::eReceiving});
                 },
-                owner);
+                accountLabel);
             emitTransferTo(*registry, TransferEvent{offer.fileId, peer, TransferState::eDone,
                                           offer.size, offer.size, {}, TransferStage::eNone});
         } catch (const std::exception& error) {
@@ -3763,7 +3762,7 @@ std::vector<IncomingMessage> Session::takeIn(
                             const std::string name = body.value("name", std::string());
                             if (!name.empty() && name.size() <= kMaxAccountNameBytes && name != name_) {
                                 name_ = name;
-                                client_->setDestinationOwner(destinationOwner());
+                                client_->setAccountLabel(accountLabel());
                                 persistMeta();
                             }
                             message.text = name_;
@@ -4280,7 +4279,7 @@ std::shared_ptr<bazarish::i2p::Endpoint> Session::openCallMediaSession()
     config.tunnelQuantity = bazarish::i2p::kCallTunnelQuantity;
     config.published = true;
     config.label = "Call media";
-    config.owner = destinationOwner();
+    config.accountLabel = accountLabel();
     config.traffic = bazarish::i2p::Traffic::eRaw;
     config.realtime = true;
     return i2pRouter().createEndpoint(config);
@@ -4459,7 +4458,7 @@ void Session::startPresence(PresenceSink sink)
     account.destKeys = presenceDestKeys_;
     account.shown = showPresence_;
     presence_ = std::make_unique<Presence>(std::move(account),
-        i2pPresenceNet(i2pDirFor(accountPath_), destinationOwner()), std::move(sink));
+        i2pPresenceNet(i2pDirFor(accountPath_), accountLabel()), std::move(sink));
     setPresenceOrder(presenceOrder_);
 }
 
@@ -4850,10 +4849,10 @@ std::string Session::contactInviteUri(const std::string& peerFingerprint) const
     return encodeDescriptor(descriptor);
 }
 
-std::string Session::destinationOwner() const
+std::string Session::accountLabel() const
 {
-    constexpr std::size_t kOwnerFingerprintChars = 8;
-    return name_.empty() ? fingerprint().substr(0, kOwnerFingerprintChars) : name_;
+    constexpr std::size_t kAccountLabelFingerprintChars = 8;
+    return name_.empty() ? fingerprint().substr(0, kAccountLabelFingerprintChars) : name_;
 }
 
 std::string Session::inviteUri() const
@@ -4967,9 +4966,9 @@ bool tellAliasesWhereWeAre(const Session::AliasErrandContext& context, const Ide
     return needed != 0 && accepted == needed;
 }
 
-FetchTransport heldDestFor(const bazarish::i2p::Privacy privacy, const std::string& owner)
+FetchTransport heldDestFor(const bazarish::i2p::Privacy privacy, const std::string& accountLabel)
 {
-    return resolverHeldDest(readySharedI2pRouter(), privacy, owner);
+    return resolverHeldDest(readySharedI2pRouter(), privacy, accountLabel);
 }
 
 }  // namespace
@@ -4979,7 +4978,7 @@ FetchTransport Session::heldTransport() const
     if (fetchTransportOverride_) {
         return fetchTransportOverride_;
     }
-    return heldDestFor(tunnelPrivacy(), destinationOwner());
+    return heldDestFor(tunnelPrivacy(), accountLabel());
 }
 
 void Session::setAliasBinding(const std::string& alias, const bool on)
@@ -5082,7 +5081,7 @@ Session::AliasErrandContext Session::aliasErrandContext() const
     context.identityPem = client_->identity().privatePem();
     context.resolver = resolverCoordinate_;
     context.privacy = tunnelPrivacy();
-    context.destinationOwner = destinationOwner();
+    context.accountLabel = accountLabel();
     context.fingerprint = fingerprint();
     context.dest = myDest_;
     context.cardKey = cardKey_;
@@ -5101,7 +5100,7 @@ Session::AliasErrandResult Session::runAliasErrand(const AliasErrandContext& con
     try {
         const FetchTransport over = context.transport
             ? context.transport
-            : heldDestFor(context.privacy, context.destinationOwner);
+            : heldDestFor(context.privacy, context.accountLabel);
         const std::int64_t now = nowSeconds();
         out.answer = askAliasStatus(context, Identity::fromPrivatePem(context.identityPem),
             over, now);
@@ -5192,7 +5191,7 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent)
     }
 
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
-        = publishPairDest(i2pRouter(), tunnelPrivacy(), destinationOwner());
+        = publishPairDest(i2pRouter(), tunnelPrivacy(), accountLabel());
 
     PairingOffer offer;
     offer.code = code;

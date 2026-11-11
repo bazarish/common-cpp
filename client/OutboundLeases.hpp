@@ -32,7 +32,7 @@ std::string leaseKeyFor(OutboundAddressing addressing, bool ownAddress, const st
 
 class OutboundLeases {
 public:
-    OutboundLeases(bazarish::i2p::Router& router, std::string owner);
+    OutboundLeases(bazarish::i2p::Router& router, std::string accountLabel);
 
     // Stops every leased address, so a send waiting on one gives up; nothing is leased after.
     void stop();
@@ -62,7 +62,7 @@ private:
     };
 
     bazarish::i2p::Router& router_;
-    const std::string owner_;
+    const std::string accountLabel_;
     std::mutex mutex_;
     std::condition_variable_any sweep_;
     std::map<std::string, Lease> leases_;

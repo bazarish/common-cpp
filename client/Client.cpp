@@ -98,9 +98,9 @@ std::string Client::gatewayRefusal() const
     return api_.gatewayRefusal();
 }
 
-void Client::setDestinationOwner(std::string owner)
+void Client::setAccountLabel(std::string accountLabel)
 {
-    api_.setDestinationOwner(std::move(owner));
+    api_.setAccountLabel(std::move(accountLabel));
 }
 
 void Client::releaseI2pLink()

@@ -418,7 +418,7 @@ public:
     DestinationInfo serverDestination();
     // True when contacts hold another routing than the one just published.
     bool refreshOwnCard();
-    std::string destinationOwner() const;
+    std::string accountLabel() const;
 
     void acceptContactRequest(const std::string& peerFingerprint);
 
@@ -429,14 +429,14 @@ public:
         std::filesystem::path i2pDataDir;
         ResolverCoordinate resolver;
         bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax;
-        std::string destinationOwner;
+        std::string accountLabel;
         FetchTransport transport;
     };
     struct AliasErrandContext {
         std::string identityPem;
         ResolverCoordinate resolver;
         bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax;
-        std::string destinationOwner;
+        std::string accountLabel;
         std::string fingerprint;
         std::string dest;
         Bytes cardKey;

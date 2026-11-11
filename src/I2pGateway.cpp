@@ -203,7 +203,7 @@ private:
 class GatewayEndpoint : public EndpointBackend {
 public:
     GatewayEndpoint(std::shared_ptr<Link> link, std::uint32_t id, std::string host, bool raw,
-        bool published, std::string label, std::string owner, std::string target,
+        bool published, std::string label, std::string accountLabel, std::string target,
         std::optional<Keys> master);
     ~GatewayEndpoint() override;
 
@@ -253,10 +253,10 @@ public:
     bool raw() const { return raw_; }
     bool published() const { return published_; }
     std::string label() const { return tag_.label(); }
-    std::string owner() const { return tag_.owner(); }
-    void retag(std::string label, std::string owner)
+    std::string accountLabel() const { return tag_.accountLabel(); }
+    void retag(std::string label, std::string accountLabel)
     {
-        tag_.retag(std::move(label), std::move(owner));
+        tag_.retag(std::move(label), std::move(accountLabel));
     }
     void statusChanged(bool ready, int in, int out, int leases, bool localRoute);
     void datagramArrived(std::vector<std::uint8_t> payload);
@@ -342,7 +342,7 @@ public:
 
     std::shared_ptr<EndpointBackend> createEndpoint(const EndpointConfig& config) override;
     void retagEndpoint(
-        const EndpointBackend& endpoint, std::string label, std::string owner) override;
+        const EndpointBackend& endpoint, std::string label, std::string accountLabel) override;
 
     bool attach(std::uint32_t flow);
     void reattachOrphans();
@@ -548,14 +548,14 @@ void StreamState::close()
 }
 
 GatewayEndpoint::GatewayEndpoint(std::shared_ptr<Link> link, const std::uint32_t id,
-    std::string host, const bool raw, const bool published, std::string label, std::string owner,
-    std::string target, std::optional<Keys> master)
+    std::string host, const bool raw, const bool published, std::string label,
+    std::string accountLabel, std::string target, std::optional<Keys> master)
     : link_(std::move(link))
     , id_(id)
     , host_(std::move(host))
     , raw_(raw)
     , published_(published)
-    , tag_(std::move(label), std::move(owner))
+    , tag_(std::move(label), std::move(accountLabel))
     , target_(std::move(target))
     , master_(std::move(master))
 {
@@ -1446,7 +1446,7 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         throw std::runtime_error("bazarish::i2p: the gateway named no address");
     }
     const auto endpoint = std::make_shared<GatewayEndpoint>(link_, id, host, raw,
-        config.published, config.label, config.owner, config.target, config.keys);
+        config.published, config.label, config.accountLabel, config.target, config.keys);
     {
         // Under the lock, so a status that comes after it lands on top of it.
         const std::lock_guard<std::mutex> lock(link_->mutex);
@@ -1484,11 +1484,11 @@ std::vector<std::shared_ptr<GatewayEndpoint>> GatewayRouter::endpointsHeld() con
 }
 
 void GatewayRouter::retagEndpoint(
-    const EndpointBackend& endpoint, std::string label, std::string owner)
+    const EndpointBackend& endpoint, std::string label, std::string accountLabel)
 {
     for (const std::shared_ptr<GatewayEndpoint>& mine : endpointsHeld()) {
         if (mine.get() == &endpoint) {
-            mine->retag(std::move(label), std::move(owner));
+            mine->retag(std::move(label), std::move(accountLabel));
             return;
         }
     }
@@ -1500,7 +1500,7 @@ std::vector<LocalDestination> GatewayRouter::localDestinations() const
     for (const std::shared_ptr<GatewayEndpoint>& endpoint : endpointsHeld()) {
         LocalDestination entry;
         entry.label = endpoint->label();
-        entry.owner = endpoint->owner();
+        entry.accountLabel = endpoint->accountLabel();
         entry.host = endpoint->routingHost();
         entry.published = endpoint->published();
         entry.ready = endpoint->ready();

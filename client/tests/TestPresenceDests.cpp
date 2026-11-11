@@ -90,23 +90,23 @@ std::size_t countOf(const i2p::Router& router, const std::string& label)
         [&label](const i2p::LocalDestination& dest) { return dest.label == label; }));
 }
 
-std::set<std::string> hostsOf(const i2p::Router& router, const std::string& owner)
+std::set<std::string> hostsOf(const i2p::Router& router, const std::string& accountLabel)
 {
     std::set<std::string> hosts;
     for (const i2p::LocalDestination& dest : presenceDests(router)) {
-        if (dest.owner == owner) {
+        if (dest.accountLabel == accountLabel) {
             hosts.insert(dest.host);
         }
     }
     return hosts;
 }
 
-bool ownsBoth(const i2p::Router& router, const std::string& owner)
+bool ownsBoth(const i2p::Router& router, const std::string& accountLabel)
 {
     bool watcher = false;
     bool address = false;
     for (const i2p::LocalDestination& dest : presenceDests(router)) {
-        if (dest.owner != owner) {
+        if (dest.accountLabel != accountLabel) {
             continue;
         }
         watcher = watcher || dest.label == kPresenceWatcher;
@@ -116,10 +116,10 @@ bool ownsBoth(const i2p::Router& router, const std::string& owner)
 }
 
 std::unique_ptr<Presence> openPresence(const Person& person, const bool shown,
-    const std::filesystem::path& routerDir, const std::string& owner, const Person& contact)
+    const std::filesystem::path& routerDir, const std::string& accountLabel, const Person& contact)
 {
     auto presence = std::make_unique<Presence>(person.account(shown),
-        i2pPresenceNet(routerDir, owner), [](const std::string&, const PresenceState&) {},
+        i2pPresenceNet(routerDir, accountLabel), [](const std::string&, const PresenceState&) {},
         testTimings());
     presence->setContacts({contact.contact()});
     presence->watch({contact.identity.fingerprint()});

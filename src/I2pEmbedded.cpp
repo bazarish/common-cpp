@@ -1001,8 +1001,8 @@ public:
     void setReseedUrls(const std::vector<std::string>& urls) override;
     ReseedState reseedState() const override;
     std::shared_ptr<backend::EndpointBackend> createEndpoint(const EndpointConfig& config) override;
-    void retagEndpoint(
-        const backend::EndpointBackend& endpoint, std::string label, std::string owner) override;
+    void retagEndpoint(const backend::EndpointBackend& endpoint, std::string label,
+        std::string accountLabel) override;
 
     bool owns = false;
     bool inited = false;
@@ -1239,9 +1239,10 @@ std::vector<TransportPeer> EmbeddedRouter::transportPeers() const
 }
 
 void EmbeddedRouter::retagEndpoint(
-    const backend::EndpointBackend& endpoint, std::string label, std::string owner)
+    const backend::EndpointBackend& endpoint, std::string label, std::string accountLabel)
 {
-    static_cast<const EmbeddedEndpoint&>(endpoint).tag->retag(std::move(label), std::move(owner));
+    static_cast<const EmbeddedEndpoint&>(endpoint).tag->retag(
+        std::move(label), std::move(accountLabel));
 }
 
 std::vector<LocalDestination> EmbeddedRouter::localDestinations() const
@@ -1255,7 +1256,7 @@ std::vector<LocalDestination> EmbeddedRouter::localDestinations() const
         if (!dest) { continue; }
         LocalDestination info;
         info.label = entry.tag->label();
-        info.owner = entry.tag->owner();
+        info.accountLabel = entry.tag->accountLabel();
         info.host = entry.host;
         info.published = entry.published;
         info.ready = dest->IsReady();
@@ -1282,7 +1283,7 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     const Keys keys = config.keys.has_value() ? config.keys.value() : Keys::generate();
 
     auto impl = std::make_shared<EmbeddedEndpoint>();
-    impl->tag = std::make_shared<DestTag>(config.label, config.owner);
+    impl->tag = std::make_shared<DestTag>(config.label, config.accountLabel);
     impl->publicDestination = keys.publicBase64();
     impl->hostAddress = bazarish::i2p::routingHost(impl->publicDestination, config.blinded);
 

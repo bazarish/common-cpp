@@ -13,9 +13,9 @@
 
 namespace bazarish::client {
 
-LoginSigner::LoginSigner(Identity identity, std::string owner)
+LoginSigner::LoginSigner(Identity identity, std::string accountLabel)
     : identity_(std::move(identity))
-    , owner_(std::move(owner))
+    , accountLabel_(std::move(accountLabel))
 {
 }
 
@@ -53,7 +53,7 @@ std::optional<int> LoginSigner::send(const std::string& challenge) const
     log::info("sending a login signature to {}", log::redact(callback->host));
     return postLoginOverI2p(router, *callback,
         service::sealLoginAnswer(*keyed.key, {canonicalLink(keyed.link), blob}), tunnelPrivacy(),
-        owner_);
+        accountLabel_);
 }
 
 std::optional<std::string> LoginSigner::fetch(
@@ -70,7 +70,7 @@ std::optional<std::string> LoginSigner::fetch(
     bazarish::i2p::Router& router = readySharedI2pRouter();
     log::info("fetching a login challenge from {}", log::redact(address->host));
     const std::optional<Bytes> sealed
-        = getLoginChallengeOverI2p(router, *address, tunnelPrivacy(), owner_, cancelled);
+        = getLoginChallengeOverI2p(router, *address, tunnelPrivacy(), accountLabel_, cancelled);
     if (!sealed) {
         return std::nullopt;
     }

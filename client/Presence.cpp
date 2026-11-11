@@ -233,9 +233,9 @@ i2p::EndpointConfig presenceEndpointShape()
     return endpoint;
 }
 
-PresenceNet i2pPresenceNet(std::filesystem::path routerDir, std::string owner)
+PresenceNet i2pPresenceNet(std::filesystem::path routerDir, std::string accountLabel)
 {
-    return [routerDir = std::move(routerDir), owner = std::move(owner)](
+    return [routerDir = std::move(routerDir), accountLabel = std::move(accountLabel)](
                const PresenceLinkConfig& config) -> std::unique_ptr<PresenceLink> {
         i2p::Router& router = sharedI2pRouter(routerDir);
         const bool watching = !config.keys.has_value() && !config.readerKey.empty();
@@ -243,13 +243,13 @@ PresenceNet i2pPresenceNet(std::filesystem::path routerDir, std::string owner)
         if (watching) {
             if (std::shared_ptr<i2p::Endpoint> warm = acquireWarmWatcher(endpoint.privacy)) {
                 warm->setLeaseSetReaderKey(config.readerKey);
-                router.retagEndpoint(*warm, kPresenceWatcherLabel, owner);
+                router.retagEndpoint(*warm, kPresenceWatcherLabel, accountLabel);
                 return std::make_unique<I2pPresenceLink>(std::move(warm));
             }
         }
         endpoint.label = watching ? kPresenceWatcherLabel : kPresenceAddressLabel;
         endpoint.keys = config.keys;
-        endpoint.owner = owner;
+        endpoint.accountLabel = accountLabel;
         endpoint.leaseSetReaders = config.readers;
         endpoint.leaseSetReaderKey = config.readerKey;
         return std::make_unique<I2pPresenceLink>(router.createEndpoint(endpoint));

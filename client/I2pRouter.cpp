@@ -435,19 +435,20 @@ bazarish::i2p::Router& readySharedI2pRouter()
 }
 
 std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(const std::string& account,
-    const std::string& owner, const bazarish::i2p::Privacy privacy, const std::string& facadeHost)
+    const std::string& accountLabel, const bazarish::i2p::Privacy privacy,
+    const std::string& facadeHost)
 {
     const auto running = sharedI2pRouterIfRunning();
     if (!running.has_value()) {
         return nullptr;
     }
     bazarish::i2p::Router& router = running->get();
-    const auto build = [&router, &owner, privacy, &facadeHost]() {
+    const auto build = [&router, &accountLabel, privacy, &facadeHost]() {
         bazarish::i2p::EndpointConfig config;
         config.privacy = privacy;
         config.published = false;
         config.label = "Facade link";
-        config.owner = owner;
+        config.accountLabel = accountLabel;
         config.target = facadeHost;
         return router.createEndpoint(config);
     };
@@ -665,7 +666,7 @@ void reportConnectProgressToAll(const ConnectMilestone milestone)
     std::vector<ConnectProgressFn> sinks;
     {
         const std::lock_guard<std::mutex> lock(progressMutex());
-        for (const auto& [owner, sink] : progressSinks()) {
+        for (const auto& [account, sink] : progressSinks()) {
             sinks.push_back(sink);
         }
     }

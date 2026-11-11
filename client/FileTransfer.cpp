@@ -433,10 +433,10 @@ constexpr int kReadyPollSeconds = 1;
 void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
     const std::string& announcedSha256, const FileTarget& target,
     const bazarish::i2p::Privacy privacy, TransferStop& stop, const TransferProgressFn& onProgress,
-    const std::string& owner)
+    const std::string& accountLabel)
 {
     const FetchAttemptFn fetch
-        = [&router, &offer, privacy, &owner, &stop](
+        = [&router, &offer, privacy, &accountLabel, &stop](
               const std::uint64_t offset, TransferSink& sink) {
               bazarish::i2p::EndpointConfig config;
               config.privacy = privacy;
@@ -444,7 +444,7 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
               config.published = false;
               config.label = "File download";
               config.bulk = true;
-              config.owner = owner;
+              config.accountLabel = accountLabel;
               config.target = offer.host;
               const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
                   = router.createEndpoint(config);

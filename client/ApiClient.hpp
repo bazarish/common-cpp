@@ -82,7 +82,7 @@ public:
     const ServerEndpoint& endpoint() const;
     std::string activeFacadeAddress() const;
     std::string gatewayRefusal() const;
-    void setDestinationOwner(std::string owner);
+    void setAccountLabel(std::string accountLabel);
     void releaseI2pLink();
 
     static std::int64_t sessionBackoffSeconds(int httpStatus);
@@ -109,7 +109,7 @@ private:
     const std::string clientId_;
     const ServerEndpoint endpoint_;
     const std::filesystem::path i2pDataDir_;
-    std::string destinationOwner_;
+    std::string accountLabel_;
 
     struct Tunnel {
         explicit Tunnel(const ServerCard::Service service)

@@ -507,10 +507,10 @@ std::shared_ptr<Endpoint> Router::createEndpoint(const EndpointConfig& config)
     return endpoint;
 }
 
-void Router::retagEndpoint(const Endpoint& endpoint, std::string label, std::string owner)
+void Router::retagEndpoint(const Endpoint& endpoint, std::string label, std::string accountLabel)
 {
     impl_->transport->retagEndpoint(
-        *endpoint.impl_->transport, std::move(label), std::move(owner));
+        *endpoint.impl_->transport, std::move(label), std::move(accountLabel));
 }
 
 }  // namespace bazarish::i2p

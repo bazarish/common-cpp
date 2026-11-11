@@ -110,6 +110,6 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const std::filesystem::path& c
 
 void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
     const std::string& announcedSha256, const FileTarget& target, bazarish::i2p::Privacy privacy,
-    TransferStop& stop, const TransferProgressFn& onProgress, const std::string& owner);
+    TransferStop& stop, const TransferProgressFn& onProgress, const std::string& accountLabel);
 
 }  // namespace bazarish::client

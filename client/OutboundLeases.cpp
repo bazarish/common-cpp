@@ -59,9 +59,9 @@ std::string leaseKeyFor(
     return addressing == OutboundAddressing::eOneForAll ? std::string(kSharedLeaseKey) : toDest;
 }
 
-OutboundLeases::OutboundLeases(bazarish::i2p::Router& router, std::string owner)
+OutboundLeases::OutboundLeases(bazarish::i2p::Router& router, std::string accountLabel)
     : router_(router)
-    , owner_(std::move(owner))
+    , accountLabel_(std::move(accountLabel))
 {
     sweeper_ = std::jthread([this](const std::stop_token& stop) { sweeperLoop(stop); });
 }
@@ -150,7 +150,7 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
         try {
             endpoint = acquireWarmDest(privacy);
             if (endpoint) {
-                router_.retagEndpoint(*endpoint, label, owner_);
+                router_.retagEndpoint(*endpoint, label, accountLabel_);
             } else {
                 log::info("no warm address for {}: building one, which is tunnels",
                     log::redact(toDest));
@@ -158,7 +158,7 @@ bool OutboundLeases::prepare(const std::string& toDest, const std::string& peerN
                 config.privacy = privacy;
                 config.published = false;
                 config.label = label;
-                config.owner = owner_;
+                config.accountLabel = accountLabel_;
                 if (!shared) {
                     config.target = toDest;
                 }

@@ -52,7 +52,7 @@ struct PresenceWatch {
 Bytes presenceWatchFrame(const PresenceWatch& watch, const Key& signer, const Key& recipientSealing);
 
 bazarish::i2p::EndpointConfig presenceEndpointShape();
-PresenceNet i2pPresenceNet(std::filesystem::path routerDir, std::string owner);
+PresenceNet i2pPresenceNet(std::filesystem::path routerDir, std::string accountLabel);
 
 struct PresenceContact {
     std::string fingerprint;

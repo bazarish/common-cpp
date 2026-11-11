@@ -47,13 +47,14 @@ void sayStage(const FetchStage stage)
 }
 
 std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(bazarish::i2p::Router& router,
-    const bazarish::i2p::Privacy privacy, const std::string& owner, const std::string& target,
+    const bazarish::i2p::Privacy privacy, const std::string& accountLabel,
+    const std::string& target,
     const char* const label = kContactLookupLabel)
 {
     std::shared_ptr<bazarish::i2p::Endpoint> endpoint = acquireWarmDest(privacy);
     if (endpoint) {
         sayStage(FetchStage::eTakingDest);
-        router.retagEndpoint(*endpoint, label, owner);
+        router.retagEndpoint(*endpoint, label, accountLabel);
         return endpoint;
     }
     sayStage(FetchStage::eBuildingDest);
@@ -61,7 +62,7 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(bazarish::i2p::Router
     config.privacy = privacy;
     config.published = false;
     config.label = label;
-    config.owner = owner;
+    config.accountLabel = accountLabel;
     config.target = target;
     endpoint = router.createEndpoint(config);
     if (!endpoint->waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
@@ -199,28 +200,28 @@ void tellFetchStages(std::function<void(FetchStage)> tell)
 
 FetchOutcome federationFetchOverI2p(bazarish::i2p::Router& router, const std::string& dest,
     const std::string& op, const Bytes& sealed, const bazarish::i2p::Privacy privacy,
-    const std::string& owner)
+    const std::string& accountLabel)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
-        = takeThrowawayDest(router, privacy, owner, dest);
+        = takeThrowawayDest(router, privacy, accountLabel, dest);
     return fetchOver(*endpoint, dest, op, sealed, Face::eFederationFrame);
 }
 
 FetchOutcome resolverFetchOverI2p(bazarish::i2p::Router& router, const std::string& host,
     const std::string& op, const Bytes& body, const bazarish::i2p::Privacy privacy,
-    const std::string& owner)
+    const std::string& accountLabel)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
-        = takeThrowawayDest(router, privacy, owner, host);
+        = takeThrowawayDest(router, privacy, accountLabel, host);
     return fetchOver(*endpoint, host, op, body, Face::eResolverHttp);
 }
 
 std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
     const service::LoginCallback& callback, const std::string& sealedAnswer,
-    const bazarish::i2p::Privacy privacy, const std::string& owner)
+    const bazarish::i2p::Privacy privacy, const std::string& accountLabel)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
-        = takeThrowawayDest(router, privacy, owner, callback.host, kSignInLabel);
+        = takeThrowawayDest(router, privacy, accountLabel, callback.host, kSignInLabel);
     const auto stream = dialI2pHttp(*endpoint, callback.host, std::chrono::seconds(kDialSeconds),
         std::chrono::seconds(kReplySeconds));
     if (!stream) {
@@ -234,10 +235,10 @@ std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
 
 std::optional<Bytes> getLoginChallengeOverI2p(bazarish::i2p::Router& router,
     const service::LoginCallback& address, const bazarish::i2p::Privacy privacy,
-    const std::string& owner, const std::atomic<bool>& cancelled)
+    const std::string& accountLabel, const std::atomic<bool>& cancelled)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
-        = takeThrowawayDest(router, privacy, owner, address.host, kSignInLabel);
+        = takeThrowawayDest(router, privacy, accountLabel, address.host, kSignInLabel);
     if (cancelled.load()) {
         return std::nullopt;
     }
@@ -256,11 +257,11 @@ std::optional<Bytes> getLoginChallengeOverI2p(bazarish::i2p::Router& router,
     return Bytes(response.body.begin(), response.body.end());
 }
 
-FetchTransport resolverHeldDest(
-    bazarish::i2p::Router& router, const bazarish::i2p::Privacy privacy, const std::string& owner)
+FetchTransport resolverHeldDest(bazarish::i2p::Router& router, const bazarish::i2p::Privacy privacy,
+    const std::string& accountLabel)
 {
     const std::shared_ptr<bazarish::i2p::Endpoint> held
-        = takeThrowawayDest(router, privacy, owner, std::string());
+        = takeThrowawayDest(router, privacy, accountLabel, std::string());
     return [held](const std::string& host, const std::string& op, const Bytes& body) {
         return fetchOver(*held, host, op, body, Face::eResolverHttp);
     };

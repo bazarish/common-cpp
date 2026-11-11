@@ -289,9 +289,9 @@ void ApiClient::standOffLocked(Tunnel& tunnel, const std::int64_t seconds)
     tunnel.blockedAtCarry = bazarish::i2p::carryReturns();
 }
 
-void ApiClient::setDestinationOwner(std::string owner)
+void ApiClient::setAccountLabel(std::string accountLabel)
 {
-    destinationOwner_ = std::move(owner);
+    accountLabel_ = std::move(accountLabel);
 }
 
 void ApiClient::releaseI2pLink()
@@ -336,7 +336,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
         reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eTunnelsBuilding);
         i2pStream_.reset();
         try {
-            i2pOut_ = facadeLinkFor(identity_.fingerprint(), destinationOwner_, tunnelPrivacy(), facade.host);
+            i2pOut_ = facadeLinkFor(identity_.fingerprint(), accountLabel_, tunnelPrivacy(), facade.host);
         } catch (const bazarish::i2p::GatewayRefusal& refusal) {
             gatewayRefusal_ = refusal.what();
             throw;

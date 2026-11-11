@@ -128,7 +128,7 @@ struct EndpointConfig {
     int tunnelQuantity = kDefaultTunnelQuantity;
     bool published = true;
     std::string label = {};
-    std::string owner = {};
+    std::string accountLabel = {};
     Traffic traffic = Traffic::eStream;
     bool realtime = false;
     bool bulk = false;
@@ -244,7 +244,7 @@ struct ProxyState {
 
 struct LocalDestination {
     std::string label;
-    std::string owner;
+    std::string accountLabel;
     std::string host;
     bool published = false;
     bool ready = false;
@@ -303,7 +303,7 @@ public:
     Capabilities capabilities() const;
 
     std::shared_ptr<Endpoint> createEndpoint(const EndpointConfig& config);
-    void retagEndpoint(const Endpoint& endpoint, std::string label, std::string owner);
+    void retagEndpoint(const Endpoint& endpoint, std::string label, std::string accountLabel);
 
 private:
     struct Impl;

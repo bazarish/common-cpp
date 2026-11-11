@@ -36,7 +36,7 @@ inline constexpr int kPairAcceptPollSeconds = 5;
 inline constexpr int kPairRequestQuietSeconds = 60;
 inline constexpr int kPairPeerQuietSeconds = 120;
 inline constexpr int kPairDrainSeconds = 60;
-inline constexpr char kPairingOwner[] = "pairing";
+inline constexpr char kPairingAccountLabel[] = "pairing";
 
 void notePairingTrouble(const std::string& reason);
 
@@ -257,9 +257,9 @@ bool applyLinkReseed(
     const std::filesystem::path& i2pDataDir, const std::vector<std::string>& reseeds);
 
 std::shared_ptr<bazarish::i2p::Endpoint> publishPairDest(
-    bazarish::i2p::Router& router, bazarish::i2p::Privacy privacy, const std::string& owner);
+    bazarish::i2p::Router& router, bazarish::i2p::Privacy privacy, const std::string& accountLabel);
 
 std::shared_ptr<bazarish::i2p::Endpoint> openPairLink(
-    bazarish::i2p::Router& router, bazarish::i2p::Privacy privacy, const std::string& owner);
+    bazarish::i2p::Router& router, bazarish::i2p::Privacy privacy, const std::string& accountLabel);
 
 }  // namespace bazarish::client

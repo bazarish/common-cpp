@@ -30,9 +30,9 @@ std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest(bazarish::i2p::Privacy 
 // Published; it gets its reader key when taken.
 std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmWatcher(bazarish::i2p::Privacy privacy);
 
-// Keyed by the account's fingerprint; the owner is only the label its destinations carry.
+// Keyed by the account's fingerprint; the account label is only a tag its destinations carry.
 std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(const std::string& account,
-    const std::string& owner, bazarish::i2p::Privacy privacy, const std::string& facadeHost);
+    const std::string& accountLabel, bazarish::i2p::Privacy privacy, const std::string& facadeHost);
 
 void stopFacadeLinkFor(const std::string& account);
 

@@ -108,7 +108,7 @@ public:
     std::string activeFacadeAddress() const;
     std::string gatewayRefusal() const;
 
-    void setDestinationOwner(std::string owner);
+    void setAccountLabel(std::string accountLabel);
     void releaseI2pLink();
 
     PublishResult publishCard(const ContactCard& content, const Bytes& cardKey,

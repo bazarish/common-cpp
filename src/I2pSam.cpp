@@ -81,7 +81,7 @@ public:
         , config_(config)
         , publicDestination_(config.keys.value().publicBase64())
         , hostAddress_(i2p::routingHost(publicDestination_, config.blinded))
-        , tag_(config.label, config.owner)
+        , tag_(config.label, config.accountLabel)
     {
         builder_ = std::thread([this]() { build(); });
     }
@@ -190,11 +190,11 @@ public:
 
     std::string label() const { return tag_.label(); }
 
-    std::string owner() const { return tag_.owner(); }
+    std::string accountLabel() const { return tag_.accountLabel(); }
 
-    void retag(std::string label, std::string owner)
+    void retag(std::string label, std::string accountLabel)
     {
-        tag_.retag(std::move(label), std::move(owner));
+        tag_.retag(std::move(label), std::move(accountLabel));
     }
 
     bool published() const { return config_.published; }
@@ -352,7 +352,7 @@ public:
             }
             LocalDestination entry;
             entry.label = endpoint->label();
-            entry.owner = endpoint->owner();
+            entry.accountLabel = endpoint->accountLabel();
             entry.host = endpoint->routingHost();
             entry.published = endpoint->published();
             entry.ready = endpoint->ready();
@@ -390,18 +390,18 @@ public:
         std::erase_if(endpoints_,
             [](const std::weak_ptr<SamEndpoint>& held) { return held.expired(); });
         endpoints_.push_back(endpoint);
-        endpoint->retag(config.label, config.owner);
+        endpoint->retag(config.label, config.accountLabel);
         return endpoint;
     }
 
     void retagEndpoint(const backend::EndpointBackend& endpoint, std::string label,
-        std::string owner) override
+        std::string accountLabel) override
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         for (const std::weak_ptr<SamEndpoint>& held : endpoints_) {
             const std::shared_ptr<SamEndpoint> mine = held.lock();
             if (mine != nullptr && mine.get() == &endpoint) {
-                mine->retag(std::move(label), std::move(owner));
+                mine->retag(std::move(label), std::move(accountLabel));
                 return;
             }
         }
