@@ -7,6 +7,7 @@
 
 #include <bazarish/Bytes.hpp>
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -29,13 +30,16 @@ std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmDest(bazarish::i2p::Privacy 
 // Published; it gets its reader key when taken.
 std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmWatcher(bazarish::i2p::Privacy privacy);
 
-std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(
+// Keyed by the account's fingerprint; the owner is only the label its destinations carry.
+std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(const std::string& account,
     const std::string& owner, bazarish::i2p::Privacy privacy, const std::string& facadeHost);
 
-void stopFacadeLinkFor(const std::string& owner);
+void stopFacadeLinkFor(const std::string& account);
 
 void setReseedUrls(std::vector<std::string> urls);
 std::vector<std::string> reseedUrls();
+// A local su3 archive in place of the reseed servers: i2pd tries it once and never waits.
+void setReseedFile(std::filesystem::path file);
 
 inline constexpr std::size_t kMinKnownRouters = 10;
 
@@ -68,9 +72,9 @@ enum class ConnectMilestone {
 int connectPercent(ConnectMilestone milestone);
 
 using ConnectProgressFn = std::function<void(ConnectMilestone milestone)>;
-// Keyed by the owner the account's destinations carry.
-void setConnectProgressSink(const std::string& owner, ConnectProgressFn sink);
-void reportConnectProgress(const std::string& owner, ConnectMilestone milestone);
+// Keyed by the account's fingerprint.
+void setConnectProgressSink(const std::string& account, ConnectProgressFn sink);
+void reportConnectProgress(const std::string& account, ConnectMilestone milestone);
 void reportConnectProgressToAll(ConnectMilestone milestone);
 
 void setSamTransport(std::string host, int port);
@@ -98,5 +102,7 @@ bazarish::i2p::Privacy tunnelPrivacy();
 void flushWarmDests();
 
 void setWarmDestsWanted(bool wanted);
+
+void setPresenceWanted(std::uint64_t presenceId, bool wanted);
 
 }  // namespace bazarish::client

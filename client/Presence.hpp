@@ -68,6 +68,7 @@ struct PresenceAccount {
     std::string sealingPem;
     Bytes readerKey;
     Bytes destKeys;
+    bool shown = true;
 };
 
 struct PresenceState {

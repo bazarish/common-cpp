@@ -50,6 +50,8 @@ constexpr char kPresenceAddressLabel[] = "Presence address";
 constexpr char kPresenceWatcherLabel[] = "Presence watcher";
 constexpr PresenceState kCarried{true, false};
 
+std::atomic<std::uint64_t> g_lastPresenceId{0};
+
 Bytes nonceFor(const std::uint8_t direction, const std::uint64_t sequence)
 {
     Bytes nonce(kAeadNonceBytes, 0);
@@ -263,6 +265,7 @@ struct Presence::Impl {
 
     PresenceAccount account;
     PresenceTimings timings;
+    const std::uint64_t id = ++g_lastPresenceId;
     Identity identity;
     Key sealingKey;
     PresenceNet net;
@@ -316,6 +319,9 @@ struct Presence::Impl {
         , net(std::move(netIn))
         , sink(std::move(sinkIn))
     {
+        inputs.shown = account.shown;
+        shown = account.shown;
+        setPresenceWanted(id, account.shown);
         worker = std::thread([this]() { run(); });
     }
 
@@ -327,6 +333,7 @@ struct Presence::Impl {
         }
         wake.notify_all();
         worker.join();
+        setPresenceWanted(id, false);
     }
 
     std::unique_ptr<Runner> openRunner(const PresenceLinkConfig& config, std::deque<Bytes>& inbox)
@@ -849,6 +856,7 @@ void Presence::setShown(const bool shown)
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->inputs.shown = shown;
+        setPresenceWanted(impl_->id, shown);
     }
     impl_->wake.notify_all();
 }

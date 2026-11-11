@@ -10,9 +10,11 @@
 #include <thread>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <map>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -54,6 +56,12 @@ std::unique_ptr<WarmDestPool>& warmWatcherPoolSlot()
 {
     static std::unique_ptr<WarmDestPool> pool;
     return pool;
+}
+
+std::set<std::uint64_t>& presenceWanters()
+{
+    static std::set<std::uint64_t> wanters;
+    return wanters;
 }
 
 bazarish::i2p::EndpointConfig warmStreamShape()
@@ -112,7 +120,7 @@ void ensureWarmPool(bazarish::i2p::Router& router)
         pool->start();
     }
     std::unique_ptr<WarmDestPool>& watchers = warmWatcherPoolSlot();
-    if (!watchers && router.capabilities().lateReaderKey) {
+    if (!watchers && router.capabilities().lateReaderKey && !presenceWanters().empty()) {
         watchers = std::make_unique<WarmDestPool>(router, kWarmWatcherPoolSize, warmWatcherShape);
         watchers->start();
     }
@@ -169,6 +177,12 @@ std::vector<std::string>& reseedsSlot()
     return reseeds;
 }
 
+std::filesystem::path& reseedFileSlot()
+{
+    static std::filesystem::path file;
+    return file;
+}
+
 bool usingSamTransport()
 {
     const std::lock_guard<std::mutex> lock(proxyMutex());
@@ -216,6 +230,12 @@ std::vector<std::string> reseedUrls()
 {
     const std::lock_guard<std::mutex> lock(reseedsMutex());
     return reseedsSlot();
+}
+
+void setReseedFile(std::filesystem::path file)
+{
+    const std::lock_guard<std::mutex> lock(reseedsMutex());
+    reseedFileSlot() = std::move(file);
 }
 
 std::size_t knownRouterCount(const std::filesystem::path& dataDir)
@@ -343,6 +363,10 @@ bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir
         config.role = g_transit ? bazarish::i2p::Role::eServer : bazarish::i2p::Role::eClient;
     }
     config.reseedUrls = reseedUrls();
+    {
+        const std::lock_guard<std::mutex> lock(reseedsMutex());
+        config.reseedFile = reseedFileSlot();
+    }
     config.socksProxyHost = i2pSocksProxyHost();
     config.socksProxyPort = i2pSocksProxyPort();
     if (usingGatewayTransport()) {
@@ -410,8 +434,8 @@ bazarish::i2p::Router& readySharedI2pRouter()
     return running->get();
 }
 
-std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(const std::string& owner,
-    const bazarish::i2p::Privacy privacy, const std::string& facadeHost)
+std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(const std::string& account,
+    const std::string& owner, const bazarish::i2p::Privacy privacy, const std::string& facadeHost)
 {
     const auto running = sharedI2pRouterIfRunning();
     if (!running.has_value()) {
@@ -427,10 +451,10 @@ std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(const std::string& owner,
         config.target = facadeHost;
         return router.createEndpoint(config);
     };
-    if (owner.empty()) {
+    if (account.empty()) {
         return build();
     }
-    const FacadeLinkKey key{owner, facadeHost};
+    const FacadeLinkKey key{account, facadeHost};
     const std::lock_guard<std::mutex> lock(facadeLinksMutex());
     if (const std::shared_ptr<bazarish::i2p::Endpoint> existing = facadeLinks()[key].lock()) {
         if (!existing->lost()) {
@@ -443,13 +467,13 @@ std::shared_ptr<bazarish::i2p::Endpoint> facadeLinkFor(const std::string& owner,
     return link;
 }
 
-void stopFacadeLinkFor(const std::string& owner)
+void stopFacadeLinkFor(const std::string& account)
 {
     std::vector<std::shared_ptr<bazarish::i2p::Endpoint>> links;
     {
         const std::lock_guard<std::mutex> lock(facadeLinksMutex());
         for (auto at = facadeLinks().begin(); at != facadeLinks().end();) {
-            if (at->first.first != owner) {
+            if (at->first.first != account) {
                 ++at;
                 continue;
             }
@@ -590,13 +614,13 @@ I2pBootstrap bootstrapI2pRouter(const std::filesystem::path& dataDir)
     return outcome;
 }
 
-void setConnectProgressSink(const std::string& owner, ConnectProgressFn sink)
+void setConnectProgressSink(const std::string& account, ConnectProgressFn sink)
 {
     const std::lock_guard<std::mutex> lock(progressMutex());
     if (sink) {
-        progressSinks()[owner] = std::move(sink);
+        progressSinks()[account] = std::move(sink);
     } else {
-        progressSinks().erase(owner);
+        progressSinks().erase(account);
     }
 }
 
@@ -621,12 +645,12 @@ int connectPercent(const ConnectMilestone milestone)
     throw std::logic_error("no share of the connection for this milestone");
 }
 
-void reportConnectProgress(const std::string& owner, const ConnectMilestone milestone)
+void reportConnectProgress(const std::string& account, const ConnectMilestone milestone)
 {
     ConnectProgressFn sink;
     {
         const std::lock_guard<std::mutex> lock(progressMutex());
-        const auto found = progressSinks().find(owner);
+        const auto found = progressSinks().find(account);
         if (found != progressSinks().end()) {
             sink = found->second;
         }
@@ -664,9 +688,7 @@ void setWarmDestsWanted(const bool wanted)
 {
     g_warmDestsWanted.store(wanted);
     const std::lock_guard<std::mutex> lock(routerMutex());
-    if (forEachWarmPool([wanted](WarmDestPool& pool) { pool.setWanted(wanted); })) {
-        return;
-    }
+    (void)forEachWarmPool([wanted](WarmDestPool& pool) { pool.setWanted(wanted); });
     const std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
     if (wanted && router != nullptr && router->running()) {
         ensureWarmPool(*router);
@@ -677,6 +699,28 @@ void flushWarmDests()
 {
     const std::lock_guard<std::mutex> lock(routerMutex());
     (void)forEachWarmPool([](WarmDestPool& pool) { pool.flush(); });
+}
+
+void setPresenceWanted(const std::uint64_t presenceId, const bool wanted)
+{
+    const std::lock_guard<std::mutex> lock(routerMutex());
+    if (wanted) {
+        presenceWanters().insert(presenceId);
+    } else {
+        presenceWanters().erase(presenceId);
+    }
+    if (presenceWanters().empty()) {
+        std::unique_ptr<WarmDestPool>& watchers = warmWatcherPoolSlot();
+        if (watchers != nullptr) {
+            watchers->stop();
+            watchers.reset();
+        }
+        return;
+    }
+    const std::unique_ptr<bazarish::i2p::Router>& router = routerSlot();
+    if (router != nullptr && router->running()) {
+        ensureWarmPool(*router);
+    }
 }
 
 }  // namespace bazarish::client

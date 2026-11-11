@@ -252,6 +252,7 @@ endif()
     bazarish_client_add_test(TestCallWindow)
     bazarish_client_add_test(TestClient)
     bazarish_client_add_test(TestPresence)
+    bazarish_client_add_test(TestPresenceDests)
     bazarish_client_add_test(TestTranscriptCore)
 
     add_executable(alias_smoke client/tests/AliasSmoke.cpp)

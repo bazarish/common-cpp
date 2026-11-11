@@ -326,17 +326,17 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     const std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody,
     const int readTimeoutSeconds)
 {
-    reportConnectProgress(destinationOwner_, ConnectMilestone::eRouterStarting);
+    reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eRouterStarting);
     setReseedUrls(endpoint_.reseeds);
     if (bootstrapI2pRouter(i2pDataDir_) == I2pBootstrap::eEmpty) {
         return std::nullopt;
     }
     gatewayRefusal_.clear();
     const auto buildLink = [&]() {
-        reportConnectProgress(destinationOwner_, ConnectMilestone::eTunnelsBuilding);
+        reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eTunnelsBuilding);
         i2pStream_.reset();
         try {
-            i2pOut_ = facadeLinkFor(destinationOwner_, tunnelPrivacy(), facade.host);
+            i2pOut_ = facadeLinkFor(identity_.fingerprint(), destinationOwner_, tunnelPrivacy(), facade.host);
         } catch (const bazarish::i2p::GatewayRefusal& refusal) {
             gatewayRefusal_ = refusal.what();
             throw;
@@ -356,7 +356,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
         return std::nullopt;
     }
     if (!i2pOut_->waitReady(std::chrono::seconds(kOutboundReadySeconds))) {
-        reportConnectProgress(destinationOwner_, ConnectMilestone::eTunnelsStillBuilding);
+        reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eTunnelsStillBuilding);
         return std::nullopt;
     }
     if (i2pStream_
@@ -366,7 +366,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     for (int attempt = 0; attempt < kKeepAliveAttempts; ++attempt) {
         const bool reused = static_cast<bool>(i2pStream_);
         if (!reused) {
-            reportConnectProgress(destinationOwner_, ConnectMilestone::eServerLookup);
+            reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eServerLookup);
             i2pStream_ = i2pOut_->connect(facade.host, std::chrono::seconds(kFacadeDialSeconds));
             // A gateway that replaced its session under the dial lost the link; no facade refused.
             if (!i2pStream_ && i2pOut_->lost()) {
@@ -381,7 +381,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
                 return std::nullopt;
             }
         }
-        reportConnectProgress(destinationOwner_, ConnectMilestone::eServerReached);
+        reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eServerReached);
         i2pStream_->setReadTimeout(std::chrono::seconds(readTimeoutSeconds));
         const auto askedAt = std::chrono::steady_clock::now();
         i2pStreamUsedAt_ = askedAt;

@@ -1001,7 +1001,7 @@ void Session::registerAccount()
         if (error.code != ErrorCode::eAccountUnknown) {
             throw;
         }
-        reportConnectProgress(destinationOwner(), ConnectMilestone::eRegistering);
+        reportConnectProgress(fingerprint(), ConnectMilestone::eRegistering);
         client_->registerHere();
         result = client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt());
     }
@@ -1011,16 +1011,16 @@ void Session::registerAccount()
         bazarish::log::info("account awaiting operator approval: no mailbox until then");
         return;
     }
-    reportConnectProgress(destinationOwner(), ConnectMilestone::eRegisteringDevice);
+    reportConnectProgress(fingerprint(), ConnectMilestone::eRegisteringDevice);
     client_->registerThisClient();
     registerEveryPass();
 
-    reportConnectProgress(destinationOwner(), ConnectMilestone::eCheckingAddress);
+    reportConnectProgress(fingerprint(), ConnectMilestone::eCheckingAddress);
     if (!reconcileI2pAddress()) {
         bazarish::log::warn("this server serves an address this device has no keys for");
         return;
     }
-    reportConnectProgress(destinationOwner(), ConnectMilestone::ePublishingDestination);
+    reportConnectProgress(fingerprint(), ConnectMilestone::ePublishingDestination);
     const bool movedOnRouting = delegateRouting();
     if (movedOnCard || movedOnRouting) {
         announceNewRouting();
@@ -1063,13 +1063,13 @@ bool Session::delegateRouting()
         throw std::runtime_error("not registered: nothing to publish routing into");
     }
     const std::int64_t expires = renewI2pTransient(delegationDays_);
-    reportConnectProgress(destinationOwner(), ConnectMilestone::eDelegating);
+    reportConnectProgress(fingerprint(), ConnectMilestone::eDelegating);
     DestinationInfo serving
         = client_->sendI2pTransient(i2pTransientBase64(), expires, addressKeys());
     serving.servingSealingKeyDer = servingSealingDer();
-    reportConnectProgress(destinationOwner(), ConnectMilestone::ePublishingCard);
+    reportConnectProgress(fingerprint(), ConnectMilestone::ePublishingCard);
     const bool moved = storeCard(client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt()));
-    reportConnectProgress(destinationOwner(), ConnectMilestone::eSyncingDevices);
+    reportConnectProgress(fingerprint(), ConnectMilestone::eSyncingDevices);
     try {
         syncI2pMasterToSelf();
     } catch (const std::exception& error) {
@@ -2939,7 +2939,7 @@ void Session::unsend(const std::string& e2eId)
 
 void Session::releaseI2pLinks()
 {
-    stopFacadeLinkFor(destinationOwner());
+    stopFacadeLinkFor(fingerprint());
     client_->releaseI2pLink();
 }
 
@@ -4457,9 +4457,9 @@ void Session::startPresence(PresenceSink sink)
     account.sealingPem = sealingKey_.privatePem();
     account.readerKey = presenceKey().rawPrivate();
     account.destKeys = presenceDestKeys_;
+    account.shown = showPresence_;
     presence_ = std::make_unique<Presence>(std::move(account),
         i2pPresenceNet(i2pDirFor(accountPath_), destinationOwner()), std::move(sink));
-    presence_->setShown(showPresence_);
     setPresenceOrder(presenceOrder_);
 }
 
