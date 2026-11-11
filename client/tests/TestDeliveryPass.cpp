@@ -19,6 +19,7 @@
 #include <bazarish/Crypto.hpp>
 #include <bazarish/FederationFrame.hpp>
 #include <bazarish/Hybrid.hpp>
+#include <bazarish/I2pAddress.hpp>
 #include <bazarish/KeyedSeal.hpp>
 #include <bazarish/Limits.hpp>
 #include <bazarish/Padding.hpp>
@@ -301,6 +302,7 @@ int main()
                   = nlohmann::json::parse(request.body).at("card").get<std::string>();
               const ContactCard card = ContactCard::verify(fromBase64(cardB64));
               CHECK(card.fingerprint() == caller);
+              CHECK(bazarish::isB32I2pHost(card.dest));
               {
                   std::lock_guard<std::mutex> lock(m.mu);
                   if (m.signedUp.count(caller) == 0) {

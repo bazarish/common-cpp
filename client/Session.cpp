@@ -1027,17 +1027,21 @@ void Session::registerAccount()
     }
 }
 
-void Session::registerSelfHosted()
+void Session::registerSelfHosted(const std::string& servedDest)
 {
+    DestinationInfo serving;
+    serving.dest = servedDest;
+    ensureAddressKeys();
+    serving.servingSealingKeyDer = servingSealingDer();
     PublishResult result;
     try {
-        result = client_->publishCard(cardContent(), cardKey_, {}, currentCardIssuedAt());
+        result = client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt());
     } catch (const ApiError& error) {
         if (error.code != ErrorCode::eAccountUnknown) {
             throw;
         }
         client_->registerHere();
-        result = client_->publishCard(cardContent(), cardKey_, {}, currentCardIssuedAt());
+        result = client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt());
     }
     storeCard(result);
     client_->registerThisClient();
@@ -1154,11 +1158,6 @@ std::int64_t Session::currentCardIssuedAt() const
         log::warn("this account's own card will not read back: {}", error.what());
         return 0;
     }
-}
-
-std::string Session::ownRoutingHost() const
-{
-    return i2pAddress_;
 }
 
 void Session::persistSealedBlob(const std::string& name, const Bytes& blob) const
@@ -4827,7 +4826,7 @@ DestinationInfo Session::servedOrOwnDestination()
         }
     }
     if (serving.dest.empty()) {
-        serving.dest = ownRoutingHost();
+        serving.dest = ensureI2pDestination();
     }
     ensureAddressKeys();
     serving.servingSealingKeyDer = servingSealingDer();

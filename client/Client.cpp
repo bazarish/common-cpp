@@ -111,6 +111,7 @@ void Client::releaseI2pLink()
 PublishResult Client::publishCard(const ContactCard& content, const Bytes& cardKey,
     const DestinationInfo& serving, const std::int64_t notBefore)
 {
+    validateB32I2pHost(serving.dest);
     ContactCard signedCard = content;
     signedCard.issuedAt = std::max(nowSeconds(), notBefore + 1);
     signedCard.dest = serving.dest;

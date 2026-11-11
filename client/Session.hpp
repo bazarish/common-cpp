@@ -347,7 +347,7 @@ public:
 
     void registerAccount();
 
-    void registerSelfHosted();
+    void registerSelfHosted(const std::string& servedDest);
 
     void publishRouting();
 
@@ -750,7 +750,6 @@ private:
     ContactCard cardContent() const;
     nlohmann::json bootstrapBlock(const std::string& pass) const;
     std::int64_t currentCardIssuedAt() const;
-    std::string ownRoutingHost() const;
     DestinationInfo servedOrOwnDestination();
 
     void sendSelf(nlohmann::json inner);
