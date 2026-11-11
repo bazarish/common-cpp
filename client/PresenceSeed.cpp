@@ -8,7 +8,8 @@
 
 #include <algorithm>
 #include <chrono>
-#include <format>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -23,6 +24,8 @@ constexpr char kReaderInfo[] = "bazarish presence reader v1|";
 constexpr std::size_t kDerivedKeyBytes = 32;
 constexpr std::size_t kReaderBytes = 32;
 constexpr std::size_t kDayTextLength = 8;
+constexpr int kYearDigits = 4;
+constexpr int kMonthDayDigits = 2;
 constexpr char kDayField[] = "d";
 constexpr char kDestField[] = "dest";
 constexpr char kReaderField[] = "reader";
@@ -79,8 +82,11 @@ std::int64_t presenceDayStart(const PresenceDay day)
 std::string presenceDayText(const PresenceDay day)
 {
     const std::chrono::year_month_day date{std::chrono::sys_days{std::chrono::days{day}}};
-    return std::format("{:04}{:02}{:02}", static_cast<int>(date.year()),
-        static_cast<unsigned>(date.month()), static_cast<unsigned>(date.day()));
+    std::ostringstream text;
+    text << std::setfill('0') << std::setw(kYearDigits) << static_cast<int>(date.year())
+         << std::setw(kMonthDayDigits) << static_cast<unsigned>(date.month())
+         << std::setw(kMonthDayDigits) << static_cast<unsigned>(date.day());
+    return text.str();
 }
 
 PresenceDay presenceDayFromText(const std::string& text)
