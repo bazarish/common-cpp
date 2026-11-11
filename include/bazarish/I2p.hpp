@@ -227,6 +227,14 @@ struct RouterConfig {
     std::chrono::seconds gatewayControlMaxGap{0};
 };
 
+struct GatewayTarget {
+    std::string host;
+    int port = 0;
+    std::string path;
+    std::string fingerprint;
+    bool tls = true;
+};
+
 struct ProxyState {
     std::string ntcp2;
     std::string ssu2;
@@ -289,6 +297,8 @@ public:
     void setReseedUrls(const std::vector<std::string>& urls);
     ReseedState reseedState() const;
     ProxyState proxyState() const;
+    // Drops the session with the current gateway: every endpoint is lost, as when it restarts.
+    void repointGateway(const GatewayTarget& target);
 
     Capabilities capabilities() const;
 

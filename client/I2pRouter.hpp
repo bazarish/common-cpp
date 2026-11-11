@@ -86,6 +86,8 @@ void refuseI2pTransport(std::string reason);
 bool applyI2pTransport(const std::function<void()>& set);
 // For good: the process has to start again.
 void retireI2pRouter();
+// False when a router that does not go through a gateway already runs.
+bool repointGatewayTransport(const GatewayAddress& address);
 
 void setI2pSocksProxy(std::string host, int port);
 void restartI2pRouter();

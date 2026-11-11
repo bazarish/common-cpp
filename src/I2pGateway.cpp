@@ -338,6 +338,8 @@ public:
 
     ProxyState proxyState() const override { notWithAGateway("the clearnet proxy"); }
 
+    void repointGateway(const GatewayTarget& target) override;
+
     std::shared_ptr<EndpointBackend> createEndpoint(const EndpointConfig& config) override;
     void retagEndpoint(
         const EndpointBackend& endpoint, std::string label, std::string owner) override;
@@ -351,6 +353,7 @@ private:
     void deliver(const Frame& frame);
     std::vector<std::shared_ptr<GatewayEndpoint>> endpointsHeld() const;
     http::SocketDial dialFor() const;
+    http::SocketDial dialLocked() const;
     gateway::ChannelOpened openChannelSocket(
         gateway::ChannelMessageFn onMessage, gateway::ChannelClosedFn onClosed);
     void openControl();
@@ -362,6 +365,9 @@ private:
     void abandon();
 
     RouterConfig config_;
+    // Guards the gateway half of config_ and the generation that counts its changes.
+    mutable std::mutex targetMutex_;
+    std::uint64_t targetGeneration_ = 0;
     std::shared_ptr<Link> link_;
     std::thread cover_;
     std::atomic<bool> live_{false};
@@ -721,6 +727,12 @@ void GatewayEndpoint::lost()
 
 http::SocketDial GatewayRouter::dialFor() const
 {
+    const std::lock_guard<std::mutex> lock(targetMutex_);
+    return dialLocked();
+}
+
+http::SocketDial GatewayRouter::dialLocked() const
+{
     http::SocketDial dial;
     dial.host = config_.gatewayHost;
     dial.port = config_.gatewayPort;
@@ -742,8 +754,28 @@ gateway::ChannelOpened GatewayRouter::openChannelSocket(
             link_->tickets.pop_front();
         }
     }
+    http::SocketDial dial;
+    std::string fingerprint;
+    std::uint64_t generation = 0;
+    {
+        const std::lock_guard<std::mutex> lock(targetMutex_);
+        dial = dialLocked();
+        fingerprint = config_.gatewayFingerprint;
+        generation = targetGeneration_;
+    }
     gateway::ChannelOpened opened = gateway::openChannel(
-        dialFor(), config_.gatewayFingerprint, join, std::move(onMessage), std::move(onClosed));
+        dial, fingerprint, join, std::move(onMessage), std::move(onClosed));
+    {
+        const std::lock_guard<std::mutex> lock(targetMutex_);
+        if (generation != targetGeneration_) {
+            if (opened.socket != nullptr) {
+                opened.socket->close();
+            }
+            gateway::ChannelOpened stale;
+            stale.error = "the gateway changed while this socket opened";
+            return stale;
+        }
+    }
     const std::lock_guard<std::mutex> lock(link_->mutex);
     if (opened.welcome.has_value()) {
         link_->sessionKey = opened.welcome->sessionKey;
@@ -752,6 +784,34 @@ gateway::ChannelOpened GatewayRouter::openChannelSocket(
         link_->tickets.push_front(join->ticket);
     }
     return opened;
+}
+
+void GatewayRouter::repointGateway(const GatewayTarget& target)
+{
+    {
+        const std::lock_guard<std::mutex> lock(targetMutex_);
+        config_.gatewayHost = target.host;
+        config_.gatewayPort = target.port;
+        config_.gatewayPath = target.path;
+        config_.gatewayFingerprint = target.fingerprint;
+        config_.gatewayTls = target.tls;
+        ++targetGeneration_;
+    }
+    std::vector<http::SocketPtr> flows;
+    {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        link_->sessionKey.clear();
+        link_->tickets.clear();
+        for (const auto& [flow, socket] : link_->flows) {
+            (void)flow;
+            flows.push_back(socket);
+        }
+    }
+    for (const http::SocketPtr& socket : flows) {
+        socket->close();
+    }
+    closeControl();
+    bazarish::log::info("i2p: the gateway is now {}", target.host);
 }
 
 void GatewayRouter::start()

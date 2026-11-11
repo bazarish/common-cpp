@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -114,6 +115,10 @@ public:
 
     virtual void setReseedUrls(const std::vector<std::string>& urls) = 0;
     virtual ReseedState reseedState() const = 0;
+    virtual void repointGateway(const GatewayTarget&)
+    {
+        throw std::logic_error("bazarish::i2p: only a gateway router is pointed at a gateway");
+    }
 
     virtual std::shared_ptr<EndpointBackend> createEndpoint(const EndpointConfig& config) = 0;
     virtual void retagEndpoint(

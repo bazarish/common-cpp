@@ -304,6 +304,30 @@ void retireI2pRouter()
     router->get().stop();
 }
 
+bool repointGatewayTransport(const GatewayAddress& address)
+{
+    const std::lock_guard<std::mutex> lifecycle(lifecycleMutex());
+    std::optional<std::reference_wrapper<bazarish::i2p::Router>> running;
+    {
+        const std::lock_guard<std::mutex> lock(routerMutex());
+        if (g_routerRetired) {
+            return false;
+        }
+        if (routerSlot() != nullptr) {
+            running = std::ref(*routerSlot());
+        }
+    }
+    if (running.has_value() && !usingGatewayTransport()) {
+        return false;
+    }
+    setGatewayTransport(address);
+    if (running.has_value()) {
+        running->get().repointGateway(
+            {address.host, address.port, address.path, address.fingerprint, address.tls});
+    }
+    return true;
+}
+
 bazarish::i2p::RouterConfig routerConfigFor(const std::filesystem::path& dataDir)
 {
     {

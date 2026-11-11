@@ -485,6 +485,11 @@ void Router::setReseedUrls(const std::vector<std::string>& urls)
     impl_->transport->setReseedUrls(urls);
 }
 
+void Router::repointGateway(const GatewayTarget& target)
+{
+    impl_->transport->repointGateway(target);
+}
+
 ReseedState Router::reseedState() const
 {
     return impl_->transport->reseedState();
