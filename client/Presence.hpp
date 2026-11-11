@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Authorship.hpp"
+#include "PresenceSeed.hpp"
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/I2p.hpp>
@@ -58,16 +59,14 @@ struct PresenceContact {
     std::string fingerprint;
     Bytes sealingKeyDer;
     IdentityKeys identity;
-    Bytes presenceKeyDer;
-    std::string presenceDest;
+    PresenceSchedule schedule;
 };
 
 struct PresenceAccount {
     std::string fingerprint;
     std::string identityPem;
     std::string sealingPem;
-    Bytes readerKey;
-    Bytes destKeys;
+    Bytes seed;
     bool shown = true;
 };
 
@@ -90,6 +89,7 @@ struct PresenceTimings {
     // i2pd's TUNNEL_EXPIRATION_TIMEOUT: how long a gone holder's lease set can still be found.
     std::chrono::milliseconds leaseSetLife{660000};
     std::chrono::milliseconds tick{250};
+    UtcClock utcNow = systemUtcSeconds;
 };
 
 class Presence {
@@ -102,7 +102,7 @@ public:
 
     void setFocused(bool focused);
     void setShown(bool shown);
-    // In chat-list order: the first kMaxPresenceReaders may read this account's presence.
+    // In chat-list order: of those with a day in their schedule, the first kMaxPresenceReaders read it.
     void setContacts(std::vector<PresenceContact> ordered);
     // The open conversation and the visible chat-list rows.
     void watch(std::vector<std::string> peers);

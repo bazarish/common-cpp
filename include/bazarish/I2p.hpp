@@ -53,6 +53,7 @@ class Keys {
 public:
     static Keys generate();
     static Keys fromBlob(const Bytes& blob);
+    static Keys fromSeeds(const Bytes& signingSeed, const Bytes& cryptoSeed);
 
     Keys(const Keys&);
     Keys(Keys&&) noexcept;

@@ -2,10 +2,12 @@
 #include "bazarish/I2p.hpp"
 
 #include "bazarish/Bytes.hpp"
+#include "bazarish/Clock.hpp"
 #include "bazarish/I2pAddress.hpp"
 
 #include "TestUtil.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -73,6 +75,21 @@ const std::string kMasterPrivateBase64
       "vNSOBNdhQ56x2RJ98Vh17YTVUh3OjTuzmqZr02rRJpomcJVk2ovsGWsAJtEdSQsOMW8aGUaKDcLLrOyJSJDI-OER"
       "eqfEk2ce5qBl0BxVnAgNQbdNsg==";
 
+const std::string kSigningSeed = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+const std::string kCryptoSeed = "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f";
+const std::string kSeededHost = "z24g4a5ba677htqqxyoxbxiy45f4bglh4tldbg5fbvpr3xegmqjfkmny.b32.i2p";
+constexpr std::size_t kEd25519KeyBytes = 32;
+constexpr std::size_t kX25519KeyBytes = 32;
+// I2P common structures: a 256-byte key field, a 128-byte signing key field, then a key certificate.
+constexpr std::size_t kSigningKeyEnd = 384;
+constexpr std::size_t kCertTypeOffset = kSigningKeyEnd;
+constexpr std::size_t kSigTypeOffset = kCertTypeOffset + 3;
+constexpr std::size_t kCryptoTypeOffset = kSigTypeOffset + 2;
+constexpr std::size_t kSeededBlobBytes = kCryptoTypeOffset + 2 + kX25519KeyBytes + kEd25519KeyBytes;
+constexpr std::uint8_t kKeyCertificate = 5;
+constexpr std::uint8_t kEd25519SigType = 7;
+constexpr std::uint8_t kX25519CryptoType = 4;
+
 }  // namespace
 
 // An offline-signed destination whose encryption key is X25519, written by libi2pd itself.
@@ -125,6 +142,36 @@ int main()
         refused = true;
     }
     CHECK(refused);
+
+    {
+        const Bytes signingSeed = bazarish::fromHex(kSigningSeed);
+        const Bytes cryptoSeed = bazarish::fromHex(kCryptoSeed);
+        const i2p::Keys seeded = i2p::Keys::fromSeeds(signingSeed, cryptoSeed);
+        const Bytes blob = seeded.blob();
+        CHECK(i2p::Keys::fromSeeds(signingSeed, cryptoSeed).blob() == blob);
+        const std::string host = i2p::routingHost(seeded.publicBase64());
+        CHECK(host == kSeededHost);
+        CHECK(blob.size() == kSeededBlobBytes);
+        CHECK(std::all_of(blob.begin() + kX25519KeyBytes,
+            blob.begin() + kSigningKeyEnd - kEd25519KeyBytes, [](const std::uint8_t b) { return b == 0; }));
+        CHECK(blob[kCertTypeOffset] == kKeyCertificate);
+        CHECK(blob[kSigTypeOffset] == 0 && blob[kSigTypeOffset + 1] == kEd25519SigType);
+        CHECK(blob[kCryptoTypeOffset] == 0 && blob[kCryptoTypeOffset + 1] == kX25519CryptoType);
+        CHECK(Bytes(blob.end() - kEd25519KeyBytes, blob.end()) == signingSeed);
+        CHECK(Bytes(blob.end() - kEd25519KeyBytes - kX25519KeyBytes, blob.end() - kEd25519KeyBytes)
+            == cryptoSeed);
+
+        const i2p::Keys delegated = seeded.issueTransient(1);
+        CHECK(delegated.isOffline());
+        CHECK(i2p::routingHost(delegated.publicBase64()) == host);
+        CHECK(delegated.b33OfflineKeysCover(nowSeconds(), delegated.transientExpires()));
+
+        Bytes otherSigning = signingSeed;
+        otherSigning.back() ^= 1;
+        CHECK(i2p::routingHost(i2p::Keys::fromSeeds(otherSigning, cryptoSeed).publicBase64()) != host);
+        CHECK(i2p::Keys::fromSeeds(signingSeed, otherSigning).blob() != blob);
+        CHECK_THROWS(i2p::Keys::fromSeeds(Bytes(signingSeed.begin(), signingSeed.end() - 1), cryptoSeed));
+    }
 
     std::printf("TestI2pKeyBlob ok\n");
     return 0;

@@ -207,6 +207,7 @@ if(BAZARISH_WITH_CLIENT)
         client/OutboundCourier.cpp
         client/OutboundLeases.cpp
         client/Presence.cpp
+        client/PresenceSeed.cpp
         client/Session.cpp
         client/SocksProxy.cpp
         client/TranscriptDb.cpp
@@ -253,6 +254,8 @@ endif()
     bazarish_client_add_test(TestCallWindow)
     bazarish_client_add_test(TestClient)
     bazarish_client_add_test(TestPresence)
+    bazarish_client_add_test(TestPresenceSeed)
+    bazarish_client_add_test(TestPresenceGateway)
     bazarish_client_add_test(TestPresenceDests)
     bazarish_client_add_test(TestTranscriptCore)
 

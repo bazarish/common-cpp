@@ -12,6 +12,8 @@ std::string encryptedLeaseSetHost(const std::string& i2pBase64Destination);
 std::string plainLeaseSetHost(const std::string& i2pBase64Destination);
 
 bool isB32I2pHost(const std::string& host);
+// The blinded form only, as an encrypted lease set is reached.
+bool isB33I2pHost(const std::string& host);
 
 // I2P's base64 alphabet is the standard one with '+' as '-' and '/' as '~'.
 std::string i2pToStandardBase64(const std::string& text);

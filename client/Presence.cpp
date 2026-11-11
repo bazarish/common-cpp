@@ -3,7 +3,6 @@
 
 #include "I2pRouter.hpp"
 
-#include <bazarish/Clock.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Hybrid.hpp>
 #include <bazarish/JsonRead.hpp>
@@ -11,12 +10,15 @@
 
 #include <nlohmann/json.hpp>
 
+#include <openssl/crypto.h>
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <map>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -263,11 +265,30 @@ struct Presence::Impl {
         std::atomic<bool> stopping{false};
     };
 
+    struct HolderLane {
+        std::unique_ptr<Runner> runner;
+        std::deque<Bytes> inbox;
+        std::vector<Bytes> readers;
+        std::vector<Bytes> wanted;
+        Clock::time_point readersChanged{};
+        Clock::time_point raiseAfter{};
+        std::map<std::uint64_t, Incoming> incoming;
+    };
+
+    struct WatcherLane {
+        std::unique_ptr<Runner> runner;
+        std::deque<Bytes> inbox;
+        std::map<std::string, Outgoing> peers;
+        std::string_view freshWhy;
+        bool announced = false;
+    };
+
     PresenceAccount account;
     PresenceTimings timings;
     const std::uint64_t id = ++g_lastPresenceId;
     Identity identity;
     Key sealingKey;
+    PresenceSeed seed;
     PresenceNet net;
     PresenceSink sink;
 
@@ -281,8 +302,6 @@ struct Presence::Impl {
         std::uint64_t contactsVersion = 0;
         std::vector<std::string> watched;
         std::map<std::string, Clock::time_point> typingUntil;
-        std::deque<Bytes> holderInbox;
-        std::deque<Bytes> watcherInbox;
     } inputs;
 
     bool focused = false;
@@ -291,31 +310,23 @@ struct Presence::Impl {
     std::uint64_t contactsVersion = 0;
     std::vector<std::string> watched;
     std::map<std::string, Clock::time_point> typingUntil;
-    std::vector<std::pair<std::string, PresenceState>> told;
 
-    std::unique_ptr<Runner> watcher;
-    std::unique_ptr<Runner> holder;
-    std::vector<Bytes> holderReaders;
-    std::vector<Bytes> wantedReaders;
-    bool readersStale = true;
-    Clock::time_point readersChanged{};
-    Clock::time_point raiseAfter{};
-    std::map<std::string, Outgoing> peers;
+    std::map<PresenceDay, HolderLane> holders;
+    std::map<PresenceDay, WatcherLane> watchers;
     // Online seen before a fresh watch stands until the contact answers or until this deadline.
     std::map<std::string, Clock::time_point> carriedUntil;
     std::map<std::string, Clock::time_point> heardFrom;
-    std::string_view freshWatcherWhy;
-    bool announced = false;
-    std::map<std::uint64_t, Incoming> incoming;
+    std::map<std::string, PresenceState> shownStates;
     Clock::time_point lastOnline{};
     std::thread worker;
 
     Impl(PresenceAccount accountIn, PresenceNet netIn, PresenceSink sinkIn,
-        const PresenceTimings timingsIn)
+        PresenceTimings timingsIn)
         : account(std::move(accountIn))
-        , timings(timingsIn)
+        , timings(std::move(timingsIn))
         , identity(Identity::fromPrivatePem(account.identityPem))
         , sealingKey(Key::fromPrivatePem(account.sealingPem))
+        , seed(std::exchange(account.seed, {}))
         , net(std::move(netIn))
         , sink(std::move(sinkIn))
     {
@@ -334,6 +345,16 @@ struct Presence::Impl {
         wake.notify_all();
         worker.join();
         setPresenceWanted(id, false);
+    }
+
+    static std::vector<PresenceDay> liveDays(const std::int64_t utc)
+    {
+        const PresenceDay ending = presenceDayOf(utc - kPresenceHalfOverlapSeconds);
+        const PresenceDay starting = presenceDayOf(utc + kPresenceHalfOverlapSeconds);
+        if (ending == starting) {
+            return {ending};
+        }
+        return {ending, starting};
     }
 
     std::unique_ptr<Runner> openRunner(const PresenceLinkConfig& config, std::deque<Bytes>& inbox)
@@ -367,24 +388,46 @@ struct Presence::Impl {
     }
 
     std::optional<std::reference_wrapper<const PresenceContact>> contactFor(
-        const std::string& fingerprint, const bool readersOnly) const
+        const std::string& fingerprint) const
     {
-        const std::size_t limit = readersOnly ? kMaxPresenceReaders : contacts.size();
-        for (std::size_t index = 0; index < contacts.size() && index < limit; ++index) {
-            if (contacts[index].fingerprint == fingerprint) {
-                return std::cref(contacts[index]);
-            }
+        const auto found = std::find_if(contacts.begin(), contacts.end(),
+            [&fingerprint](const PresenceContact& contact) { return contact.fingerprint == fingerprint; });
+        if (found == contacts.end()) {
+            return std::nullopt;
         }
-        return std::nullopt;
+        return std::cref(*found);
     }
 
-    std::vector<Bytes> readersWanted() const
+    template <typename Visit>
+    void forEachReader(const PresenceDay day, const Visit& visit) const
+    {
+        std::size_t counted = 0;
+        for (const PresenceContact& contact : contacts) {
+            if (counted == kMaxPresenceReaders) {
+                return;
+            }
+            if (const std::optional<ScheduledDay> scheduled = scheduledOn(contact.schedule, day)) {
+                ++counted;
+                visit(contact, *scheduled);
+            }
+        }
+    }
+
+    bool readsOn(const std::string& fingerprint, const PresenceDay day) const
+    {
+        bool reads = false;
+        forEachReader(day, [&](const PresenceContact& contact, const ScheduledDay&) {
+            reads = reads || contact.fingerprint == fingerprint;
+        });
+        return reads;
+    }
+
+    std::vector<Bytes> readersWanted(const PresenceDay day) const
     {
         std::vector<Bytes> readers;
-        for (std::size_t index = 0; index < contacts.size() && index < kMaxPresenceReaders;
-             ++index) {
-            readers.push_back(Key::fromPublicDer(contacts[index].presenceKeyDer).rawPublic());
-        }
+        forEachReader(day, [&readers](const PresenceContact&, const ScheduledDay& scheduled) {
+            readers.push_back(scheduled.reader);
+        });
         return readers;
     }
 
@@ -393,6 +436,11 @@ struct Presence::Impl {
     {
         return left.size() == right.size()
             && std::is_permutation(left.begin(), left.end(), right.begin());
+    }
+
+    bool watching(const std::string& peerFp) const
+    {
+        return std::find(watched.begin(), watched.end(), peerFp) != watched.end();
     }
 
     void send(Runner& runner, const std::string& host, const Bytes& datagram)
@@ -404,25 +452,22 @@ struct Presence::Impl {
         }
     }
 
-    Outgoing outgoingTo(const PresenceContact& contact) const
+    static Outgoing outgoingTo(const PresenceContact& contact, const std::string& host)
     {
         Outgoing outgoing;
         outgoing.peer = contact.fingerprint;
-        outgoing.host = contact.presenceDest;
+        outgoing.host = host;
         outgoing.sealingKeyDer = contact.sealingKeyDer;
         outgoing.id = randomBytes(kPresenceSubscriptionIdBytes);
         outgoing.key = randomBytes(kSubscriptionKeyBytes);
-        if (carriedUntil.contains(contact.fingerprint)) {
-            outgoing.state = kCarried;
-        }
         return outgoing;
     }
 
-    void sendWatch(Outgoing& outgoing, const Clock::time_point now)
+    void sendWatch(WatcherLane& lane, Outgoing& outgoing, const Clock::time_point now)
     {
-        const PresenceWatch watch{
-            outgoing.id, outgoing.key, account.fingerprint, watcher->link->host(), nowSeconds()};
-        send(*watcher, outgoing.host,
+        const PresenceWatch watch{outgoing.id, outgoing.key, account.fingerprint,
+            lane.runner->link->host(), timings.utcNow()};
+        send(*lane.runner, outgoing.host,
             presenceWatchFrame(watch, identity.classical(), Key::fromPublicDer(outgoing.sealingKeyDer)));
         if (outgoing.firstSent == Clock::time_point{}) {
             outgoing.firstSent = now;
@@ -430,9 +475,9 @@ struct Presence::Impl {
         outgoing.lastSent = now;
     }
 
-    void sendRenew(Outgoing& outgoing, const Clock::time_point now)
+    void sendRenew(WatcherLane& lane, Outgoing& outgoing, const Clock::time_point now)
     {
-        send(*watcher, outgoing.host,
+        send(*lane.runner, outgoing.host,
             sealedFrame(kRenewType, outgoing.id, outgoing.key, kToHolder, ++outgoing.sent,
                 nlohmann::json::object()));
         outgoing.lastSent = now;
@@ -448,21 +493,29 @@ struct Presence::Impl {
         return state;
     }
 
-    void tell(Incoming& sub, const Clock::time_point now, const bool moved)
+    void tell(HolderLane& lane, Incoming& sub, const Clock::time_point now, const bool moved)
     {
         const PresenceState state = moved ? PresenceState{} : stateFor(sub, now);
         nlohmann::json payload = {{"online", state.online}, {"typing", state.typing}};
         if (moved) {
             payload["moved"] = true;
         }
-        send(*holder, sub.reply,
+        send(*lane.runner, sub.reply,
             sealedFrame(kStateType, sub.id, sub.key, kFromHolder, ++sub.sent, payload));
         sub.told = state;
     }
 
-    void onWatch(const Bytes& frame, const Clock::time_point now)
+    void tellAll(HolderLane& lane, const Clock::time_point now, const bool moved)
     {
-        const Bytes id(frame.begin() + kTypeBytes, frame.begin() + kHeaderBytes);
+        for (auto& [subscription, sub] : lane.incoming) {
+            tell(lane, sub, now, moved);
+        }
+    }
+
+    void onWatch(const PresenceDay day, HolderLane& lane, const Bytes& frame,
+        const Clock::time_point now)
+    {
+        const Bytes subscriptionId(frame.begin() + kTypeBytes, frame.begin() + kHeaderBytes);
         nlohmann::json content;
         try {
             content = parseCbor(
@@ -472,50 +525,53 @@ struct Presence::Impl {
             return;
         }
         if (content.value("t", std::string()) != kWatchTag
-            || content.value("sub", std::string()) != toHex(id)) {
+            || content.value("sub", std::string()) != toHex(subscriptionId)) {
             return;
         }
         const std::string from = content.value("from", std::string());
-        const auto found = contactFor(from, true);
-        if (!found.has_value()) {
+        const auto contact = contactFor(from);
+        if (!contact.has_value() || !readsOn(from, day)) {
             return;
         }
-        const PresenceContact& contact = found->get();
         if (!content.contains(kWatchSignatureField) || !content.at(kWatchSignatureField).is_binary()) {
             return;
         }
         const Bytes signature = content.at(kWatchSignatureField).get_binary();
         content.erase(kWatchSignatureField);
-        if (!verify(Key::fromPublicDer(contact.identity.classicalDer), watchSigningInput(content),
+        if (!verify(Key::fromPublicDer(contact->get().identity.classicalDer), watchSigningInput(content),
                 signature)) {
             return;
         }
         const std::int64_t sentAt = content.value("sentAt", std::int64_t{0});
-        if (sentAt < nowSeconds() - kWatchSkewSeconds || sentAt > nowSeconds() + kWatchSkewSeconds) {
+        const std::int64_t utc = timings.utcNow();
+        if (sentAt < utc - kWatchSkewSeconds || sentAt > utc + kWatchSkewSeconds) {
             return;
         }
         Incoming sub;
         sub.peer = from;
         sub.reply = content.at("reply").get<std::string>();
-        sub.id = id;
+        sub.id = subscriptionId;
         sub.key = fromBase64(content.at("key").get<std::string>());
         if (sub.key.size() != kSubscriptionKeyBytes) {
             return;
         }
         sub.expires = now + timings.subscriptionLife;
-        Incoming& stored = incoming[subscriptionOf(id)] = std::move(sub);
-        tell(stored, now, false);
+        Incoming& stored = lane.incoming[subscriptionOf(subscriptionId)] = std::move(sub);
+        tell(lane, stored, now, false);
         heardFrom[from] = now;
-        if (const auto ours = peers.find(from); ours != peers.end() && !ours->second.answered) {
-            wokenBy(ours->second, now);
+        if (const auto ours = watchers.find(day); ours != watchers.end()) {
+            if (const auto outgoing = ours->second.peers.find(from);
+                outgoing != ours->second.peers.end() && !outgoing->second.answered) {
+                wokenBy(outgoing->second, now);
+            }
         }
     }
 
-    void onRenew(const Bytes& frame, const Clock::time_point now)
+    void onRenew(HolderLane& lane, const Bytes& frame, const Clock::time_point now)
     {
-        const Bytes id(frame.begin() + kTypeBytes, frame.begin() + kHeaderBytes);
-        const auto found = incoming.find(subscriptionOf(id));
-        if (found == incoming.end()) {
+        const Bytes subscriptionId(frame.begin() + kTypeBytes, frame.begin() + kHeaderBytes);
+        const auto found = lane.incoming.find(subscriptionOf(subscriptionId));
+        if (found == lane.incoming.end()) {
             return;
         }
         Incoming& sub = found->second;
@@ -523,18 +579,18 @@ struct Presence::Impl {
             return;
         }
         sub.expires = now + timings.subscriptionLife;
-        tell(sub, now, false);
+        tell(lane, sub, now, false);
     }
 
-    void onState(const Bytes& frame, const Clock::time_point now)
+    void onState(WatcherLane& lane, const Bytes& frame, const Clock::time_point now)
     {
-        const Bytes id(frame.begin() + kTypeBytes, frame.begin() + kHeaderBytes);
-        const auto watching = std::find_if(peers.begin(), peers.end(),
-            [&id](const auto& entry) { return entry.second.id == id; });
-        if (watching == peers.end()) {
+        const Bytes subscriptionId(frame.begin() + kTypeBytes, frame.begin() + kHeaderBytes);
+        const auto found = std::find_if(lane.peers.begin(), lane.peers.end(),
+            [&subscriptionId](const auto& entry) { return entry.second.id == subscriptionId; });
+        if (found == lane.peers.end()) {
             return;
         }
-        Outgoing& outgoing = watching->second;
+        Outgoing& outgoing = found->second;
         const std::optional<nlohmann::json> payload
             = openedFrame(frame, outgoing.key, kFromHolder, outgoing.heard);
         if (!payload) {
@@ -542,20 +598,16 @@ struct Presence::Impl {
         }
         heardFrom[outgoing.peer] = now;
         if (payload->value("moved", false)) {
-            watchAfresh("a contact's address moved");
+            watchAfresh(lane, "a contact's address moved");
             return;
         }
         outgoing.answered = true;
         outgoing.lastHeard = now;
         carriedUntil.erase(outgoing.peer);
-        const PresenceState state{payload->value("online", false), payload->value("typing", false)};
-        if (state != outgoing.state) {
-            told.emplace_back(outgoing.peer, state);
-        }
-        outgoing.state = state;
+        outgoing.state = PresenceState{payload->value("online", false), payload->value("typing", false)};
     }
 
-    void wokenBy(Outgoing& outgoing, const Clock::time_point now)
+    static void wokenBy(Outgoing& outgoing, const Clock::time_point now)
     {
         outgoing.lastSent = Clock::time_point{};
         if (outgoing.wokenAt == Clock::time_point{}) {
@@ -563,147 +615,181 @@ struct Presence::Impl {
         }
     }
 
-    void tellAll(const Clock::time_point now, const bool moved)
+    static void watchAfresh(WatcherLane& lane, const std::string_view why)
     {
-        for (auto& [id, sub] : incoming) {
-            tell(sub, now, moved);
+        if (lane.freshWhy.empty()) {
+            lane.freshWhy = why;
         }
     }
 
-    void watchAfresh(const std::string_view why)
+    static void dropHolder(const PresenceDay day, HolderLane& lane, const std::string_view why)
     {
-        if (freshWatcherWhy.empty()) {
-            freshWatcherWhy = why;
-        }
+        bazarish::log::info(
+            "presence: the presence address for {} is down: {}", presenceDayText(day), why);
+        closeRunner(lane.runner);
+        lane.incoming.clear();
+        lane.readers.clear();
     }
 
-    void dropHolder(const std::string_view why)
-    {
-        bazarish::log::info("presence: the presence address is down: {}", why);
-        closeRunner(holder);
-        incoming.clear();
-        holderReaders.clear();
-    }
-
-    void raise(const Clock::time_point now)
+    void raise(const PresenceDay day, HolderLane& lane, const Clock::time_point now)
     {
         PresenceLinkConfig config;
-        config.keys = i2p::Keys::fromBlob(account.destKeys);
-        config.readers = wantedReaders;
+        config.keys = seed.destFor(day);
+        config.readers = lane.wanted;
         try {
-            holder = openRunner(config, inputs.holderInbox);
+            lane.runner = openRunner(config, lane.inbox);
         } catch (const std::exception& error) {
-            bazarish::log::info("presence: the presence address did not come up: {}", error.what());
-            raiseAfter = now + timings.watchRetry;
+            bazarish::log::info("presence: the presence address for {} did not come up: {}",
+                presenceDayText(day), error.what());
+            lane.raiseAfter = now + timings.watchRetry;
             return;
         }
-        holderReaders = wantedReaders;
-        bazarish::log::info("presence: the presence address is up for {} readers", holderReaders.size());
+        lane.readers = lane.wanted;
+        bazarish::log::info("presence: the presence address for {} is up for {} readers",
+            presenceDayText(day), lane.readers.size());
     }
 
-    void tickHolder(const Clock::time_point now)
+    void retireDays(const std::vector<PresenceDay>& days, const Clock::time_point now)
+    {
+        const auto live = [&days](const PresenceDay day) {
+            return std::find(days.begin(), days.end(), day) != days.end();
+        };
+        for (auto at = holders.begin(); at != holders.end();) {
+            if (live(at->first)) {
+                ++at;
+                continue;
+            }
+            if (at->second.runner) {
+                tellAll(at->second, now, true);
+                dropHolder(at->first, at->second, "its day is over");
+            }
+            at = holders.erase(at);
+        }
+        for (auto at = watchers.begin(); at != watchers.end();) {
+            if (live(at->first)) {
+                ++at;
+                continue;
+            }
+            closeRunner(at->second.runner);
+            at = watchers.erase(at);
+        }
+    }
+
+    void takeContacts(const std::vector<PresenceDay>& days, const bool changed,
+        const Clock::time_point now)
+    {
+        for (const PresenceDay day : days) {
+            const auto [at, added] = holders.try_emplace(day);
+            if (!added && !changed) {
+                continue;
+            }
+            HolderLane& lane = at->second;
+            std::vector<Bytes> readers = readersWanted(day);
+            if (!sameReaders(readers, lane.wanted)) {
+                lane.wanted = std::move(readers);
+                lane.readersChanged = now;
+            }
+            std::erase_if(lane.incoming,
+                [this, day](const auto& entry) { return !readsOn(entry.second.peer, day); });
+        }
+    }
+
+    void tickHolders(const Clock::time_point now)
     {
         const bool online = focused && shown;
         if (online) {
             lastOnline = now;
         }
-        if (holder) {
-            std::erase_if(incoming, [now](const auto& entry) { return entry.second.expires <= now; });
-            if (!shown || now - lastOnline >= timings.onlineTail) {
-                tellAll(now, shown);
-                dropHolder(shown ? "the online tail ran out" : "the status is hidden");
-                return;
+        for (auto& [day, lane] : holders) {
+            if (lane.runner) {
+                std::erase_if(lane.incoming, [now](const auto& entry) { return entry.second.expires <= now; });
+                if (!shown || now - lastOnline >= timings.onlineTail) {
+                    tellAll(lane, now, shown);
+                    dropHolder(day, lane, shown ? "the online tail ran out" : "the status is hidden");
+                    continue;
+                }
+                if (!sameReaders(lane.wanted, lane.readers)
+                    && now - lane.readersChanged >= timings.readersSettle) {
+                    tellAll(lane, now, true);
+                    dropHolder(day, lane, "the readers changed");
+                }
             }
-            if (!sameReaders(wantedReaders, holderReaders)
-                && now - readersChanged >= timings.readersSettle) {
-                tellAll(now, true);
-                dropHolder("the readers changed");
+            if (!lane.runner) {
+                if (online && !lane.wanted.empty() && now >= lane.raiseAfter) {
+                    raise(day, lane, now);
+                }
+                continue;
             }
-        }
-        if (!holder) {
-            if (online && !wantedReaders.empty() && now >= raiseAfter) {
-                raise(now);
-            }
-            return;
-        }
-        for (auto& [id, sub] : incoming) {
-            if (sub.told != stateFor(sub, now)) {
-                tell(sub, now, false);
+            for (auto& [subscription, sub] : lane.incoming) {
+                if (sub.told != stateFor(sub, now)) {
+                    tell(lane, sub, now, false);
+                }
             }
         }
     }
 
-    void startFresh(const Clock::time_point now)
+    void startFresh(WatcherLane& lane, const Clock::time_point now)
     {
-        closeRunner(watcher);
-        for (const auto& [peerFp, watching] : peers) {
-            if (!watching.state.online) {
-                continue;
+        closeRunner(lane.runner);
+        for (const auto& [peerFp, outgoing] : lane.peers) {
+            if (outgoing.state.online) {
+                carriedUntil.try_emplace(peerFp, now + timings.subscriptionLife);
             }
-            if (watching.state != kCarried) {
-                told.emplace_back(peerFp, kCarried);
-            }
-            carriedUntil.try_emplace(peerFp, now + timings.subscriptionLife);
         }
-        peers.clear();
-        freshWatcherWhy = {};
+        lane.peers.clear();
+        lane.freshWhy = {};
     }
 
     void tickPeers(const Clock::time_point now)
     {
         // A watch names its sender, so a device that hides its own status watches no one.
-        const bool watching = focused && shown;
-        for (auto at = carriedUntil.begin(); at != carriedUntil.end();) {
-            const bool stands = watching && now < at->second
-                && std::find(watched.begin(), watched.end(), at->first) != watched.end();
-            if (stands) {
-                ++at;
-                continue;
-            }
-            if (const auto found = peers.find(at->first); found != peers.end()) {
-                found->second.state = PresenceState{};
-            }
-            told.emplace_back(at->first, PresenceState{});
-            at = carriedUntil.erase(at);
+        const bool watchingAny = focused && shown;
+        std::erase_if(carriedUntil, [&](const auto& entry) {
+            return !watchingAny || now >= entry.second || !watching(entry.first);
+        });
+        for (auto& [day, lane] : watchers) {
+            std::erase_if(lane.peers, [&, day = day](const auto& entry) {
+                const auto contact = contactFor(entry.first);
+                return !watchingAny || !contact.has_value() || !watching(entry.first)
+                    || !scheduledOn(contact->get().schedule, day).has_value();
+            });
         }
-        for (auto at = peers.begin(); at != peers.end();) {
-            const bool still = watching && contactFor(at->first, false).has_value()
-                && std::find(watched.begin(), watched.end(), at->first) != watched.end();
-            if (still) {
-                ++at;
-                continue;
-            }
-            if (at->second.state != PresenceState{}) {
-                told.emplace_back(at->first, PresenceState{});
-            }
-            at = peers.erase(at);
-        }
-        if (!watching || !watcher) {
+        if (!watchingAny) {
             return;
         }
-        // Watches go before our address is up, so a contact on our gateway is met at once.
-        const bool holderUp = holder && holder->link->ready();
-        if (holderUp && !announced) {
-            announced = true;
-            watchAfresh("our presence address is up");
-            return;
-        }
-        announced = holderUp;
-        for (const std::string& peerFp : watched) {
-            const auto known = contactFor(peerFp, false);
-            if (!known.has_value()) {
+        for (auto& [day, lane] : watchers) {
+            if (!lane.runner) {
                 continue;
             }
-            const PresenceContact& contact = known->get();
-            auto found = peers.find(peerFp);
-            if (found == peers.end()) {
-                found = peers.emplace(peerFp, outgoingTo(contact)).first;
+            // Watches go before our address is up, so a contact on our gateway is met at once.
+            const auto holder = holders.find(day);
+            const bool holderUp = holder != holders.end() && holder->second.runner
+                && holder->second.runner->link->ready();
+            if (holderUp && !lane.announced) {
+                lane.announced = true;
+                watchAfresh(lane, "our presence address is up");
+                continue;
             }
-            tickPeer(found->second, now);
+            lane.announced = holderUp;
+            for (const std::string& peerFp : watched) {
+                const auto contact = contactFor(peerFp);
+                if (!contact.has_value()) {
+                    continue;
+                }
+                const std::optional<ScheduledDay> scheduled = scheduledOn(contact->get().schedule, day);
+                if (!scheduled.has_value()) {
+                    continue;
+                }
+                auto found = lane.peers.find(peerFp);
+                if (found == lane.peers.end()) {
+                    found = lane.peers.emplace(peerFp, outgoingTo(contact->get(), scheduled->dest)).first;
+                }
+                tickPeer(lane, found->second, now);
+            }
         }
     }
 
-    void tickPeer(Outgoing& outgoing, const Clock::time_point now)
+    void tickPeer(WatcherLane& lane, Outgoing& outgoing, const Clock::time_point now)
     {
         if (!outgoing.answered) {
             const bool sent = outgoing.firstSent != Clock::time_point{};
@@ -715,38 +801,99 @@ struct Presence::Impl {
             const bool wokenLong = outgoing.wokenAt != Clock::time_point{}
                 && now - outgoing.wokenAt >= timings.watchRetry;
             if (wokenLong) {
-                watchAfresh("a contact that woke it stays unanswered");
+                watchAfresh(lane, "a contact that woke it stays unanswered");
                 return;
             }
             if (mayBeStale && unanswered >= timings.subscriptionLife) {
-                watchAfresh("a contact seen lately stays unanswered");
+                watchAfresh(lane, "a contact seen lately stays unanswered");
                 return;
             }
             if (now - outgoing.lastSent >= timings.watchRetry) {
-                sendWatch(outgoing, now);
+                sendWatch(lane, outgoing, now);
             }
             return;
         }
         if (now - outgoing.lastHeard >= timings.subscriptionLife) {
-            watchAfresh("a contact went silent");
+            watchAfresh(lane, "a contact went silent");
             return;
         }
         if (now - outgoing.lastSent >= timings.renewEvery) {
-            sendRenew(outgoing, now);
+            sendRenew(lane, outgoing, now);
         }
     }
 
-    void openWatcher()
+    void openWatchers(const std::vector<PresenceDay>& days)
     {
-        if (!focused || !shown || watcher) {
+        if (!focused || !shown) {
             return;
         }
-        PresenceLinkConfig config;
-        config.readerKey = account.readerKey;
-        try {
-            watcher = openRunner(config, inputs.watcherInbox);
-        } catch (const std::exception& error) {
-            bazarish::log::info("presence: the watching address did not come up: {}", error.what());
+        for (const PresenceDay day : days) {
+            WatcherLane& lane = watchers[day];
+            if (lane.runner) {
+                continue;
+            }
+            PresenceLinkConfig config;
+            config.readerKey = seed.readerFor(day).rawPrivate();
+            try {
+                lane.runner = openRunner(config, lane.inbox);
+            } catch (const std::exception& error) {
+                bazarish::log::info("presence: the watching address for {} did not come up: {}",
+                    presenceDayText(day), error.what());
+            }
+            OPENSSL_cleanse(config.readerKey.data(), config.readerKey.size());
+        }
+    }
+
+    void closeWatchers()
+    {
+        for (auto& [day, lane] : watchers) {
+            closeRunner(lane.runner);
+        }
+        watchers.clear();
+    }
+
+    PresenceState stateOf(const std::string& peerFp) const
+    {
+        PresenceState state;
+        for (const auto& [day, lane] : watchers) {
+            if (const auto found = lane.peers.find(peerFp); found != lane.peers.end()) {
+                state.online = state.online || found->second.state.online;
+                state.typing = state.typing || found->second.state.typing;
+            }
+        }
+        if (!state.online && carriedUntil.contains(peerFp)) {
+            return kCarried;
+        }
+        return state;
+    }
+
+    void tellChanges()
+    {
+        std::set<std::string> peers;
+        for (const auto& [peerFp, state] : shownStates) {
+            peers.insert(peerFp);
+        }
+        for (const auto& [day, lane] : watchers) {
+            for (const auto& [peerFp, outgoing] : lane.peers) {
+                peers.insert(peerFp);
+            }
+        }
+        for (const auto& [peerFp, until] : carriedUntil) {
+            peers.insert(peerFp);
+        }
+        for (const std::string& peerFp : peers) {
+            const PresenceState state = stateOf(peerFp);
+            const auto held = shownStates.find(peerFp);
+            const PresenceState before = held == shownStates.end() ? PresenceState{} : held->second;
+            if (state == before) {
+                continue;
+            }
+            sink(peerFp, state);
+            if (state == PresenceState{}) {
+                shownStates.erase(peerFp);
+            } else {
+                shownStates[peerFp] = state;
+            }
         }
     }
 
@@ -763,8 +910,9 @@ struct Presence::Impl {
     void run()
     {
         while (true) {
-            std::deque<Bytes> holderFrames;
-            std::deque<Bytes> watcherFrames;
+            std::map<PresenceDay, std::deque<Bytes>> holderFrames;
+            std::map<PresenceDay, std::deque<Bytes>> watcherFrames;
+            bool contactsChanged = false;
             {
                 std::unique_lock<std::mutex> lock(mutex);
                 wake.wait_for(lock, timings.tick);
@@ -778,61 +926,72 @@ struct Presence::Impl {
                 if (inputs.contactsVersion != contactsVersion) {
                     contacts = inputs.contacts;
                     contactsVersion = inputs.contactsVersion;
-                    readersStale = true;
+                    contactsChanged = true;
                 }
-                holderFrames.swap(inputs.holderInbox);
-                watcherFrames.swap(inputs.watcherInbox);
+                for (auto& [day, lane] : holders) {
+                    holderFrames[day].swap(lane.inbox);
+                }
+                for (auto& [day, lane] : watchers) {
+                    watcherFrames[day].swap(lane.inbox);
+                }
             }
             const Clock::time_point now = Clock::now();
             std::erase_if(typingUntil, [now](const auto& entry) { return entry.second <= now; });
-            if (readersStale) {
-                std::vector<Bytes> readers = readersWanted();
-                if (!sameReaders(readers, wantedReaders)) {
-                    wantedReaders = std::move(readers);
-                    readersChanged = now;
-                }
-                readersStale = false;
-            }
-            if (holder && holder->link->lost()) {
-                dropHolder("the transport took it down");
-            }
-            for (const Bytes& frame : holderFrames) {
-                if (!holder || frame.size() <= kHeaderBytes) {
-                    continue;
-                }
-                if (frame[0] == kWatchType) {
-                    takeFrame("watch", [&]() { onWatch(frame, now); });
-                } else if (frame[0] == kRenewType) {
-                    takeFrame("renew", [&]() { onRenew(frame, now); });
+            const std::vector<PresenceDay> days = liveDays(timings.utcNow());
+            retireDays(days, now);
+            takeContacts(days, contactsChanged, now);
+            for (auto& [day, lane] : holders) {
+                if (lane.runner && lane.runner->link->lost()) {
+                    dropHolder(day, lane, "the transport took it down");
                 }
             }
-            for (const Bytes& frame : watcherFrames) {
-                if (frame.size() > kHeaderBytes && frame[0] == kStateType) {
-                    takeFrame("state", [&]() { onState(frame, now); });
+            for (const auto& [day, frames] : holderFrames) {
+                const auto lane = holders.find(day);
+                for (const Bytes& frame : frames) {
+                    if (lane == holders.end() || !lane->second.runner || frame.size() <= kHeaderBytes) {
+                        continue;
+                    }
+                    if (frame[0] == kWatchType) {
+                        takeFrame("watch", [&]() { onWatch(day, lane->second, frame, now); });
+                    } else if (frame[0] == kRenewType) {
+                        takeFrame("renew", [&]() { onRenew(lane->second, frame, now); });
+                    }
                 }
             }
-            if (watcher && watcher->link->lost()) {
-                watchAfresh("the watching address was lost");
+            for (const auto& [day, frames] : watcherFrames) {
+                const auto lane = watchers.find(day);
+                for (const Bytes& frame : frames) {
+                    if (lane != watchers.end() && frame.size() > kHeaderBytes
+                        && frame[0] == kStateType) {
+                        takeFrame("state", [&]() { onState(lane->second, frame, now); });
+                    }
+                }
             }
-            if (!freshWatcherWhy.empty()) {
-                bazarish::log::info("presence: watching from a new address: {}", freshWatcherWhy);
-                startFresh(now);
+            for (auto& [day, lane] : watchers) {
+                if (lane.runner && lane.runner->link->lost()) {
+                    watchAfresh(lane, "the watching address was lost");
+                }
+                if (!lane.freshWhy.empty()) {
+                    bazarish::log::info("presence: watching {} from a new address: {}",
+                        presenceDayText(day), lane.freshWhy);
+                    startFresh(lane, now);
+                }
             }
-            openWatcher();
-            tickHolder(now);
+            openWatchers(days);
+            tickHolders(now);
             tickPeers(now);
             if (!focused || !shown) {
-                closeRunner(watcher);
+                closeWatchers();
             }
-            for (const auto& [peerFp, state] : told) {
-                sink(peerFp, state);
-            }
-            told.clear();
+            tellChanges();
         }
-        closeRunner(watcher);
-        closeRunner(holder);
+        closeWatchers();
+        for (auto& [day, lane] : holders) {
+            closeRunner(lane.runner);
+        }
     }
 };
+
 
 Presence::Presence(PresenceAccount account, PresenceNet net, PresenceSink sink,
     const PresenceTimings timings)

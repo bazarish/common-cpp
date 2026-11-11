@@ -7,6 +7,7 @@
 #include "OutboundCourier.hpp"
 #include "AccountDb.hpp"
 #include "Authorship.hpp"
+#include "PresenceSeed.hpp"
 #include "Session.hpp"
 #include "WireLog.hpp"
 
@@ -16,6 +17,7 @@
 #include <bazarish/AliasMaintenance.hpp>
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
+#include <bazarish/Clock.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/FederationFrame.hpp>
 #include <bazarish/Hybrid.hpp>
@@ -89,6 +91,8 @@ http::Server::Options localOptions()
 
 constexpr int kServiceUnavailable = 503;
 constexpr std::size_t kSneakPassBytes = 32;
+constexpr int kQuietPasses = 3;
+constexpr std::size_t kShortReaderBytes = 31;
 constexpr std::array<std::uint8_t, 3> kJpegOpening{0xFF, 0xD8, 0xFF};
 
 void respondJson(http::Response& response, const nlohmann::json& body)
@@ -1976,9 +1980,7 @@ int main()
                 {"sealing", toBase64(Key::generateSealing().publicDer())},
                 {"dest", std::string(52, 'q') + ".b32.i2p"},
                 {"servingKey", toBase64(Key::generateSealing().publicDer())},
-                {"pass", toBase64(randomBytes(kSneakPassBytes))},
-                {"presenceKey", toBase64(Key::generateX25519().publicDer())},
-                {"presenceDest", std::string(52, 'r') + ".b32.i2p"}};
+                {"pass", toBase64(randomBytes(kSneakPassBytes))}};
             nlohmann::json request = {{"v", 1}, {"type", "contact.request"}, {"id", "sneak-request"},
                 {"from", sneak.fingerprint()}, {"sentAt", 1}, {"text", "hello"}, {"dn", "Sneak"},
                 {"bootstrap", bootstrap}};
@@ -2186,6 +2188,184 @@ int main()
             bob->setTransferHandler({});
             fs::remove(offered);
             fs::remove(gDir);
+        }
+
+        {
+            std::atomic<std::int64_t> utc{nowSeconds()};
+            const UtcClock clock = [&utc]() { return utc.load(); };
+            const auto accountAt = [&](const std::string& name, const AccountKind kind,
+                                       const std::string& dest) {
+                const fs::path dir = scratch / name;
+                fs::remove(dir);
+                std::unique_ptr<Session> session = Session::create(dir, kind, endpoint, std::string{});
+                {
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    m.destFor[session->fingerprint()] = dest;
+                }
+                session->setPresenceClock(clock);
+                session->registerAccount();
+                session->setFetchTransport(directDial);
+                session->setOutboundCourier(courierFor());
+                return session;
+            };
+            const auto befriend = [&](Session& asking, Session& asked) {
+                addByInvite(asking, asked.inviteUri(), "schedules");
+                CHECK(testutil::waitFor([&]() {
+                    asked.sync();
+                    return asked.contactIsPending(asking.fingerprint());
+                }));
+                asked.acceptContactRequest(asking.fingerprint());
+            };
+            const auto offer = [&](const Identity& from, const nlohmann::json& days, Session& to) {
+                nlohmann::json inner = {{"v", 1}, {"type", "presence.schedule"},
+                    {"id", toHex(randomBytes(kMessageIdBytes))}, {"from", from.fingerprint()},
+                    {"sentAt", nowMillis()}, {"days", days}};
+                signAuthorship(inner, from, /*withKeys=*/false);
+                {
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    m.mailbox[to.fingerprint()].push_back({inner.at("id").get<std::string>(),
+                        "content",
+                        hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({inner}))),
+                            Key::fromPublicDer(fromBase64(to.sealingPublicB64())))});
+                }
+                for (const IncomingMessage& item : to.sync()) {
+                    CHECK(item.contentType != "unsupported");
+                }
+            };
+
+            const fs::path earlyPam = scratch / "bz-presence-early.bundle";
+            std::unique_ptr<Session> pam
+                = accountAt("bz-presence-pam", AccountKind::eUser,
+                    "plkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+            fs::remove(earlyPam);
+            pam->exportAccount(earlyPam, "bundle-password");
+            std::unique_ptr<Session> quin
+                = accountAt("bz-presence-quin", AccountKind::eUser,
+                    "qlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+            const PresenceDay today = presenceDayOf(utc.load());
+            befriend(*pam, *quin);
+            const PresenceSchedule pamDays = presenceScheduleFrom(pam->presenceSeed(), today);
+            const PresenceSchedule quinDays = presenceScheduleFrom(quin->presenceSeed(), today);
+            CHECK(testutil::waitFor([&]() {
+                quin->sync();
+                pam->sync();
+                return pam->contactPresence(quin->fingerprint()) == quinDays
+                    && quin->contactPresence(pam->fingerprint()) == pamDays;
+            }));
+
+            {
+                const fs::path laterPam = scratch / "bz-presence-later.bundle";
+                fs::remove(laterPam);
+                pam->exportAccount(laterPam, "bundle-password");
+                const fs::path restoredDir = scratch / "bz-presence-restored";
+                fs::remove(restoredDir);
+                Session::importAccount(laterPam, restoredDir, "bundle-password");
+                const std::unique_ptr<Session> restored = Session::open(restoredDir, std::string{});
+                CHECK(restored->presenceSeed().bytes() == pam->presenceSeed().bytes());
+                CHECK(restored->contactPresence(quin->fingerprint()) == quinDays);
+
+                const fs::path twinDir = scratch / "bz-presence-twin";
+                fs::remove(twinDir);
+                Session::importAccount(earlyPam, twinDir, "bundle-password");
+                const std::unique_ptr<Session> twin = Session::open(twinDir, std::string{});
+                twin->setPresenceClock(clock);
+                CHECK(twin->presenceSeed().bytes() == pam->presenceSeed().bytes());
+                CHECK(!twin->hasContact(quin->fingerprint()));
+                CHECK(testutil::waitFor([&]() {
+                    twin->sync();
+                    pam->sync();
+                    return twin->contactPresence(quin->fingerprint()) == quinDays;
+                }));
+            }
+
+            const Identity quinIdentity = Identity::fromPrivatePem(
+                AccountDb(scratch / "bz-presence-quin", std::string{}).text("identity.pem"));
+            const PresenceSeed otherSeed = PresenceSeed::generate();
+            const auto unchanged = [&]() {
+                return pam->contactPresence(quin->fingerprint()) == quinDays;
+            };
+            offer(Identity::generate(), presenceScheduleJson(presenceScheduleFrom(otherSeed, today + 1)),
+                *pam);
+            CHECK(unchanged());
+            {
+                nlohmann::json gap = presenceScheduleJson(presenceScheduleFrom(otherSeed, today + 1));
+                gap.erase(gap.begin() + 1);
+                offer(quinIdentity, gap, *pam);
+                CHECK(unchanged());
+                offer(quinIdentity,
+                    presenceScheduleJson(
+                        presenceScheduleFrom(otherSeed, today + 1, kPresenceHorizonDays + 1)),
+                    *pam);
+                CHECK(unchanged());
+                nlohmann::json plainHost = presenceScheduleJson(presenceScheduleFrom(otherSeed, today + 1));
+                plainHost[0]["dest"] = "qlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+                offer(quinIdentity, plainHost, *pam);
+                CHECK(unchanged());
+                nlohmann::json shortKey = presenceScheduleJson(presenceScheduleFrom(otherSeed, today + 1));
+                shortKey[0]["reader"] = toBase64(randomBytes(kShortReaderBytes));
+                offer(quinIdentity, shortKey, *pam);
+                CHECK(unchanged());
+                offer(quinIdentity, presenceScheduleJson(presenceScheduleFrom(otherSeed, today - 2)),
+                    *pam);
+                CHECK(unchanged());
+                offer(quinIdentity, presenceScheduleJson(presenceScheduleFrom(otherSeed, today - 1)),
+                    *pam);
+                CHECK(unchanged());
+                pam->setBlocked(quin->fingerprint(), true);
+                offer(quinIdentity, presenceScheduleJson(presenceScheduleFrom(otherSeed, today + 1)),
+                    *pam);
+                pam->setBlocked(quin->fingerprint(), false);
+                CHECK(unchanged());
+            }
+
+            {
+                std::unique_ptr<Session> robot = accountAt("bz-presence-bot", AccountKind::eBot,
+                    "rlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+                befriend(*pam, *robot);
+                CHECK(testutil::waitFor([&]() {
+                    robot->sync();
+                    pam->sync();
+                    return pam->canWriteTo(robot->fingerprint());
+                }));
+                robot->sync();
+                pam->sync();
+                CHECK(pam->contactPresence(robot->fingerprint()).empty());
+                CHECK(robot->contactPresence(pam->fingerprint()).empty());
+                const Identity robotIdentity = Identity::fromPrivatePem(
+                    AccountDb(scratch / "bz-presence-bot", std::string{}).text("identity.pem"));
+                offer(robotIdentity, presenceScheduleJson(presenceScheduleFrom(otherSeed, today)), *pam);
+                CHECK(pam->contactPresence(robot->fingerprint()).empty());
+                const Identity pamIdentity = Identity::fromPrivatePem(
+                    AccountDb(scratch / "bz-presence-pam", std::string{}).text("identity.pem"));
+                offer(pamIdentity, presenceScheduleJson(presenceScheduleFrom(otherSeed, today)), *robot);
+                CHECK(robot->contactPresence(pam->fingerprint()).empty());
+            }
+
+            const PresenceSchedule moved = presenceScheduleFrom(quin->presenceSeed(), today + 1);
+            offer(quinIdentity, presenceScheduleJson(moved), *pam);
+            CHECK(pam->contactPresence(quin->fingerprint()) == moved);
+
+            const std::int64_t wholeDays = kPresenceHorizonDays - kPresenceRefreshBelowDays - 1;
+            utc.store(utc.load() + wholeDays * kSecondsPerDay);
+            for (int pass = 0; pass < kQuietPasses; ++pass) {
+                pam->sync();
+                quin->sync();
+            }
+            const PresenceSchedule stillHeld = quin->contactPresence(pam->fingerprint());
+            CHECK(!stillHeld.empty());
+            CHECK(stillHeld.front().day == today + wholeDays);
+            CHECK(stillHeld.back().day == pamDays.back().day);
+
+            utc.store(utc.load() + 2 * kSecondsPerDay);
+            pam->flushPendingEchoes();
+            utc.store(utc.load() + kSecondsPerHour);
+            const PresenceSchedule refreshed
+                = presenceScheduleFrom(pam->presenceSeed(), today + wholeDays + 2);
+            CHECK(testutil::waitFor([&]() {
+                pam->sync();
+                quin->sync();
+                return quin->contactPresence(pam->fingerprint()) == refreshed;
+            }));
         }
     }
 

@@ -157,6 +157,11 @@ bool isB32I2pHost(const std::string& host)
     return true;
 }
 
+bool isB33I2pHost(const std::string& host)
+{
+    return isB32I2pHost(host) && host.size() == kB33LabelChars + kB32SuffixLen;
+}
+
 void validateB32I2pHost(const std::string& host)
 {
     if (!isB32I2pHost(host)) {

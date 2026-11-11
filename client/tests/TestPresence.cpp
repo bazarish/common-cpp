@@ -1,8 +1,9 @@
 // Bazarish project (c) 2026
-#include "I2pKeys.hpp"
 #include "Presence.hpp"
+#include "PresenceSeed.hpp"
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/Clock.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Hybrid.hpp>
 #include <nlohmann/json.hpp>
@@ -49,6 +50,20 @@ constexpr milliseconds kAwayBeforeReturn{1000};
 constexpr std::size_t kWatchersPerFocus = 2;
 constexpr milliseconds kSlowPublish{3000};
 constexpr milliseconds kBeforeOwnAddress{1500};
+// 2026-11-11, noon UTC.
+constexpr PresenceDay kDay = 20768;
+constexpr std::int64_t kNoon = kDay * kSecondsPerDay + kSecondsPerDay / 2;
+constexpr std::int64_t kScheduledDays = 2;
+constexpr std::int64_t kBeforeOverlap = kPresenceHalfOverlapSeconds + kSecondsPerMinute;
+constexpr std::int64_t kInOverlap = kPresenceHalfOverlapSeconds - kSecondsPerMinute;
+constexpr std::size_t kFrameHeaderBytes = 1 + kPresenceSubscriptionIdBytes;
+
+std::atomic<std::int64_t> g_utc{kNoon};
+
+std::int64_t fakeUtc()
+{
+    return g_utc.load();
+}
 
 PresenceTimings fastTimings()
 {
@@ -60,6 +75,7 @@ PresenceTimings fastTimings()
     timings.typingPulse = milliseconds(500);
     timings.readersSettle = milliseconds(200);
     timings.tick = milliseconds(20);
+    timings.utcNow = fakeUtc;
     return timings;
 }
 
@@ -80,23 +96,18 @@ public:
         std::mutex mutex;
         std::condition_variable arrived;
         std::deque<Bytes> queue;
+        std::uint64_t received = 0;
     };
-
-    void knowReader(const Key& key)
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        publicOf_[toHex(key.rawPrivate())] = key.rawPublic();
-    }
 
     std::shared_ptr<Box> open(const PresenceLinkConfig& config)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto box = std::make_shared<Box>();
-        box->host = config.keys.has_value() ? i2pRoutingHost(config.keys->blob())
+        box->host = config.keys.has_value() ? i2p::routingHost(config.keys->publicBase64())
                                             : "watcher" + std::to_string(++opened_) + ".b32.i2p";
         box->readers = config.readers;
         if (!config.readerKey.empty()) {
-            box->readerPublic = publicOf_.at(toHex(config.readerKey));
+            box->readerPublic = Key::fromRawX25519Private(config.readerKey).rawPublic();
         }
         box->generation = ++opened_;
         box->publishedAt = std::chrono::steady_clock::now()
@@ -118,6 +129,7 @@ public:
         std::shared_ptr<Box> target;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            ++sentTo_[host];
             const std::pair<std::uint64_t, std::string> route{from.generation, host};
             if (const auto known = resolved_.find(route); known != resolved_.end()) {
                 target = known->second;
@@ -142,6 +154,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(target->mutex);
             target->queue.push_back(datagram);
+            ++target->received;
         }
         target->arrived.notify_all();
     }
@@ -204,6 +217,25 @@ public:
             }));
     }
 
+    std::uint64_t sentTo(const std::string& host)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return sentTo_[host];
+    }
+
+    std::uint64_t receivedBy(const Key& reader)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::uint64_t received = 0;
+        for (const std::shared_ptr<Box>& box : live_) {
+            if (box->readerPublic == reader.rawPublic()) {
+                std::lock_guard<std::mutex> boxLock(box->mutex);
+                received += box->received;
+            }
+        }
+        return received;
+    }
+
     int holdersOf(const std::string& host)
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -214,7 +246,7 @@ public:
 private:
     const milliseconds holderPublishDelay_;
     std::mutex mutex_;
-    std::map<std::string, Bytes> publicOf_;
+    std::map<std::string, std::uint64_t> sentTo_;
     std::vector<std::shared_ptr<Box>> live_;
     std::vector<std::shared_ptr<Box>> published_;
     std::map<std::pair<std::uint64_t, std::string>, std::shared_ptr<Box>> resolved_;
@@ -273,9 +305,9 @@ private:
 struct Person {
     Identity identity = Identity::generate();
     Key sealing = Key::generateSealing();
-    Key presence = Key::generateX25519();
-    Bytes destKeys = generateI2pMaster().privateKeys;
-    std::string dest = i2pRoutingHost(destKeys);
+    PresenceSeed seed = PresenceSeed::generate();
+    Key presence = seed.readerFor(kDay);
+    std::string dest = seed.hostFor(kDay);
 
     PresenceAccount account() const
     {
@@ -283,8 +315,7 @@ struct Person {
         account.fingerprint = identity.fingerprint();
         account.identityPem = identity.privatePem();
         account.sealingPem = sealing.privatePem();
-        account.readerKey = presence.rawPrivate();
-        account.destKeys = destKeys;
+        account.seed = seed.bytes();
         return account;
     }
 
@@ -299,10 +330,71 @@ struct Person {
         contact.fingerprint = identity.fingerprint();
         contact.sealingKeyDer = sealing.publicDer();
         contact.identity = IdentityKeys{identity.classical().publicDer(), identity.pq().publicDer()};
-        contact.presenceKeyDer = presence.publicDer();
-        contact.presenceDest = dest;
+        contact.schedule = presenceScheduleFrom(seed, kDay, kScheduledDays);
         return contact;
     }
+};
+
+// A watching address of the test's own: it knocks as a contact and reads what comes back.
+class Door {
+public:
+    Door(FakeNet& net, const Key& reader)
+        : link_(net, net.open(configFor(reader)))
+    {
+    }
+
+    bool knock(const Person& from, const Person& to, const std::string& toHost)
+    {
+        PresenceWatch watch;
+        watch.id = randomBytes(kPresenceSubscriptionIdBytes);
+        watch.key = randomBytes(kAeadKeyBytes);
+        watch.from = from.fp();
+        watch.reply = link_.host();
+        watch.sentAt = g_utc.load();
+        key_ = watch.key;
+        link_.send(toHost,
+            presenceWatchFrame(watch, from.identity.classical(), Key::fromPublicDer(to.sealing.publicDer())));
+        return next(kKnockWait).has_value();
+    }
+
+    std::optional<nlohmann::json> next(const milliseconds within)
+    {
+        const std::optional<Bytes> frame = link_.receive(within);
+        if (!frame || frame->size() < kFrameHeaderBytes + kAeadNonceBytes) {
+            return std::nullopt;
+        }
+        const auto nonceAt = frame->begin() + static_cast<std::ptrdiff_t>(kFrameHeaderBytes);
+        const auto sealedAt = nonceAt + static_cast<std::ptrdiff_t>(kAeadNonceBytes);
+        const std::optional<Bytes> plain
+            = aeadOpen(key_, Bytes(nonceAt, sealedAt), Bytes(sealedAt, frame->end()));
+        if (!plain) {
+            return std::nullopt;
+        }
+        return nlohmann::json::from_cbor(*plain);
+    }
+
+    bool hearsMoved(const milliseconds within)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + within;
+        while (std::chrono::steady_clock::now() < deadline) {
+            const std::optional<nlohmann::json> said = next(kPoll);
+            if (said && said->value("moved", false)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+private:
+    static PresenceLinkConfig configFor(const Key& reader)
+    {
+        PresenceLinkConfig config;
+        config.readerKey = reader.rawPrivate();
+        return config;
+    }
+
+    FakeLink link_;
+    Bytes key_;
 };
 
 class Observer {
@@ -393,9 +485,6 @@ int main()
     const Person frank;
     const Person gwen;
     const Person hal;
-    for (const Person* person : {&alice, &bob, &carol, &dave, &erin, &frank, &gwen, &hal}) {
-        net.knowReader(person->presence);
-    }
 
     Observer bobSees;
     Presence bob1(bob.account(), netFor(net), bobSees.sink(), fastTimings());
@@ -547,9 +636,7 @@ int main()
                 watch.key = randomBytes(kAeadKeyBytes);
                 watch.from = dave.fp();
                 watch.reply = inbox.host();
-                watch.sentAt = std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::system_clock::now().time_since_epoch())
-                                   .count();
+                watch.sentAt = g_utc.load();
                 inbox.send(alice.dest, presenceWatchFrame(watch, signer, aliceSealing));
                 return inbox.receive(kKnockWait).has_value();
             };
@@ -565,6 +652,10 @@ int main()
             wronglyTyped();
             CHECK(knock(dave.identity.classical()));
             CHECK(!knock(bob.identity.classical()));
+            Door tomorrows(net, dave.seed.readerFor(kDay + 1));
+            CHECK(!tomorrows.knock(dave, alice, alice.dest));
+            Door todays(net, dave.seed.readerFor(kDay));
+            CHECK(todays.knock(dave, alice, alice.dest));
         }
         const std::uint64_t beforeReorder = net.newestGeneration(alice.dest);
         alice1.setContacts({dave.contact(), bob.contact()});
@@ -587,7 +678,7 @@ int main()
     for (std::size_t index = 0; index < kMaxPresenceReaders + kCrowdBeyondCap; ++index) {
         PresenceContact contact = bob.contact();
         contact.fingerprint = "crowd" + std::to_string(index);
-        contact.presenceKeyDer = Key::generateX25519().publicDer();
+        contact.schedule = presenceScheduleFrom(PresenceSeed::generate(), kDay, 1);
         crowd.push_back(std::move(contact));
     }
     alice1.setContacts(crowd);
@@ -611,8 +702,6 @@ int main()
         FakeNet slowNet(kSlowPublish);
         const Person liz;
         const Person mia;
-        slowNet.knowReader(liz.presence);
-        slowNet.knowReader(mia.presence);
         Observer miaSees;
         Presence mia1(mia.account(), netFor(slowNet), miaSees.sink(), fastTimings());
         mia1.setContacts({liz.contact()});
@@ -634,8 +723,6 @@ int main()
     {
         const Person ivy;
         const Person jon;
-        net.knowReader(ivy.presence);
-        net.knowReader(jon.presence);
         PresenceTimings longPulse = fastTimings();
         longPulse.typingPulse = kLongSilence;
         Observer jonSees;
@@ -651,6 +738,122 @@ int main()
         CHECK(typeUntilSeen(ivy1, jon.fp(), jonSees, ivy.fp()));
         ivy1.stoppedTyping(jon.fp());
         CHECK(jonSees.waitFor(ivy.fp(), kOnline, kSettle));
+    }
+
+    {
+        const Person rita;
+        const Person sam;
+        PresenceContact samUnscheduled = sam.contact();
+        samUnscheduled.schedule.clear();
+        PresenceContact ritaUnscheduled = rita.contact();
+        ritaUnscheduled.schedule.clear();
+        Observer ritaSees;
+        Presence rita1(rita.account(), netFor(net), ritaSees.sink(), fastTimings());
+        rita1.setContacts({samUnscheduled});
+        Observer samSees;
+        Presence sam1(sam.account(), netFor(net), samSees.sink(), fastTimings());
+        sam1.setContacts({ritaUnscheduled});
+        rita1.setFocused(true);
+        sam1.setFocused(true);
+        rita1.watch({sam.fp()});
+        sam1.watch({rita.fp()});
+        std::this_thread::sleep_for(kQuietWatch);
+        CHECK(ritaSees.history(sam.fp()).empty());
+        CHECK(samSees.history(rita.fp()).empty());
+        CHECK(net.sentTo(sam.dest) == 0);
+        CHECK(net.sentTo(rita.dest) == 0);
+        CHECK(net.holdersOf(sam.dest) == 0);
+        CHECK(net.holdersOf(rita.dest) == 0);
+    }
+
+    {
+        const Person tom;
+        const Person uma;
+        const Person vic;
+        PresenceTimings settled = fastTimings();
+        settled.readersSettle = kLongSilence;
+        Observer tomSees;
+        Presence tom1(tom.account(), netFor(net), tomSees.sink(), settled);
+        tom1.setContacts({uma.contact(), vic.contact()});
+        tom1.setFocused(true);
+        Observer umaSees;
+        Presence uma1(uma.account(), netFor(net), umaSees.sink(), fastTimings());
+        uma1.setContacts({tom.contact()});
+        uma1.setFocused(true);
+        uma1.watch({tom.fp()});
+        Observer vicSees;
+        Presence vic1(vic.account(), netFor(net), vicSees.sink(), fastTimings());
+        vic1.setContacts({tom.contact()});
+        vic1.setFocused(true);
+        vic1.watch({tom.fp()});
+        CHECK(umaSees.waitFor(tom.fp(), kOnline));
+        CHECK(vicSees.waitFor(tom.fp(), kOnline));
+        const std::uint64_t leaseSet = net.newestGeneration(tom.dest);
+        tom1.setContacts({vic.contact()});
+        Door umaDoor(net, uma.presence);
+        CHECK(!umaDoor.knock(uma, tom, tom.dest));
+        Door vicDoor(net, vic.presence);
+        CHECK(vicDoor.knock(vic, tom, tom.dest));
+        CHECK(net.newestGeneration(tom.dest) == leaseSet);
+        CHECK(umaSees.waitFor(tom.fp(), kOffline));
+        CHECK(vicSees.of(tom.fp()) == kOnline);
+    }
+
+    {
+        const Person pia;
+        const Person quin;
+        PresenceTimings lasting = fastTimings();
+        lasting.subscriptionLife = kLongSilence;
+        const std::int64_t midnight = presenceDayStart(kDay + 1);
+        g_utc.store(midnight - kBeforeOverlap);
+        Observer piaSees;
+        Presence pia1(pia.account(), netFor(net), piaSees.sink(), lasting);
+        pia1.setContacts({quin.contact()});
+        Observer quinSees;
+        Presence quin1(quin.account(), netFor(net), quinSees.sink(), lasting);
+        quin1.setContacts({pia.contact()});
+        pia1.setFocused(true);
+        quin1.setFocused(true);
+        pia1.watch({quin.fp()});
+        quin1.watch({pia.fp()});
+        CHECK(piaSees.waitFor(quin.fp(), kOnline));
+        CHECK(quinSees.waitFor(pia.fp(), kOnline));
+        CHECK(net.holdersOf(pia.seed.hostFor(kDay + 1)) == 0);
+        Door before(net, quin.presence);
+        CHECK(before.knock(quin, pia, pia.dest));
+        const std::size_t piaMark = quinSees.history(pia.fp()).size();
+        const std::size_t quinMark = piaSees.history(quin.fp()).size();
+
+        g_utc.store(midnight - kInOverlap);
+        const Key piaTomorrow = pia.seed.readerFor(kDay + 1);
+        const Key quinTomorrow = quin.seed.readerFor(kDay + 1);
+        CHECK(testutil::waitFor([&]() {
+            return net.holdersOf(pia.seed.hostFor(kDay + 1)) == 1
+                && net.holdersOf(quin.seed.hostFor(kDay + 1)) == 1
+                && net.receivedBy(piaTomorrow) > 0 && net.receivedBy(quinTomorrow) > 0;
+        }));
+        CHECK(net.holdersOf(pia.dest) == 1);
+        CHECK(net.holdersOf(quin.dest) == 1);
+        CHECK(net.watchersOf(pia.presence) > 0);
+        {
+            Door wrongDay(net, quin.presence);
+            CHECK(!wrongDay.knock(quin, pia, pia.seed.hostFor(kDay + 1)));
+            Door rightDay(net, quinTomorrow);
+            CHECK(rightDay.knock(quin, pia, pia.seed.hostFor(kDay + 1)));
+        }
+
+        g_utc.store(midnight + kBeforeOverlap);
+        CHECK(testutil::waitFor([&]() {
+            return net.holdersOf(pia.dest) == 0 && net.holdersOf(quin.dest) == 0;
+        }));
+        CHECK(before.hearsMoved(kSettle));
+        CHECK(net.holdersOf(pia.seed.hostFor(kDay + 1)) == 1);
+        CHECK(typeUntilSeen(pia1, quin.fp(), quinSees, pia.fp()));
+        CHECK(quinSees.waitFor(pia.fp(), kOnline));
+        CHECK(!quinSees.sawSince(pia.fp(), piaMark, kOffline));
+        CHECK(!piaSees.sawSince(quin.fp(), quinMark, kOffline));
+        CHECK(piaSees.of(quin.fp()) == kOnline);
+        g_utc.store(kNoon);
     }
 
     std::fprintf(stderr, "TestPresence passed\n");

@@ -7,6 +7,8 @@
 #include "bazarish/Log.hpp"
 #include "bazarish/RawPathChooser.hpp"
 
+#include "OpenSslHandles.hpp"
+
 #include <utility>
 
 #include <boost/asio.hpp>
@@ -67,6 +69,12 @@ using backend::DestTag;
 namespace {
 
 constexpr i2pd::data::SigningKeyType kSigType = i2pd::data::SIGNING_KEY_TYPE_EDDSA_SHA512_ED25519;
+constexpr i2pd::data::CryptoKeyType kSeededCryptoType
+    = i2pd::data::CRYPTO_KEY_TYPE_ECIES_X25519_AEAD;
+// RFC 8032 and RFC 7748: Ed25519 and X25519 raw keys are both 32 bytes.
+constexpr std::size_t kRawKeyBytes = 32;
+constexpr std::size_t kSigningFieldOffset = sizeof(i2pd::data::Identity::publicKey);
+constexpr std::size_t kSigningFieldBytes = sizeof(i2pd::data::Identity::signingKey);
 constexpr i2pd::data::SigningKeyType kB33SigType
     = i2pd::data::SIGNING_KEY_TYPE_REDDSA_SHA512_ED25519;
 constexpr int kMaxB33Days = 0xFFFF;
@@ -202,6 +210,23 @@ Bytes createB33OfflineKeys(
         offset += keyLen;
     }
     return batch;
+}
+
+Bytes rawPublicOf(const int type, const Bytes& rawPrivate)
+{
+    const std::unique_ptr<EVP_PKEY, ossl::Freer<&EVP_PKEY_free>> key(
+        EVP_PKEY_new_raw_private_key(type, nullptr, rawPrivate.data(), rawPrivate.size()));
+    if (!key)
+    {
+        throw std::runtime_error("bazarish::i2p: a seed is not a raw private key");
+    }
+    Bytes raw(kRawKeyBytes);
+    std::size_t length = raw.size();
+    if (EVP_PKEY_get_raw_public_key(key.get(), raw.data(), &length) != 1 || length != raw.size())
+    {
+        throw std::runtime_error("bazarish::i2p: no raw public key for a seed");
+    }
+    return raw;
 }
 
 bool isClosedStatus(i2pd::stream::StreamStatus status)
@@ -1601,6 +1626,32 @@ Bytes issueTransientBlob(const Bytes& master, const int days)
     const Bytes batch = createB33OfflineKeys(keys, days, midnight);
     blob.insert(blob.end(), batch.begin(), batch.end());
     return blob;
+}
+
+Bytes keysBlobFromSeeds(const Bytes& signingSeed, const Bytes& cryptoSeed)
+{
+    if (signingSeed.size() != kRawKeyBytes || cryptoSeed.size() != kRawKeyBytes)
+    {
+        throw std::invalid_argument("bazarish::i2p: a key seed is 32 bytes");
+    }
+    ensureCryptoInit();
+    const Bytes signingPublic = rawPublicOf(EVP_PKEY_ED25519, signingSeed);
+    const Bytes cryptoPublic = rawPublicOf(EVP_PKEY_X25519, cryptoSeed);
+    const i2pd::data::IdentityEx identity(
+        cryptoPublic.data(), signingPublic.data(), kSigType, kSeededCryptoType);
+    Bytes blob(identity.GetFullLen());
+    if (identity.ToBuffer(blob.data(), blob.size()) != blob.size())
+    {
+        throw std::runtime_error("bazarish::i2p: the identity did not serialize");
+    }
+    // i2pd pads both key fields at random; a derived destination pads them with zeros.
+    std::fill(blob.begin() + kRawKeyBytes,
+        blob.begin() + kSigningFieldOffset + kSigningFieldBytes - kRawKeyBytes, 0);
+    blob.insert(blob.end(), cryptoSeed.begin(), cryptoSeed.end());
+    blob.insert(blob.end(), signingSeed.begin(), signingSeed.end());
+    Bytes keys = serializeKeys(parseKeys(blob));
+    OPENSSL_cleanse(blob.data(), blob.size());
+    return keys;
 }
 
 std::optional<std::int64_t> offlineExpires(const Bytes& blob)

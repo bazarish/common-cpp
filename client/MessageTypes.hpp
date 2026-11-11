@@ -18,6 +18,7 @@ inline constexpr char kTypeBotCommand[] = "bot.command";
 inline constexpr char kTypeBotCallback[] = "bot.callback";
 inline constexpr char kTypeContactRequest[] = "contact.request";
 inline constexpr char kTypeContactAccept[] = "contact.accept";
+inline constexpr char kTypePresenceSchedule[] = "presence.schedule";
 inline constexpr char kTypeUnsupported[] = "unsupported";
 inline constexpr char kTypeGroupState[] = "group.state";
 inline constexpr char kTypeGroupReactions[] = "group.reactions";

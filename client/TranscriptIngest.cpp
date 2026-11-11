@@ -99,7 +99,7 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
     if (!message.sentByUs && !noteGroupBlock(message)) {
         return false;
     }
-    if (type == kTypeGroupState) {
+    if (type == kTypeGroupState || type == kTypePresenceSchedule) {
         return true;
     }
     if (type == kTypeGroupReactions) {

@@ -278,21 +278,19 @@ int main()
 
         const std::unique_ptr<Session> user = Session::create(kinds / "user.db", AccountKind::eUser);
         CHECK(user->kind() == AccountKind::eUser);
-        CHECK(user->presenceKey().rawPrivate().size() == 32);
-        CHECK(!user->presenceDest().empty());
-        const std::string userPresence = user->presenceDest();
+        CHECK(user->presenceSeed().bytes().size() == kPresenceSeedBytes);
+        const Bytes userSeed = user->presenceSeed().bytes();
+        CHECK(Session::open(kinds / "user.db")->presenceSeed().bytes() == userSeed);
         const Bytes userBundle = user->exportAccountBytes("pw");
         CHECK(Session::bundleKind(userBundle, "pw") == AccountKind::eUser);
         Session::importAccountBytes(userBundle, kinds / "user-copy.db", "pw");
         const std::unique_ptr<Session> userCopy = Session::open(kinds / "user-copy.db");
         CHECK(userCopy->kind() == AccountKind::eUser);
-        CHECK(userCopy->presenceDest() == userPresence);
-        CHECK(userCopy->presenceKey().rawPrivate() == user->presenceKey().rawPrivate());
+        CHECK(userCopy->presenceSeed().bytes() == userSeed);
 
         const std::unique_ptr<Session> bot = Session::create(kinds / "bot.db", AccountKind::eBot);
         CHECK(bot->kind() == AccountKind::eBot);
-        CHECK(bot->presenceDest().empty());
-        CHECK_THROWS(bot->presenceKey());
+        CHECK_THROWS(bot->presenceSeed());
         const Bytes botBundle = bot->exportAccountBytes("pw");
         CHECK(Session::bundleKind(botBundle, "pw") == AccountKind::eBot);
         Session::importAccountBytes(botBundle, kinds / "bot-copy.db", "pw");
@@ -311,7 +309,7 @@ int main()
 
         {
             AccountDb db(kinds / "user.db", std::string{});
-            db.erase("presence-dest");
+            db.erase("presence-seed");
         }
         CHECK_THROWS(Session::open(kinds / "user.db"));
     }

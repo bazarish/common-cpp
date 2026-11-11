@@ -144,8 +144,6 @@ int main()
             card.dest = bobDest;
             card.sealingPublicKeyDer = bobSealing.publicDer();
             card.servingSealingKeyDer = servingSealing.publicDer();
-            card.presenceKeyDer = Key::generateX25519().publicDer();
-            card.presenceDest = bobDest;
             outcome.sealed = KeyedSeal(bobCardKey, kCardReplyLabel).seal(card.issue(bob));
             return outcome;
         }
@@ -279,8 +277,6 @@ int main()
         serving.servingSealingKeyDer = servingSealing.publicDer();
         ContactCard content;
         content.sealingPublicKeyDer = aliceSealing.publicDer();
-        content.presenceKeyDer = Key::generateX25519().publicDer();
-        content.presenceDest = aliceDest;
         const PublishResult result = client.publishCard(content, aliceCardKey, serving, 0);
         CHECK(!result.approvalPending);
         CHECK(result.dest == aliceDest);

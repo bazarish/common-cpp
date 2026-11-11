@@ -14,7 +14,7 @@ constexpr std::size_t kMaxMessageIdBytes = 64;
 constexpr std::size_t kMaxMediaNameBytes = 255;
 constexpr std::size_t kMaxMediaMimeBytes = 255;
 // All but the media of the heaviest picture or voice message, as TestDeliveryPass weighs it.
-constexpr std::size_t kMediaMessageReserveBytes = 7905;
+constexpr std::size_t kMediaMessageReserveBytes = 7755;
 constexpr std::size_t kMaxMediaBytes = kMaxSealedBodyBytes - kMediaMessageReserveBytes;
 constexpr std::size_t kMaxPendingContactRequests = 30;
 

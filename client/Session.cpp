@@ -121,28 +121,10 @@ constexpr std::size_t kEndedCallsRemembered = 32;
 constexpr int kMessageFormatVersion = 1;
 constexpr int kBundleFormatVersion = 2;
 
-constexpr char kPresenceKeyRow[] = "presence.pem";
-constexpr char kPresenceDestRow[] = "presence-dest";
+constexpr char kPresenceSeedRow[] = "presence-seed";
+constexpr std::int64_t kPresenceScheduleSpreadSeconds = kSecondsPerHour;
 constexpr char kAddressSealingRow[] = "address-sealing.pem";
 constexpr char kAddressSigningRow[] = "address-signing.pem";
-
-void applyPresence(Contact& contact, const AccountKind kind, const std::string& presenceKeyB64,
-    const std::string& presenceDest)
-{
-    contact.kind = kind;
-    if (kind != AccountKind::eUser) {
-        contact.presenceKeyB64.clear();
-        contact.presenceDest.clear();
-        return;
-    }
-    const Key key = Key::fromPublicDer(fromBase64(presenceKeyB64));
-    if (key.hasKem() || !key.isA(kClassicalSealingAlgorithm)) {
-        throw std::runtime_error("a presence key is a bare X25519 key");
-    }
-    validateB32I2pHost(presenceDest);
-    contact.presenceKeyB64 = presenceKeyB64;
-    contact.presenceDest = presenceDest;
-}
 
 nlohmann::json readBundle(const Bytes& plain)
 {
@@ -159,8 +141,7 @@ nlohmann::json readBundle(const Bytes& plain)
 
 void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap)
 {
-    applyPresence(contact, accountKindFromName(bootstrap.at("kind").get<std::string>()),
-        bootstrap.value("presenceKey", std::string()), bootstrap.value("presenceDest", std::string()));
+    contact.kind = accountKindFromName(bootstrap.at("kind").get<std::string>());
     if (bootstrap.contains("sealing")) {
         contact.sealingPublicB64 = bootstrap.at("sealing").get<std::string>();
     }
@@ -477,13 +458,10 @@ std::unique_ptr<Session> Session::create(const fs::path& accountFile, const Acco
     Key sealing = Key::generateSealing();
     db->putText("sealing.pem", sealing.privatePem());
 
-    std::optional<Key> presenceKey;
-    Bytes presenceDestKeys;
+    std::optional<PresenceSeed> presenceSeed;
     if (kind == AccountKind::eUser) {
-        presenceKey = Key::generateX25519();
-        db->putText(kPresenceKeyRow, presenceKey->privatePem());
-        presenceDestKeys = generateI2pMaster().privateKeys;
-        db->put(kPresenceDestRow, presenceDestKeys);
+        presenceSeed = PresenceSeed::generate();
+        db->put(kPresenceSeedRow, presenceSeed->bytes());
     }
 
     const std::string clientId = toHex(randomBytes(8));
@@ -524,11 +502,7 @@ std::unique_ptr<Session> Session::create(const fs::path& accountFile, const Acco
     session->deliverySecret_ = fromHex(deliverySecret);
     session->cardKey_ = cardKey;
     session->kind_ = kind;
-    session->presenceKey_ = std::move(presenceKey);
-    session->presenceDestKeys_ = std::move(presenceDestKeys);
-    if (kind == AccountKind::eUser) {
-        session->presenceDest_ = i2pRoutingHost(session->presenceDestKeys_);
-    }
+    session->presenceSeed_ = std::move(presenceSeed);
     session->client_->setAccountLabel(session->accountLabel());
     return session;
 }
@@ -616,8 +590,8 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
         for (const auto& [fingerprint, entry] : stored.items()) {
             Contact contact;
             contact.kind = accountKindFromName(entry.at("kind").get<std::string>());
-            contact.presenceKeyB64 = entry.at("presenceKeyB64").get<std::string>();
-            contact.presenceDest = entry.at("presenceDest").get<std::string>();
+            contact.presence = presenceScheduleFromJson(entry.at("presence"));
+            contact.presenceSentThrough = entry.at("presenceSentThrough").get<PresenceDay>();
             contact.sealingPublicB64 = entry.at("sealingPublicB64").get<std::string>();
             contact.dest = entry.at("dest").get<std::string>();
             contact.servingSealingB64 = entry.at("servingSealingB64").get<std::string>();
@@ -702,13 +676,11 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     session->cardKey_ = linkKeyFromText(meta.at("cardKey").get<std::string>());
     session->kind_ = accountKindFromName(meta.at("kind").get<std::string>());
     if (session->kind_ == AccountKind::eUser) {
-        const std::string presencePem = session->db_->text(kPresenceKeyRow);
-        session->presenceDestKeys_ = session->db_->get(kPresenceDestRow).value_or(Bytes{});
-        if (presencePem.empty() || session->presenceDestKeys_.empty()) {
-            throw std::runtime_error("this account has no presence keys and cannot be opened");
+        std::optional<Bytes> seed = session->db_->get(kPresenceSeedRow);
+        if (!seed.has_value()) {
+            throw std::runtime_error("this account has no presence seed and cannot be opened");
         }
-        session->presenceKey_ = Key::fromPrivatePem(presencePem);
-        session->presenceDest_ = i2pRoutingHost(session->presenceDestKeys_);
+        session->presenceSeed_.emplace(std::move(*seed));
     }
     if (!session->cardB64_.empty()) {
         const ContactCard card = ContactCard::verify(fromBase64(session->cardB64_));
@@ -838,17 +810,23 @@ AccountKind Session::contactKind(const std::string& peerFingerprint) const
     return found->second.kind;
 }
 
+PresenceSchedule Session::contactPresence(const std::string& peerFingerprint) const
+{
+    const auto found = contacts_.find(peerFingerprint);
+    return found == contacts_.end() ? PresenceSchedule{} : found->second.presence;
+}
+
 std::string Session::sealingPublicB64() const
 {
     return toBase64(sealingKey_.publicDer());
 }
 
-const Key& Session::presenceKey() const
+const PresenceSeed& Session::presenceSeed() const
 {
-    if (!presenceKey_.has_value()) {
-        throw std::logic_error("only a user account has a presence key");
+    if (!presenceSeed_.has_value()) {
+        throw std::logic_error("only a user account has a presence seed");
     }
-    return *presenceKey_;
+    return *presenceSeed_;
 }
 
 ContactCard Session::cardContent() const
@@ -856,16 +834,12 @@ ContactCard Session::cardContent() const
     ContactCard card;
     card.kind = kind_;
     card.sealingPublicKeyDer = sealingKey_.publicDer();
-    if (kind_ == AccountKind::eUser) {
-        card.presenceKeyDer = presenceKey().publicDer();
-        card.presenceDest = presenceDest_;
-    }
     return card;
 }
 
 nlohmann::json Session::bootstrapBlock(const std::string& pass) const
 {
-    nlohmann::json block = {
+    return {
         {"kind", std::string(accountKindName(kind_))},
         {"sealing", sealingPublicB64()},
         {"dest", myDest_},
@@ -873,11 +847,6 @@ nlohmann::json Session::bootstrapBlock(const std::string& pass) const
         {"cardKey", linkKeyText(cardKey_)},
         {"pass", pass},
     };
-    if (kind_ == AccountKind::eUser) {
-        block["presenceKey"] = toBase64(presenceKey().publicDer());
-        block["presenceDest"] = presenceDest_;
-    }
-    return block;
 }
 
 AccountKind Session::storedKind(const fs::path& accountFile, const std::string& passphrase)
@@ -965,8 +934,8 @@ nlohmann::json Session::contactsToJson() const
     for (const auto& [fingerprint, contact] : contacts_) {
         stored[fingerprint] = {
             {"kind", std::string(accountKindName(contact.kind))},
-            {"presenceKeyB64", contact.presenceKeyB64},
-            {"presenceDest", contact.presenceDest},
+            {"presence", presenceScheduleJson(contact.presence)},
+            {"presenceSentThrough", contact.presenceSentThrough},
             {"sealingPublicB64", contact.sealingPublicB64},
             {"dest", contact.dest},
             {"servingSealingB64", contact.servingSealingB64},
@@ -2216,7 +2185,7 @@ void Session::recordRequestedContact(const std::string& peerFingerprint,
     validateB32I2pHost(info.card.dest);
 
     Contact& contact = contacts_[peerFingerprint];
-    applyPresence(contact, info.card.kind, toBase64(info.card.presenceKeyDer), info.card.presenceDest);
+    contact.kind = info.card.kind;
     contact.dest = info.card.dest;
     contact.cardKey = info.cardKey;
     contact.sealingPublicB64 = toBase64(peerPrekey.publicDer());
@@ -3843,6 +3812,11 @@ std::vector<IncomingMessage> Session::takeIn(
                         message.timerSeconds = body.at("seconds").get<std::int64_t>();
                     } else if (type == "contact.accept") {
                         message.contentType = type;
+                    } else if (type == kTypePresenceSchedule) {
+                        message.contentType = type;
+                        if (!fromOurselves && !message.sentByUs) {
+                            takePresenceSchedule(message.fromFingerprint, body);
+                        }
                     } else if (type == "contact.routing") {
                         message.contentType = type;
                     } else {
@@ -3900,6 +3874,7 @@ std::vector<IncomingMessage> Session::takeIn(
 
     for (const std::string& peer : establishedPeers) {
         maybeSendAvatarToContact(peer);
+        offerPresenceSchedule(peer);
     }
 
     retryPendingRevokes();
@@ -4080,12 +4055,14 @@ void Session::flushPendingEchoes()
     std::vector<std::string> established;
     std::vector<std::string> notEstablished;
     std::vector<std::pair<std::string, bool>> told;
+    std::vector<EchoQueue::ScheduleTold> schedulesTold;
     {
         const std::lock_guard<std::mutex> lock(echoQueue_->mutex);
         ready.swap(echoQueue_->pending);
         established.swap(echoQueue_->established);
         notEstablished.swap(echoQueue_->notEstablished);
         told.swap(echoQueue_->routingTold);
+        schedulesTold.swap(echoQueue_->schedulesTold);
     }
     for (const std::string& peerFingerprint : established) {
         const auto found = contacts_.find(peerFingerprint);
@@ -4104,6 +4081,7 @@ void Session::flushPendingEchoes()
             bazarish::log::warn("contact-accept self-sync failed: {}", error.what());
         }
         maybeSendAvatarToContact(peerFingerprint);
+        offerPresenceSchedule(peerFingerprint);
     }
     for (const std::string& peerFingerprint : notEstablished) {
         const auto found = contacts_.find(peerFingerprint);
@@ -4129,6 +4107,19 @@ void Session::flushPendingEchoes()
             routingFanoutSink_(peerFingerprint, delivered);
         }
     }
+    for (const EchoQueue::ScheduleTold& schedule : schedulesTold) {
+        presenceInFlight_.erase(schedule.peer);
+        const auto found = contacts_.find(schedule.peer);
+        if (!schedule.stored || found == contacts_.end()) {
+            bazarish::log::info("presence: a schedule for {} did not land",
+                bazarish::log::redact(schedule.peer));
+            continue;
+        }
+        found->second.presenceSentThrough
+            = std::max(found->second.presenceSentThrough, schedule.through);
+        persistContacts();
+    }
+    keepPresenceSchedules();
 }
 
 void Session::echoSentToSelf(const std::string& peerFingerprint, const nlohmann::json& inner)
@@ -4158,8 +4149,8 @@ nlohmann::json Session::contactBookEntry(
     nlohmann::json entry = {
         {"peer", peerFingerprint},
         {"kind", std::string(accountKindName(contact.kind))},
-        {"presenceKey", contact.presenceKeyB64},
-        {"presenceDest", contact.presenceDest},
+        {"presence", presenceScheduleJson(contact.presence)},
+        {"presenceSentThrough", contact.presenceSentThrough},
         {"pass", contact.sendPass},
         {"sealing", contact.sealingPublicB64},
         {"dest", contact.dest},
@@ -4243,9 +4234,15 @@ void Session::applyContactBook(const nlohmann::json& entries)
         fill(contact.identityClassicalB64, entry.value("identityClassical", std::string()));
         fill(contact.identityPqB64, entry.value("identityPq", std::string()));
         if (isNew) {
-            applyPresence(contact, accountKindFromName(entry.at("kind").get<std::string>()),
-                entry.at("presenceKey").get<std::string>(),
-                entry.at("presenceDest").get<std::string>());
+            contact.kind = accountKindFromName(entry.at("kind").get<std::string>());
+        }
+        if (contact.kind == AccountKind::eUser) {
+            contact.presence = mergedSchedule(contact.presence,
+                presenceScheduleFromJson(entry.at("presence")), presenceToday());
+            contact.presenceSentThrough = std::max(contact.presenceSentThrough,
+                entry.at("presenceSentThrough").get<PresenceDay>());
+        }
+        if (isNew) {
             contact.notifications = entry.value("notifications", true);
             contact.allowCalls = entry.value("allowCalls", true);
             contact.issuedToThem = entry.value("issuedToThem", false);
@@ -4454,11 +4451,12 @@ void Session::startPresence(PresenceSink sink)
     account.fingerprint = fingerprint();
     account.identityPem = identity.privatePem();
     account.sealingPem = sealingKey_.privatePem();
-    account.readerKey = presenceKey().rawPrivate();
-    account.destKeys = presenceDestKeys_;
+    account.seed = presenceSeed().bytes();
     account.shown = showPresence_;
+    PresenceTimings timings;
+    timings.utcNow = presenceClock_;
     presence_ = std::make_unique<Presence>(std::move(account),
-        i2pPresenceNet(i2pDirFor(accountPath_), accountLabel()), std::move(sink));
+        i2pPresenceNet(i2pDirFor(accountPath_), accountLabel()), std::move(sink), timings);
     setPresenceOrder(presenceOrder_);
 }
 
@@ -4479,15 +4477,126 @@ void Session::setPresenceOrder(const std::vector<std::string>& chatOrder)
     for (const std::string& peerFingerprint : chatOrder) {
         const auto found = contacts_.find(peerFingerprint);
         if (found == contacts_.end() || isBlocked(peerFingerprint) || !found->second.issuedToThem
-            || found->second.kind != AccountKind::eUser || found->second.presenceKeyB64.empty()) {
+            || found->second.kind != AccountKind::eUser) {
             continue;
         }
         const Contact& contact = found->second;
         ordered.push_back(PresenceContact{peerFingerprint, fromBase64(contact.sealingPublicB64),
             IdentityKeys{fromBase64(contact.identityClassicalB64), fromBase64(contact.identityPqB64)},
-            fromBase64(contact.presenceKeyB64), contact.presenceDest});
+            contact.presence});
     }
     presence_->setContacts(std::move(ordered));
+}
+
+void Session::setPresenceClock(UtcClock clock)
+{
+    presenceClock_ = std::move(clock);
+}
+
+PresenceDay Session::presenceToday() const
+{
+    return presenceDayOf(presenceClock_());
+}
+
+bool Session::sendsPresenceTo(const std::string& peerFingerprint) const
+{
+    const auto found = contacts_.find(peerFingerprint);
+    return kind_ == AccountKind::eUser && !switchedOff_ && found != contacts_.end()
+        && found->second.kind == AccountKind::eUser && found->second.issuedToThem
+        && !found->second.sendPass.empty() && !isBlocked(peerFingerprint)
+        && !isSavedChat(peerFingerprint);
+}
+
+void Session::sendPresenceSchedule(const std::string& peerFingerprint)
+{
+    const PresenceSchedule schedule = presenceScheduleFrom(presenceSeed(), presenceToday());
+    const PresenceDay through = schedule.back().day;
+    DeliveryWatch watch;
+    watch.onOutcome = [echoQueue = echoQueue_, peerFingerprint, through](
+                          const OutboundCourier::Outcome& outcome) {
+        const std::lock_guard<std::mutex> lock(echoQueue->mutex);
+        echoQueue->schedulesTold.push_back({peerFingerprint, through, outcome.stored});
+    };
+    sendContent(peerFingerprint,
+        envelope(kTypePresenceSchedule, newMessageId(), {{"days", presenceScheduleJson(schedule)}}),
+        watch);
+    presenceInFlight_.insert(peerFingerprint);
+}
+
+void Session::offerPresenceSchedule(const std::string& peerFingerprint)
+{
+    if (!sendsPresenceTo(peerFingerprint) || presenceInFlight_.contains(peerFingerprint)) {
+        return;
+    }
+    presenceDue_.erase(peerFingerprint);
+    try {
+        sendPresenceSchedule(peerFingerprint);
+    } catch (const std::exception& error) {
+        bazarish::log::warn("presence: no schedule went to {}: {}",
+            bazarish::log::redact(peerFingerprint), error.what());
+    }
+}
+
+void Session::keepPresenceSchedules()
+{
+    if (kind_ != AccountKind::eUser || switchedOff_) {
+        return;
+    }
+    const std::int64_t utc = presenceClock_();
+    const PresenceDay today = presenceDayOf(utc);
+    if (presenceCheckedDay_ != today) {
+        presenceCheckedDay_ = today;
+        bool trimmed = false;
+        for (auto& [peerFingerprint, contact] : contacts_) {
+            PresenceSchedule kept = trimmedSchedule(contact.presence, today);
+            if (kept.size() != contact.presence.size()) {
+                contact.presence = std::move(kept);
+                trimmed = true;
+            }
+            const std::int64_t daysLeft
+                = contact.presenceSentThrough >= today ? contact.presenceSentThrough - today + 1 : 0;
+            if (daysLeft < kPresenceRefreshBelowDays && sendsPresenceTo(peerFingerprint)
+                && !presenceInFlight_.contains(peerFingerprint)) {
+                presenceDue_.try_emplace(peerFingerprint,
+                    utc + static_cast<std::int64_t>(randomBelow(kPresenceScheduleSpreadSeconds)));
+            }
+        }
+        if (trimmed) {
+            persistContacts();
+            setPresenceOrder(presenceOrder_);
+        }
+    }
+    std::vector<std::string> ready;
+    for (const auto& [peerFingerprint, dueAt] : presenceDue_) {
+        if (dueAt <= utc) {
+            ready.push_back(peerFingerprint);
+        }
+    }
+    for (const std::string& peerFingerprint : ready) {
+        offerPresenceSchedule(peerFingerprint);
+        presenceDue_.erase(peerFingerprint);
+    }
+}
+
+void Session::takePresenceSchedule(const std::string& peerFingerprint, const nlohmann::json& body)
+{
+    const auto found = contacts_.find(peerFingerprint);
+    if (kind_ != AccountKind::eUser || found == contacts_.end()
+        || found->second.kind != AccountKind::eUser || isBlocked(peerFingerprint)) {
+        bazarish::log::info("presence: a schedule from {}, who has no presence here, was dropped",
+            bazarish::log::redact(peerFingerprint));
+        noteWire(false, "presence schedule from an account without presence", "dropped", {});
+        return;
+    }
+    const PresenceDay today = presenceToday();
+    PresenceSchedule kept
+        = mergedSchedule(found->second.presence, offeredPresenceSchedule(body.at("days"), today), today);
+    if (kept == found->second.presence) {
+        return;
+    }
+    found->second.presence = std::move(kept);
+    persistContacts();
+    setPresenceOrder(presenceOrder_);
 }
 
 void Session::presenceWatch(std::vector<std::string> peerFingerprints)
@@ -5335,8 +5444,7 @@ Bytes Session::accountBundle()
         {"blocked", nlohmann::json(blocked_)},
     };
     if (kind_ == AccountKind::eUser) {
-        bundle["presencePem"] = presenceKey().privatePem();
-        bundle["presenceDest"] = toBase64(presenceDestKeys_);
+        bundle["presenceSeed"] = toBase64(presenceSeed().bytes());
     }
     const std::string text = bundle.dump();
     return Bytes(text.begin(), text.end());
@@ -5376,9 +5484,8 @@ void Session::importAccountBundle(
     db.putText("identity.pem", identity.privatePem());
     db.putText("sealing.pem", sealing.privatePem());
     if (kind == AccountKind::eUser) {
-        db.putText(kPresenceKeyRow,
-            Key::fromPrivatePem(bundle.at("presencePem").get<std::string>()).privatePem());
-        db.put(kPresenceDestRow, fromBase64(bundle.at("presenceDest").get<std::string>()));
+        db.put(kPresenceSeedRow,
+            PresenceSeed(fromBase64(bundle.at("presenceSeed").get<std::string>())).bytes());
     }
 
     nlohmann::json meta = bundle.at("meta");

@@ -7,6 +7,7 @@
 #include <bazarish/HttpServer.hpp>
 #include <bazarish/WebSocket.hpp>
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -32,6 +33,18 @@ public:
     }
 
     std::string fingerprint() const { return identity_.fingerprint(); }
+
+    std::vector<Bytes> received()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return received_;
+    }
+
+    void askRenewals()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        renewDue_ = keyedEndpoints_;
+    }
 
     int start(http::Server& server)
     {
@@ -86,12 +99,24 @@ private:
             raw->close();
             return;
         }
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            received_.push_back(*opened);
+        }
         answer(channel, gateway::decode(*opened));
     }
 
-    static void answer(const http::SocketPtr& socket, const gateway::Frame& frame)
+    void answer(const http::SocketPtr& socket, const gateway::Frame& frame)
     {
         using gateway::FrameType;
+        std::vector<std::uint32_t> renewing;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            renewing.swap(renewDue_);
+        }
+        for (const std::uint32_t endpoint : renewing) {
+            socket->send(gateway::encode(FrameType::eEndpointRenew, endpoint));
+        }
         if (frame.type == FrameType::eHello) {
             socket->send(gateway::encodeJson(FrameType::eReady, frame.ref,
                 {{"version", gateway::kProtocolVersion}, {"i2pd", "test"},
@@ -106,6 +131,10 @@ private:
                     {"leaseSets", 0}, {"localRoute", false}}));
             socket->send(gateway::encodeJson(
                 FrameType::eOk, frame.ref, {{"host", kFakeGatewayHost}, {"kind", "stream"}}));
+            if (gateway::bodyJson(frame).contains("keys")) {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                keyedEndpoints_.push_back(frame.ref);
+            }
         }
     }
 
@@ -115,6 +144,9 @@ private:
     const gateway::Cover cover_;
     std::mutex mutex_;
     std::map<const http::Socket*, std::shared_ptr<gateway::ChannelSocket>> channels_;
+    std::vector<Bytes> received_;
+    std::vector<std::uint32_t> keyedEndpoints_;
+    std::vector<std::uint32_t> renewDue_;
 };
 
 }  // namespace bazarish::test

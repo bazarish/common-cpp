@@ -2,11 +2,12 @@
 #include "bazarish/Certificates.hpp"
 
 #include "bazarish/Hybrid.hpp"
-#include "bazarish/I2pAddress.hpp"
 
 #include <nlohmann/json.hpp>
 
+#include <set>
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 
@@ -31,24 +32,19 @@ void requireSigner(const VerifiedJson& verified, const std::string& expectedFing
     }
 }
 
-void requirePresenceFieldsMatch(const bazarish::ContactCard& card)
+void requireExactFields(const nlohmann::json& body, const std::set<std::string_view>& fields)
 {
-    const bool carriesKey = !card.presenceKeyDer.empty();
-    const bool carriesDest = !card.presenceDest.empty();
-    if (card.kind != bazarish::AccountKind::eUser) {
-        if (carriesKey || carriesDest) {
-            throw std::runtime_error("only a user card carries presence");
+    if (!body.is_object() || body.size() != fields.size()) {
+        throw std::runtime_error("a document must carry exactly the fields of its type");
+    }
+    for (const auto& [name, value] : body.items()) {
+        if (!fields.contains(name)) {
+            throw std::runtime_error("a document carries a field its type does not have: " + name);
         }
-        return;
+        if (value.is_string() && value.get_ref<const std::string&>().empty()) {
+            throw std::runtime_error("a document carries an empty field: " + name);
+        }
     }
-    if (!carriesKey || !carriesDest) {
-        throw std::runtime_error("a user card must carry its presence key and address");
-    }
-    const bazarish::Key key = bazarish::Key::fromPublicDer(card.presenceKeyDer);
-    if (key.hasKem() || !key.isA(bazarish::kClassicalSealingAlgorithm)) {
-        throw std::runtime_error("a presence key is a bare X25519 key");
-    }
-    bazarish::validateB32I2pHost(card.presenceDest);
 }
 
 }  // namespace
@@ -60,6 +56,20 @@ const char* const kAliasCertificateType = "alias-certificate";
 const char* const kServerCardType = "server-card";
 const char* const kNodeCardType = "node-card";
 const char* const kDelegationCertificateType = "delegation-certificate";
+constexpr char kVersionField[] = "v";
+constexpr char kTypeField[] = "t";
+constexpr char kIssuedAtField[] = "issuedAt";
+constexpr char kKindField[] = "kind";
+constexpr char kDestField[] = "dest";
+constexpr char kSealingKeyField[] = "sealingKey";
+constexpr char kServingKeyField[] = "servingKey";
+
+const std::set<std::string_view>& contactCardFields()
+{
+    static const std::set<std::string_view> kFields{kVersionField, kTypeField, kIssuedAtField,
+        kKindField, kDestField, kSealingKeyField, kServingKeyField};
+    return kFields;
+}
 
 const char* cardType(const bazarish::ServerCard::Service service)
 {
@@ -73,58 +83,29 @@ namespace bazarish {
 
 Bytes ContactCard::issue(const Identity& userIdentity) const
 {
-    requirePresenceFieldsMatch(*this);
-    nlohmann::json body = {
-        {"v", kCertificateFormatVersion},
-        {"t", kContactCardType},
-        {"issuedAt", issuedAt},
-        {"kind", std::string(accountKindName(kind))},
+    const nlohmann::json body = {
+        {kVersionField, kCertificateFormatVersion},
+        {kTypeField, kContactCardType},
+        {kIssuedAtField, issuedAt},
+        {kKindField, std::string(accountKindName(kind))},
+        {kDestField, dest},
+        {kSealingKeyField, toBase64(sealingPublicKeyDer)},
+        {kServingKeyField, toBase64(servingSealingKeyDer)},
     };
-    if (!dest.empty()) {
-        body["dest"] = dest;
-    }
-    if (!sealingPublicKeyDer.empty()) {
-        body["sealingKey"] = toBase64(sealingPublicKeyDer);
-    }
-    if (!servingSealingKeyDer.empty()) {
-        body["servingKey"] = toBase64(servingSealingKeyDer);
-    }
-    if (!presenceKeyDer.empty()) {
-        body["presenceKey"] = toBase64(presenceKeyDer);
-        body["presenceDest"] = presenceDest;
-    }
+    requireExactFields(body, contactCardFields());
     return hybrid::signJson(body, userIdentity);
 }
 
 ContactCard ContactCard::verify(const Bytes& der)
 {
     const VerifiedJson verified = verifyTagged(der, kContactCardType);
+    requireExactFields(verified.body, contactCardFields());
     ContactCard card;
-    if (!verified.body.contains("issuedAt")) {
-        throw std::runtime_error("a contact card must say when it was signed");
-    }
-    card.issuedAt = verified.body.at("issuedAt").get<std::int64_t>();
-    if (!verified.body.contains("kind")) {
-        throw std::runtime_error("a contact card must say what kind of account it is");
-    }
-    card.kind = accountKindFromName(verified.body.at("kind").get<std::string>());
-    if (verified.body.contains("presenceKey")) {
-        card.presenceKeyDer = fromBase64(verified.body.at("presenceKey").get<std::string>());
-    }
-    if (verified.body.contains("presenceDest")) {
-        card.presenceDest = verified.body.at("presenceDest").get<std::string>();
-    }
-    requirePresenceFieldsMatch(card);
-    if (verified.body.contains("dest")) {
-        card.dest = verified.body.at("dest").get<std::string>();
-    }
-    if (verified.body.contains("sealingKey")) {
-        card.sealingPublicKeyDer = fromBase64(verified.body.at("sealingKey").get<std::string>());
-    }
-    if (verified.body.contains("servingKey")) {
-        card.servingSealingKeyDer
-            = fromBase64(verified.body.at("servingKey").get<std::string>());
-    }
+    card.issuedAt = verified.body.at(kIssuedAtField).get<std::int64_t>();
+    card.kind = accountKindFromName(verified.body.at(kKindField).get<std::string>());
+    card.dest = verified.body.at(kDestField).get<std::string>();
+    card.sealingPublicKeyDer = fromBase64(verified.body.at(kSealingKeyField).get<std::string>());
+    card.servingSealingKeyDer = fromBase64(verified.body.at(kServingKeyField).get<std::string>());
     card.identityClassicalDer = verified.signerClassicalDer;
     card.identityPqDer = verified.signerPqDer;
     return card;
@@ -149,14 +130,6 @@ Key ContactCard::servingSealingKey() const
         throw std::runtime_error("contact card carries no serving sealing key");
     }
     return Key::fromPublicDer(servingSealingKeyDer);
-}
-
-Key ContactCard::presenceKey() const
-{
-    if (presenceKeyDer.empty()) {
-        throw std::runtime_error("contact card carries no presence key");
-    }
-    return Key::fromPublicDer(presenceKeyDer);
 }
 
 Bytes AliasCertificate::issue(

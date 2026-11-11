@@ -137,6 +137,7 @@ std::unique_ptr<RouterBackend> makeEmbeddedRouter(const RouterConfig& config);
 std::string embeddedRouterVersion();
 std::vector<Bytes> embeddedSampleRouterInfos(std::size_t count);
 Bytes generateKeysBlob();
+Bytes keysBlobFromSeeds(const Bytes& signingSeed, const Bytes& cryptoSeed);
 // I2CP lease-set options take the raw X25519 key in I2P base64.
 inline constexpr std::size_t kLeaseSetKeyBytes = 32;
 std::string leaseSetKeyBase64(const Bytes& raw);

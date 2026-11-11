@@ -78,6 +78,11 @@ Keys Keys::fromBlob(const Bytes& blob)
     return keys;
 }
 
+Keys Keys::fromSeeds(const Bytes& signingSeed, const Bytes& cryptoSeed)
+{
+    return fromBlob(backend::keysBlobFromSeeds(signingSeed, cryptoSeed));
+}
+
 Bytes Keys::blob() const
 {
     return impl_->blob;

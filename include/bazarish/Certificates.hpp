@@ -24,9 +24,6 @@ struct ContactCard {
     Bytes sealingPublicKeyDer;
     std::int64_t issuedAt = 0;
     Bytes servingSealingKeyDer;
-    // Only a user card carries these two; a bot or chat card carries neither.
-    Bytes presenceKeyDer;
-    std::string presenceDest;
     // SPKI DER.
     Bytes identityClassicalDer;
     Bytes identityPqDer;
@@ -38,7 +35,6 @@ struct ContactCard {
 
     Key sealingKey() const;
     Key servingSealingKey() const;
-    Key presenceKey() const;
 };
 
 struct AliasCertificate {
