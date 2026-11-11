@@ -321,6 +321,14 @@ public:
     int outboundTunnels() const override { return 0; }
     std::vector<TransportPeer> transportPeers() const override { return {}; }
     std::vector<LocalDestination> localDestinations() const override;
+    std::optional<DestinationDetail> destinationDetail(const std::string&) const override
+    {
+        notWithAGateway("a destination's tunnels and lease sets");
+    }
+    bool refreshLeaseSet(const std::string&, const std::string&) override
+    {
+        notWithAGateway("refreshing a lease set");
+    }
 
     void setSocksProxy(const std::string&, int) override
     {

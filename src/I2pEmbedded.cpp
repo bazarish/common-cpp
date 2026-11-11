@@ -996,6 +996,8 @@ public:
     int outboundTunnels() const override;
     std::vector<TransportPeer> transportPeers() const override;
     std::vector<LocalDestination> localDestinations() const override;
+    std::optional<DestinationDetail> destinationDetail(const std::string& host) const override;
+    bool refreshLeaseSet(const std::string& localHost, const std::string& remoteHost) override;
     void setSocksProxy(const std::string& host, int port) override;
     ProxyState proxyState() const override;
     void setReseedUrls(const std::vector<std::string>& urls) override;
@@ -1019,6 +1021,14 @@ public:
     };
     mutable std::mutex destsMutex;
     mutable std::vector<DestEntry> dests;
+
+    struct HeldDest {
+        DestEntry entry;
+        std::shared_ptr<i2pd::client::ClientDestination> dest;
+    };
+    std::optional<HeldDest> heldDest(const std::string& host) const;
+    static LocalDestination describe(
+        const DestEntry& entry, const i2pd::client::ClientDestination& dest);
 
     ~EmbeddedRouter()
     {
@@ -1245,36 +1255,205 @@ void EmbeddedRouter::retagEndpoint(
         std::move(label), std::move(accountLabel));
 }
 
-std::vector<LocalDestination> EmbeddedRouter::localDestinations() const
+LocalDestination EmbeddedRouter::describe(
+    const DestEntry& entry, const i2pd::client::ClientDestination& dest)
 {
     constexpr int kTunnelCountProbe = 64;
+    LocalDestination info;
+    info.label = entry.tag->label();
+    info.accountLabel = entry.tag->accountLabel();
+    info.host = entry.host;
+    info.published = entry.published;
+    info.ready = dest.IsReady();
+    info.remoteLeaseSets = dest.GetNumRemoteLeaseSets();
+    const auto tunnelPool = dest.GetTunnelPool();
+    info.closing = !tunnelPool || !tunnelPool->IsActive();
+    if (const auto pool = tunnelPool) {
+        info.inboundTunnels = static_cast<int>(pool->GetInboundTunnels(kTunnelCountProbe).size());
+        const auto outbound = pool->GetOutboundTunnelsList();
+        for (const auto& tunnel : outbound) {
+            if (tunnel && tunnel->IsEstablished()) {
+                ++info.outboundTunnels;
+            }
+        }
+    }
+    return info;
+}
+
+std::vector<LocalDestination> EmbeddedRouter::localDestinations() const
+{
     std::vector<LocalDestination> live;
     std::lock_guard<std::mutex> lock(destsMutex);
     std::erase_if(dests, [](const DestEntry& entry) { return entry.dest.expired(); });
     for (const DestEntry& entry : dests) {
         const std::shared_ptr<i2pd::client::ClientDestination> dest = entry.dest.lock();
         if (!dest) { continue; }
-        LocalDestination info;
-        info.label = entry.tag->label();
-        info.accountLabel = entry.tag->accountLabel();
-        info.host = entry.host;
-        info.published = entry.published;
-        info.ready = dest->IsReady();
-        info.remoteLeaseSets = dest->GetNumRemoteLeaseSets();
-        const auto tunnelPool = dest->GetTunnelPool();
-        info.closing = !tunnelPool || !tunnelPool->IsActive();
-        if (const auto pool = tunnelPool) {
-            info.inboundTunnels = static_cast<int>(pool->GetInboundTunnels(kTunnelCountProbe).size());
-            const auto outbound = pool->GetOutboundTunnelsList();
-            for (const auto& tunnel : outbound) {
-                if (tunnel && tunnel->IsEstablished()) {
-                    ++info.outboundTunnels;
-                }
-            }
-        }
-        live.push_back(std::move(info));
+        live.push_back(describe(entry, *dest));
     }
     return live;
+}
+
+std::optional<EmbeddedRouter::HeldDest> EmbeddedRouter::heldDest(const std::string& host) const
+{
+    const std::lock_guard<std::mutex> lock(destsMutex);
+    for (const DestEntry& entry : dests) {
+        if (entry.host != host) { continue; }
+        if (std::shared_ptr<i2pd::client::ClientDestination> dest = entry.dest.lock()) {
+            return HeldDest{entry, std::move(dest)};
+        }
+    }
+    return std::nullopt;
+}
+
+namespace {
+
+constexpr std::size_t kHopHashChars = 6;
+constexpr char kB32Suffix[] = ".b32.i2p";
+
+TunnelState tunnelStateOf(const i2pd::tunnel::TunnelState state)
+{
+    switch (state)
+    {
+        case i2pd::tunnel::eTunnelStatePending:
+        case i2pd::tunnel::eTunnelStateBuildReplyReceived: return TunnelState::eBuilding;
+        case i2pd::tunnel::eTunnelStateEstablished: return TunnelState::eEstablished;
+        case i2pd::tunnel::eTunnelStateExpiring: return TunnelState::eExpiring;
+        case i2pd::tunnel::eTunnelStateBuildFailed:
+        case i2pd::tunnel::eTunnelStateTestFailed:
+        case i2pd::tunnel::eTunnelStateFailed: return TunnelState::eFailed;
+    }
+    return TunnelState::eFailed;
+}
+
+TunnelDetail describeTunnel(const i2pd::tunnel::Tunnel& tunnel, const std::size_t bytes)
+{
+    TunnelDetail detail;
+    detail.inbound = tunnel.IsInbound();
+    for (const auto& hop : tunnel.GetPeers()) {
+        if (hop) {
+            detail.hops.push_back(hop->GetIdentHash().ToBase64().substr(0, kHopHashChars));
+        }
+    }
+    detail.state = tunnelStateOf(tunnel.GetState());
+    if (tunnel.LatencyIsKnown()) {
+        detail.latencyMs = tunnel.GetMeanLatency();
+    }
+    detail.bytes = bytes;
+    return detail;
+}
+
+std::string remoteHostOf(const i2pd::data::LeaseSet& leaseSet)
+{
+    if (leaseSet.IsPublishedEncrypted()) {
+        return i2pd::data::BlindedPublicKey(leaseSet.GetIdentity()).ToB33() + kB32Suffix;
+    }
+    return leaseSet.GetIdentHash().ToBase32() + kB32Suffix;
+}
+
+bool hasIdentity(const std::shared_ptr<i2pd::data::LeaseSet>& leaseSet)
+{
+    return leaseSet && leaseSet->GetIdentity();
+}
+
+std::vector<RemoteLeaseSet> remoteLeaseSetsOf(const i2pd::client::ClientDestination& dest)
+{
+    const std::int64_t now = static_cast<std::int64_t>(i2pd::util::GetMillisecondsSinceEpoch());
+    // An encrypted lease set is kept under its identity and under each day's blinded key.
+    std::map<std::string, RemoteLeaseSet> byHost;
+    for (const auto& leaseSet : dest.GetLeaseSetsList()) {
+        if (!hasIdentity(leaseSet)) { continue; }
+        RemoteLeaseSet entry;
+        entry.host = remoteHostOf(*leaseSet);
+        entry.expiresIn = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds(
+            static_cast<std::int64_t>(leaseSet->GetExpirationTime()) - now));
+        entry.leases = static_cast<int>(leaseSet->GetNonExpiredLeases(false).size());
+        const auto [held, added] = byHost.try_emplace(entry.host, entry);
+        if (!added && held->second.expiresIn < entry.expiresIn) {
+            held->second = std::move(entry);
+        }
+    }
+    std::vector<RemoteLeaseSet> listed;
+    listed.reserve(byHost.size());
+    for (auto& [host, entry] : byHost) { listed.push_back(std::move(entry)); }
+    return listed;
+}
+
+template <typename Work>
+auto onDestinationThread(i2pd::client::ClientDestination& dest, Work work)
+{
+    using Result = decltype(work());
+    const auto taken = std::make_shared<std::promise<Result>>();
+    std::future<Result> result = taken->get_future();
+    boost::asio::post(dest.GetService(), [taken, work = std::move(work)]() { taken->set_value(work()); });
+    if (result.wait_for(std::chrono::seconds(kSessionSnapshotSeconds)) != std::future_status::ready) {
+        throw std::runtime_error("bazarish::i2p: the destination's thread did not answer in time");
+    }
+    return result.get();
+}
+
+}  // namespace
+
+std::optional<DestinationDetail> EmbeddedRouter::destinationDetail(const std::string& host) const
+{
+    const std::optional<HeldDest> held = heldDest(host);
+    if (!held.has_value()) {
+        return std::nullopt;
+    }
+    DestinationDetail detail;
+    detail.destination = describe(held->entry, *held->dest);
+    if (const auto pool = held->dest->GetTunnelPool()) {
+        for (const auto& tunnel : pool->GetInboundTunnelsList()) {
+            if (tunnel) {
+                detail.tunnels.push_back(describeTunnel(*tunnel, tunnel->GetNumReceivedBytes()));
+            }
+        }
+        for (const auto& tunnel : pool->GetOutboundTunnelsList()) {
+            if (tunnel) {
+                detail.tunnels.push_back(describeTunnel(*tunnel, tunnel->GetNumSentBytes()));
+            }
+        }
+    }
+    const std::shared_ptr<i2pd::client::ClientDestination> dest = held->dest;
+    detail.leaseSets = onDestinationThread(*dest, [dest]() { return remoteLeaseSetsOf(*dest); });
+    return detail;
+}
+
+bool EmbeddedRouter::refreshLeaseSet(const std::string& localHost, const std::string& remoteHost)
+{
+    const std::optional<HeldDest> held = heldDest(localHost);
+    if (!held.has_value()) {
+        return false;
+    }
+    const auto answered = std::make_shared<std::promise<bool>>();
+    std::future<bool> answer = answered->get_future();
+    const std::shared_ptr<i2pd::client::ClientDestination> dest = held->dest;
+    boost::asio::post(dest->GetService(), [dest, remoteHost, answered]() {
+        std::vector<std::shared_ptr<i2pd::data::LeaseSet>> cached;
+        for (const auto& leaseSet : dest->GetLeaseSetsList()) {
+            if (hasIdentity(leaseSet) && remoteHostOf(*leaseSet) == remoteHost) {
+                cached.push_back(leaseSet);
+            }
+        }
+        if (cached.empty()) {
+            answered->set_value(false);
+            return;
+        }
+        const auto done = [answered](const std::shared_ptr<i2pd::data::LeaseSet>& found) {
+            answered->set_value(found && !found->IsExpired());
+        };
+        const std::shared_ptr<const i2pd::data::IdentityEx> identity = cached.front()->GetIdentity();
+        if (!cached.front()->IsPublishedEncrypted()) {
+            (void)dest->RequestDestination(identity->GetIdentHash(), done);
+            return;
+        }
+        // A lookup by blinded key answers from the cache while the cached copy is current.
+        for (const auto& leaseSet : cached) {
+            leaseSet->ExpireLease();
+        }
+        (void)dest->RequestDestinationWithEncryptedLeaseSet(
+            std::make_shared<i2pd::data::BlindedPublicKey>(identity), done);
+    });
+    return answer.get();
 }
 
 std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
@@ -1395,6 +1574,7 @@ Capabilities EmbeddedRouter::capabilities() const
     what.lateReaderKey = true;
     what.offlineKeys = true;
     what.reseed = true;
+    what.destinationDetail = true;
     return what;
 }
 

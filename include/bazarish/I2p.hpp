@@ -201,6 +201,7 @@ struct Capabilities {
     bool warmPool = false;
     // Endpoint::setLeaseSetReaderKey is supported.
     bool lateReaderKey = false;
+    bool destinationDetail = false;
 };
 
 inline constexpr int kDefaultSamControlPort = 7656;
@@ -255,6 +256,29 @@ struct LocalDestination {
     bool localRoute = false;
 };
 
+enum class TunnelState { eBuilding, eEstablished, eExpiring, eFailed };
+
+struct TunnelDetail {
+    bool inbound = false;
+    // Short router hashes, in the order the traffic passes them.
+    std::vector<std::string> hops;
+    TunnelState state = TunnelState::eBuilding;
+    std::optional<int> latencyMs;
+    std::uint64_t bytes = 0;
+};
+
+struct RemoteLeaseSet {
+    std::string host;
+    std::chrono::seconds expiresIn{0};
+    int leases = 0;
+};
+
+struct DestinationDetail {
+    LocalDestination destination;
+    std::vector<TunnelDetail> tunnels;
+    std::vector<RemoteLeaseSet> leaseSets;
+};
+
 struct TransportPeer {
     std::string ident;
     std::string transport;
@@ -292,6 +316,9 @@ public:
     int outboundTunnels() const;
     std::vector<TransportPeer> transportPeers() const;
     std::vector<LocalDestination> localDestinations() const;
+    std::optional<DestinationDetail> destinationDetail(const std::string& host) const;
+    // Blocks until the network answers; true when a current lease set came back.
+    bool refreshLeaseSet(const std::string& localHost, const std::string& remoteHost);
 
     void setSocksProxy(const std::string& host, int port);
     void setReseedUrls(const std::vector<std::string>& urls);

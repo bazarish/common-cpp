@@ -475,6 +475,16 @@ std::vector<LocalDestination> Router::localDestinations() const
     return impl_->transport->localDestinations();
 }
 
+std::optional<DestinationDetail> Router::destinationDetail(const std::string& host) const
+{
+    return impl_->transport->destinationDetail(host);
+}
+
+bool Router::refreshLeaseSet(const std::string& localHost, const std::string& remoteHost)
+{
+    return impl_->transport->refreshLeaseSet(localHost, remoteHost);
+}
+
 void Router::setSocksProxy(const std::string& host, const int port)
 {
     impl_->transport->setSocksProxy(host, port);

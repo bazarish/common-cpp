@@ -361,6 +361,16 @@ public:
         return destinations;
     }
 
+    std::optional<DestinationDetail> destinationDetail(const std::string&) const override
+    {
+        notWithAnExternalRouter("a destination's tunnels and lease sets");
+    }
+
+    bool refreshLeaseSet(const std::string&, const std::string&) override
+    {
+        notWithAnExternalRouter("refreshing a lease set");
+    }
+
     void setSocksProxy(const std::string&, int) override
     {
         notWithAnExternalRouter("the clearnet proxy");
