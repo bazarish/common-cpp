@@ -6,6 +6,9 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <string_view>
+#include <tuple>
+#include <vector>
 
 using namespace bazarish::log;
 
@@ -23,6 +26,28 @@ int main()
     CHECK(enabled(Level::eWarn));
     CHECK(!enabled(Level::eInfo));
     CHECK(!enabled(Level::eDebug));
+
+    for (const Level each : {Level::eError, Level::eWarn, Level::eInfo, Level::eDebug}) {
+        CHECK(levelFromString(levelName(each)) == each);
+    }
+
+    using Tapped = std::tuple<Level, std::string, std::string>;
+    std::vector<Tapped> tapped;
+    setComponent("tapped");
+    setLevel(Level::eInfo);
+    setTap([&tapped](const Level at, const std::string_view component,
+               const std::string_view message) {
+        tapped.emplace_back(at, std::string(component), std::string(message));
+    });
+    warn("seen {}", 1);
+    debug("below the level");
+    emit(Level::eDebug, "emitted directly");
+    setTap({});
+    error("after the tap is gone");
+    CHECK(tapped.size() == 2);
+    CHECK(tapped[0] == Tapped(Level::eWarn, "tapped", "seen 1"));
+    CHECK(tapped[1] == Tapped(Level::eDebug, "tapped", "emitted directly"));
+    setLevel(Level::eWarn);
 
     CHECK(redact("short") == "short");
     CHECK(redact("0123456789abcdef") == "01234567...");

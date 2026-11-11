@@ -83,6 +83,8 @@ constexpr std::size_t kDateStringBytes = 9;
 constexpr std::size_t kB32SuffixLen = 8;
 constexpr int kReceivePollSeconds = 5;
 constexpr int kServerShareRatio = 100;
+constexpr char kI2pdLogLevel[] = "warn";
+constexpr char kI2pdSilent[] = "none";
 constexpr int kSessionSnapshotSeconds = 2;
 constexpr int kDialRoundMillis = 30000;
 constexpr int kDialSliceMillis = 250;
@@ -323,6 +325,11 @@ std::atomic<bool> g_routerLive{false};
 std::string backend::embeddedRouterVersion()
 {
     return I2PD_VERSION;
+}
+
+void backend::setEmbeddedLogging(const bool enabled)
+{
+    i2pd::log::Logger().SetLogLevel(enabled ? kI2pdLogLevel : kI2pdSilent);
 }
 
 std::vector<Bytes> backend::embeddedSampleRouterInfos(const std::size_t count)
@@ -1143,7 +1150,7 @@ void EmbeddedRouter::start()
         if (!i2pLogging()) { return; }
         bazarish::log::emit(mapLevel(level), text);
     });
-    i2pd::log::Logger().SetLogLevel(i2pLogging() ? "warn" : "none");
+    backend::setEmbeddedLogging(i2pLogging());
     started = true;
     bazarish::log::info("i2p: engine running");
     io = std::make_shared<IoService>(ioContextCount());

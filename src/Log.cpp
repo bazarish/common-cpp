@@ -6,12 +6,14 @@
 #include <cstdlib>
 #include <mutex>
 #include <string>
+#include <utility>
 
 namespace {
 
 std::atomic<bazarish::log::Level> gLevel{bazarish::log::Level::eInfo};
 std::string gComponent = "bazarish";
 std::mutex gWriteMutex;
+bazarish::log::Tap gTap;
 
 const bool kUnderJournald = std::getenv("JOURNAL_STREAM") != nullptr;
 
@@ -86,6 +88,17 @@ Level level()
     return gLevel.load(std::memory_order_relaxed);
 }
 
+std::string_view levelName(const Level level)
+{
+    switch (level) {
+        case Level::eError: return "error";
+        case Level::eWarn:  return "warn";
+        case Level::eInfo:  return "info";
+        case Level::eDebug: return "debug";
+    }
+    return "info";
+}
+
 std::optional<Level> levelFromString(const std::string_view text)
 {
     if (text == "error") {
@@ -115,6 +128,15 @@ void emit(const Level level, const std::string_view message)
         : formatLine("{} {}: {}\n", levelTag(level), gComponent, message);
     const std::lock_guard<std::mutex> guard(gWriteMutex);
     std::fwrite(line.data(), 1, line.size(), stderr);
+    if (gTap) {
+        gTap(level, gComponent, message);
+    }
+}
+
+void setTap(Tap tap)
+{
+    const std::lock_guard<std::mutex> guard(gWriteMutex);
+    gTap = std::move(tap);
 }
 
 std::string redact(const std::string_view identifier)

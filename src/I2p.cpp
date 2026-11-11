@@ -200,6 +200,7 @@ TunnelLength tunnelLengthFor(const Privacy privacy)
 void setI2pLogging(const bool enabled)
 {
     g_i2pLogging = enabled;
+    backend::setEmbeddedLogging(enabled);
 }
 
 bool i2pLogging()

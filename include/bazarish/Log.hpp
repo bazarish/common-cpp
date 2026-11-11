@@ -3,6 +3,7 @@
 
 #include <optional>
 #include <chrono>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -32,10 +33,16 @@ void setLevel(Level level);
 Level level();
 
 std::optional<Level> levelFromString(std::string_view text);
+std::string_view levelName(Level level);
 
 bool enabled(Level level);
 
 void emit(Level level, std::string_view message);
+
+using Tap = std::function<void(
+    Level level, std::string_view component, std::string_view message)>;
+// Runs under the log's lock for every line written, so a tap must not log.
+void setTap(Tap tap);
 
 std::string redact(std::string_view identifier);
 
