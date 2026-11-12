@@ -86,6 +86,11 @@ bool isAvatarPicture(const Bytes& data, const std::string& mime)
 
 namespace {
 
+bool sharePresence(const AccountKind own, const AccountKind peer)
+{
+    return own == AccountKind::eUser && peer == AccountKind::eUser;
+}
+
 bool isBlank(const std::string& text)
 {
     return text.find_first_not_of(" \t\r\n") == std::string::npos;
@@ -584,14 +589,17 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     Key sealing = Key::fromPrivatePem(db->text("sealing.pem"));
     const std::string clientId = meta.at("clientId").get<std::string>();
 
+    const AccountKind ownKind = accountKindFromName(meta.at("kind").get<std::string>());
     std::map<std::string, Contact> contacts;
     if (db->has("contacts")) {
         const nlohmann::json stored = parseJson(db->text("contacts"));
         for (const auto& [fingerprint, entry] : stored.items()) {
             Contact contact;
             contact.kind = accountKindFromName(entry.at("kind").get<std::string>());
-            contact.presence = presenceScheduleFromJson(entry.at("presence"));
-            contact.presenceSentThrough = entry.at("presenceSentThrough").get<PresenceDay>();
+            if (sharePresence(ownKind, contact.kind)) {
+                contact.presence = presenceScheduleFromJson(entry.at("presence"));
+                contact.presenceSentThrough = entry.at("presenceSentThrough").get<PresenceDay>();
+            }
             contact.sealingPublicB64 = entry.at("sealingPublicB64").get<std::string>();
             contact.dest = entry.at("dest").get<std::string>();
             contact.servingSealingB64 = entry.at("servingSealingB64").get<std::string>();
@@ -674,7 +682,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     session->deliveryIdSeed_ = meta.at("deliveryIdSeed").get<std::string>();
     session->deliverySecret_ = fromHex(meta.at("deliverySecret").get<std::string>());
     session->cardKey_ = linkKeyFromText(meta.at("cardKey").get<std::string>());
-    session->kind_ = accountKindFromName(meta.at("kind").get<std::string>());
+    session->kind_ = ownKind;
     if (session->kind_ == AccountKind::eUser) {
         std::optional<Bytes> seed = session->db_->get(kPresenceSeedRow);
         if (!seed.has_value()) {
@@ -934,8 +942,6 @@ nlohmann::json Session::contactsToJson() const
     for (const auto& [fingerprint, contact] : contacts_) {
         stored[fingerprint] = {
             {"kind", std::string(accountKindName(contact.kind))},
-            {"presence", presenceScheduleJson(contact.presence)},
-            {"presenceSentThrough", contact.presenceSentThrough},
             {"sealingPublicB64", contact.sealingPublicB64},
             {"dest", contact.dest},
             {"servingSealingB64", contact.servingSealingB64},
@@ -950,6 +956,10 @@ nlohmann::json Session::contactsToJson() const
             {"notifications", contact.notifications},
             {"allowCalls", contact.allowCalls},
         };
+        if (sharePresence(kind_, contact.kind)) {
+            stored[fingerprint]["presence"] = presenceScheduleJson(contact.presence);
+            stored[fingerprint]["presenceSentThrough"] = contact.presenceSentThrough;
+        }
     }
     return stored;
 }
@@ -4149,8 +4159,6 @@ nlohmann::json Session::contactBookEntry(
     nlohmann::json entry = {
         {"peer", peerFingerprint},
         {"kind", std::string(accountKindName(contact.kind))},
-        {"presence", presenceScheduleJson(contact.presence)},
-        {"presenceSentThrough", contact.presenceSentThrough},
         {"pass", contact.sendPass},
         {"sealing", contact.sealingPublicB64},
         {"dest", contact.dest},
@@ -4164,6 +4172,10 @@ nlohmann::json Session::contactBookEntry(
         {"identityClassical", contact.identityClassicalB64},
         {"identityPq", contact.identityPqB64},
     };
+    if (sharePresence(kind_, contact.kind)) {
+        entry["presence"] = presenceScheduleJson(contact.presence);
+        entry["presenceSentThrough"] = contact.presenceSentThrough;
+    }
     if (!contact.avatar.empty()) {
         entry["avatar"] = toBase64(contact.avatar);
         entry["avatarMime"] = contact.avatarMime;
@@ -4236,7 +4248,7 @@ void Session::applyContactBook(const nlohmann::json& entries)
         if (isNew) {
             contact.kind = accountKindFromName(entry.at("kind").get<std::string>());
         }
-        if (contact.kind == AccountKind::eUser) {
+        if (sharePresence(kind_, contact.kind)) {
             contact.presence = mergedSchedule(contact.presence,
                 presenceScheduleFromJson(entry.at("presence")), presenceToday());
             contact.presenceSentThrough = std::max(contact.presenceSentThrough,

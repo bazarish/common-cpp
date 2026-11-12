@@ -2339,6 +2339,20 @@ int main()
                     AccountDb(scratch / "bz-presence-pam", std::string{}).text("identity.pem"));
                 offer(pamIdentity, presenceScheduleJson(presenceScheduleFrom(otherSeed, today)), *robot);
                 CHECK(robot->contactPresence(pam->fingerprint()).empty());
+
+                const auto storedContact = [&](const std::string& account, const std::string& peer) {
+                    return nlohmann::json::parse(
+                        AccountDb(scratch / account, std::string{}).text("contacts")).at(peer);
+                };
+                CHECK(!storedContact("bz-presence-bot", pam->fingerprint()).contains("presence"));
+                CHECK(!storedContact("bz-presence-pam", robot->fingerprint()).contains("presence"));
+                CHECK(storedContact("bz-presence-pam", quin->fingerprint()).contains("presence"));
+                const std::string robotFingerprint = robot->fingerprint();
+                robot.reset();
+                const std::unique_ptr<Session> reopened
+                    = Session::open(scratch / "bz-presence-bot", std::string{});
+                CHECK(reopened->fingerprint() == robotFingerprint);
+                CHECK(reopened->canWriteTo(pam->fingerprint()));
             }
 
             const PresenceSchedule moved = presenceScheduleFrom(quin->presenceSeed(), today + 1);
