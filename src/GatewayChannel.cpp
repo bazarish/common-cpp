@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <condition_variable>
 #include <deque>
 
@@ -93,6 +94,64 @@ Bytes unpadded(const Bytes& message)
         throw std::runtime_error("a padded message is a body and its padding");
     }
     return bytesOfBinary(framed.at(0));
+}
+
+shape::LogNormal recordPad()
+{
+    return {kRecordPadMedian, kRecordPadSigma, kRecordPadFloor, kRecordPadCeiling};
+}
+
+shape::LogNormal bulkPad()
+{
+    return {kBulkPadMedian, kBulkPadSigma, 0, static_cast<double>(kBulkPadMax)};
+}
+
+Bytes padRecord(const Bytes& frame, const std::uint8_t flags, shape::RandomSource& random)
+{
+    if (frame.size() > kMaxFrameBytes) {
+        throw ProtocolError(Fault::eBadFrame, "a frame over the cap does not go in a record");
+    }
+    const std::size_t needed = kRecordHeaderBytes + frame.size();
+    const std::size_t total = static_cast<double>(needed) <= kRecordPadCeiling
+        ? static_cast<std::size_t>(std::ceil(shape::drawAtLeast(
+            recordPad(), static_cast<double>(needed), random)))
+        : needed + static_cast<std::size_t>(shape::draw(bulkPad(), random));
+    Bytes plaintext(total, 0);
+    plaintext[0] = flags;
+    putBigEndian(ByteBuffer(plaintext).subspan(kRecordFlagsBytes, kRecordLengthBytes),
+        static_cast<std::uint16_t>(frame.size()));
+    std::copy(frame.begin(), frame.end(), plaintext.begin() + kRecordHeaderBytes);
+    return plaintext;
+}
+
+std::optional<RecordBody> unpadRecord(const Bytes& plaintext)
+{
+    if (plaintext.size() < kRecordHeaderBytes || plaintext.size() > kMaxPaddedBytes) {
+        return std::nullopt;
+    }
+    const std::size_t length = getBigEndian(
+        ByteView(plaintext).subspan(kRecordFlagsBytes, kRecordLengthBytes));
+    if (length > plaintext.size() - kRecordHeaderBytes) {
+        return std::nullopt;
+    }
+    RecordBody body;
+    body.flags = plaintext[0];
+    const auto start = plaintext.begin() + kRecordHeaderBytes;
+    body.frame.assign(start, start + static_cast<std::ptrdiff_t>(length));
+    return body;
+}
+
+std::string pingCarrying(const std::uint8_t flags)
+{
+    return std::string(kRecordFlagsBytes, static_cast<char>(flags));
+}
+
+std::optional<std::uint8_t> flagsOfPing(const std::string& payload)
+{
+    if (payload.size() != kRecordFlagsBytes) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint8_t>(payload.front());
 }
 
 Hello makeHello(const Cover& cover, const Key& gatewaySealing)
@@ -228,18 +287,27 @@ Bytes refusedJoin()
     return randomBytes(padded({kJoinedMark}).size() + kAeadTagBytes);
 }
 
-ChannelSocket::ChannelSocket(http::SocketPtr raw, std::shared_ptr<Records> records)
+ChannelSocket::ChannelSocket(
+    http::SocketPtr raw, std::shared_ptr<Records> records, ChannelHooks hooks)
     : raw_(std::move(raw))
     , records_(std::move(records))
+    , hooks_(std::move(hooks))
 {
 }
 
 void ChannelSocket::send(std::vector<unsigned char> message)
 {
-    // The nonce is the record's place in the stream, so sealing and queueing are one step.
-    const std::lock_guard<std::mutex> lock(sending_);
-    const Bytes record = records_->seal(Bytes(message.begin(), message.end()));
-    raw_->send(std::vector<unsigned char>(record.begin(), record.end()));
+    const std::uint8_t flags = hooks_.flags ? hooks_.flags() : 0;
+    {
+        // The nonce is the record's place in the stream, so sealing and queueing are one step.
+        const std::lock_guard<std::mutex> lock(sending_);
+        const Bytes record
+            = records_->seal(padRecord(Bytes(message.begin(), message.end()), flags, random_));
+        raw_->send(std::vector<unsigned char>(record.begin(), record.end()));
+    }
+    if (hooks_.sent) {
+        hooks_.sent();
+    }
 }
 
 std::size_t ChannelSocket::pending() const
@@ -257,9 +325,13 @@ bool ChannelSocket::open() const
     return raw_->open();
 }
 
-std::optional<Bytes> ChannelSocket::openRecord(const Bytes& record)
+std::optional<RecordBody> ChannelSocket::openRecord(const Bytes& record)
 {
-    return records_->open(record);
+    const std::optional<Bytes> opened = records_->open(record);
+    if (!opened.has_value()) {
+        return std::nullopt;
+    }
+    return unpadRecord(*opened);
 }
 
 namespace {
@@ -294,7 +366,8 @@ std::optional<Bytes> nextEarly(Opening& opening)
 }  // namespace
 
 ChannelOpened openChannel(const http::SocketDial& dial, const std::string& fingerprint,
-    const std::optional<ChannelJoin>& join, ChannelMessageFn onMessage, ChannelClosedFn onClosed)
+    const std::optional<ChannelJoin>& join, ChannelMessageFn onMessage, ChannelClosedFn onClosed,
+    ChannelHooks hooks)
 {
     const std::shared_ptr<Opening> opening = std::make_shared<Opening>();
     opening->onMessage = std::move(onMessage);
@@ -315,14 +388,15 @@ ChannelOpened openChannel(const http::SocketDial& dial, const std::string& finge
             if (channel == nullptr) {
                 return;
             }
-            const std::optional<Bytes> opened
+            const std::optional<RecordBody> opened
                 = channel->openRecord(Bytes(message.begin(), message.end()));
             if (!opened.has_value()) {
                 log::warn("gateway: a record that does not open; the socket is closed");
                 raw->close();
                 return;
             }
-            opening->onMessage(channel, std::vector<unsigned char>(opened->begin(), opened->end()));
+            opening->onMessage(
+                channel, std::vector<unsigned char>(opened->frame.begin(), opened->frame.end()));
         },
         [opening](const http::SocketPtr&) {
             std::shared_ptr<ChannelSocket> channel;
@@ -409,7 +483,8 @@ ChannelOpened openChannel(const http::SocketDial& dial, const std::string& finge
             result.welcome->sessionKey, result.welcome->salt, Side::eClient);
     }
 
-    const std::shared_ptr<ChannelSocket> channel = std::make_shared<ChannelSocket>(raw, records);
+    const std::shared_ptr<ChannelSocket> channel
+        = std::make_shared<ChannelSocket>(raw, records, std::move(hooks));
     bool outOfTurn = false;
     {
         const std::lock_guard<std::mutex> lock(opening->mutex);

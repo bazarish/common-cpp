@@ -5,6 +5,7 @@
 #include "bazarish/GatewayProtocol.hpp"
 #include "bazarish/GatewayStreamBook.hpp"
 #include "bazarish/Log.hpp"
+#include "bazarish/TrafficShape.hpp"
 #include "bazarish/WebSocketClient.hpp"
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -37,6 +39,9 @@ constexpr int kRenewedDelegationDays = 2;
 constexpr std::chrono::milliseconds kCoverTick{200};
 constexpr std::size_t kControlSocketsKept = 2;
 constexpr std::chrono::milliseconds kQuietBeforeChurn{1000};
+constexpr char kDecoyCookie[] = "sid";
+// What a decoy's request carries besides its target, host and cookie value.
+constexpr std::string_view kDecoyRequestFrame = "GET  HTTP/1.1\r\nHost: \r\nCookie: =\r\n\r\n";
 constexpr std::chrono::milliseconds kFirstRetry{500};
 constexpr std::chrono::milliseconds kSlowestRetry{15000};
 constexpr std::chrono::milliseconds kFarewellWait{2000};
@@ -55,12 +60,32 @@ std::int64_t millisNow()
         .count();
 }
 
-std::chrono::milliseconds drawBetween(
-    const std::chrono::milliseconds low, const std::chrono::milliseconds high)
+std::optional<shape::Clock::time_point> steadyAt(const std::int64_t millis)
 {
-    return std::chrono::milliseconds(static_cast<std::int64_t>(
-        randomBetween(static_cast<std::uint64_t>(low.count()),
-            static_cast<std::uint64_t>(high.count()))));
+    if (millis == 0) {
+        return std::nullopt;
+    }
+    return shape::Clock::time_point(std::chrono::milliseconds(millis));
+}
+
+std::string decoyFiller(const std::size_t wanted, const std::size_t taken)
+{
+    if (wanted <= taken) {
+        return {};
+    }
+    return toBase64Url(randomBytes(wanted - taken)).substr(0, wanted - taken);
+}
+
+// Shared with every socket the router opens, which may outlive it.
+struct CoverState {
+    std::atomic<bool> exchanging{false};
+    std::atomic<std::int64_t> lastSent{0};
+};
+
+std::uint8_t recordFlags(const CoverState& state)
+{
+    const shape::Activity activity = backend::activityNow(state.exchanging.load());
+    return activity == shape::Activity::eActive ? gateway::kRecordActive : 0;
 }
 
 // A steady max() deadline overflows where libstdc++ waits on the system clock (musl).
@@ -87,6 +112,109 @@ struct Pending {
     bool done = false;
     Frame answer;
     Bytes request;
+};
+
+bool askDecoy(http::KeptConnection& connection, const http::SocketDial& dial,
+    const shape::DecoyRequest& request)
+{
+    const std::string target = request.resource
+        ? dial.path + "?" + std::string(gateway::kDecoyResourceKey) + "="
+            + std::string(gateway::kDecoyResourceValue)
+        : dial.path;
+    const std::size_t taken = kDecoyRequestFrame.size() + target.size() + dial.host.size()
+        + std::string_view(kDecoyCookie).size();
+    const http::KeptAnswer answer = connection.get(target,
+        {{"Cookie", std::string(kDecoyCookie) + "=" + decoyFiller(request.bytes, taken)}});
+    if (!answer.reached) {
+        bazarish::log::debug("i2p: a decoy went unanswered: {}", answer.error);
+    }
+    return answer.reached;
+}
+
+using DecoyAsk = std::function<bool(http::KeptConnection&, const shape::DecoyRequest&)>;
+
+// An idle connection takes the next resource; a new one opens only while all are busy.
+class DecoyLanes {
+public:
+    DecoyLanes(http::SocketDial dial, std::unique_ptr<http::KeptConnection> first, DecoyAsk ask)
+        : dial_(std::move(dial))
+        , ask_(std::move(ask))
+    {
+        lanes_.emplace_back([this, held = std::move(first)]() mutable { serve(std::move(held)); });
+    }
+
+    ~DecoyLanes() { finish(); }
+    DecoyLanes(const DecoyLanes&) = delete;
+    DecoyLanes& operator=(const DecoyLanes&) = delete;
+
+    void ask(const shape::DecoyRequest& request)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        backlog_.push_back(request);
+        if (backlog_.size() > idle_ + starting_ && lanes_.size() < shape::kMaxConnectionsPerHost) {
+            ++starting_;
+            lanes_.emplace_back([this]() {
+                auto opened = std::make_unique<http::KeptConnection>(dial_);
+                {
+                    const std::lock_guard<std::mutex> started(mutex_);
+                    --starting_;
+                }
+                if (!opened->connected()) {
+                    bazarish::log::debug("i2p: a decoy lane found no gateway: {}", opened->error());
+                    changed_.notify_all();
+                    return;
+                }
+                serve(std::move(opened));
+            });
+        }
+        changed_.notify_all();
+    }
+
+    void finish()
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            closing_ = true;
+        }
+        changed_.notify_all();
+        for (std::thread& lane : lanes_) {
+            if (lane.joinable()) {
+                lane.join();
+            }
+        }
+    }
+
+private:
+    void serve(std::unique_ptr<http::KeptConnection> connection)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        for (;;) {
+            ++idle_;
+            changed_.wait(lock, [this]() { return !backlog_.empty() || closing_; });
+            --idle_;
+            if (backlog_.empty()) {
+                return;
+            }
+            const shape::DecoyRequest request = backlog_.front();
+            backlog_.pop_front();
+            lock.unlock();
+            const bool answered = ask_(*connection, request);
+            lock.lock();
+            if (!answered) {
+                return;
+            }
+        }
+    }
+
+    const http::SocketDial dial_;
+    const DecoyAsk ask_;
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    std::deque<shape::DecoyRequest> backlog_;
+    std::size_t idle_ = 0;
+    std::size_t starting_ = 0;
+    bool closing_ = false;
+    std::vector<std::thread> lanes_;
 };
 
 class StreamState;
@@ -203,8 +331,8 @@ private:
 class GatewayEndpoint : public EndpointBackend {
 public:
     GatewayEndpoint(std::shared_ptr<Link> link, std::uint32_t id, std::string host, bool raw,
-        bool published, std::string label, std::string accountLabel, std::string target,
-        std::optional<Keys> master);
+        bool published, bool exchange, std::string label, std::string accountLabel,
+        std::string target, std::optional<Keys> master);
     ~GatewayEndpoint() override;
 
     bool ready() const override { return ready_.load(); }
@@ -252,6 +380,7 @@ public:
     std::uint32_t id() const { return id_; }
     bool raw() const { return raw_; }
     bool published() const { return published_; }
+    bool exchange() const { return exchange_ && !stopped_.load(); }
     std::string label() const { return tag_.label(); }
     std::string accountLabel() const { return tag_.accountLabel(); }
     void retag(std::string label, std::string accountLabel)
@@ -272,6 +401,7 @@ private:
     std::string host_;
     bool raw_;
     bool published_;
+    bool exchange_;
     DestTag tag_;
     std::string target_;
     const std::optional<Keys> master_;
@@ -292,6 +422,7 @@ public:
     explicit GatewayRouter(const RouterConfig& config)
         : config_(config)
         , link_(std::make_shared<Link>(/*odd=*/false))
+        , traffic_(std::make_shared<CoverState>())
     {
     }
 
@@ -365,8 +496,14 @@ private:
         gateway::ChannelMessageFn onMessage, gateway::ChannelClosedFn onClosed);
     void openControl();
     void closeControl();
+    void dropSockets();
     void coverLoop();
-    void decoy();
+    void startBurst();
+    void decoyBurst(const std::vector<shape::DecoyRequest>& burst);
+    bool pause(std::chrono::milliseconds span);
+    bool exchanging() const;
+    std::optional<shape::Clock::time_point> lastReal() const;
+    gateway::ChannelHooks hooks() const;
     bool quiet() const;
     bool hasControl() const;
     void abandon();
@@ -376,7 +513,13 @@ private:
     mutable std::mutex targetMutex_;
     std::uint64_t targetGeneration_ = 0;
     std::shared_ptr<Link> link_;
+    const std::shared_ptr<CoverState> traffic_;
     std::thread cover_;
+    std::thread burst_;
+    std::atomic<bool> bursting_{false};
+    std::mutex pauseMutex_;
+    std::condition_variable pauseWake_;
+    shape::SystemRandom random_;
     std::atomic<bool> live_{false};
     std::atomic<bool> stopping_{false};
     std::atomic<bool> openFailing_{false};
@@ -555,13 +698,14 @@ void StreamState::close()
 }
 
 GatewayEndpoint::GatewayEndpoint(std::shared_ptr<Link> link, const std::uint32_t id,
-    std::string host, const bool raw, const bool published, std::string label,
-    std::string accountLabel, std::string target, std::optional<Keys> master)
+    std::string host, const bool raw, const bool published, const bool exchange,
+    std::string label, std::string accountLabel, std::string target, std::optional<Keys> master)
     : link_(std::move(link))
     , id_(id)
     , host_(std::move(host))
     , raw_(raw)
     , published_(published)
+    , exchange_(exchange)
     , tag_(std::move(label), std::move(accountLabel))
     , target_(std::move(target))
     , master_(std::move(master))
@@ -746,7 +890,11 @@ http::SocketDial GatewayRouter::dialLocked() const
     dial.path = config_.gatewayPath;
     dial.tls = config_.gatewayTls;
     dial.maxMessageBytes = gateway::kMaxRecordBytes;
-    dial.idleTimeout = gateway::kKeepalive + gateway::kPongTimeout;
+    dial.pingAfterSilence = gateway::kIdleKeepalive;
+    dial.pongTimeout = gateway::kPongTimeout;
+    dial.pingPayload = [traffic = traffic_]() {
+        return gateway::pingCarrying(recordFlags(*traffic));
+    };
     return dial;
 }
 
@@ -771,7 +919,7 @@ gateway::ChannelOpened GatewayRouter::openChannelSocket(
         generation = targetGeneration_;
     }
     gateway::ChannelOpened opened = gateway::openChannel(
-        dial, fingerprint, join, std::move(onMessage), std::move(onClosed));
+        dial, fingerprint, join, std::move(onMessage), std::move(onClosed), hooks());
     {
         const std::lock_guard<std::mutex> lock(targetMutex_);
         if (generation != targetGeneration_) {
@@ -826,7 +974,10 @@ void GatewayRouter::start()
     if (live_.load()) {
         return;
     }
-    stopping_.store(false);
+    {
+        const std::lock_guard<std::mutex> lock(pauseMutex_);
+        stopping_.store(false);
+    }
     openControl();
     live_.store(true);
     cover_ = std::thread([this]() { coverLoop(); });
@@ -834,10 +985,17 @@ void GatewayRouter::start()
 
 void GatewayRouter::stop()
 {
-    stopping_.store(true);
+    {
+        const std::lock_guard<std::mutex> lock(pauseMutex_);
+        stopping_.store(true);
+    }
+    pauseWake_.notify_all();
     if (live_.exchange(false) && cover_.joinable()) {
         link_->abandonCalls();
         cover_.join();
+    }
+    if (burst_.joinable()) {
+        burst_.join();
     }
     std::vector<std::shared_ptr<GatewayEndpoint>> standing;
     {
@@ -1106,41 +1264,96 @@ bool GatewayRouter::quiet() const
     return millisNow() - link_->lastUse.load() >= kQuietBeforeChurn.count();
 }
 
-void GatewayRouter::decoy()
+gateway::ChannelHooks GatewayRouter::hooks() const
 {
-    const Bytes noise = randomBytes(static_cast<std::size_t>(
-        randomBetween(gateway::kDecoyRequestMinBytes, gateway::kDecoyRequestMaxBytes)));
-    (void)http::probeHost(dialFor(), std::string(noise.begin(), noise.end()));
+    gateway::ChannelHooks made;
+    made.flags = [traffic = traffic_]() { return recordFlags(*traffic); };
+    made.sent = [traffic = traffic_]() { traffic->lastSent.store(millisNow()); };
+    return made;
+}
+
+bool GatewayRouter::exchanging() const
+{
+    for (const std::shared_ptr<GatewayEndpoint>& endpoint : endpointsHeld()) {
+        if (endpoint->exchange()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<shape::Clock::time_point> GatewayRouter::lastReal() const
+{
+    return steadyAt(std::max(traffic_->lastSent.load(), link_->lastArrival.load()));
+}
+
+void GatewayRouter::dropSockets()
+{
+    std::vector<http::SocketPtr> flows;
+    {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        for (const auto& [flow, socket] : link_->flows) {
+            (void)flow;
+            flows.push_back(socket);
+        }
+    }
+    for (const http::SocketPtr& socket : flows) {
+        socket->close();
+    }
+    closeControl();
+}
+
+bool GatewayRouter::pause(const std::chrono::milliseconds span)
+{
+    std::unique_lock<std::mutex> lock(pauseMutex_);
+    return !pauseWake_.wait_for(lock, span, [this]() { return stopping_.load(); });
+}
+
+void GatewayRouter::decoyBurst(const std::vector<shape::DecoyRequest>& burst)
+{
+    const http::SocketDial dial = dialFor();
+    auto first = std::make_unique<http::KeptConnection>(dial);
+    if (!first->connected()) {
+        bazarish::log::debug("i2p: a decoy found no gateway: {}", first->error());
+        return;
+    }
+    if (burst.empty() || !askDecoy(*first, dial, burst.front())) {
+        return;
+    }
+    DecoyLanes lanes(dial, std::move(first),
+        [dial](http::KeptConnection& connection, const shape::DecoyRequest& request) {
+            return askDecoy(connection, dial, request);
+        });
+    for (auto at = std::next(burst.begin()); at != burst.end(); ++at) {
+        if (!pause(at->after)) {
+            break;
+        }
+        lanes.ask(*at);
+    }
+    lanes.finish();
+}
+
+void GatewayRouter::startBurst()
+{
+    if (burst_.joinable()) {
+        burst_.join();
+    }
+    bursting_.store(true);
+    burst_ = std::thread([this, burst = shape::drawBurst(random_)]() {
+        decoyBurst(burst);
+        bursting_.store(false);
+    });
 }
 
 void GatewayRouter::coverLoop()
 {
-    const auto chosen = [](const std::chrono::milliseconds set,
-                            const std::chrono::milliseconds fallback) {
-        return set.count() > 0 ? set : fallback;
-    };
-    const std::chrono::milliseconds decoyMin
-        = chosen(config_.gatewayDecoyMin, gateway::kDecoyMinDelay);
-    const std::chrono::milliseconds decoyMax
-        = chosen(config_.gatewayDecoyMax, gateway::kDecoyMaxDelay);
-    const std::chrono::milliseconds minLife = chosen(config_.gatewayControlMinLife,
-        std::chrono::milliseconds(gateway::kControlSocketMinLife));
-    const std::chrono::milliseconds maxLife = chosen(config_.gatewayControlMaxLife,
-        std::chrono::milliseconds(gateway::kControlSocketMaxLife));
-    const std::chrono::milliseconds maxGap = chosen(
-        config_.gatewayControlMaxGap, std::chrono::milliseconds(gateway::kControlGapMax));
-
-    const auto nextDecoy = [decoyMin, decoyMax]() {
-        return std::chrono::steady_clock::now() + drawBetween(decoyMin, decoyMax);
-    };
-    const auto nextChurn = [minLife, maxLife]() {
-        return std::chrono::steady_clock::now() + drawBetween(minLife, maxLife);
-    };
-    auto decoyAt = nextDecoy();
-    auto churnAt = nextChurn();
+    shape::BurstPlan plan(random_, config_.gatewayReadPause.value_or(shape::readPause()));
     auto openAt = std::chrono::steady_clock::now();
     std::chrono::milliseconds backoff = kFirstRetry;
     std::uint64_t carrySeen = carryReturns();
+    std::uint64_t networkSeen = networkChanges();
+    std::uint64_t actionsSeen = backend::userActions();
+    bool burstSeen = false;
 
     while (live_.load()) {
         std::this_thread::sleep_for(kCoverTick);
@@ -1149,11 +1362,30 @@ void GatewayRouter::coverLoop()
         }
         const auto now = std::chrono::steady_clock::now();
         reattachOrphans();
+        if (const std::uint64_t moved = networkChanges(); moved != networkSeen) {
+            networkSeen = moved;
+            bazarish::log::info("i2p: the device moved network: the gateway's sockets open anew");
+            dropSockets();
+            openAt = now;
+            backoff = kFirstRetry;
+        }
         if (const std::uint64_t carry = carryReturns(); carry != carrySeen) {
             carrySeen = carry;
             openAt = now;
             backoff = kFirstRetry;
         }
+        const bool exchange = exchanging();
+        traffic_->exchanging.store(exchange);
+        const shape::Activity activity = backend::activityNow(exchange);
+        if (const std::uint64_t actions = backend::userActions(); actions != actionsSeen) {
+            actionsSeen = actions;
+            plan.userActed(now);
+        }
+        const bool burstNow = bursting_.load();
+        if (burstSeen && !burstNow) {
+            plan.burstEnded(now);
+        }
+        burstSeen = burstNow;
 
         if (!hasControl()) {
             if (now < openAt) {
@@ -1163,9 +1395,9 @@ void GatewayRouter::coverLoop()
                 openControl();
                 if (openFailing_.exchange(false)) {
                     noteCarryReturned();
+                    carrySeen = carryReturns();
                 }
                 backoff = kFirstRetry;
-                churnAt = nextChurn();
             } catch (const std::exception& error) {
                 openFailing_.store(true);
                 bazarish::log::warn(
@@ -1180,20 +1412,15 @@ void GatewayRouter::coverLoop()
             continue;
         }
 
-        if (now >= decoyAt) {
-            decoy();
-            decoyAt = nextDecoy();
-        }
-        if (!live_.load() || now < churnAt) {
+        if (plan.tick(now, activity, exchange, lastReal()) != shape::BurstStep::eDecoyBurst) {
             continue;
         }
-        if (!quiet()) {
-            continue;
+        if (quiet()) {
+            closeControl();
+            openAt = now;
         }
-        closeControl();
-        openAt = std::chrono::steady_clock::now()
-            + drawBetween(std::min(std::chrono::milliseconds(gateway::kControlGapMin), maxGap),
-                maxGap);
+        startBurst();
+        burstSeen = true;
     }
 }
 
@@ -1453,7 +1680,8 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         throw std::runtime_error("bazarish::i2p: the gateway named no address");
     }
     const auto endpoint = std::make_shared<GatewayEndpoint>(link_, id, host, raw,
-        config.published, config.label, config.accountLabel, config.target, config.keys);
+        config.published, config.bulk || config.realtime, config.label, config.accountLabel,
+        config.target, config.keys);
     {
         // Under the lock, so a status that comes after it lands on top of it.
         const std::lock_guard<std::mutex> lock(link_->mutex);

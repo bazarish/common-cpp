@@ -71,6 +71,7 @@ add_library(bazarish_common STATIC
     src/HttpClient.cpp
     src/GatewayProtocol.cpp
     src/GatewayChannel.cpp
+    src/TrafficShape.cpp
     src/GatewayStreamBook.cpp
     src/RawPathChooser.cpp
     src/HttpServer.cpp
@@ -139,6 +140,8 @@ bazarish_add_test(TestJsonRead)
 bazarish_add_test(TestFileName)
 bazarish_add_test(TestPortalSession)
 bazarish_add_test(TestGatewayChannel)
+bazarish_add_test(TestTrafficShape)
+bazarish_add_test(TestSocketKeepalive)
 bazarish_add_test(TestKeyedSeal)
 bazarish_add_test(TestHttpServer)
 bazarish_add_test(TestEmbeddedRouter)

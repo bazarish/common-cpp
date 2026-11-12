@@ -32,6 +32,9 @@ struct SocketRoutes {
     std::function<void(const SocketPtr&)> closed;
     std::string subprotocol;
     std::chrono::seconds idleTimeout{45};
+    // Nonzero: this side never pings, answers pings, and drops a socket silent this long.
+    std::chrono::seconds silenceLimit{0};
+    std::function<void(const SocketPtr&, const std::string&)> pinged;
     std::size_t maxMessageBytes = 64 * 1024;
 };
 

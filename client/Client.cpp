@@ -310,11 +310,11 @@ std::size_t Client::revokePasses(const std::vector<Bytes>& handles)
         .get<std::size_t>();
 }
 
-std::vector<PendingEntry> Client::waitForPending(const int waitSeconds)
+std::vector<PendingEntry> Client::waitForPending(const MailWait wait)
 {
-    constexpr int kReadSlackSeconds = 20;
-    const ApiResponse response = api_.getWaiting(
-        kEventsPath, "wait=" + std::to_string(waitSeconds), waitSeconds + kReadSlackSeconds);
+    const bool held = wait == MailWait::eHeld;
+    const ApiResponse response = api_.getWaiting(kEventsPath, held ? kEventsHoldQuery : "",
+        held ? kNoReadDeadline : ApiClient::kDefaultReadTimeoutSeconds);
     const std::vector<PendingEntry> entries = pendingEntries(response.json().at("pending"));
     if (!entries.empty()) {
         log_->record({0, false, "poll: " + std::to_string(entries.size()) + " waiting", "200", {}});

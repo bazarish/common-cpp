@@ -2,6 +2,7 @@
 #pragma once
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/TrafficShape.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -224,11 +225,8 @@ struct RouterConfig {
     std::string gatewayPath;
     std::string gatewayFingerprint;
     bool gatewayTls = true;
-    std::chrono::milliseconds gatewayDecoyMin{0};
-    std::chrono::milliseconds gatewayDecoyMax{0};
-    std::chrono::seconds gatewayControlMinLife{0};
-    std::chrono::seconds gatewayControlMaxLife{0};
-    std::chrono::seconds gatewayControlMaxGap{0};
+    // Unset reads as browsing does (shape::readPause()).
+    std::optional<shape::Pareto> gatewayReadPause;
 };
 
 struct GatewayTarget {
@@ -316,6 +314,13 @@ I2pLogLevel i2pLogLevel();
 // Grows when the link returns or the device moves network.
 std::uint64_t carryReturns();
 void networkChanged();
+// Grows only when the device moves network.
+std::uint64_t networkChanges();
+
+// What the user does shapes a gateway's cover traffic; the screen counts as on until told.
+void windowActive(bool active);
+void screenOn(bool on);
+void userActed();
 
 // Calls its listener, on whichever thread grows carryReturns(), for as long as it lives.
 class CarryWatch {

@@ -26,8 +26,10 @@ inline constexpr std::size_t kStreamWindowBytes = 256 * 1024;
 inline constexpr std::chrono::seconds kDialRetryDelay{2};
 inline constexpr std::size_t kInboundQueue = 8;
 inline constexpr std::size_t kDatagramQueue = 64;
-inline constexpr std::chrono::seconds kKeepalive{30};
+// Under the five minutes a mobile carrier's NAT keeps a silent TCP flow.
+inline constexpr std::chrono::seconds kIdleKeepalive{270};
 inline constexpr std::chrono::seconds kPongTimeout{15};
+inline constexpr std::chrono::seconds kSilenceLimit = kIdleKeepalive + kPongTimeout;
 inline constexpr std::chrono::milliseconds kStatusPeriod{250};
 inline constexpr std::size_t kMaxSocketsPerSession = 16;
 inline constexpr std::chrono::seconds kMaxDialDeadline{90};
@@ -35,16 +37,9 @@ inline constexpr std::size_t kMaxDialsPerSession = 64;
 inline constexpr std::size_t kMaxEndpointsPerSession = 256;
 inline constexpr std::size_t kMaxStreamsPerSession = 1024;
 
-inline constexpr std::chrono::milliseconds kDecoyMinDelay{500};
-inline constexpr std::chrono::milliseconds kDecoyMaxDelay{300000};
-inline constexpr std::size_t kDecoyMinBytes = 1024;
-inline constexpr std::size_t kDecoyMaxBytes = 256 * 1024;
-inline constexpr std::size_t kDecoyRequestMinBytes = 256;
-inline constexpr std::size_t kDecoyRequestMaxBytes = 2048;
-inline constexpr std::chrono::seconds kControlSocketMinLife{1};
-inline constexpr std::chrono::seconds kControlSocketMaxLife{300};
-inline constexpr std::chrono::seconds kControlGapMax{2};
-inline constexpr std::chrono::milliseconds kControlGapMin{200};
+// A decoy asked with this query is answered as a resource; without it, as a page.
+inline constexpr std::string_view kDecoyResourceKey = "fast";
+inline constexpr std::string_view kDecoyResourceValue = "true";
 
 enum class FrameType : std::uint8_t {
     eHello = 0x01,

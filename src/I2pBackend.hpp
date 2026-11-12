@@ -132,6 +132,9 @@ public:
 
 void noteCarryReturned();
 
+shape::Activity activityNow(bool exchanging);
+std::uint64_t userActions();
+
 std::unique_ptr<RouterBackend> makeSamRouter(const RouterConfig& config);
 std::unique_ptr<RouterBackend> makeGatewayRouter(const RouterConfig& config);
 

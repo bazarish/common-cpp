@@ -43,6 +43,9 @@ std::mutex g_carryListenerMutex;
 std::mutex g_carryCalling;
 std::map<std::uint64_t, std::function<void()>> g_carryListeners;
 std::uint64_t g_nextCarryWatch = 0;
+std::atomic<std::uint64_t> g_networkChanges{0};
+std::mutex g_activityMutex;
+shape::ActivityState g_activity;
 
 std::uint64_t addCarryListener(std::function<void()> listener)
 {
@@ -249,7 +252,43 @@ std::uint64_t carryReturns()
 
 void networkChanged()
 {
+    ++g_networkChanges;
     backend::noteCarryReturned();
+}
+
+std::uint64_t networkChanges()
+{
+    return g_networkChanges.load();
+}
+
+void windowActive(const bool active)
+{
+    const std::lock_guard<std::mutex> lock(g_activityMutex);
+    g_activity.windowActive(active);
+}
+
+void screenOn(const bool on)
+{
+    const std::lock_guard<std::mutex> lock(g_activityMutex);
+    g_activity.screenOn(on);
+}
+
+void userActed()
+{
+    const std::lock_guard<std::mutex> lock(g_activityMutex);
+    g_activity.userActed(shape::Clock::now());
+}
+
+shape::Activity backend::activityNow(const bool exchanging)
+{
+    const std::lock_guard<std::mutex> lock(g_activityMutex);
+    return g_activity.state(shape::Clock::now(), exchanging);
+}
+
+std::uint64_t backend::userActions()
+{
+    const std::lock_guard<std::mutex> lock(g_activityMutex);
+    return g_activity.actions();
 }
 
 CarryWatch::CarryWatch(std::function<void()> listener)

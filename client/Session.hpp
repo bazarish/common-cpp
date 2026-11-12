@@ -492,7 +492,7 @@ public:
 
     ContactFetchContext contactFetchContext() const;
     static std::unique_ptr<Client> makeEventClient(const ContactFetchContext& context);
-    static std::vector<PendingEntry> waitForMail(Client& waiter, int waitSeconds);
+    static std::vector<PendingEntry> waitForMail(Client& waiter, Client::MailWait wait);
 
     enum class CardStep { eLookingUpAlias, eSolvingPuzzle, eFetchingCard };
     static ContactCardResolved resolveContactCard(const ContactFetchContext& context,

@@ -28,6 +28,8 @@ constexpr const char* kPath = "/socket";
 constexpr const char* kProtocol = "test/1";
 constexpr int kDeadlineSeconds = 1;
 constexpr int kPatienceSeconds = 10;
+constexpr const char* kAnswerPath = "/answer";
+constexpr int kKeptRounds = 3;
 
 class MuteListener {
 public:
@@ -91,12 +93,15 @@ int main()
 {
     {
         MuteListener mute;
-        Probe probe;
-        const int probeTook
-            = secondsTaken([&]() { probe = probeHost(dialTo(mute.port()), "a question"); });
-        CHECK(!probe.reached);
-        CHECK(!probe.error.empty());
-        CHECK(probeTook < kPatienceSeconds);
+        KeptAnswer asked;
+        const int askTook = secondsTaken([&]() {
+            KeptConnection connection(dialTo(mute.port()));
+            CHECK(connection.connected());
+            asked = connection.get(kAnswerPath, {});
+        });
+        CHECK(!asked.reached);
+        CHECK(!asked.error.empty());
+        CHECK(askTook < kPatienceSeconds);
 
         SocketDialResult dialled;
         const int dialTook = secondsTaken([&]() {
@@ -124,19 +129,23 @@ int main()
             socket->send(std::vector<unsigned char>(message.rbegin(), message.rend()));
         };
         server.upgrade(kPath, routes);
-        server.post("/answer", [](const Request&) {
+        server.get(kAnswerPath, [](const Request&) {
             return Response{200, "text/plain", {}, "here"};
         });
 
         const int port = server.start();
         CHECK(port > 0);
 
-        SocketDial dial = dialTo(port);
-        dial.path = "/answer";
-        const Probe probe = probeHost(dial, "a question");
-        CHECK(probe.reached);
-        CHECK(probe.status == 200);
-        CHECK(probe.error.empty());
+        KeptConnection connection(dialTo(port));
+        CHECK(connection.connected());
+        for (int round = 0; round < kKeptRounds; ++round) {
+            const KeptAnswer answer = connection.get(kAnswerPath, {{"Cookie", "a=b"}});
+            CHECK(answer.reached);
+            CHECK(answer.status == 200);
+            CHECK(answer.bytes == std::string("here").size());
+            CHECK(answer.error.empty());
+        }
+        CHECK(connection.connected());
 
         const SocketDialResult dialled = openSocket(dialTo(port),
             [&](const SocketPtr&, const std::vector<unsigned char>& message) {

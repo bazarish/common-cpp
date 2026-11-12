@@ -43,6 +43,7 @@ struct ClientOptions {
     std::string certificate;
     std::string key;
     std::chrono::seconds connectTimeout{15};
+    // Zero waits for the answer however long it takes.
     std::chrono::seconds readTimeout{60};
     std::chrono::seconds writeTimeout{60};
     std::string digestUser;

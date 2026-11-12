@@ -379,13 +379,43 @@ public:
     void writeAll(ByteView data) override;
     std::size_t pendingBytes() const override;
     void close() override;
+    void tellRenewedLeaseSet();
 
     std::shared_ptr<i2pd::stream::Stream> stream;
     std::shared_ptr<i2pd::client::ClientDestination> owner;
     std::shared_ptr<std::atomic<bool>> stopped;
     std::atomic<bool> closed{false};
     std::atomic<int> readTimeoutSeconds{0};
+    struct Told {
+        std::mutex mutex;
+        std::shared_ptr<const i2pd::data::LocalLeaseSet> leaseSet;
+    };
+    const std::shared_ptr<Told> told = std::make_shared<Told>();
 };
+
+// i2pd sends a renewed lease set only with a message: a silent stream's far end loses the way back.
+void EmbeddedStream::tellRenewedLeaseSet()
+{
+    boost::asio::post(owner->GetService(), [owner = owner, stream = stream, told = told]() {
+        const std::shared_ptr<const i2pd::data::LocalLeaseSet> current = owner->GetLeaseSet();
+        bool first = false;
+        {
+            const std::lock_guard<std::mutex> lock(told->mutex);
+            if (current == nullptr || current == told->leaseSet) {
+                return;
+            }
+            first = told->leaseSet == nullptr;
+            told->leaseSet = current;
+        }
+        const std::shared_ptr<const i2pd::data::LeaseSet> remote = stream->GetRemoteLeaseSet();
+        const std::shared_ptr<i2pd::stream::StreamingDestination> streaming
+            = owner->GetStreamingDestination();
+        if (first || remote == nullptr || streaming == nullptr) {
+            return;
+        }
+        streaming->SendPing(remote);
+    });
+}
 
 std::size_t EmbeddedStream::readSome(const ByteBuffer buffer)
 {
@@ -404,6 +434,7 @@ std::size_t EmbeddedStream::readSome(const ByteBuffer buffer)
         const std::size_t received = future.get();
         if (received > 0) { return received; }
         if (isClosedStatus(stream->GetStatus())) { return 0; }
+        tellRenewedLeaseSet();
         if (timeout.count() > 0 && std::chrono::steady_clock::now() - started >= timeout)
         {
             throw std::runtime_error("bazarish::i2p: nothing read within "

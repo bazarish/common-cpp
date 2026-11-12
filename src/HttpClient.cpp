@@ -122,7 +122,11 @@ asio::awaitable<ClientResponse> exchangeOn(Stream& stream, const std::string& ho
 
     phase = Phase::eRead;
     beasthttp::response<beasthttp::string_body> in;
-    beast::get_lowest_layer(stream).expires_after(options.readTimeout);
+    if (options.readTimeout.count() > 0) {
+        beast::get_lowest_layer(stream).expires_after(options.readTimeout);
+    } else {
+        beast::get_lowest_layer(stream).expires_never();
+    }
     co_await beasthttp::async_read(stream, buffer, in, asio::use_awaitable);
     co_return fromBeast(in);
 }

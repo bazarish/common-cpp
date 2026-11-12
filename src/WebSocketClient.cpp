@@ -9,6 +9,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
@@ -17,6 +18,7 @@
 #include <boost/beast/websocket/ssl.hpp>
 
 
+#include <algorithm>
 #include <atomic>
 #include <deque>
 #include <memory>
@@ -35,8 +37,12 @@ namespace websocket = boost::beast::websocket;
 using asio::ip::tcp;
 
 using TlsStream = beast::ssl_stream<beast::tcp_stream>;
+using SteadyClock = std::chrono::steady_clock;
 
 thread_local bool tOnSocketThread = false;
+
+constexpr int kHttpVersion = 11;
+constexpr std::size_t kKeptAnswerMaxBytes = 16 * 1024 * 1024;
 
 bool isAddressLiteral(const std::string& host)
 {
@@ -58,10 +64,14 @@ template <class Stream>
 class ClientSocket : public Socket, public std::enable_shared_from_this<ClientSocket<Stream>> {
 public:
     ClientSocket(std::unique_ptr<asio::io_context> loop, std::unique_ptr<ssl::context> tls,
-        std::unique_ptr<websocket::stream<Stream>> stream)
+        std::unique_ptr<websocket::stream<Stream>> stream, const SocketDial& dial)
         : loop_(std::move(loop))
         , tls_(std::move(tls))
         , stream_(std::move(stream))
+        , keepalive_(*loop_)
+        , silence_(dial.pingAfterSilence)
+        , pongWait_(dial.pongTimeout)
+        , pingPayload_(dial.pingPayload)
     {
     }
 
@@ -139,6 +149,15 @@ public:
         closed_ = std::move(closed);
         const std::shared_ptr<ClientSocket> self = this->shared_from_this();
         loop_->restart();
+        if (silence_.count() > 0) {
+            lastSent_ = SteadyClock::now();
+            lastHeard_ = lastSent_;
+            stream_->control_callback(
+                [this](const websocket::frame_type, const beast::string_view) {
+                    lastHeard_ = SteadyClock::now();
+                });
+            armKeepalive();
+        }
         readNext();
         thread_ = std::thread([self]() {
             tOnSocketThread = true;
@@ -165,6 +184,7 @@ private:
             ended();
             return;
         }
+        lastHeard_ = SteadyClock::now();
         if (message_) {
             const unsigned char* const at = static_cast<const unsigned char*>(buffer_.data().data());
             message_(this->shared_from_this(), std::vector<unsigned char>(at, at + buffer_.size()));
@@ -186,6 +206,7 @@ private:
         off.idle_timeout = websocket::stream_base::none();
         off.keep_alive_pings = false;
         stream_->set_option(off);
+        keepalive_.cancel();
         if (closed_) {
             closed_(this->shared_from_this());
         }
@@ -212,11 +233,61 @@ private:
                     self->queued_ -= self->queue_.front().size();
                     self->queue_.pop_front();
                 }
+                self->lastSent_ = SteadyClock::now();
                 if (error) {
                     self->close();
                 }
                 self->writeNext();
             });
+    }
+
+    // A ping only after silence either way; one left unanswered past its wait ends the link.
+    void armKeepalive()
+    {
+        const SteadyClock::time_point due = pingOut_
+            ? pingSentAt_ + pongWait_
+            : std::min(lastSent_, lastHeard_) + silence_;
+        keepalive_.expires_at(due);
+        keepalive_.async_wait(
+            [self = this->shared_from_this()](const boost::system::error_code& error) {
+                if (!error) {
+                    self->keepaliveDue();
+                }
+            });
+    }
+
+    void keepaliveDue()
+    {
+        if (!open_.load()) {
+            return;
+        }
+        const SteadyClock::time_point now = SteadyClock::now();
+        if (pingOut_ && lastHeard_ >= pingSentAt_) {
+            pingOut_ = false;
+        }
+        if (pingOut_ && now >= pingSentAt_ + pongWait_) {
+            bazarish::log::info("websocket: a ping went unanswered for {} s; closed",
+                pongWait_.count());
+            close();
+            return;
+        }
+        if (!pingOut_ && now - std::min(lastSent_, lastHeard_) >= silence_) {
+            websocket::ping_data payload;
+            if (pingPayload_) {
+                const std::string carried = pingPayload_();
+                payload.assign(carried.data(), std::min(carried.size(), payload.max_size()));
+            }
+            stream_->async_ping(payload,
+                [self = this->shared_from_this()](const boost::system::error_code& error) {
+                    if (error) {
+                        self->close();
+                    }
+                });
+            pingOut_ = true;
+            pingSentAt_ = now;
+            lastSent_ = now;
+        }
+        armKeepalive();
     }
 
     std::unique_ptr<asio::io_context> loop_;
@@ -232,6 +303,14 @@ private:
     std::size_t queued_ = 0;
     bool writing_ = false;
     std::atomic<bool> open_{true};
+    asio::steady_timer keepalive_;
+    const std::chrono::seconds silence_;
+    const std::chrono::seconds pongWait_;
+    const std::function<std::string()> pingPayload_;
+    SteadyClock::time_point lastSent_{};
+    SteadyClock::time_point lastHeard_{};
+    SteadyClock::time_point pingSentAt_{};
+    bool pingOut_ = false;
 };
 
 struct Connected {
@@ -253,6 +332,7 @@ boost::system::error_code awaited(asio::io_context& loop, Start&& start)
     return result;
 }
 
+// Every connection to a host, a socket's or a plain request's, is made here.
 Connected connect(const SocketDial& dial)
 {
     Connected out;
@@ -321,8 +401,11 @@ std::string upgrade(
 {
     websocket::stream_base::timeout timeouts{};
     timeouts.handshake_timeout = dial.connectTimeout;
-    timeouts.idle_timeout = dial.idleTimeout;
-    timeouts.keep_alive_pings = true;
+    const bool ownKeepalive = dial.pingAfterSilence.count() > 0;
+    timeouts.idle_timeout = ownKeepalive
+        ? websocket::stream_base::none()
+        : std::chrono::duration_cast<std::chrono::steady_clock::duration>(dial.idleTimeout);
+    timeouts.keep_alive_pings = !ownKeepalive;
     stream.set_option(timeouts);
     stream.read_message_max(dial.maxMessageBytes);
     stream.set_option(
@@ -365,7 +448,7 @@ SocketDialResult openSocket(const SocketDial& dial,
             return result;
         }
         const auto socket = std::make_shared<ClientSocket<beast::tcp_stream>>(
-            std::move(connected.loop), std::move(connected.tls), std::move(stream));
+            std::move(connected.loop), std::move(connected.tls), std::move(stream), dial);
         socket->run(std::move(message), std::move(closed));
         result.socket = socket;
         return result;
@@ -377,7 +460,7 @@ SocketDialResult openSocket(const SocketDial& dial,
         return result;
     }
     const auto socket = std::make_shared<ClientSocket<TlsStream>>(
-        std::move(connected.loop), std::move(connected.tls), std::move(stream));
+        std::move(connected.loop), std::move(connected.tls), std::move(stream), dial);
     socket->run(std::move(message), std::move(closed));
     result.socket = socket;
     return result;
@@ -386,58 +469,96 @@ SocketDialResult openSocket(const SocketDial& dial,
 namespace {
 
 template <class Stream>
-void exchange(asio::io_context& loop, Stream& stream, const SocketDial& dial,
-    const std::string& body, Probe& probe)
+KeptAnswer exchange(asio::io_context& loop, Stream& stream, const SocketDial& dial,
+    const std::string& target, const std::map<std::string, std::string>& headers)
 {
-    bhttp::request<bhttp::string_body> out{
-        body.empty() ? bhttp::verb::get : bhttp::verb::post, dial.path, 11};
+    KeptAnswer answer;
+    bhttp::request<bhttp::empty_body> out{bhttp::verb::get, target, kHttpVersion};
     out.set(bhttp::field::host, hostHeader(dial.host));
-    for (const auto& [name, value] : dial.headers) {
+    for (const auto& [name, value] : headers) {
         out.set(name, value);
     }
-    out.body() = body;
-    out.prepare_payload();
+    out.keep_alive(true);
 
     beast::get_lowest_layer(stream).expires_after(dial.connectTimeout);
     boost::system::error_code error = awaited(loop, [&stream, &out](auto&& handler) {
         bhttp::async_write(stream, out, std::move(handler));
     });
     if (error) {
-        probe.error = "the request would not go: " + error.message();
-        return;
+        answer.error = "the request would not go: " + error.message();
+        return answer;
     }
     beast::flat_buffer buffer;
-    bhttp::response<bhttp::string_body> in;
+    bhttp::response_parser<bhttp::string_body> in;
+    in.body_limit(kKeptAnswerMaxBytes);
     beast::get_lowest_layer(stream).expires_after(dial.connectTimeout);
     error = awaited(loop, [&stream, &buffer, &in](auto&& handler) {
         bhttp::async_read(stream, buffer, in, std::move(handler));
     });
+    beast::get_lowest_layer(stream).expires_never();
     if (error) {
-        probe.error = "no answer came back: " + error.message();
-        return;
+        answer.error = "no answer came back: " + error.message();
+        return answer;
     }
-    probe.reached = true;
-    probe.status = static_cast<int>(in.result_int());
+    answer.reached = true;
+    answer.status = static_cast<int>(in.get().result_int());
+    answer.bytes = in.get().body().size();
+    return answer;
 }
 
 }  // namespace
 
-Probe probeHost(const SocketDial& dial, const std::string& body)
+struct KeptConnection::Impl {
+    SocketDial dial;
+    Connected connected;
+    bool broken = false;
+};
+
+KeptConnection::KeptConnection(const SocketDial& dial)
+    : impl_(std::make_unique<Impl>())
 {
-    Probe probe;
-    Connected connected = connect(dial);
-    if (!connected.error.empty()) {
-        probe.error = connected.error;
-        return probe;
+    impl_->dial = dial;
+    impl_->connected = connect(dial);
+}
+
+KeptConnection::~KeptConnection()
+{
+    Connected& link = impl_->connected;
+    if (!link.secure || !link.error.empty() || impl_->broken) {
+        return;
     }
-    if (connected.plain) {
-        exchange(*connected.loop, *connected.plain, dial, body, probe);
-        return probe;
+    beast::get_lowest_layer(*link.secure).expires_after(impl_->dial.connectTimeout);
+    const boost::system::error_code error = awaited(*link.loop,
+        [&link](auto&& handler) { link.secure->async_shutdown(std::move(handler)); });
+    if (error) {
+        bazarish::log::debug("a kept connection did not say goodbye: {}", error.message());
     }
-    exchange(*connected.loop, *connected.secure, dial, body, probe);
-    boost::system::error_code ignored;
-    connected.secure->shutdown(ignored);
-    return probe;
+}
+
+bool KeptConnection::connected() const
+{
+    return impl_->connected.error.empty() && !impl_->broken;
+}
+
+const std::string& KeptConnection::error() const
+{
+    return impl_->connected.error;
+}
+
+KeptAnswer KeptConnection::get(
+    const std::string& target, const std::map<std::string, std::string>& headers)
+{
+    if (!connected()) {
+        KeptAnswer refused;
+        refused.error = impl_->connected.error.empty() ? "the connection broke" : impl_->connected.error;
+        return refused;
+    }
+    Connected& link = impl_->connected;
+    const KeptAnswer answer = link.plain
+        ? exchange(*link.loop, *link.plain, impl_->dial, target, headers)
+        : exchange(*link.loop, *link.secure, impl_->dial, target, headers);
+    impl_->broken = !answer.reached;
+    return answer;
 }
 
 }  // namespace bazarish::http

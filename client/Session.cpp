@@ -2383,9 +2383,9 @@ std::unique_ptr<Client> Session::makeEventClient(const ContactFetchContext& cont
     return waiter;
 }
 
-std::vector<PendingEntry> Session::waitForMail(Client& waiter, const int waitSeconds)
+std::vector<PendingEntry> Session::waitForMail(Client& waiter, const Client::MailWait wait)
 {
-    return waiter.waitForPending(waitSeconds);
+    return waiter.waitForPending(wait);
 }
 
 Session::ContactCardResolved Session::resolveContactCard(const ContactFetchContext& context,

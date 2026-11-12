@@ -15,7 +15,6 @@ using namespace bazarish;
 
 namespace {
 
-constexpr std::chrono::seconds kQuiet{600};
 constexpr std::chrono::seconds kReadyWithin{10};
 constexpr std::int64_t kOldPublished = 1'800'000'000;
 constexpr std::int64_t kNewPublished = kOldPublished + 30;
@@ -56,10 +55,6 @@ int main()
     config.gatewayPath = test::kFakeGatewayPath;
     config.gatewayFingerprint = fake.fingerprint();
     config.gatewayTls = false;
-    config.gatewayControlMinLife = kQuiet;
-    config.gatewayControlMaxLife = kQuiet;
-    config.gatewayDecoyMin = kQuiet;
-    config.gatewayDecoyMax = kQuiet;
     i2p::Router router(config);
     router.start();
     CHECK(router.waitReady(kReadyWithin));

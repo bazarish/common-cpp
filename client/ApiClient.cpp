@@ -405,8 +405,9 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
             return response;
         } catch (const std::exception& error) {
             i2pStream_.reset();
-            const bool timedOut = std::chrono::steady_clock::now() - askedAt
-                >= std::chrono::seconds(readTimeoutSeconds);
+            const bool timedOut = readTimeoutSeconds != kNoReadDeadline
+                && std::chrono::steady_clock::now() - askedAt
+                    >= std::chrono::seconds(readTimeoutSeconds);
             if (reused && !timedOut) {
                 bazarish::log::info("kept connection was already closed; dialling again");
                 continue;

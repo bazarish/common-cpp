@@ -106,16 +106,16 @@ private:
                     welcome.sessionKey, welcome.salt, gateway::Side::eGateway));
             return;
         }
-        const std::optional<Bytes> opened = channel->openRecord(message);
+        const std::optional<gateway::RecordBody> opened = channel->openRecord(message);
         if (!opened.has_value()) {
             raw->close();
             return;
         }
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            received_.push_back(*opened);
+            received_.push_back(opened->frame);
         }
-        answer(channel, gateway::decode(*opened));
+        answer(channel, gateway::decode(opened->frame));
     }
 
     void answer(const http::SocketPtr& socket, const gateway::Frame& frame)

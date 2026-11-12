@@ -139,7 +139,9 @@ public:
     void registerPasses(const std::vector<Bytes>& handles);
     std::size_t revokePasses(const std::vector<Bytes>& handles);
     std::vector<PendingEntry> listPending();
-    std::vector<PendingEntry> waitForPending(int waitSeconds);
+    // A held wait ends when mail arrives or the link breaks, and at no set time.
+    enum class MailWait { eAtOnce, eHeld };
+    std::vector<PendingEntry> waitForPending(MailWait wait);
     // Items no longer held are left out of the answer.
     std::vector<FetchedItem> fetch(const std::vector<std::string>& ids);
     void ack(const std::vector<std::string>& ids);

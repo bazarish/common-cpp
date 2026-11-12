@@ -225,6 +225,8 @@ public:
     SocketImpl(websocket::stream<beast::tcp_stream> stream, SocketRoutes routes)
         : stream_(std::move(stream))
         , routes_(std::move(routes))
+        , watchdog_(stream_.get_executor())
+        , lastHeard_(std::chrono::steady_clock::now())
     {
     }
 
@@ -278,7 +280,16 @@ public:
 
     websocket::stream<beast::tcp_stream>& stream() { return stream_; }
     const SocketRoutes& routes() const { return routes_; }
-    void markClosed() { open_.store(false); }
+    void markClosed()
+    {
+        open_.store(false);
+        watchdog_.cancel();
+    }
+
+    // The read loop, the control callback and the watchdog all run on the stream's strand.
+    void heard() { lastHeard_ = std::chrono::steady_clock::now(); }
+    std::chrono::steady_clock::time_point lastHeard() const { return lastHeard_; }
+    asio::steady_timer& watchdog() { return watchdog_; }
 
 private:
     void write()
@@ -315,6 +326,8 @@ private:
 
     websocket::stream<beast::tcp_stream> stream_;
     SocketRoutes routes_;
+    asio::steady_timer watchdog_;
+    std::chrono::steady_clock::time_point lastHeard_;
     mutable std::mutex mutex_;
     std::deque<std::vector<unsigned char>> queue_;
     std::size_t queued_ = 0;
@@ -322,10 +335,41 @@ private:
     std::atomic<bool> open_{true};
 };
 
+asio::awaitable<void> watchSilence(std::shared_ptr<SocketImpl> socket, std::chrono::seconds limit)
+{
+    while (socket->open()) {
+        const std::chrono::steady_clock::time_point due = socket->lastHeard() + limit;
+        if (std::chrono::steady_clock::now() >= due) {
+            log::debug("websocket: nothing heard for {} s; closed", limit.count());
+            socket->close();
+            co_return;
+        }
+        socket->watchdog().expires_at(due);
+        boost::system::error_code woken;
+        co_await socket->watchdog().async_wait(asio::redirect_error(asio::use_awaitable, woken));
+    }
+}
+
 asio::awaitable<void> runSocket(std::shared_ptr<SocketImpl> socket, Request request)
 {
     websocket::stream<beast::tcp_stream>& stream = socket->stream();
     const SocketRoutes& routes = socket->routes();
+    if (routes.silenceLimit.count() > 0) {
+        const std::weak_ptr<SocketImpl> weak = socket;
+        stream.control_callback(
+            [weak](const websocket::frame_type kind, const beast::string_view payload) {
+                const std::shared_ptr<SocketImpl> held = weak.lock();
+                if (held == nullptr) {
+                    return;
+                }
+                held->heard();
+                if (kind == websocket::frame_type::ping && held->routes().pinged) {
+                    held->routes().pinged(held, std::string(payload));
+                }
+            });
+        asio::co_spawn(stream.get_executor(), watchSilence(socket, routes.silenceLimit),
+            asio::detached);
+    }
     if (routes.opened) {
         routes.opened(socket, request);
     }
@@ -340,6 +384,7 @@ asio::awaitable<void> runSocket(std::shared_ptr<SocketImpl> socket, Request requ
         if (!stream.got_binary()) {
             break;
         }
+        socket->heard();
         if (routes.message) {
             const unsigned char* const at
                 = static_cast<const unsigned char*>(buffer.data().data());
@@ -572,8 +617,12 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                         websocket::stream<beast::tcp_stream> upgraded(std::move(stream));
                         websocket::stream_base::timeout timeouts{};
                         timeouts.handshake_timeout = options.readTimeout;
-                        timeouts.idle_timeout = chosen.idleTimeout;
-                        timeouts.keep_alive_pings = true;
+                        const bool quiet = chosen.silenceLimit.count() > 0;
+                        timeouts.idle_timeout = quiet
+                            ? websocket::stream_base::none()
+                            : std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                chosen.idleTimeout);
+                        timeouts.keep_alive_pings = !quiet;
                         upgraded.set_option(timeouts);
                         upgraded.set_option(websocket::stream_base::decorator(
                             [protocol = chosen.subprotocol](websocket::response_type& response) {
