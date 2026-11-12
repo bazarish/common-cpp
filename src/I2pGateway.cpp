@@ -306,6 +306,7 @@ public:
         what.proxy = false;
         what.offlineKeys = false;
         what.warmPool = true;
+        what.leaseSetRefresh = true;
         return what;
     }
 
@@ -325,10 +326,8 @@ public:
     {
         notWithAGateway("a destination's tunnels and lease sets");
     }
-    bool refreshLeaseSet(const std::string&, const std::string&) override
-    {
-        notWithAGateway("refreshing a lease set");
-    }
+    LeaseSetRefresh refreshLeaseSet(
+        const std::string& localHost, const std::string& remoteHost) override;
 
     void setSocksProxy(const std::string&, int) override
     {
@@ -1519,6 +1518,35 @@ std::vector<LocalDestination> GatewayRouter::localDestinations() const
         destinations.push_back(std::move(entry));
     }
     return destinations;
+}
+
+LeaseSetRefresh GatewayRouter::refreshLeaseSet(
+    const std::string& localHost, const std::string& remoteHost)
+{
+    std::shared_ptr<GatewayEndpoint> from;
+    for (const std::shared_ptr<GatewayEndpoint>& endpoint : endpointsHeld()) {
+        if (endpoint->routingHost() == localHost) {
+            from = endpoint;
+        }
+    }
+    if (from == nullptr) {
+        throw std::runtime_error("bazarish::i2p: no destination " + localHost + " to look up from");
+    }
+    const std::uint32_t id = link_->nextId();
+    const nlohmann::json ask = {{"endpoint", from->id()}, {"host", remoteHost}};
+    const std::optional<Frame> answer
+        = link_->call(gateway::encodeJson(FrameType::eLeaseSetRefresh, id, ask), id, kCallTimeout);
+    if (!answer) {
+        throw std::runtime_error(
+            "bazarish::i2p: the gateway did not answer a lease set lookup in time");
+    }
+    if (answer->type != FrameType::eOk) {
+        const nlohmann::json said = answer->type == FrameType::eError
+            ? gateway::bodyJson(*answer) : nlohmann::json::object();
+        throw GatewayRefusal("bazarish::i2p: the gateway refused a lease set lookup: "
+            + said.value("message", std::string(gateway::frameTypeName(answer->type))));
+    }
+    return gateway::leaseSetRefreshFromJson(gateway::bodyJson(*answer));
 }
 
 void GatewayRouter::arrived(

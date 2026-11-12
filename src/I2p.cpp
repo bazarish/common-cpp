@@ -11,9 +11,11 @@
 #include <algorithm>
 #include <atomic>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 namespace bazarish::i2p {
 
@@ -37,9 +39,18 @@ constexpr auto kRouterReadyPoll = std::chrono::milliseconds(500);
 std::atomic<I2pLogLevel> g_i2pLogLevel{I2pLogLevel::eNone};
 std::atomic<std::uint64_t> g_carryReturns{0};
 std::mutex g_carryListenerMutex;
-// Held while the listener runs, so replacing it waits out a call already under way.
+// Held while the listeners run, so a watch going away waits out a call already under way.
 std::mutex g_carryCalling;
-std::function<void()> g_carryListener;
+std::map<std::uint64_t, std::function<void()>> g_carryListeners;
+std::uint64_t g_nextCarryWatch = 0;
+
+std::uint64_t addCarryListener(std::function<void()> listener)
+{
+    const std::lock_guard<std::mutex> lock(g_carryListenerMutex);
+    const std::uint64_t id = ++g_nextCarryWatch;
+    g_carryListeners.emplace(id, std::move(listener));
+    return id;
+}
 
 }  // namespace
 
@@ -241,11 +252,16 @@ void networkChanged()
     backend::noteCarryReturned();
 }
 
-void onCarryReturned(std::function<void()> listener)
+CarryWatch::CarryWatch(std::function<void()> listener)
+    : id_(addCarryListener(std::move(listener)))
+{
+}
+
+CarryWatch::~CarryWatch()
 {
     {
         const std::lock_guard<std::mutex> lock(g_carryListenerMutex);
-        g_carryListener = std::move(listener);
+        g_carryListeners.erase(id_);
     }
     const std::lock_guard<std::mutex> waited(g_carryCalling);
 }
@@ -254,12 +270,14 @@ void backend::noteCarryReturned()
 {
     ++g_carryReturns;
     const std::lock_guard<std::mutex> calling(g_carryCalling);
-    std::function<void()> listener;
+    std::vector<std::function<void()>> listeners;
     {
         const std::lock_guard<std::mutex> lock(g_carryListenerMutex);
-        listener = g_carryListener;
+        for (const auto& [id, listener] : g_carryListeners) {
+            listeners.push_back(listener);
+        }
     }
-    if (listener) {
+    for (const std::function<void()>& listener : listeners) {
         listener();
     }
 }
@@ -509,7 +527,12 @@ std::optional<DestinationDetail> Router::destinationDetail(const std::string& ho
     return impl_->transport->destinationDetail(host);
 }
 
-bool Router::refreshLeaseSet(const std::string& localHost, const std::string& remoteHost)
+bool publishedLater(const LeaseSetSeen& candidate, const std::optional<LeaseSetSeen>& than)
+{
+    return !than.has_value() || candidate.publishedAt > than->publishedAt;
+}
+
+LeaseSetRefresh Router::refreshLeaseSet(const std::string& localHost, const std::string& remoteHost)
 {
     return impl_->transport->refreshLeaseSet(localHost, remoteHost);
 }

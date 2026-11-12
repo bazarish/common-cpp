@@ -51,6 +51,7 @@ std::string_view frameTypeName(const FrameType type)
         case FrameType::eEndpointLost: return "endpoint-lost";
         case FrameType::eEndpointRenew: return "endpoint-renew";
         case FrameType::eEndpointDelegate: return "endpoint-delegate";
+        case FrameType::eLeaseSetRefresh: return "lease-set-refresh";
         case FrameType::eStreamOpen: return "stream-open";
         case FrameType::eStreamOpened: return "stream-opened";
         case FrameType::eStreamInbound: return "stream-inbound";
@@ -80,6 +81,7 @@ std::optional<FrameType> frameTypeFromByte(const std::uint8_t value)
         case FrameType::eEndpointLost:
         case FrameType::eEndpointRenew:
         case FrameType::eEndpointDelegate:
+        case FrameType::eLeaseSetRefresh:
         case FrameType::eStreamOpen:
         case FrameType::eStreamOpened:
         case FrameType::eStreamInbound:
@@ -92,6 +94,48 @@ std::optional<FrameType> frameTypeFromByte(const std::uint8_t value)
             return static_cast<FrameType>(value);
     }
     return std::nullopt;
+}
+
+namespace {
+
+constexpr char kBeforeField[] = "before";
+constexpr char kAfterField[] = "after";
+constexpr char kPublishedField[] = "published";
+constexpr char kExpiresField[] = "expires";
+
+nlohmann::json seenJson(const std::optional<i2p::LeaseSetSeen>& seen)
+{
+    if (!seen.has_value()) {
+        return nullptr;
+    }
+    return {{kPublishedField, seen->publishedAt}, {kExpiresField, seen->expiresAt}};
+}
+
+std::optional<i2p::LeaseSetSeen> seenFrom(const nlohmann::json& body, const char* field)
+{
+    const auto found = body.find(field);
+    if (found == body.end() || found->is_null()) {
+        return std::nullopt;
+    }
+    i2p::LeaseSetSeen seen;
+    seen.publishedAt = found->at(kPublishedField).get<std::int64_t>();
+    seen.expiresAt = found->at(kExpiresField).get<std::int64_t>();
+    return seen;
+}
+
+}  // namespace
+
+nlohmann::json leaseSetRefreshJson(const i2p::LeaseSetRefresh& refresh)
+{
+    return {{kBeforeField, seenJson(refresh.before)}, {kAfterField, seenJson(refresh.after)}};
+}
+
+i2p::LeaseSetRefresh leaseSetRefreshFromJson(const nlohmann::json& body)
+{
+    i2p::LeaseSetRefresh refresh;
+    refresh.before = seenFrom(body, kBeforeField);
+    refresh.after = seenFrom(body, kAfterField);
+    return refresh;
 }
 
 std::string_view faultName(const Fault fault)

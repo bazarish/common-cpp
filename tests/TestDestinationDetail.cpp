@@ -61,8 +61,11 @@ int main()
         }
 
         CHECK(!router.destinationDetail(stranger).has_value());
-        CHECK(!router.refreshLeaseSet(host, stranger));
-        CHECK(!router.refreshLeaseSet(stranger, host));
+        CHECK(router.capabilities().leaseSetRefresh);
+        const i2p::LeaseSetRefresh unknown = router.refreshLeaseSet(host, stranger);
+        CHECK(!unknown.before.has_value());
+        CHECK(!unknown.after.has_value());
+        CHECK_THROWS(router.refreshLeaseSet(stranger, host));
     }
     fs::remove_all(dir);
     return 0;

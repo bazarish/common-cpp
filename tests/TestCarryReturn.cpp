@@ -5,18 +5,25 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 
 int main()
 {
-    int told = 0;
+    int first = 0;
+    int second = 0;
     const std::uint64_t before = bazarish::i2p::carryReturns();
-    bazarish::i2p::onCarryReturned([&told]() { ++told; });
+    auto firstWatch = std::make_unique<bazarish::i2p::CarryWatch>([&first]() { ++first; });
+    {
+        const bazarish::i2p::CarryWatch secondWatch([&second]() { ++second; });
+        bazarish::i2p::networkChanged();
+        CHECK(first == 1 && second == 1 && bazarish::i2p::carryReturns() == before + 1);
+    }
     bazarish::i2p::networkChanged();
-    CHECK(told == 1 && bazarish::i2p::carryReturns() == before + 1);
+    CHECK(first == 2 && second == 1 && bazarish::i2p::carryReturns() == before + 2);
 
-    bazarish::i2p::onCarryReturned({});
+    firstWatch.reset();
     bazarish::i2p::networkChanged();
-    CHECK(told == 1 && bazarish::i2p::carryReturns() == before + 2);
+    CHECK(first == 2 && second == 1 && bazarish::i2p::carryReturns() == before + 3);
 
     std::printf("TestCarryReturn: all checks passed\n");
     return 0;

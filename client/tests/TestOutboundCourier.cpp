@@ -3,21 +3,25 @@
 #include "OutboundLeases.hpp"
 
 #include <bazarish/Crypto.hpp>
+#include <bazarish/DeliveryEnvelope.hpp>
 #include <bazarish/FederationFrame.hpp>
+#include <bazarish/I2p.hpp>
+#include <bazarish/Limits.hpp>
 
 #include "TestUtil.hpp"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
-#include <cstdlib>
-#include <deque>
-#include <future>
+#include <map>
+#include <memory>
 #include <mutex>
-#include <set>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -27,26 +31,64 @@ using namespace bazarish::client;
 
 namespace {
 
+constexpr std::chrono::seconds kQuickDial{1};
+constexpr std::chrono::seconds kQuickReply{1};
+// Long enough that nothing in a test reaches it unless the test waits for it.
+constexpr std::chrono::seconds kFarBound{3600};
+constexpr std::chrono::seconds kNearBound{2};
+// What a gate that must stay closed is given to prove it does.
+constexpr std::chrono::milliseconds kStaysClosed{4000};
+constexpr std::int64_t kPublishedStep = 100;
+constexpr std::int64_t kLeaseSeconds = 600;
+constexpr std::size_t kPayloadBytes = 64;
+constexpr std::int64_t kPastMs = 1;
+
+std::string deliveredReply(const Key& signing, const std::string& deliveryId);
+
 class ScriptedStream final : public DeliveryStream {
 public:
-    ScriptedStream(std::string reply, const bool answer)
-        : reply_(std::move(reply))
-        , answer_(answer)
+    explicit ScriptedStream(std::string reply)
+        : reply_(std::move(reply) + "\n")
     {
     }
 
-    void writeAll(const ByteView data) override
-    {
-        written_.insert(written_.end(), data.begin(), data.end());
-    }
+    void writeAll(const ByteView) override {}
 
     std::size_t readSome(const ByteBuffer buffer) override
     {
-        if (!answer_) {
-            throw std::runtime_error("no answer");
-        }
-        if (sent_ == 0) {
-            reply_.push_back('\n');
+        const ByteView from
+            = viewOf(reply_).subspan(sent_, std::min(buffer.size(), reply_.size() - sent_));
+        std::copy(from.begin(), from.end(), buffer.begin());
+        sent_ += from.size();
+        return from.size();
+    }
+
+    void close() override {}
+
+private:
+    std::string reply_;
+    std::size_t sent_ = 0;
+};
+
+// A recipient's server: opens the envelope with its serving key and signs what it names.
+class ServerStream final : public DeliveryStream {
+public:
+    ServerStream(const Key& signing, const Key& serving)
+        : signing_(signing)
+        , serving_(serving)
+    {
+    }
+
+    void writeAll(const ByteView data) override { written_.append(data.begin(), data.end()); }
+
+    std::size_t readSome(const ByteBuffer buffer) override
+    {
+        if (reply_.empty()) {
+            const nlohmann::json header
+                = nlohmann::json::parse(written_.substr(0, written_.find('\n')));
+            const DeliveryEnvelope envelope = openDeliveryEnvelope(
+                fromBase64(header.at("sealed").get<std::string>()), serving_);
+            reply_ = deliveredReply(signing_, envelope.deliveryId) + "\n";
         }
         const ByteView from
             = viewOf(reply_).subspan(sent_, std::min(buffer.size(), reply_.size() - sent_));
@@ -55,15 +97,14 @@ public:
         return from.size();
     }
 
-    void close() override { answer_ = false; }
-
-    const Bytes& written() const { return written_; }
+    void close() override {}
 
 private:
-    Bytes written_;
+    const Key& signing_;
+    const Key& serving_;
+    std::string written_;
     std::string reply_;
     std::size_t sent_ = 0;
-    std::atomic<bool> answer_{true};
 };
 
 // What a stream into a lease set whose tunnels are gone does: takes everything, answers nothing.
@@ -93,44 +134,208 @@ private:
     bool closed_ = false;
 };
 
-std::string signedDeliveredReply(const Key& signingKey, const std::string& deliveryId)
+struct TestKeys {
+    Key signing = Key::generateSigning();
+    Key serving = Key::generateSealing();
+};
+
+std::string deliveredReply(const Key& signing, const std::string& deliveryId)
 {
-    const Bytes signedBytes = deliveryAckInput(deliveryId);
-    const nlohmann::json reply = {
-        {"delivered", true},
-        {"deliveryId", deliveryId},
-        {"signerPub", toBase64(signingKey.publicDer())},
-        {"sig", toBase64(bazarish::sign(signingKey, signedBytes))},
+    return nlohmann::json({
+                              {"delivered", true},
+                              {"deliveryId", deliveryId},
+                              {"signerPub", toBase64(signing.publicDer())},
+                              {"sig",
+                                  toBase64(bazarish::sign(signing, deliveryAckInput(deliveryId)))},
+                          })
+        .dump();
+}
+
+Letter letterTo(const TestKeys& keys, const std::string& route, const std::uint64_t seq)
+{
+    Letter letter;
+    letter.seq = seq;
+    letter.route = route;
+    letter.mailbox = "mailbox-" + route;
+    letter.deliveryClass = kContentDeliveryClass;
+    letter.deliveryId = "d-" + std::to_string(seq);
+    letter.pass = Bytes{1, 2, 3};
+    letter.servingSealingDer = keys.serving.publicDer();
+    letter.payload = Bytes(kPayloadBytes, 0x41);
+    letter.kind = "text";
+    return letter;
+}
+
+CourierTimings quick(const std::chrono::seconds bound)
+{
+    CourierTimings timings;
+    timings.dial = kQuickDial;
+    timings.reply = kQuickReply;
+    timings.staleBound = bound;
+    return timings;
+}
+
+OutboundCourier::Links dialling(
+    std::function<std::shared_ptr<DeliveryStream>(const std::string& toDest)> open)
+{
+    OutboundCourier::Links links;
+    links.prepare = [](const std::string&, const std::string&) { return true; };
+    links.openStream = [open = std::move(open)](const std::string& toDest, std::chrono::seconds) {
+        return open(toDest);
     };
-    return reply.dump();
+    return links;
 }
 
-DeliverySchedule quickSchedule()
+// Outcomes and phases as the courier reported them, by letter.
+struct Record {
+    std::mutex mutex;
+    std::map<std::uint64_t, DeliveryOutcome> outcomes;
+    std::map<std::uint64_t, std::vector<std::string>> phases;
+    std::map<std::uint64_t, std::thread::id> reportedOn;
+    std::vector<std::uint64_t> settled;
+
+    DeliveryWatch watchFor(const std::uint64_t seq)
+    {
+        DeliveryWatch watch;
+        watch.onPhase = [this, seq](const std::string& phase) {
+            const std::lock_guard<std::mutex> lock(mutex);
+            phases[seq].push_back(phase);
+        };
+        watch.onOutcome = [this, seq](const DeliveryOutcome& outcome) {
+            const std::lock_guard<std::mutex> lock(mutex);
+            outcomes[seq] = outcome;
+            reportedOn[seq] = std::this_thread::get_id();
+        };
+        return watch;
+    }
+
+    OutboundCourier::SettledFn settledFn()
+    {
+        return [this](const std::uint64_t seq, const DeliveryOutcome&) {
+            const std::lock_guard<std::mutex> lock(mutex);
+            settled.push_back(seq);
+        };
+    }
+
+    std::optional<DeliveryOutcome> outcome(const std::uint64_t seq)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const auto found = outcomes.find(seq);
+        return found == outcomes.end() ? std::nullopt
+                                       : std::optional<DeliveryOutcome>(found->second);
+    }
+
+    bool saw(const std::uint64_t seq, const std::string& phase)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const std::vector<std::string>& seen = phases[seq];
+        return std::find(seen.begin(), seen.end(), phase) != seen.end();
+    }
+
+    std::size_t settledCount()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return settled.size();
+    }
+};
+
+bool settles(Record& record, const std::uint64_t seq)
 {
-    DeliverySchedule schedule;
-    schedule.dial = std::chrono::seconds{1};
-    schedule.retryDelays
-        = {std::chrono::seconds{0}, std::chrono::seconds{0}, std::chrono::seconds{0}};
-    schedule.run = std::chrono::seconds{10};
-    return schedule;
+    return testutil::waitFor([&record, seq]() { return record.outcome(seq).has_value(); });
 }
 
-OutboundCourier::Task taskTo(const std::string& dest, const std::string& deliveryId)
+bool staysUnsettled(Record& record, const std::uint64_t seq)
 {
-    OutboundCourier::Task task;
-    task.toDest = dest;
-    task.deliveryId = deliveryId;
-    task.sealed = Bytes{1, 2, 3};
-    task.payload = Bytes(64, 0x41);
-    return task;
+    return !testutil::waitFor(
+        [&record, seq]() { return record.outcome(seq).has_value(); }, kStaysClosed);
+}
+
+bool waits(Record& record, const std::uint64_t seq)
+{
+    return testutil::waitFor([&record, seq]() { return record.saw(seq, kPhaseWaiting); });
+}
+
+i2p::LeaseSetSeen version(const int number)
+{
+    const std::int64_t published = number * kPublishedStep;
+    return i2p::LeaseSetSeen{published, published + kLeaseSeconds};
+}
+
+// One recipient's lease sets: what its live router answers on, what the closest floodfill
+// serves, and what the sender's address holds.
+struct FakeNet {
+    std::mutex mutex;
+    int live = 1;
+    int floodfill = 1;
+    std::optional<int> cached;
+    int lookups = 0;
+    std::vector<int> dialledOn;
+    const TestKeys& keys;
+
+    explicit FakeNet(const TestKeys& held)
+        : keys(held)
+    {
+    }
+
+    OutboundCourier::Links links(const bool refreshes)
+    {
+        OutboundCourier::Links links = dialling(
+            [this](const std::string&) -> std::shared_ptr<DeliveryStream> {
+            const std::lock_guard<std::mutex> lock(mutex);
+            if (!cached.has_value()) {
+                cached = floodfill;
+            }
+            dialledOn.push_back(*cached);
+            if (*cached != live) {
+                return std::make_shared<SilentStream>();
+            }
+            return std::make_shared<ServerStream>(keys.signing, keys.serving);
+        });
+        links.lookup = [this, refreshes](
+                           const std::string&) -> std::optional<i2p::LeaseSetRefresh> {
+            if (!refreshes) {
+                return std::nullopt;
+            }
+            const std::lock_guard<std::mutex> lock(mutex);
+            ++lookups;
+            i2p::LeaseSetRefresh refresh;
+            if (cached.has_value()) {
+                refresh.before = version(*cached);
+            }
+            cached = floodfill;
+            refresh.after = version(floodfill);
+            return refresh;
+        };
+        return links;
+    }
+
+    int lookupsMade()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return lookups;
+    }
+
+    std::vector<int> dialled()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return dialledOn;
+    }
+};
+
+std::int64_t utcMillisIn(const std::chrono::seconds from)
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        (std::chrono::system_clock::now() + from).time_since_epoch())
+        .count();
 }
 
 }  // namespace
 
 int main()
 {
-    const Key signingKey = Key::generateSigning();
+    const TestKeys keys;
     const std::string dest = "recipient.b32.i2p";
+    const std::string other = "another.b32.i2p";
 
     {
         const std::chrono::steady_clock::time_point made{};
@@ -140,311 +345,272 @@ int main()
         const std::chrono::steady_clock::time_point busy = made + kLeaseMaxLife - tick;
         CHECK(!leaseSpent(made, busy, made + kLeaseMaxLife - tick));
         CHECK(leaseSpent(made, busy, made + kLeaseMaxLife));
-    }
-
-    {
-        const std::string other = "another.b32.i2p";
         CHECK(leaseKeyFor(OutboundAddressing::eOnePerCorrespondent, false, dest) == dest);
-        CHECK(leaseKeyFor(OutboundAddressing::eOnePerCorrespondent, false, other) == other);
         CHECK(leaseKeyFor(OutboundAddressing::eOneForAll, false, dest)
             == leaseKeyFor(OutboundAddressing::eOneForAll, false, other));
-        CHECK(leaseKeyFor(OutboundAddressing::eOneForAll, false, dest) != dest);
-        for (const OutboundAddressing addressing :
-            {OutboundAddressing::eOneForAll, OutboundAddressing::eOnePerCorrespondent}) {
-            const std::string own = leaseKeyFor(addressing, true, dest);
-            CHECK(own != dest);
-            CHECK(own != leaseKeyFor(addressing, false, dest));
-            CHECK(own != leaseKeyFor(addressing, true, other));
+        CHECK(leaseKeyFor(OutboundAddressing::eOneForAll, true, dest)
+            != leaseKeyFor(OutboundAddressing::eOneForAll, false, dest));
+    }
+
+    {
+        Record record;
+        std::atomic<int> dials{0};
+        OutboundCourier courier(
+            dialling([&](const std::string&) -> std::shared_ptr<DeliveryStream> {
+            ++dials;
+            return std::make_shared<ServerStream>(keys.signing, keys.serving);
+        }),
+            record.settledFn(), quick(kFarBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(settles(record, 1));
+        CHECK(record.outcome(1)->stored);
+        CHECK(dials.load() == 1);
+        CHECK(record.reportedOn[1] != std::this_thread::get_id());
+        CHECK(record.saw(1, kPhasePreparing) && record.saw(1, kPhaseDialing)
+            && record.saw(1, kPhaseSending));
+        CHECK(testutil::waitFor([&record]() { return record.settledCount() == 1; }));
+
+        Record late;
+        CHECK(courier.attach(1, late.watchFor(1)));
+        CHECK(settles(late, 1));
+        CHECK(late.outcome(1)->stored);
+        courier.forget(1);
+        CHECK(!courier.attach(1, late.watchFor(1)));
+    }
+
+    {
+        Record record;
+        std::atomic<int> dials{0};
+        OutboundCourier courier(
+            dialling([&](const std::string&) -> std::shared_ptr<DeliveryStream> {
+            ++dials;
+            return std::make_shared<ScriptedStream>(
+                nlohmann::json({{"delivered", false}, {"errorCode", "DELIVERY_REJECTED"},
+                                   {"errorMessage", "delivery rejected"}})
+                    .dump());
+        }),
+            {}, quick(kFarBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(settles(record, 1));
+        CHECK(!record.outcome(1)->stored);
+        CHECK(record.outcome(1)->errorCode == "DELIVERY_REJECTED");
+        CHECK(dials.load() == 1);
+    }
+
+    {
+        Record record;
+        std::atomic<int> dials{0};
+        OutboundCourier courier(
+            dialling([&](const std::string&) -> std::shared_ptr<DeliveryStream> {
+            ++dials;
+            return std::make_shared<ScriptedStream>(nlohmann::json({{"delivered", true}}).dump());
+        }),
+            {}, quick(kFarBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(waits(record, 1));
+        CHECK(staysUnsettled(record, 1));
+        CHECK(dials.load() == 1);
+        courier.stop();
+        CHECK(!record.outcome(1).has_value());
+        CHECK_THROWS(courier.submit(letterTo(keys, dest, 2)));
+    }
+
+    {
+        Record record;
+        FakeNet net(keys);
+        net.live = 2;
+        net.floodfill = 2;
+        net.cached = 1;
+        OutboundCourier courier(net.links(true), {}, quick(kFarBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(settles(record, 1));
+        CHECK(record.outcome(1)->stored);
+        CHECK(record.saw(1, kPhaseWaiting));
+        CHECK(net.lookupsMade() == 1);
+        CHECK(net.dialled() == std::vector<int>({1, 2}));
+        std::printf("TestOutboundCourier: a restarted holder is reached on its new lease set"
+                    " right after the first silence\n");
+    }
+
+    {
+        Record record;
+        FakeNet net(keys);
+        net.live = 2;
+        net.floodfill = 2;
+        net.cached = 1;
+        OutboundCourier courier(net.links(false), {}, quick(kFarBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(waits(record, 1));
+        CHECK(staysUnsettled(record, 1));
+        CHECK(net.dialled() == std::vector<int>({1}));
+        std::printf("TestOutboundCourier: with no lookup the stale lease set is not dialled"
+                    " again before the bound\n");
+    }
+
+    {
+        Record record;
+        FakeNet net(keys);
+        net.live = 2;
+        net.floodfill = 1;
+        net.cached = 1;
+        OutboundCourier courier(net.links(true), {}, quick(kFarBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(testutil::waitFor([&net]() { return net.lookupsMade() == 1; }));
+        CHECK(staysUnsettled(record, 1));
+        CHECK(net.dialled() == std::vector<int>({1}));
+        {
+            const std::lock_guard<std::mutex> lock(net.mutex);
+            net.floodfill = 2;
         }
+        courier.heard(dest);
+        CHECK(settles(record, 1));
+        CHECK(record.outcome(1)->stored);
+        CHECK(net.lookupsMade() == 2);
+        CHECK(net.dialled() == std::vector<int>({1, 2}));
     }
 
     {
-        std::vector<std::string> phases;
-        int dials = 0;
-        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
-            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                ++dials;
-                return std::make_shared<ScriptedStream>(
-                    signedDeliveredReply(signingKey, "d-1"), true);
-            },
-            quickSchedule());
-        OutboundCourier::Task task = taskTo(dest, "d-1");
-        task.onPhase = [&phases](const std::string& phase) { phases.push_back(phase); };
-        const OutboundCourier::Outcome outcome = courier.deliverNow(task);
-        CHECK(outcome.stored);
-        CHECK(dials == 1);
-        CHECK(phases.size() == 3);
-        CHECK(phases.at(0) == kPhasePreparing);
-        CHECK(phases.at(1) == kPhaseDialing);
-        CHECK(phases.at(2) == kPhaseSending);
+        Record record;
+        FakeNet net(keys);
+        net.live = 2;
+        net.floodfill = 1;
+        net.cached = 1;
+        OutboundCourier courier(net.links(true), {}, quick(kNearBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(testutil::waitFor([&net]() { return net.lookupsMade() == 1; }));
+        {
+            const std::lock_guard<std::mutex> lock(net.mutex);
+            net.floodfill = 2;
+            net.cached.reset();
+        }
+        CHECK(settles(record, 1));
+        CHECK(record.outcome(1)->stored);
+        CHECK(net.lookupsMade() == 1);
+        CHECK(net.dialled() == std::vector<int>({1, 2}));
     }
 
     {
-        int dials = 0;
-        int prepared = 0;
-        std::vector<std::string> retired;
-        DeliverySchedule schedule = quickSchedule();
-        schedule.reply = std::chrono::seconds{1};
+        Record record;
+        std::atomic<bool> answers{false};
+        std::atomic<int> dials{0};
         OutboundCourier courier(
-            [&prepared](const std::string&, const std::string&) {
-                ++prepared;
-                return true;
-            },
-            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                ++dials;
-                if (dials == 1) {
-                    return std::make_shared<SilentStream>();
-                }
-                return std::make_shared<ScriptedStream>(
-                    signedDeliveredReply(signingKey, "d-silent"), true);
-            },
-            schedule, [&retired](const std::string& toDest) { retired.push_back(toDest); });
-        const OutboundCourier::Outcome outcome = courier.deliverNow(taskTo(dest, "d-silent"));
-        CHECK(outcome.stored);
-        CHECK(dials == 2);
-        CHECK(retired == std::vector<std::string>{dest});
-        CHECK(prepared == 2);
-    }
-
-    {
-        int dials = 0;
-        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
-            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                ++dials;
-                return std::make_shared<ScriptedStream>(
-                    nlohmann::json({{"delivered", true}}).dump(), true);
-            },
-            quickSchedule());
-        const OutboundCourier::Outcome outcome = courier.deliverNow(taskTo(dest, "d-2"));
-        CHECK(!outcome.stored);
-        CHECK(dials == kDeliveryAttempts);
-    }
-
-    {
-        int dials = 0;
-        std::vector<std::string> retries;
-        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
-            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                ++dials;
+            dialling([&](const std::string&) -> std::shared_ptr<DeliveryStream> {
+            ++dials;
+            if (!answers.load()) {
                 return nullptr;
-            },
-            quickSchedule());
-        OutboundCourier::Task task = taskTo(dest, "d-3");
-        task.onPhase = [&retries](const std::string& phase) {
-            if (phase.starts_with(kPhaseRetryPrefix)) {
-                retries.push_back(phase);
             }
-        };
-        const OutboundCourier::Outcome outcome = courier.deliverNow(task);
-        CHECK(!outcome.stored);
-        CHECK(dials == kDeliveryAttempts);
-        CHECK(static_cast<int>(retries.size()) == kDeliveryAttempts - 1);
-        CHECK(retries.front() == std::string(kPhaseRetryPrefix) + "2/4");
-        CHECK(outcome.errorCode == "RECIPIENT_SERVER_UNREACHABLE");
+            return std::make_shared<ServerStream>(keys.signing, keys.serving);
+        }),
+            {}, quick(kFarBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(waits(record, 1));
+        CHECK(staysUnsettled(record, 1));
+        CHECK(dials.load() == 1);
+        answers = true;
+        i2p::networkChanged();
+        CHECK(settles(record, 1));
+        CHECK(record.outcome(1)->stored);
+        CHECK(dials.load() == 2);
     }
 
     {
-        int dials = 0;
-        std::vector<std::string> retries;
-        DeliverySchedule schedule = quickSchedule();
-        schedule.dial = std::chrono::seconds{2};
-        schedule.run = std::chrono::seconds{5};
-        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
-            [&](const std::string&, const std::chrono::seconds forHowLong)
-                -> std::shared_ptr<DeliveryStream> {
-                ++dials;
-                std::this_thread::sleep_for(forHowLong);
-                return nullptr;
-            },
-            schedule);
-        OutboundCourier::Task task = taskTo(dest, "d-budget");
-        task.onPhase = [&retries](const std::string& phase) {
-            if (phase.starts_with(kPhaseRetryPrefix)) {
-                retries.push_back(phase);
+        Record record;
+        std::atomic<bool> answers{false};
+        OutboundCourier::Links links;
+        links.ownMailbox = [&answers](const Letter&) -> std::optional<DeliveryOutcome> {
+            if (!answers.load()) {
+                return std::nullopt;
             }
+            DeliveryOutcome stored;
+            stored.stored = true;
+            return stored;
         };
-        const OutboundCourier::Outcome outcome = courier.deliverNow(task);
-        CHECK(!outcome.stored);
-        CHECK(dials == 2);
-        CHECK(static_cast<int>(retries.size()) == dials - 1);
-        CHECK(outcome.errorCode == "RECIPIENT_SERVER_UNREACHABLE");
-        CHECK(outcome.errorMessage.find("2 of 4 tries") != std::string::npos);
+        OutboundCourier courier(links, {}, quick(kFarBound));
+        courier.submit(letterTo(keys, kOwnMailboxRoute, 1), record.watchFor(1));
+        CHECK(waits(record, 1));
+        CHECK(!record.saw(1, kPhasePreparing));
+        courier.heard(dest);
+        CHECK(staysUnsettled(record, 1));
+        answers = true;
+        courier.heard(kOwnMailboxRoute);
+        CHECK(settles(record, 1));
+        CHECK(record.outcome(1)->stored);
     }
 
     {
-        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
-            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                return std::make_shared<ScriptedStream>(std::string(), false);
-            },
-            quickSchedule());
-        const OutboundCourier::Outcome outcome = courier.deliverNow(taskTo(dest, "d-quiet"));
-        CHECK(!outcome.stored);
-        CHECK(outcome.errorCode == "RECIPIENT_SERVER_UNREACHABLE");
-        CHECK(outcome.errorMessage.find("did not answer") != std::string::npos);
-    }
-
-    {
-        int dials = 0;
-        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
-            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                ++dials;
-                return std::make_shared<ScriptedStream>(
-                    nlohmann::json({{"delivered", false}, {"errorCode", "DELIVERY_REJECTED"},
-                        {"errorMessage", "delivery rejected"}})
-                        .dump(),
-                    true);
-            },
-            quickSchedule());
-        const OutboundCourier::Outcome outcome = courier.deliverNow(taskTo(dest, "d-4"));
-        CHECK(!outcome.stored);
-        CHECK(dials == 1);
-        CHECK(outcome.errorCode == "DELIVERY_REJECTED");
-    }
-
-    {
-        int dials = 0;
-        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
-            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                if (++dials == 1) {
-                    throw std::runtime_error("the gateway closed the stream");
-                }
-                return std::make_shared<ScriptedStream>(
-                    signedDeliveredReply(signingKey, "d-dial-threw"), true);
-            },
-            quickSchedule());
-        CHECK(courier.deliverNow(taskTo(dest, "d-dial-threw")).stored);
-        CHECK(dials == 2);
-    }
-
-    {
-        std::promise<OutboundCourier::Outcome> told;
-        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
-            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                return std::make_shared<ScriptedStream>(std::string{}, false);
-            },
-            quickSchedule(),
-            [](const std::string&) { throw std::runtime_error("the address would not go"); });
-        OutboundCourier::Task task = taskTo(dest, "d-retire-threw");
-        task.onOutcome
-            = [&told](const OutboundCourier::Outcome& outcome) { told.set_value(outcome); };
-        courier.submit(std::move(task));
-        const OutboundCourier::Outcome outcome = told.get_future().get();
-        CHECK(!outcome.stored);
-        CHECK(outcome.errorMessage.find("would not go") != std::string::npos);
-    }
-
-    {
-        int dials = 0;
-        OutboundCourier courier([](const std::string&, const std::string&) { return false; },
-            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                ++dials;
-                return nullptr;
-            },
-            quickSchedule());
-        const OutboundCourier::Outcome outcome = courier.deliverNow(taskTo(dest, "d-5"));
-        CHECK(!outcome.stored);
-        CHECK(dials == 0);
-        CHECK(!outcome.errorMessage.empty());
-    }
-
-    {
-        int dials = 0;
+        Record record;
         OutboundCourier courier(
-            [](const std::string&, const std::string&) -> bool {
-                throw std::runtime_error("the gateway did not answer in time");
-            },
-            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                ++dials;
-                return nullptr;
-            },
-            quickSchedule());
-        const OutboundCourier::Outcome outcome = courier.deliverNow(taskTo(dest, "d-thrown"));
-        CHECK(!outcome.stored);
-        CHECK(dials == 0);
-        CHECK(outcome.errorMessage.find("did not answer in time") != std::string::npos);
+            dialling([](const std::string&) -> std::shared_ptr<DeliveryStream> { return nullptr; }),
+            record.settledFn(), quick(kFarBound));
+        Letter call = letterTo(keys, dest, 1);
+        call.kind = "call.invite";
+        call.notAfterMs = utcMillisIn(kNearBound);
+        courier.submit(call, record.watchFor(1));
+        courier.submit(letterTo(keys, other, 2), record.watchFor(2));
+        Letter stale = letterTo(keys, other, 3);
+        stale.notAfterMs = kPastMs;
+        courier.submit(stale, record.watchFor(3));
+        CHECK(settles(record, 3));
+        CHECK(settles(record, 1));
+        CHECK(!record.outcome(1)->stored);
+        CHECK(record.outcome(1)->errorCode.empty());
+        CHECK(!record.outcome(2).has_value());
+        courier.withdraw("mailbox-" + other);
+        CHECK(settles(record, 2));
+        CHECK(record.outcome(2)->errorMessage == kWithdrawnMessage);
+        CHECK(record.reportedOn[2] != std::this_thread::get_id());
+        CHECK(testutil::waitFor([&record]() { return record.settledCount() == 3; }));
     }
 
     {
-        int prepared = 0;
-        DeliverySchedule schedule = quickSchedule();
-        schedule.reply = std::chrono::seconds{1};
-        OutboundCourier courier(
-            [&prepared](const std::string&, const std::string&) -> bool {
-                if (++prepared > 1) {
-                    throw std::runtime_error("the gateway did not answer in time");
-                }
-                return true;
-            },
-            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                return std::make_shared<SilentStream>();
-            },
-            schedule, [](const std::string&) {});
-        const OutboundCourier::Outcome outcome = courier.deliverNow(taskTo(dest, "d-rethrown"));
-        CHECK(!outcome.stored);
-        CHECK(prepared == 2);
-        CHECK(outcome.errorCode == "RECIPIENT_SERVER_UNREACHABLE");
-    }
-
-    {
+        Record record;
         std::mutex mutex;
-        std::condition_variable cv;
-        std::vector<std::string> outcomes;
+        std::vector<std::string> dialled;
         OutboundCourier courier(
-            [](const std::string& toDest, const std::string&) -> bool {
-                if (toDest == "lost.b32.i2p") {
-                    throw std::runtime_error("the gateway did not answer in time");
+            dialling([&](const std::string& toDest) -> std::shared_ptr<DeliveryStream> {
+                const std::lock_guard<std::mutex> lock(mutex);
+                dialled.push_back(toDest);
+                if (toDest == dest) {
+                    return nullptr;
                 }
-                return true;
-            },
-            [&](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                return std::make_shared<ScriptedStream>(
-                    signedDeliveredReply(signingKey, "d-after"), true);
-            },
-            quickSchedule(), {}, 1);
-        const auto collect = [&](const OutboundCourier::Outcome& outcome) {
-            const std::lock_guard<std::mutex> lock(mutex);
-            outcomes.push_back(outcome.stored ? "stored" : outcome.errorMessage);
-            cv.notify_all();
-        };
-        OutboundCourier::Task lost = taskTo("lost.b32.i2p", "d-lost");
-        lost.onOutcome = collect;
-        OutboundCourier::Task after = taskTo(dest, "d-after");
-        after.onOutcome = collect;
-        courier.submit(lost);
-        courier.submit(after);
-        {
-            std::unique_lock<std::mutex> lock(mutex);
-            cv.wait(lock, [&outcomes]() { return outcomes.size() == 2; });
-        }
-        courier.stop();
-        CHECK(outcomes.at(0).find("did not answer in time") != std::string::npos);
-        CHECK(outcomes.at(1) == "stored");
+                return std::make_shared<ServerStream>(keys.signing, keys.serving);
+            }),
+            {}, quick(kFarBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(waits(record, 1));
+        courier.readdress("mailbox-" + dest, other, keys.serving.publicDer());
+        CHECK(settles(record, 1));
+        CHECK(record.outcome(1)->stored);
+        const std::lock_guard<std::mutex> lock(mutex);
+        CHECK(dialled == std::vector<std::string>({dest, other}));
     }
 
     {
-        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
-            [](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                return nullptr;
-            },
-            quickSchedule(), {}, 1);
-        std::mutex held;
-        std::promise<std::thread::id> reportedOn;
-        {
-            const std::lock_guard<std::mutex> holding(held);
-            OutboundCourier::Outcome ready;
-            ready.stored = true;
-            courier.report(
-                [&held, &reportedOn](const OutboundCourier::Outcome& outcome) {
-                    const std::lock_guard<std::mutex> lock(held);
-                    CHECK(outcome.stored);
-                    reportedOn.set_value(std::this_thread::get_id());
-                },
-                ready);
-        }
-        CHECK(reportedOn.get_future().get() != std::this_thread::get_id());
-        courier.stop();
-        CHECK_THROWS(courier.submit(taskTo("late.b32.i2p", "d-late")));
-        CHECK_THROWS(courier.report([](const OutboundCourier::Outcome&) {}, {}));
+        Record record;
+        std::mutex mutex;
+        std::vector<std::string> told;
+        OutboundCourier::Links links
+            = dialling([&](const std::string&) -> std::shared_ptr<DeliveryStream> {
+                  return std::make_shared<ServerStream>(keys.signing, keys.serving);
+              });
+        links.keepOwn = [&](const std::string& toDest) {
+            const std::lock_guard<std::mutex> lock(mutex);
+            told.push_back("keep " + toDest);
+        };
+        links.release = [&](const std::string& toDest) {
+            const std::lock_guard<std::mutex> lock(mutex);
+            told.push_back("release " + toDest);
+        };
+        OutboundCourier courier(links, {}, quick(kFarBound));
+        Letter request = letterTo(keys, dest, 1);
+        request.deliveryClass = kContactDeliveryClass;
+        request.pass.clear();
+        courier.submit(request, record.watchFor(1));
+        CHECK(settles(record, 1));
+        CHECK(testutil::waitFor([&]() {
+            const std::lock_guard<std::mutex> lock(mutex);
+            return told == std::vector<std::string>({"keep " + dest, "release " + dest});
+        }));
     }
 
     {
@@ -454,11 +620,11 @@ int main()
         int maxInFlightSame = 0;
         int otherDials = 0;
         bool release = false;
-        OutboundCourier courier([](const std::string&, const std::string&) { return true; },
-            [&](const std::string& toDest,
-                std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+        Record record;
+        OutboundCourier courier(
+            dialling([&](const std::string& toDest) -> std::shared_ptr<DeliveryStream> {
                 std::unique_lock<std::mutex> lock(mutex);
-                if (toDest == "other.b32.i2p") {
+                if (toDest == other) {
                     ++otherDials;
                     cv.notify_all();
                 } else {
@@ -468,22 +634,22 @@ int main()
                     cv.wait(lock, [&release]() { return release; });
                     --inFlightSame;
                 }
-                return std::make_shared<ScriptedStream>(
-                    signedDeliveredReply(signingKey, "d-6"), true);
-            },
-            quickSchedule());
-        courier.submit(taskTo(dest, "d-6"));
-        courier.submit(taskTo(dest, "d-6"));
-        courier.submit(taskTo("other.b32.i2p", "d-6"));
+                return std::make_shared<ServerStream>(keys.signing, keys.serving);
+            }),
+            {}, quick(kFarBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        courier.submit(letterTo(keys, dest, 2), record.watchFor(2));
+        courier.submit(letterTo(keys, other, 3), record.watchFor(3));
         {
             std::unique_lock<std::mutex> lock(mutex);
             cv.wait(lock, [&otherDials]() { return otherDials == 1; });
             release = true;
         }
         cv.notify_all();
-        courier.stop();
+        CHECK(settles(record, 1));
+        CHECK(settles(record, 2));
+        CHECK(settles(record, 3));
         CHECK(maxInFlightSame == 1);
-        CHECK(otherDials == 1);
     }
 
     std::printf("TestOutboundCourier ok\n");

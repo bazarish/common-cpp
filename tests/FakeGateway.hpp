@@ -40,6 +40,18 @@ public:
         return received_;
     }
 
+    void answerLookups(const i2p::LeaseSetRefresh& refresh)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        lookupAnswer_ = refresh;
+    }
+
+    std::vector<nlohmann::json> lookups()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return lookups_;
+    }
+
     void askRenewals()
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -125,6 +137,17 @@ private:
                     {"streams", nlohmann::json::array()}}));
             return;
         }
+        if (frame.type == FrameType::eLeaseSetRefresh) {
+            i2p::LeaseSetRefresh answer;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                lookups_.push_back(gateway::bodyJson(frame));
+                answer = lookupAnswer_;
+            }
+            socket->send(gateway::encodeJson(
+                FrameType::eOk, frame.ref, gateway::leaseSetRefreshJson(answer)));
+            return;
+        }
         if (frame.type == FrameType::eEndpointCreate) {
             socket->send(gateway::encodeJson(FrameType::eEndpointStatus, frame.ref,
                 {{"ready", true}, {"host", kFakeGatewayHost}, {"tunnelsIn", 1}, {"tunnelsOut", 1},
@@ -147,6 +170,8 @@ private:
     std::vector<Bytes> received_;
     std::vector<std::uint32_t> keyedEndpoints_;
     std::vector<std::uint32_t> renewDue_;
+    i2p::LeaseSetRefresh lookupAnswer_;
+    std::vector<nlohmann::json> lookups_;
 };
 
 }  // namespace bazarish::test

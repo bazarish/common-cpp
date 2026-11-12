@@ -81,6 +81,9 @@ constexpr int kMaxB33Days = 0xFFFF;
 // i2pd's GetDateString writes "YYYYMMDD" and its terminator.
 constexpr std::size_t kDateStringBytes = 9;
 constexpr std::size_t kB32SuffixLen = 8;
+constexpr std::size_t kB32LabelBytesMax = 64;
+constexpr std::size_t kIdentHashBytes = 32;
+constexpr std::int64_t kMillisPerSecond = 1000;
 constexpr int kReceivePollSeconds = 5;
 constexpr int kServerShareRatio = 100;
 constexpr int kSessionSnapshotSeconds = 2;
@@ -1040,7 +1043,8 @@ public:
     std::vector<TransportPeer> transportPeers() const override;
     std::vector<LocalDestination> localDestinations() const override;
     std::optional<DestinationDetail> destinationDetail(const std::string& host) const override;
-    bool refreshLeaseSet(const std::string& localHost, const std::string& remoteHost) override;
+    LeaseSetRefresh refreshLeaseSet(
+        const std::string& localHost, const std::string& remoteHost) override;
     void setSocksProxy(const std::string& host, int port) override;
     ProxyState proxyState() const override;
     void setReseedUrls(const std::vector<std::string>& urls) override;
@@ -1398,6 +1402,41 @@ bool hasIdentity(const std::shared_ptr<i2pd::data::LeaseSet>& leaseSet)
     return leaseSet && leaseSet->GetIdentity();
 }
 
+LeaseSetSeen seenOf(const i2pd::data::LeaseSet& leaseSet)
+{
+    LeaseSetSeen seen;
+    seen.publishedAt = static_cast<std::int64_t>(leaseSet.GetPublishedTimestamp());
+    seen.expiresAt = static_cast<std::int64_t>(leaseSet.GetExpirationTime()) / kMillisPerSecond;
+    return seen;
+}
+
+// One of the two names a lease set is looked up by.
+struct LookupTarget {
+    std::optional<i2pd::data::IdentHash> ident;
+    std::shared_ptr<i2pd::data::BlindedPublicKey> blinded;
+};
+
+std::optional<LookupTarget> lookupTargetOf(const std::string& host)
+{
+    LookupTarget target;
+    if (!isB32I2pHost(host)) {
+        i2pd::data::IdentityEx identity;
+        if (identity.FromBase64(host) == 0) {
+            return std::nullopt;
+        }
+        target.ident = identity.GetIdentHash();
+        return target;
+    }
+    const std::string label = host.substr(0, host.size() - kB32SuffixLen);
+    std::array<std::uint8_t, kB32LabelBytesMax> raw{};
+    if (i2pd::data::Base32ToByteStream(label, raw.data(), raw.size()) == kIdentHashBytes) {
+        target.ident = i2pd::data::IdentHash(raw.data());
+        return target;
+    }
+    target.blinded = std::make_shared<i2pd::data::BlindedPublicKey>(std::string_view(label));
+    return target;
+}
+
 std::vector<RemoteLeaseSet> remoteLeaseSetsOf(const i2pd::client::ClientDestination& dest)
 {
     const std::int64_t now = static_cast<std::int64_t>(i2pd::util::GetMillisecondsSinceEpoch());
@@ -1461,40 +1500,49 @@ std::optional<DestinationDetail> EmbeddedRouter::destinationDetail(const std::st
     return detail;
 }
 
-bool EmbeddedRouter::refreshLeaseSet(const std::string& localHost, const std::string& remoteHost)
+LeaseSetRefresh EmbeddedRouter::refreshLeaseSet(
+    const std::string& localHost, const std::string& remoteHost)
 {
     const std::optional<HeldDest> held = heldDest(localHost);
     if (!held.has_value()) {
-        return false;
+        throw std::runtime_error("bazarish::i2p: no destination " + localHost + " to look up from");
     }
-    const auto answered = std::make_shared<std::promise<bool>>();
-    std::future<bool> answer = answered->get_future();
+    const auto answered = std::make_shared<std::promise<LeaseSetRefresh>>();
+    std::future<LeaseSetRefresh> answer = answered->get_future();
     const std::shared_ptr<i2pd::client::ClientDestination> dest = held->dest;
     boost::asio::post(dest->GetService(), [dest, remoteHost, answered]() {
+        LeaseSetRefresh refresh;
         std::vector<std::shared_ptr<i2pd::data::LeaseSet>> cached;
         for (const auto& leaseSet : dest->GetLeaseSetsList()) {
             if (hasIdentity(leaseSet) && remoteHostOf(*leaseSet) == remoteHost) {
                 cached.push_back(leaseSet);
+                const LeaseSetSeen seen = seenOf(*leaseSet);
+                if (!refresh.before.has_value() || publishedLater(seen, refresh.before)) {
+                    refresh.before = seen;
+                }
             }
         }
-        if (cached.empty()) {
-            answered->set_value(false);
+        const auto done = [answered, refresh](const std::shared_ptr<i2pd::data::LeaseSet>& found) {
+            LeaseSetRefresh told = refresh;
+            if (found && !found->IsExpired()) {
+                told.after = seenOf(*found);
+            }
+            answered->set_value(told);
+        };
+        const std::optional<LookupTarget> target = lookupTargetOf(remoteHost);
+        if (!target.has_value()) {
+            done(nullptr);
             return;
         }
-        const auto done = [answered](const std::shared_ptr<i2pd::data::LeaseSet>& found) {
-            answered->set_value(found && !found->IsExpired());
-        };
-        const std::shared_ptr<const i2pd::data::IdentityEx> identity = cached.front()->GetIdentity();
-        if (!cached.front()->IsPublishedEncrypted()) {
-            (void)dest->RequestDestination(identity->GetIdentHash(), done);
+        if (target->ident.has_value()) {
+            (void)dest->RequestDestination(*target->ident, done);
             return;
         }
         // A lookup by blinded key answers from the cache while the cached copy is current.
         for (const auto& leaseSet : cached) {
             leaseSet->ExpireLease();
         }
-        (void)dest->RequestDestinationWithEncryptedLeaseSet(
-            std::make_shared<i2pd::data::BlindedPublicKey>(identity), done);
+        (void)dest->RequestDestinationWithEncryptedLeaseSet(target->blinded, done);
     });
     return answer.get();
 }
@@ -1618,6 +1666,7 @@ Capabilities EmbeddedRouter::capabilities() const
     what.offlineKeys = true;
     what.reseed = true;
     what.destinationDetail = true;
+    what.leaseSetRefresh = true;
     return what;
 }
 

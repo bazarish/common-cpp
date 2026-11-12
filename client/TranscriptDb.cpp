@@ -585,19 +585,23 @@ std::vector<SearchableRow> TranscriptReader::searchableRows(const std::string& p
     return rows;
 }
 
-std::optional<int> TranscriptStore::failUnsentOnLoad(
-    const int preparingStatus, const int deliveringStatus, const int failedStatus)
+std::optional<std::vector<UnsentRow>> TranscriptStore::unsentOutgoing(
+    const int preparingStatus, const int deliveringStatus)
 {
     Query query(db_);
-    query.prepare("UPDATE messages SET status = ? WHERE outgoing = 1 AND status IN (?, ?)");
-    query.bind(failedStatus);
+    query.prepare("SELECT id, peer, e2eId FROM messages WHERE outgoing = 1 AND status IN (?, ?)"
+                  " ORDER BY id");
     query.bind(preparingStatus);
     query.bind(deliveringStatus);
     if (!query.exec()) {
         failed();
         return std::nullopt;
     }
-    return query.changes();
+    std::vector<UnsentRow> rows;
+    while (query.next()) {
+        rows.push_back({query.number(0), query.text(1), query.text(2)});
+    }
+    return rows;
 }
 
 std::optional<int> TranscriptStore::settleUnfinishedNotes(const std::string& type,

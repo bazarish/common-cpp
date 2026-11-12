@@ -2,6 +2,7 @@
 #pragma once
 
 #include "bazarish/Bytes.hpp"
+#include "bazarish/I2p.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -59,6 +60,7 @@ enum class FrameType : std::uint8_t {
     eEndpointLost = 0x13,
     eEndpointRenew = 0x14,
     eEndpointDelegate = 0x15,
+    eLeaseSetRefresh = 0x16,
     eStreamOpen = 0x20,
     eStreamOpened = 0x21,
     eStreamInbound = 0x22,
@@ -111,6 +113,10 @@ Bytes encode(FrameType type, std::uint32_t ref, ByteView body = {});
 Bytes encodeJson(FrameType type, std::uint32_t ref, const nlohmann::json& body);
 Frame decode(ByteView data);
 nlohmann::json bodyJson(const Frame& frame);
+
+// A lease-set-refresh is answered ok with what the gateway's destination held and found.
+nlohmann::json leaseSetRefreshJson(const i2p::LeaseSetRefresh& refresh);
+i2p::LeaseSetRefresh leaseSetRefreshFromJson(const nlohmann::json& body);
 
 Bytes encodeCredit(std::uint32_t stream, std::uint64_t total);
 std::uint64_t decodeCredit(const Frame& frame);

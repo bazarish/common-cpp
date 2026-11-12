@@ -6,6 +6,7 @@
 #include <bazarish/Log.hpp>
 
 #include <chrono>
+#include <stdexcept>
 #include <utility>
 
 namespace bazarish::client {
@@ -223,10 +224,19 @@ void OutboundLeases::release(const std::string& toDest)
     own_.erase(toDest);
 }
 
-void OutboundLeases::retire(const std::string& toDest)
+std::optional<bazarish::i2p::LeaseSetRefresh> OutboundLeases::lookup(const std::string& toDest)
 {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    leases_.erase(keyForLocked(toDest));
+    if (!router_.capabilities().leaseSetRefresh) {
+        return std::nullopt;
+    }
+    if (!prepare(toDest, {})) {
+        throw std::runtime_error("no address with tunnels to look the recipient up from");
+    }
+    const std::shared_ptr<bazarish::i2p::Endpoint> endpoint = held(toDest);
+    if (!endpoint) {
+        throw std::runtime_error("the address to look the recipient up from went away");
+    }
+    return router_.refreshLeaseSet(endpoint->routingHost(), toDest);
 }
 
 void OutboundLeases::setAddressing(const OutboundAddressing addressing)

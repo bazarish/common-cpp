@@ -73,6 +73,12 @@ std::shared_ptr<WireLog> Client::wireLogHandle() const
     return log_;
 }
 
+void Client::shareWireLog(std::shared_ptr<WireLog> log)
+{
+    log_ = std::move(log);
+    api_.setWireLog(log_);
+}
+
 const Identity& Client::identity() const
 {
     return identity_;

@@ -9,7 +9,6 @@ int main()
 {
     const ErrorCode codes[] = {
         ErrorCode::eStorageFull,
-        ErrorCode::eRecipientServerUnreachable,
         ErrorCode::eDeliveryRejected,
         ErrorCode::eContactRequestTooLarge,
         ErrorCode::eContactRateLimited,

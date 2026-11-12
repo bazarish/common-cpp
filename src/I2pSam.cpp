@@ -366,7 +366,7 @@ public:
         notWithAnExternalRouter("a destination's tunnels and lease sets");
     }
 
-    bool refreshLeaseSet(const std::string&, const std::string&) override
+    LeaseSetRefresh refreshLeaseSet(const std::string&, const std::string&) override
     {
         notWithAnExternalRouter("refreshing a lease set");
     }

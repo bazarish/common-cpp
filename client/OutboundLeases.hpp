@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stop_token>
 #include <string>
@@ -40,7 +41,8 @@ public:
     std::shared_ptr<DeliveryStream> openStream(
         const std::string& toDest, std::chrono::seconds timeout);
     void release(const std::string& toDest);
-    void retire(const std::string& toDest);
+    // None when the router cannot look past what the address holds.
+    std::optional<bazarish::i2p::LeaseSetRefresh> lookup(const std::string& toDest);
 
     void setAddressing(OutboundAddressing addressing);
     void keepOwn(const std::string& toDest);

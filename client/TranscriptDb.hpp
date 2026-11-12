@@ -62,6 +62,13 @@ struct SearchableRow {
     bool outgoing = false;
 };
 
+// An outgoing row a delivery was under way for when the profile last closed.
+struct UnsentRow {
+    std::int64_t id = 0;
+    std::string peer;
+    std::string e2eId;
+};
+
 struct Reaction {
     std::string reactor;
     std::string emoji;
@@ -164,8 +171,8 @@ public:
     [[nodiscard]] bool updateStatus(std::int64_t id, int status);
     // Forward only, except to failure; nothing when the store failed, false when unchanged.
     [[nodiscard]] std::optional<bool> advanceStatus(std::int64_t id, int status);
-    [[nodiscard]] std::optional<int> failUnsentOnLoad(
-        int preparingStatus, int deliveringStatus, int failedStatus);
+    [[nodiscard]] std::optional<std::vector<UnsentRow>> unsentOutgoing(
+        int preparingStatus, int deliveringStatus);
     [[nodiscard]] std::optional<int> settleUnfinishedNotes(const std::string& type,
         int preparingStatus, int settledStatus, const std::string& text);
     [[nodiscard]] bool markOutgoingReadUpTo(const std::string& peer, std::int64_t uptoId,

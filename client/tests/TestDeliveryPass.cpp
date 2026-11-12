@@ -43,6 +43,7 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -126,6 +127,9 @@ struct Mock {
     int nextId = 1;
     std::string refuseWith;
     int failAcks = 0;
+    // Stored, then the stream ends before the reply: what a sender sees of a lost ack.
+    std::string loseReplyTo;
+    std::map<std::string, int> offers;
     std::map<std::string, std::string> aliasOwner;
     std::map<std::string, Descriptor> aliasDescriptor;
     std::set<std::string> aliasBindingWanted;
@@ -145,8 +149,9 @@ public:
 
     std::size_t readSome(const ByteBuffer buffer) override
     {
-        if (reply_.empty()) {
+        if (!served_) {
             reply_ = serve();
+            served_ = true;
         }
         const ByteView from
             = viewOf(reply_).subspan(sent_, std::min(buffer.size(), reply_.size() - sent_));
@@ -219,6 +224,11 @@ private:
                 mock_.mailbox[mailbox].push_back(
                     {"m" + std::to_string(mock_.nextId++), cls, payload});
             }
+            ++mock_.offers[deliveryId];
+            if (!mock_.loseReplyTo.empty() && mock_.loseReplyTo == deliveryId) {
+                mock_.loseReplyTo.clear();
+                return {};
+            }
         }
         const Bytes signedBytes = deliveryAckInput(deliveryId);
         const nlohmann::json reply = {
@@ -234,7 +244,35 @@ private:
     const Key& signingKey_;
     std::string written_;
     std::string reply_;
+    bool served_ = false;
     std::size_t sent_ = 0;
+};
+
+// A stream into a lease set whose tunnels are gone: takes everything, answers nothing.
+class SilentServerStream final : public DeliveryStream {
+public:
+    void writeAll(ByteView) override {}
+
+    std::size_t readSome(ByteBuffer) override
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        closed_.wait(lock, [this]() { return shut_; });
+        throw std::runtime_error("closed before an answer");
+    }
+
+    void close() override
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            shut_ = true;
+        }
+        closed_.notify_all();
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable closed_;
+    bool shut_ = false;
 };
 
 void addByInvite(Session& session, const std::string& invite, const std::string& text)
@@ -495,6 +533,29 @@ int main()
         bob->setResolverCoordinate(resolver);
         const Identity aliceIdentity
             = Identity::fromPrivatePem(AccountDb(aDir, std::string{}).text("identity.pem"));
+        // What a device of the account has posted to the account's own mailbox.
+        const auto postedToSelf = [&](const fs::path& accountDir, const std::string& owner,
+                                      const std::string& type) {
+            const Key sealing
+                = Key::fromPrivatePem(AccountDb(accountDir, std::string{}).text("sealing.pem"));
+            const std::lock_guard<std::mutex> lock(m.mu);
+            for (const Mock::Item& item : m.mailbox[owner]) {
+                if (item.cls != "device") {
+                    continue;
+                }
+                const nlohmann::json bodies = nlohmann::json::from_cbor(
+                    unpadFromLadder(hybrid::unseal(item.payload, sealing)));
+                for (const nlohmann::json& body : bodies) {
+                    if (body.value("type", std::string()) == type) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+        const auto selfHolds = [&](const std::string& type) {
+            return postedToSelf(aDir, alice->fingerprint(), type);
+        };
         const fs::path earlyBundle = scratch / "bz-pass-early.bundle";
         fs::remove(earlyBundle);
         alice->exportAccount(earlyBundle, "bundle-password");
@@ -632,14 +693,16 @@ int main()
 
         const Key ackSigning = Key::generateSigning();
         const auto courierFor = [&m, &ackSigning]() {
-            return std::make_unique<OutboundCourier>([](const std::string&, const std::string&) { return true; },
-                [&m, &ackSigning](const std::string&,
-                    std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                    return std::make_shared<MockServerStream>(m, ackSigning);
-                });
+            OutboundCourier::Links links;
+            links.prepare = [](const std::string&, const std::string&) { return true; };
+            links.openStream = [&m, &ackSigning](const std::string&,
+                                   std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                return std::make_shared<MockServerStream>(m, ackSigning);
+            };
+            return links;
         };
-        alice->setOutboundCourier(courierFor());
-        bob->setOutboundCourier(courierFor());
+        alice->setOutboundLinks(courierFor());
+        bob->setOutboundLinks(courierFor());
 
         addByInvite(*alice, bob->inviteUri(), "hi bob");
         bob->sync();
@@ -813,8 +876,10 @@ int main()
                 CHECK(m.mailbox[bob->fingerprint()].size() == waiting);
             }
             alice->setDisplayName("Alice of the log");
-            CHECK(logHas(alice->connectionLog(),
-                "POST /v1/messaging/self (device.account-name)", "200"));
+            CHECK(testutil::waitFor([&]() {
+                return logHas(alice->connectionLog(),
+                    "POST /v1/messaging/self (device.account-name)", "200");
+            }));
         }
 
         {
@@ -1393,7 +1458,7 @@ int main()
                     m.refuseWith.clear();
                 };
                 for (const char* code :
-                    {"STORAGE_FULL", "RECIPIENT_SERVER_UNREACHABLE", "DELIVERY_REJECTED"}) {
+                    {"STORAGE_FULL", "CONTACT_RATE_LIMITED", "DELIVERY_REJECTED"}) {
                     refuseOnce(code);
                     alice->sync();
                     CHECK(alice->canWriteTo(bob->fingerprint()));
@@ -1500,7 +1565,7 @@ int main()
             }
             carol->registerAccount();
             carol->setFetchTransport(directDial);
-            carol->setOutboundCourier(courierFor());
+            carol->setOutboundLinks(courierFor());
 
             const std::string longestName(kMaxAccountNameBytes, 'n');
             alice->setDisplayName(longestName);
@@ -1529,7 +1594,7 @@ int main()
             }
             fiona->registerAccount();
             fiona->setFetchTransport(directDial);
-            fiona->setOutboundCourier(courierFor());
+            fiona->setOutboundLinks(courierFor());
             addByInvite(*alice, fiona->inviteUri(), "the heaviest picture");
             CHECK(testutil::waitFor([&]() {
                 fiona->sync();
@@ -1583,7 +1648,7 @@ int main()
             }
             dana->registerAccount();
             dana->setFetchTransport(directDial);
-            dana->setOutboundCourier(courierFor());
+            dana->setOutboundLinks(courierFor());
 
             const auto heldForAlice = [&]() {
                 const std::lock_guard<std::mutex> lock(m.mu);
@@ -1655,7 +1720,7 @@ int main()
             }
             erin->registerAccount();
             erin->setFetchTransport(directDial);
-            erin->setOutboundCourier(courierFor());
+            erin->setOutboundLinks(courierFor());
 
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
@@ -1668,33 +1733,283 @@ int main()
                 m.refuseWith.clear();
             }
 
-            DeliverySchedule once;
-            once.attempts = 1;
-            once.dial = std::chrono::seconds(1);
-            once.run = std::chrono::seconds(2);
-            alice->setOutboundCourier(std::make_unique<OutboundCourier>(
-                [](const std::string&, const std::string&) { return true; },
-                [](const std::string&, std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
-                    return nullptr;
-                },
-                once));
-            CHECK_THROWS(addByInvite(*alice, erin->inviteUri(), "are you there"));
-            CHECK(alice->contactAwaitsAnswer(erin->fingerprint()));
+            const std::string erinDest = [&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.destFor[erin->fingerprint()];
+            }();
+            const std::string aliceDest = [&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.destFor[alice->fingerprint()];
+            }();
+            const auto contactRequestsFor = [&](const std::string& fingerprint) {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return std::count_if(m.mailbox[fingerprint].begin(), m.mailbox[fingerprint].end(),
+                    [](const Mock::Item& item) { return item.cls == kContactDeliveryClass; });
+            };
+            constexpr std::chrono::seconds kQuickDial{1};
+            constexpr std::chrono::seconds kQuickReply{1};
+            constexpr std::chrono::seconds kQuickBound{3};
+            constexpr std::chrono::milliseconds kStillWaiting{3000};
+            constexpr std::int64_t kOldPublished = 1000;
+            constexpr std::int64_t kLeaseSeconds = 600;
 
-            alice->setOutboundCourier(courierFor());
+            std::atomic<bool> erinDown{true};
+            OutboundCourier::Links towardsErin = courierFor();
+            towardsErin.openStream = [&](const std::string& toDest,
+                                         std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                if (toDest == erinDest && erinDown.load()) {
+                    return nullptr;
+                }
+                return std::make_shared<MockServerStream>(m, ackSigning);
+            };
+            alice->setOutboundLinks(towardsErin);
+            Session::ContactCardRequest asking;
+            asking.uriOrAlias = erin->inviteUri();
+            asking.introText = "are you there";
+            asking.requestId = "first-request";
+            const Session::ContactCardResolved resolvedErin = Session::resolveContactCard(
+                alice->contactFetchContext(), asking, [](Session::CardStep) {});
+            CHECK(resolvedErin.ok);
+            std::mutex settledMutex;
+            std::vector<OutboundCourier::Outcome> requestOutcomes;
+            DeliveryWatch requestWatch;
+            requestWatch.onOutcome = [&](const OutboundCourier::Outcome& outcome) {
+                const std::lock_guard<std::mutex> lock(settledMutex);
+                requestOutcomes.push_back(outcome);
+            };
+            const auto requestsSettled = [&]() {
+                const std::lock_guard<std::mutex> lock(settledMutex);
+                return requestOutcomes.size();
+            };
+            alice->commitContactAdd(resolvedErin, requestWatch);
+            CHECK(!testutil::waitFor([&]() { return requestsSettled() > 0; }, kStillWaiting));
+            CHECK(alice->contactAwaitsAnswer(erin->fingerprint()));
             alice->sendContactRequest(
-                erin->fingerprint(), "resent-request", "are you there", DeliveryWatch{});
+                erin->fingerprint(), "second-request", "are you there", requestWatch);
+            CHECK(contactRequestsFor(erin->fingerprint()) == 0);
+            erinDown = false;
+            i2p::networkChanged();
+            CHECK(testutil::waitFor([&]() { return requestsSettled() == 2; }));
+            {
+                const std::lock_guard<std::mutex> lock(settledMutex);
+                CHECK(requestOutcomes.at(0).stored && requestOutcomes.at(1).stored);
+            }
+            CHECK(contactRequestsFor(erin->fingerprint()) == 1);
             CHECK(testutil::waitFor([&]() {
                 erin->sync();
                 return erin->hasContact(alice->fingerprint());
             }));
             CHECK(erin->contactIsPending(alice->fingerprint()));
+            std::printf("TestDeliveryPass: a contact request to an unreachable server went once"
+                        " the link came back, with no second request\n");
+
+            std::atomic<bool> aliceRestarted{false};
+            std::atomic<int> silences{0};
+            OutboundCourier::Links towardsAlice = courierFor();
+            towardsAlice.openStream = [&](const std::string& toDest,
+                                          std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                if (toDest == aliceDest && !aliceRestarted.load()) {
+                    ++silences;
+                    return std::make_shared<SilentServerStream>();
+                }
+                return std::make_shared<MockServerStream>(m, ackSigning);
+            };
+            towardsAlice.lookup
+                = [&](const std::string&) -> std::optional<i2p::LeaseSetRefresh> {
+                i2p::LeaseSetRefresh refresh;
+                refresh.before = i2p::LeaseSetSeen{kOldPublished, kOldPublished + kLeaseSeconds};
+                refresh.after = refresh.before;
+                return refresh;
+            };
+            CourierTimings quick;
+            quick.dial = kQuickDial;
+            quick.reply = kQuickReply;
+            quick.staleBound = kQuickBound;
+            erin->setOutboundLinks(towardsAlice, quick);
+            const auto aliceRequestsBefore = contactRequestsFor(alice->fingerprint());
             erin->acceptContactRequest(alice->fingerprint());
+            CHECK(erin->contactAcceptInFlight(alice->fingerprint()));
+            CHECK(testutil::waitFor([&]() { return silences.load() == 1; }));
+            CHECK(!testutil::waitFor([&]() {
+                erin->sync();
+                return !erin->contactIsPending(alice->fingerprint());
+            }, std::chrono::milliseconds(kQuickBound) / 2));
+            CHECK(erin->contactAcceptInFlight(alice->fingerprint()));
+            aliceRestarted = true;
+            CHECK(testutil::waitFor([&]() {
+                erin->sync();
+                return !erin->contactIsPending(alice->fingerprint());
+            }));
+            CHECK(!erin->contactAcceptInFlight(alice->fingerprint()));
+            CHECK(silences.load() == 1);
             CHECK(testutil::waitFor([&]() {
                 alice->sync();
                 return alice->canWriteTo(erin->fingerprint());
             }));
             CHECK(!alice->contactAwaitsAnswer(erin->fingerprint()));
+            CHECK(erin->canWriteTo(alice->fingerprint()));
+            CHECK(contactRequestsFor(alice->fingerprint()) == aliceRequestsBefore);
+            std::printf("TestDeliveryPass: an acceptance that met a dead lease set landed by itself"
+                        " once that lease set had expired; both sides are contacts\n");
+            alice->setOutboundLinks(courierFor());
+            erin->setOutboundLinks(courierFor());
+        }
+
+        {
+            const auto heldFor = [&](const std::string& fingerprint) {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[fingerprint].size();
+            };
+            const std::string id = "once-only";
+            const std::string deliveryId = alice->deliveryIdFor(id, bob->fingerprint());
+            const std::size_t before = heldFor(bob->fingerprint());
+            {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.loseReplyTo = deliveryId;
+            }
+            std::mutex outcomeMutex;
+            std::optional<OutboundCourier::Outcome> told;
+            DeliveryWatch watch;
+            watch.onOutcome = [&](const OutboundCourier::Outcome& outcome) {
+                const std::lock_guard<std::mutex> lock(outcomeMutex);
+                told = outcome;
+            };
+            alice->sendMessage(bob->fingerprint(), "delivered once", id, watch);
+            CHECK(testutil::waitFor([&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.offers[deliveryId] == 1;
+            }));
+            CHECK(heldFor(bob->fingerprint()) == before + 1);
+            CHECK(!testutil::waitFor([&]() {
+                const std::lock_guard<std::mutex> lock(outcomeMutex);
+                return told.has_value();
+            }, std::chrono::milliseconds(1000)));
+            i2p::networkChanged();
+            CHECK(testutil::waitFor([&]() {
+                const std::lock_guard<std::mutex> lock(outcomeMutex);
+                return told.has_value();
+            }));
+            {
+                const std::lock_guard<std::mutex> lock(outcomeMutex);
+                CHECK(told->stored);
+            }
+            {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                CHECK(m.offers[deliveryId] == 2);
+            }
+            CHECK(heldFor(bob->fingerprint()) == before + 1);
+            int seen = 0;
+            CHECK(testutil::waitFor([&]() {
+                for (const IncomingMessage& item : bob->sync()) {
+                    seen += item.text == "delivered once" ? 1 : 0;
+                }
+                return seen > 0;
+            }));
+            for (const IncomingMessage& item : bob->sync()) {
+                seen += item.text == "delivered once" ? 1 : 0;
+            }
+            CHECK(seen == 1);
+            std::printf("TestDeliveryPass: a delivery whose reply was lost went again and was"
+                        " stored once\n");
+        }
+
+        {
+            const fs::path ritaDir = scratch / "bz-pass-rita";
+            const fs::path samDir = scratch / "bz-pass-sam";
+            fs::remove(ritaDir);
+            fs::remove(samDir);
+            std::unique_ptr<Session> rita
+                = Session::create(ritaDir, AccountKind::eUser, endpoint, std::string{});
+            const std::unique_ptr<Session> sam
+                = Session::create(samDir, AccountKind::eUser, endpoint, std::string{});
+            {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.destFor[rita->fingerprint()]
+                    = "rlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+                m.destFor[sam->fingerprint()]
+                    = "slkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+            }
+            for (Session* const each : {rita.get(), sam.get()}) {
+                each->registerAccount();
+                each->setFetchTransport(directDial);
+                each->setOutboundLinks(courierFor());
+            }
+            addByInvite(*rita, sam->inviteUri(), "a restart is coming");
+            CHECK(testutil::waitFor([&]() {
+                sam->sync();
+                return sam->contactIsPending(rita->fingerprint());
+            }));
+            sam->acceptContactRequest(rita->fingerprint());
+            CHECK(testutil::waitFor([&]() {
+                rita->sync();
+                sam->sync();
+                return rita->canWriteTo(sam->fingerprint()) && sam->canWriteTo(rita->fingerprint());
+            }));
+            const std::string samDest = [&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.destFor[sam->fingerprint()];
+            }();
+            const auto heldForSam = [&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[sam->fingerprint()].size();
+            };
+            CHECK(testutil::waitFor([&]() {
+                sam->sync();
+                return heldForSam() == 0;
+            }));
+            OutboundCourier::Links samAway = courierFor();
+            samAway.openStream = [&](const std::string& toDest,
+                                     std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                if (toDest == samDest) {
+                    return nullptr;
+                }
+                return std::make_shared<MockServerStream>(m, ackSigning);
+            };
+            rita->setOutboundLinks(samAway);
+            const std::string keptId = "kept-across-a-restart";
+            rita->sendMessage(sam->fingerprint(), "kept across a restart", keptId);
+            rita->sendReceipt(sam->fingerprint(), "a-read-message");
+            CHECK(!testutil::waitFor([&]() { return heldForSam() > 0; },
+                std::chrono::milliseconds(2000)));
+            CHECK(!rita->watchDelivery(sam->fingerprint(), "never-sent", DeliveryWatch{}));
+            rita.reset();
+
+            rita = Session::open(ritaDir, std::string{});
+            rita->setFetchTransport(directDial);
+            rita->setOutboundLinks(courierFor());
+            std::mutex outcomeMutex;
+            std::optional<OutboundCourier::Outcome> told;
+            DeliveryWatch watch;
+            watch.onOutcome = [&](const OutboundCourier::Outcome& outcome) {
+                const std::lock_guard<std::mutex> lock(outcomeMutex);
+                told = outcome;
+            };
+            CHECK(rita->watchDelivery(sam->fingerprint(), keptId, watch));
+            rita->flushPendingEchoes();
+            CHECK(testutil::waitFor([&]() {
+                const std::lock_guard<std::mutex> lock(outcomeMutex);
+                return told.has_value();
+            }));
+            {
+                const std::lock_guard<std::mutex> lock(outcomeMutex);
+                CHECK(told->stored);
+            }
+            bool sawText = false;
+            bool sawReceipt = false;
+            CHECK(testutil::waitFor([&]() {
+                for (const IncomingMessage& item : sam->sync()) {
+                    sawText = sawText || item.text == "kept across a restart";
+                    sawReceipt = sawReceipt
+                        || (item.contentType == "receipt" && item.refId == "a-read-message");
+                }
+                return sawText && sawReceipt;
+            }));
+            CHECK(testutil::waitFor([&]() {
+                rita->flushPendingEchoes();
+                return !rita->watchDelivery(sam->fingerprint(), keptId, DeliveryWatch{});
+            }));
+            std::printf("TestDeliveryPass: a message and a receipt to an unreachable recipient"
+                        " outlived closing the account and went once it was back\n");
         }
 
         {
@@ -1715,6 +2030,7 @@ int main()
             CHECK(!second->hasContact(bob->fingerprint()));
 
             second->sync();
+            CHECK(testutil::waitFor([&]() { return selfHolds("device.contacts-request"); }));
             alice->sync();
             CHECK(testutil::waitFor([&]() {
                 second->sync();
@@ -1771,7 +2087,7 @@ int main()
                 }
                 finn->registerAccount();
                 finn->setFetchTransport(directDial);
-                finn->setOutboundCourier(courierFor());
+                finn->setOutboundLinks(courierFor());
 
                 addByInvite(*alice, finn->inviteUri(), "added on one device");
                 alice->renameContact(finn->fingerprint(), "Finn of the phone");
@@ -1812,6 +2128,7 @@ int main()
                 Session::importAccount(earlyBundle, thirdDir, "bundle-password");
                 const std::unique_ptr<Session> third = Session::open(thirdDir, std::string{});
                 third->sync();
+                CHECK(testutil::waitFor([&]() { return selfHolds("device.contacts-request"); }));
                 alice->sync();
                 CHECK(testutil::waitFor([&]() {
                     third->sync();
@@ -2020,7 +2337,7 @@ int main()
         {
             {
                 std::lock_guard<std::mutex> lock(m.mu);
-                m.refuseWith = "RECIPIENT_SERVER_UNREACHABLE";
+                m.refuseWith = "STORAGE_FULL";
             }
             int refused = 0;
             alice->setRoutingFanoutSink([&refused](const std::string&, const bool delivered) {
@@ -2062,7 +2379,7 @@ int main()
             }
             gail->registerAccount();
             gail->setFetchTransport(directDial);
-            gail->setOutboundCourier(courierFor());
+            gail->setOutboundLinks(courierFor());
             addByInvite(*gail, bob->inviteUri(), "a file for you");
             bob->sync();
             bob->acceptContactRequest(gail->fingerprint());
@@ -2205,7 +2522,7 @@ int main()
                 session->setPresenceClock(clock);
                 session->registerAccount();
                 session->setFetchTransport(directDial);
-                session->setOutboundCourier(courierFor());
+                session->setOutboundLinks(courierFor());
                 return session;
             };
             const auto befriend = [&](Session& asking, Session& asked) {
@@ -2271,9 +2588,14 @@ int main()
                 twin->setPresenceClock(clock);
                 CHECK(twin->presenceSeed().bytes() == pam->presenceSeed().bytes());
                 CHECK(!twin->hasContact(quin->fingerprint()));
+                twin->sync();
+                CHECK(testutil::waitFor([&]() {
+                    return postedToSelf(scratch / "bz-presence-pam", pam->fingerprint(),
+                        "device.contacts-request");
+                }));
+                pam->sync();
                 CHECK(testutil::waitFor([&]() {
                     twin->sync();
-                    pam->sync();
                     return twin->contactPresence(quin->fingerprint()) == quinDays;
                 }));
             }

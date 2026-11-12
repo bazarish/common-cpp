@@ -110,7 +110,9 @@ public:
     virtual std::vector<TransportPeer> transportPeers() const = 0;
     virtual std::vector<LocalDestination> localDestinations() const = 0;
     virtual std::optional<DestinationDetail> destinationDetail(const std::string& host) const = 0;
-    virtual bool refreshLeaseSet(const std::string& localHost, const std::string& remoteHost) = 0;
+    virtual LeaseSetRefresh refreshLeaseSet(
+        const std::string& localHost, const std::string& remoteHost)
+        = 0;
 
     virtual void setSocksProxy(const std::string& host, int port) = 0;
     virtual ProxyState proxyState() const = 0;

@@ -147,6 +147,7 @@ public:
 
     WireLog& wireLog();
     std::shared_ptr<WireLog> wireLogHandle() const;
+    void shareWireLog(std::shared_ptr<WireLog> log);
 
 private:
     const Identity identity_;

@@ -11,7 +11,6 @@ namespace bazarish {
 
 enum class ErrorCode {
     eStorageFull,
-    eRecipientServerUnreachable,
     eDeliveryRejected,
     eContactRequestTooLarge,
     eContactRateLimited,

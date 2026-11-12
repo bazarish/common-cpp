@@ -40,11 +40,6 @@ namespace bazarish::client {
 
 class AccountDb;
 
-struct DeliveryWatch {
-    OutboundCourier::PhaseFn onPhase;
-    OutboundCourier::OutcomeFn onOutcome;
-};
-
 struct InlineButton {
     std::string text;
     std::string data;
@@ -71,7 +66,6 @@ struct Contact {
     Bytes cardKey;
     std::string sendPass;
     bool issuedToThem = false;
-    bool acceptInFlight = false;
     std::string displayName;
     std::string identityClassicalB64;
     std::string identityPqB64;
@@ -222,6 +216,14 @@ struct TransferEvent {
 using TransferEventFn = std::function<void(const TransferEvent&)>;
 
 using RelayFitter = std::function<std::size_t(const std::vector<RelayedPost>&)>;
+
+// What a letter changes once it is stored, and how long it stays worth sending.
+struct LetterTerms {
+    std::int64_t notAfterMs = 0;
+    bool tellsRouting = false;
+    PresenceDay scheduleThrough = 0;
+    std::string avatarDigest;
+};
 
 // One thread, its owner, calls a Session; only the static functions may run on any thread.
 class Session {
@@ -501,7 +503,7 @@ public:
     bool contactAwaitsAnswer(const std::string& peerFingerprint) const;
     // A definite refusal takes back the recorded contact; an unreachable server leaves it.
     void settleContactRequest(
-        const std::string& peerFingerprint, const OutboundCourier::Outcome& outcome);
+        const std::string& peerFingerprint, const DeliveryOutcome& outcome);
     void forgetUnansweredContact(const std::string& peerFingerprint);
 
     void setResolverCoordinate(ResolverCoordinate coordinate);
@@ -598,9 +600,14 @@ public:
 
     void announceNewRouting();
 
-    void runRoutingFanout();
-
     void retryRoutingTo(const std::string& peerFingerprint);
+
+    // What waits for the peer is reported withdrawn and is not delivered.
+    void withdrawDeliveries(const std::string& peerFingerprint);
+
+    // False when the outbox holds nothing to that peer carrying the message.
+    bool watchDelivery(const std::string& peerFingerprint, const std::string& messageId,
+        const DeliveryWatch& watch);
 
     void sendReceipt(const std::string& peerFingerprint, const std::string& refMessageId);
 
@@ -679,7 +686,8 @@ public:
     using AudioSourceFactory = std::function<std::unique_ptr<AudioSource>()>;
     using AudioSinkFactory = std::function<std::unique_ptr<AudioSink>()>;
     void setFetchTransport(FetchTransport transport);
-    void setOutboundCourier(std::unique_ptr<OutboundCourier> courier);
+    // The session's own mailbox link is always its own; the next send builds the courier.
+    void setOutboundLinks(OutboundCourier::Links links, CourierTimings timings = {});
     void setOutboundAddressing(OutboundAddressing addressing);
     void setDeliveryWorkers(std::size_t workers);
     void setDeviceSync(bool enabled);
@@ -703,7 +711,7 @@ public:
 
     std::vector<IncomingMessage> sync(bool autoAckSurfaced = true, std::size_t maxItems = 0);
     static constexpr std::size_t kPendingItemsPerPass = 5;
-    void setSwitchedOff(bool off) { switchedOff_ = off; }
+    void setSwitchedOff(bool off);
     bool switchedOff() const { return switchedOff_; }
     void requireSwitchedOn() const;
     void flushPendingEchoes();
@@ -717,10 +725,6 @@ public:
 
     using AckSink = std::function<void(const std::string& pendingId)>;
     void setAckSink(AckSink sink);
-
-    using SelfSendSink
-        = std::function<void(std::string deliveryId, Bytes sealed, std::string kind)>;
-    void setSelfSendSink(SelfSendSink sink);
 
     struct MailboxItem {
         PendingEntry entry;
@@ -756,8 +760,9 @@ private:
     std::int64_t currentCardIssuedAt() const;
     DestinationInfo servedOrOwnDestination();
 
-    void sendSelf(nlohmann::json inner);
-    void saveToSelf(nlohmann::json message);
+    void sendSelf(nlohmann::json inner, std::vector<std::string> ids = {},
+        const DeliveryWatch& watch = {});
+    void saveToSelf(nlohmann::json message, const DeliveryWatch& watch = {});
     bool newerState(const std::string& slot, std::int64_t sentAt);
     void persistBlocked();
     void persistPendingRevokes();
@@ -783,8 +788,9 @@ private:
     IdentityKeys knownKeysFor(const std::string& peerFingerprint) const;
     static void rememberKeys(Contact& contact, const IdentityKeys& keys);
 
-    void submitSignedToSelf(
-        nlohmann::json inner, const std::string& kind, bool later = false) const;
+    void submitSignedToSelf(nlohmann::json inner, const std::string& kind,
+        std::vector<std::string> ids = {}, const DeliveryWatch& watch = {},
+        std::int64_t notAfterMs = 0);
 
     void noteWire(bool outgoing, std::string what, std::string status, std::string detail) const;
     std::string wireName(const std::string& peerFingerprint) const;
@@ -794,9 +800,11 @@ private:
         nlohmann::json payload = nlohmann::json::object()) const;
 
     void sendContent(const std::string& peerFingerprint, nlohmann::json inner,
-        const DeliveryWatch& watch = {}, bool establishOnFirstReply = false);
+        const DeliveryWatch& watch = {}, bool establishOnFirstReply = false,
+        const LetterTerms& terms = {});
     void sendContents(const std::string& peerFingerprint, std::vector<nlohmann::json> items,
-        const DeliveryWatch& watch = {}, bool establishOnFirstReply = false);
+        const DeliveryWatch& watch = {}, bool establishOnFirstReply = false,
+        const LetterTerms& terms = {});
 
     void syncI2pMasterToSelf();
     bool adoptI2pMasterFromOwnMailbox(const std::string& wantedHost = {});
@@ -812,6 +820,7 @@ private:
     void maybeSendAvatarToContact(const std::string& peerFingerprint, bool removal = false);
     bool sendsPresenceTo(const std::string& peerFingerprint) const;
     void sendPresenceSchedule(const std::string& peerFingerprint);
+    bool scheduleQueued(const std::string& peerFingerprint) const;
     void offerPresenceSchedule(const std::string& peerFingerprint);
     void keepPresenceSchedules();
     void takePresenceSchedule(const std::string& peerFingerprint, const nlohmann::json& body);
@@ -834,10 +843,39 @@ private:
         const nlohmann::json& body, IncomingMessage& message);
     void logCompletedCall(CallOutcome outcome);
 
-    void deliver(const std::string& toDest, const Key& servingSealingKey,
-        const std::string& deliveryClass, const std::string& mailbox, const Bytes& pass,
-        const Bytes& payload, const DeliveryWatch& watch, const std::string& e2eId);
-    OutboundCourier& outboundCourier();
+    struct OutboxEntry {
+        std::string peer;
+        bool own = false;
+        std::string deliveryClass;
+        std::string deliveryId;
+        Bytes pass;
+        Bytes payload;
+        std::string kind;
+        std::vector<std::string> ids;
+        bool establishes = false;
+        LetterTerms terms;
+        std::vector<nlohmann::json> echoes;
+    };
+    static Bytes outboxEntryBytes(const OutboxEntry& entry);
+    static OutboxEntry outboxEntryFrom(const Bytes& stored);
+    std::uint64_t deliver(OutboxEntry entry, const DeliveryWatch& watch);
+    Letter letterFor(std::uint64_t seq, const OutboxEntry& entry) const;
+    DeliveryWatch loggedWatch(const OutboxEntry& entry, const DeliveryWatch& watch) const;
+    void resumeDeliveries();
+    void buildCourierLocked();
+    void stopCourier();
+    void loadOutbox();
+    void persistOutboxIndex() const;
+    void eraseOutboxEntry(std::uint64_t seq);
+    void applySettled(std::uint64_t seq, const DeliveryOutcome& outcome);
+    void settleDeliveries();
+    std::optional<std::uint64_t> queuedLetter(const std::string& peerFingerprint,
+        const std::function<bool(const OutboxEntry&)>& matches) const;
+    bool bootstrapQueued(const std::string& peerFingerprint) const;
+    void attachWatch(std::uint64_t seq, const DeliveryWatch& watch);
+    void attachLocked(std::uint64_t seq, const DeliveryWatch& watch);
+    std::string avatarDigest() const;
+    void tellCourier(const std::function<void(OutboundCourier&)>& tell);
     void persistContacts() const;
     void persistMeta() const;
     nlohmann::json contactsToJson() const;
@@ -857,10 +895,16 @@ private:
         std::mutex mutex;
         std::unique_ptr<OutboundLeases> leases;
         std::unique_ptr<OutboundCourier> courier;
+        std::optional<OutboundCourier::Links> links;
+        CourierTimings timings;
         OutboundAddressing addressing = OutboundAddressing::eOnePerCorrespondent;
         std::size_t workers = kDeliveryWorkers;
     };
     std::shared_ptr<Outbound> outbound_ = std::make_shared<Outbound>();
+    std::map<std::uint64_t, OutboxEntry> outbox_;
+    std::uint64_t outboxNext_ = 0;
+    // Attached when the courier is built: an account opens before it sends.
+    std::map<std::uint64_t, std::vector<DeliveryWatch>> heldWatches_;
     bool deviceSync_ = true;
     GroupBlockSource groupBlockSource_;
     void putFile(const std::string& e2eId, const Bytes& bytes);
@@ -906,6 +950,7 @@ private:
     void relayAliasStatus(const Bytes& statusDer, const Bytes& delegationDer);
     void scheduleNextAliasCheck(std::int64_t from);
     void queueRoutingFanout();
+    void runRoutingFanout();
     void persistRoutingFanout() const;
     void dropFromRoutingFanout(const std::string& peerFingerprint);
     void tellRoutingTo(const std::string& peerFingerprint);
@@ -995,7 +1040,6 @@ private:
     std::set<std::string> awaitingAck_;
     std::function<void()> serverAnswered_;
     AckSink ackSink_;
-    SelfSendSink selfSendSink_;
     // Taken in without an ack sink; acked together at the end of the pass.
     std::vector<std::string> owedAcks_;
     void flushOwedAcks();
@@ -1034,22 +1078,13 @@ private:
     std::optional<PresenceDay> presenceCheckedDay_;
     // UTC second each one is due at, spread so a day's checks are not one burst.
     std::map<std::string, std::int64_t> presenceDue_;
-    std::set<std::string> presenceInFlight_;
     std::string passphrase_;
-    struct EchoQueue {
+    // Filled on the courier's threads, emptied on the owner's.
+    struct SettledQueue {
         std::mutex mutex;
-        std::vector<std::pair<std::string, nlohmann::json>> pending;
-        std::vector<std::string> established;
-        std::vector<std::string> notEstablished;
-        std::vector<std::pair<std::string, bool>> routingTold;
-        struct ScheduleTold {
-            std::string peer;
-            PresenceDay through = 0;
-            bool stored = false;
-        };
-        std::vector<ScheduleTold> schedulesTold;
+        std::vector<std::pair<std::uint64_t, DeliveryOutcome>> settled;
     };
-    std::shared_ptr<EchoQueue> echoQueue_ = std::make_shared<EchoQueue>();
+    std::shared_ptr<SettledQueue> settledQueue_ = std::make_shared<SettledQueue>();
     AddressDecisionFn addressDecision_;
     Bytes i2pMaster_;
     std::string i2pAddress_;

@@ -7,9 +7,8 @@
 
 namespace {
 
-constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 14> kErrorNames = {{
+constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErrorNames = {{
     {bazarish::ErrorCode::eStorageFull, "STORAGE_FULL"},
-    {bazarish::ErrorCode::eRecipientServerUnreachable, "RECIPIENT_SERVER_UNREACHABLE"},
     {bazarish::ErrorCode::eDeliveryRejected, "DELIVERY_REJECTED"},
     {bazarish::ErrorCode::eContactRequestTooLarge, "CONTACT_REQUEST_TOO_LARGE"},
     {bazarish::ErrorCode::eContactRateLimited, "CONTACT_RATE_LIMITED"},
@@ -24,9 +23,8 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 14> kErro
     {bazarish::ErrorCode::eRequestFailed, "REQUEST_FAILED"},
 }};
 
-constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 14> kErrorTexts = {{
+constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErrorTexts = {{
     {bazarish::ErrorCode::eStorageFull, "The server has run out of storage."},
-    {bazarish::ErrorCode::eRecipientServerUnreachable, "Their server did not answer."},
     {bazarish::ErrorCode::eDeliveryRejected, "Their server refused to take this."},
     {bazarish::ErrorCode::eContactRequestTooLarge, "The contact request is too long."},
     {bazarish::ErrorCode::eContactRateLimited,

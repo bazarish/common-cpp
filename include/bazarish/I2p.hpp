@@ -203,6 +203,8 @@ struct Capabilities {
     // Endpoint::setLeaseSetReaderKey is supported.
     bool lateReaderKey = false;
     bool destinationDetail = false;
+    // Router::refreshLeaseSet asks the netDb past the local cache and says what it found.
+    bool leaseSetRefresh = false;
 };
 
 inline constexpr int kDefaultSamControlPort = 7656;
@@ -274,6 +276,20 @@ struct RemoteLeaseSet {
     int leases = 0;
 };
 
+// UTC seconds, as the lease set states them.
+struct LeaseSetSeen {
+    std::int64_t publishedAt = 0;
+    std::int64_t expiresAt = 0;
+};
+
+struct LeaseSetRefresh {
+    // What the local destination held before it asked again.
+    std::optional<LeaseSetSeen> before;
+    std::optional<LeaseSetSeen> after;
+};
+
+bool publishedLater(const LeaseSetSeen& candidate, const std::optional<LeaseSetSeen>& than);
+
 struct DestinationDetail {
     LocalDestination destination;
     std::vector<TunnelDetail> tunnels;
@@ -300,8 +316,18 @@ I2pLogLevel i2pLogLevel();
 // Grows when the link returns or the device moves network.
 std::uint64_t carryReturns();
 void networkChanged();
-// Called on whichever thread grows carryReturns(); an empty function unsubscribes.
-void onCarryReturned(std::function<void()> listener);
+
+// Calls its listener, on whichever thread grows carryReturns(), for as long as it lives.
+class CarryWatch {
+public:
+    explicit CarryWatch(std::function<void()> listener);
+    ~CarryWatch();
+    CarryWatch(const CarryWatch&) = delete;
+    CarryWatch& operator=(const CarryWatch&) = delete;
+
+private:
+    const std::uint64_t id_;
+};
 
 class Router {
 public:
@@ -325,8 +351,8 @@ public:
     std::vector<TransportPeer> transportPeers() const;
     std::vector<LocalDestination> localDestinations() const;
     std::optional<DestinationDetail> destinationDetail(const std::string& host) const;
-    // Blocks until the network answers; true when a current lease set came back.
-    bool refreshLeaseSet(const std::string& localHost, const std::string& remoteHost);
+    // Drops what localHost holds of remoteHost's lease set and asks the netDb again; blocks.
+    LeaseSetRefresh refreshLeaseSet(const std::string& localHost, const std::string& remoteHost);
 
     void setSocksProxy(const std::string& host, int port);
     void setReseedUrls(const std::vector<std::string>& urls);

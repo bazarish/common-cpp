@@ -113,11 +113,48 @@ constexpr const char* kChosenNamesKey = "chosen-contact-names";
 
 constexpr std::size_t kDeliveryIdSeedBytes = 32;
 
+constexpr char kOutboxIndexKey[] = "outbox";
+const std::string kOutboxEntryPrefix = "outbox:";
+
 namespace fs = std::filesystem;
 
 fs::path i2pDirFor(const fs::path& accountFile)
 {
     return accountFile.parent_path().parent_path() / "i2p";
+}
+
+struct OwnMailboxClient {
+    std::mutex mutex;
+    std::unique_ptr<Client> client;
+};
+
+// A client of its own: the courier's threads never touch the session's.
+std::function<std::optional<DeliveryOutcome>(const Letter&)> ownMailboxLink(
+    Session::ContactFetchContext context, std::shared_ptr<WireLog> log)
+{
+    const std::shared_ptr<OwnMailboxClient> held = std::make_shared<OwnMailboxClient>();
+    return [context = std::move(context), log = std::move(log), held](
+               const Letter& letter) -> std::optional<DeliveryOutcome> {
+        const std::lock_guard<std::mutex> lock(held->mutex);
+        if (!held->client) {
+            held->client = Session::makeEventClient(context);
+            held->client->shareWireLog(log);
+        }
+        DeliveryOutcome outcome;
+        try {
+            held->client->submitSelf(letter.deliveryId, letter.payload, letter.kind);
+            outcome.stored = true;
+        } catch (const ApiError& error) {
+            if (error.httpStatus == 0) {
+                bazarish::log::warn("our server did not take a {}: {}", letter.kind, error.what());
+                return std::nullopt;
+            }
+            outcome.errorCode
+                = error.code.has_value() ? std::string(toString(*error.code)) : std::string();
+            outcome.errorMessage = error.what();
+        }
+        return outcome;
+    };
 }
 
 constexpr std::int64_t kMediaSilenceTimeoutMs = 20000;
@@ -527,6 +564,7 @@ void Session::connectServer(const ServerEndpoint& endpoint)
             Identity::fromPrivatePem(client_->identity().privatePem()), client_->clientId(),
             endpoint, i2pDirFor(accountPath_));
         client_->setAccountLabel(accountLabel());
+        stopCourier();
     }
     persistMeta();
 }
@@ -706,6 +744,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     }
     session->client_->setAccountLabel(session->accountLabel());
     session->loadSentFiles();
+    session->loadOutbox();
 
     const auto loadBlob = [&session](const std::string& name) -> Bytes {
         return session->db_->get(name).value_or(Bytes{});
@@ -805,8 +844,7 @@ bool Session::contactIsPending(const std::string& peerFingerprint) const
 
 bool Session::contactAcceptInFlight(const std::string& peerFingerprint) const
 {
-    const auto found = contacts_.find(peerFingerprint);
-    return found != contacts_.end() && found->second.acceptInFlight;
+    return bootstrapQueued(peerFingerprint);
 }
 
 AccountKind Session::contactKind(const std::string& peerFingerprint) const
@@ -1413,13 +1451,14 @@ void Session::requireSwitchedOn() const
     }
 }
 
-void Session::sendSelf(nlohmann::json inner)
+void Session::sendSelf(
+    nlohmann::json inner, std::vector<std::string> ids, const DeliveryWatch& watch)
 {
     requireSwitchedOn();
     const std::string kind = inner.value("type", std::string());
     nlohmann::json sealed = envelope(kind, newMessageId(), std::move(inner));
     sealed["device"] = client_->clientId();
-    submitSignedToSelf(sealed, kind);
+    submitSignedToSelf(sealed, kind, std::move(ids), watch);
 }
 
 void Session::syncChatPinToSelf(const std::string& peerFingerprint, bool pinned)
@@ -1459,12 +1498,15 @@ bool Session::isSavedChat(const std::string& peerFingerprint) const
     return !peerFingerprint.empty() && peerFingerprint == fingerprint();
 }
 
-void Session::saveToSelf(nlohmann::json message)
+void Session::saveToSelf(nlohmann::json message, const DeliveryWatch& watch)
 {
-    sendSelf({
-        {"type", "device.saved"},
-        {"message", std::move(message)},
-    });
+    std::vector<std::string> ids{message.value("id", std::string())};
+    sendSelf(
+        {
+            {"type", "device.saved"},
+            {"message", std::move(message)},
+        },
+        std::move(ids), watch);
 }
 
 void Session::clearSaved()
@@ -1589,18 +1631,23 @@ void Session::maybeSendAvatarToContact(const std::string& peerFingerprint, const
     if (found == contacts_.end()) {
         return;
     }
-    Contact& contact = found->second;
+    const Contact& contact = found->second;
     if (!contact.issuedToThem || contact.avatarSentToPeer || contact.sendPass.empty()
         || contact.sealingPublicB64.empty() || contact.servingSealingB64.empty()) {
+        return;
+    }
+    LetterTerms terms;
+    terms.avatarDigest = avatarDigest();
+    if (queuedLetter(peerFingerprint, [&terms](const OutboxEntry& entry) {
+            return entry.terms.avatarDigest == terms.avatarDigest;
+        })) {
         return;
     }
     nlohmann::json inner = envelope("avatar", newMessageId(), {
         {"avatar", {{"mime", avatarMime_}, {"data", nlohmann::json::binary(avatar_)}}},
     });
     try {
-        sendContent(peerFingerprint, std::move(inner));
-        contact.avatarSentToPeer = true;
-        persistContacts();
+        sendContent(peerFingerprint, std::move(inner), {}, false, terms);
     } catch (const std::exception& error) {
         bazarish::log::warn(
             "avatar push to {} failed: {}", bazarish::log::redact(peerFingerprint), error.what());
@@ -1612,10 +1659,15 @@ void Session::setAvatar(const Bytes& data, const std::string& mime)
     if (data.size() > kAvatarMaxBytes) {
         throw std::runtime_error("avatar exceeds the 500 KB protocol limit");
     }
+    settleDeliveries();
     const bool removal = data.empty();
     std::vector<std::string> tell;
     for (const auto& [contactFp, contact] : contacts_) {
-        if (!removal || contact.avatarSentToPeer) {
+        const bool carried = contact.avatarSentToPeer
+            || queuedLetter(contactFp, [](const OutboxEntry& entry) {
+                   return !entry.terms.avatarDigest.empty();
+               });
+        if (!removal || carried) {
             tell.push_back(contactFp);
         }
     }
@@ -1672,6 +1724,7 @@ void Session::removeContact(const std::string& peerFingerprint)
     if (contacts_.erase(peerFingerprint) == 0) {
         return;
     }
+    withdrawDeliveries(peerFingerprint);
     db_->erase("avatar-" + peerFingerprint);
     forgetSentFilesFor(peerFingerprint);
     persistContacts();
@@ -1787,8 +1840,8 @@ Bytes Session::passIdFor(const std::string& peerFingerprint) const
     return deliveryPass(deliverySecret_, peerFingerprint);
 }
 
-void Session::submitSignedToSelf(
-    nlohmann::json inner, const std::string& kind, const bool later) const
+void Session::submitSignedToSelf(nlohmann::json inner, const std::string& kind,
+    std::vector<std::string> ids, const DeliveryWatch& watch, const std::int64_t notAfterMs)
 {
     if (!deviceSync_) {
         return;
@@ -1796,23 +1849,21 @@ void Session::submitSignedToSelf(
     signAuthorship(inner, client_->identity(), /*withKeys=*/false);
     const Bytes innerBytes = encodedBody(inner);
     const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
-    const std::string deliveryId = toHex(randomBytes(16));
-    Bytes sealed = hybrid::seal(innerBytes, ownSealing);
-    if (later && selfSendSink_) {
-        selfSendSink_(deliveryId, std::move(sealed), kind);
-        return;
-    }
-    client_->submitSelf(deliveryId, sealed, kind);
+    OutboxEntry entry;
+    entry.peer = fingerprint();
+    entry.own = true;
+    entry.deliveryClass = kDeviceDeliveryClass;
+    entry.deliveryId = toHex(randomBytes(kDeliveryIdBytes));
+    entry.payload = hybrid::seal(innerBytes, ownSealing);
+    entry.kind = kind;
+    entry.ids = std::move(ids);
+    entry.terms.notAfterMs = notAfterMs;
+    deliver(std::move(entry), watch);
 }
 
 void Session::setDeviceSync(const bool enabled)
 {
     deviceSync_ = enabled;
-}
-
-void Session::setSelfSendSink(SelfSendSink sink)
-{
-    selfSendSink_ = std::move(sink);
 }
 
 IdentityKeys Session::knownKeysFor(const std::string& peerFingerprint) const
@@ -1907,59 +1958,370 @@ std::string Session::deliveryIdFor(
     return bazarish::client::deliveryIdFor(deliveryIdSeed_, e2eId, mailbox);
 }
 
-void Session::deliver(const std::string& toDest, const Key& servingSealingKey,
-    const std::string& kind, const std::string& mailbox, const Bytes& pass,
-    const Bytes& payload, const DeliveryWatch& watch, const std::string& e2eId)
+Bytes Session::outboxEntryBytes(const OutboxEntry& entry)
 {
-    const std::string deliveryId = deliveryIdFor(e2eId, mailbox);
-    OutboundCourier::Task task;
-    task.toDest = toDest;
-    const auto known = contacts_.find(mailbox);
-    task.peerName = known != contacts_.end() ? known->second.displayName : std::string();
-    if (task.peerName.empty() && !mailbox.empty()) {
-        task.peerName = mailbox.substr(0, std::min(mailbox.size(), kShortFingerprintChars));
-    }
-    task.sealed = sealDeliveryEnvelope(
-        DeliveryEnvelope{kind, mailbox, deliveryId,
-            pass.empty() ? std::nullopt : std::optional<Bytes>(pass)},
-        servingSealingKey);
-    task.payload = payload;
-    task.deliveryId = deliveryId;
-    task.onPhase = watch.onPhase;
-    task.onOutcome = watch.onOutcome;
-    OutboundCourier& courier = outboundCourier();
-    const bool oneAddressOnly = kind == kContactDeliveryClass && outbound_->leases != nullptr;
-    if (oneAddressOnly) {
-        outbound_->leases->keepOwn(toDest);
-        task.onOutcome = [outbound = outbound_, toDest, report = watch.onOutcome](
-                             const OutboundCourier::Outcome& outcome) {
-            outbound->leases->release(toDest);
-            if (report) {
-                report(outcome);
-            }
-        };
-    }
-    courier.submit(std::move(task));
+    const nlohmann::json stored = {
+        {"peer", entry.peer},
+        {"own", entry.own},
+        {"class", entry.deliveryClass},
+        {"deliveryId", entry.deliveryId},
+        {"pass", nlohmann::json::binary(entry.pass)},
+        {"payload", nlohmann::json::binary(entry.payload)},
+        {"kind", entry.kind},
+        {"ids", entry.ids},
+        {"establishes", entry.establishes},
+        {"notAfter", entry.terms.notAfterMs},
+        {"routing", entry.terms.tellsRouting},
+        {"schedule", entry.terms.scheduleThrough},
+        {"avatar", entry.terms.avatarDigest},
+        {"echoes", entry.echoes},
+    };
+    return nlohmann::json::to_cbor(stored);
 }
 
-OutboundCourier& Session::outboundCourier()
+Session::OutboxEntry Session::outboxEntryFrom(const Bytes& stored)
+{
+    const nlohmann::json held = nlohmann::json::from_cbor(stored);
+    OutboxEntry entry;
+    entry.peer = held.at("peer").get<std::string>();
+    entry.own = held.at("own").get<bool>();
+    entry.deliveryClass = held.at("class").get<std::string>();
+    entry.deliveryId = held.at("deliveryId").get<std::string>();
+    entry.pass = held.at("pass").get_binary();
+    entry.payload = held.at("payload").get_binary();
+    entry.kind = held.at("kind").get<std::string>();
+    entry.ids = held.at("ids").get<std::vector<std::string>>();
+    entry.establishes = held.at("establishes").get<bool>();
+    entry.terms.notAfterMs = held.at("notAfter").get<std::int64_t>();
+    entry.terms.tellsRouting = held.at("routing").get<bool>();
+    entry.terms.scheduleThrough = held.at("schedule").get<PresenceDay>();
+    entry.terms.avatarDigest = held.at("avatar").get<std::string>();
+    entry.echoes = held.at("echoes").get<std::vector<nlohmann::json>>();
+    return entry;
+}
+
+std::uint64_t Session::deliver(OutboxEntry entry, const DeliveryWatch& watch)
+{
+    const std::uint64_t seq = ++outboxNext_;
+    db_->put(kOutboxEntryPrefix + std::to_string(seq), outboxEntryBytes(entry));
+    const auto [held, added] = outbox_.emplace(seq, std::move(entry));
+    persistOutboxIndex();
+    {
+        const std::lock_guard<std::mutex> lock(outbound_->mutex);
+        if (outbound_->courier) {
+            outbound_->courier->submit(
+                letterFor(seq, held->second), loggedWatch(held->second, watch));
+            return seq;
+        }
+        if (watch.onPhase || watch.onOutcome) {
+            heldWatches_[seq].push_back(watch);
+        }
+    }
+    if (!switchedOff_) {
+        resumeDeliveries();
+    }
+    return seq;
+}
+
+DeliveryWatch Session::loggedWatch(const OutboxEntry& entry, const DeliveryWatch& watch) const
+{
+    if (entry.own) {
+        return watch;
+    }
+    DeliveryWatch logged = watch;
+    logged.onOutcome = [log = client_->wireLogHandle(),
+                           what = entry.kind + " to " + wireName(entry.peer),
+                           detail = "id " + entry.deliveryId.substr(0, kShortFingerprintChars),
+                           onOutcome = watch.onOutcome](const DeliveryOutcome& outcome) {
+        const std::string status = outcome.stored
+            ? std::string("stored")
+            : "failed: " + (outcome.errorCode.empty() ? outcome.errorMessage : outcome.errorCode);
+        log->record({0, true, what, status, detail});
+        if (onOutcome) {
+            onOutcome(outcome);
+        }
+    };
+    return logged;
+}
+
+Letter Session::letterFor(const std::uint64_t seq, const OutboxEntry& entry) const
+{
+    Letter letter;
+    letter.seq = seq;
+    letter.mailbox = entry.peer;
+    letter.deliveryClass = entry.deliveryClass;
+    letter.deliveryId = entry.deliveryId;
+    letter.pass = entry.pass;
+    letter.payload = entry.payload;
+    letter.kind = entry.kind;
+    letter.notAfterMs = entry.terms.notAfterMs;
+    if (entry.own) {
+        letter.route = kOwnMailboxRoute;
+        return letter;
+    }
+    const Contact& contact = contacts_.at(entry.peer);
+    letter.route = contact.dest;
+    letter.servingSealingDer = fromBase64(contact.servingSealingB64);
+    letter.peerName = contact.displayName.empty()
+        ? entry.peer.substr(0, std::min(entry.peer.size(), kShortFingerprintChars))
+        : contact.displayName;
+    return letter;
+}
+
+void Session::resumeDeliveries()
 {
     const std::lock_guard<std::mutex> lock(outbound_->mutex);
     if (!outbound_->courier) {
+        buildCourierLocked();
+    }
+}
+
+void Session::buildCourierLocked()
+{
+    OutboundCourier::Links links;
+    if (outbound_->links.has_value()) {
+        links = *outbound_->links;
+    } else {
         outbound_->leases = std::make_unique<OutboundLeases>(i2pRouter(), accountLabel());
         OutboundLeases& leases = *outbound_->leases;
         leases.setAddressing(outbound_->addressing);
-        outbound_->courier = std::make_unique<OutboundCourier>(
-            [&leases](const std::string& toDest, const std::string& peerName) {
-                return leases.prepare(toDest, peerName);
-            },
-            [&leases](const std::string& toDest, const std::chrono::seconds timeout) {
-                return leases.openStream(toDest, timeout);
-            },
-            DeliverySchedule{}, [&leases](const std::string& toDest) { leases.retire(toDest); },
-            outbound_->workers);
+        links.prepare = [&leases](const std::string& toDest, const std::string& peerName) {
+            return leases.prepare(toDest, peerName);
+        };
+        links.openStream
+            = [&leases](const std::string& toDest, const std::chrono::seconds timeout) {
+                  return leases.openStream(toDest, timeout);
+              };
+        links.lookup = [&leases](const std::string& toDest) { return leases.lookup(toDest); };
+        links.keepOwn = [&leases](const std::string& toDest) { leases.keepOwn(toDest); };
+        links.release = [&leases](const std::string& toDest) { leases.release(toDest); };
     }
-    return *outbound_->courier;
+    links.ownMailbox = ownMailboxLink(contactFetchContext(), client_->wireLogHandle());
+    outbound_->courier = std::make_unique<OutboundCourier>(std::move(links),
+        [queue = settledQueue_](const std::uint64_t seq, const DeliveryOutcome& outcome) {
+            const std::lock_guard<std::mutex> held(queue->mutex);
+            queue->settled.emplace_back(seq, outcome);
+        },
+        outbound_->timings, outbound_->workers);
+    for (const auto& [seq, entry] : outbox_) {
+        outbound_->courier->submit(letterFor(seq, entry), loggedWatch(entry, {}));
+    }
+    for (const auto& [seq, watches] : heldWatches_) {
+        for (const DeliveryWatch& watch : watches) {
+            attachLocked(seq, watch);
+        }
+    }
+    heldWatches_.clear();
+}
+
+void Session::stopCourier()
+{
+    const std::lock_guard<std::mutex> lock(outbound_->mutex);
+    if (outbound_->leases) {
+        outbound_->leases->stop();
+    }
+    outbound_->courier.reset();
+    outbound_->leases.reset();
+}
+
+void Session::tellCourier(const std::function<void(OutboundCourier&)>& tell)
+{
+    const std::lock_guard<std::mutex> lock(outbound_->mutex);
+    if (outbound_->courier) {
+        tell(*outbound_->courier);
+    }
+}
+
+void Session::loadOutbox()
+{
+    if (!db_->has(kOutboxIndexKey)) {
+        return;
+    }
+    const nlohmann::json index = db_->document(kOutboxIndexKey);
+    outboxNext_ = index.at("next").get<std::uint64_t>();
+    bool dropped = false;
+    for (const nlohmann::json& queued : index.at("queued")) {
+        const std::uint64_t seq = queued.get<std::uint64_t>();
+        const std::string key = kOutboxEntryPrefix + std::to_string(seq);
+        const std::optional<Bytes> stored = db_->get(key);
+        if (!stored.has_value()) {
+            throw std::runtime_error("the outbox names a letter this profile does not hold");
+        }
+        OutboxEntry entry = outboxEntryFrom(*stored);
+        if (!entry.own && contacts_.count(entry.peer) == 0) {
+            bazarish::log::warn("a {} to a removed contact was withdrawn", entry.kind);
+            db_->erase(key);
+            dropped = true;
+            continue;
+        }
+        outbox_.emplace(seq, std::move(entry));
+    }
+    if (dropped) {
+        persistOutboxIndex();
+    }
+}
+
+void Session::persistOutboxIndex() const
+{
+    if (outbox_.empty()) {
+        db_->erase(kOutboxIndexKey);
+        return;
+    }
+    nlohmann::json queued = nlohmann::json::array();
+    for (const auto& [seq, entry] : outbox_) {
+        queued.push_back(seq);
+    }
+    db_->putDocument(kOutboxIndexKey, {{"next", outboxNext_}, {"queued", queued}});
+}
+
+void Session::eraseOutboxEntry(const std::uint64_t seq)
+{
+    outbox_.erase(seq);
+    db_->erase(kOutboxEntryPrefix + std::to_string(seq));
+    persistOutboxIndex();
+}
+
+std::optional<std::uint64_t> Session::queuedLetter(const std::string& peerFingerprint,
+    const std::function<bool(const OutboxEntry&)>& matches) const
+{
+    for (const auto& [seq, entry] : outbox_) {
+        if (entry.peer == peerFingerprint && matches(entry)) {
+            return seq;
+        }
+    }
+    return std::nullopt;
+}
+
+bool Session::bootstrapQueued(const std::string& peerFingerprint) const
+{
+    return queuedLetter(peerFingerprint, [](const OutboxEntry& entry) { return entry.establishes; })
+        .has_value();
+}
+
+std::string Session::avatarDigest() const
+{
+    Bytes described(avatarMime_.begin(), avatarMime_.end());
+    described.insert(described.end(), avatar_.begin(), avatar_.end());
+    return toHex(sha256(described));
+}
+
+void Session::withdrawDeliveries(const std::string& peerFingerprint)
+{
+    settleDeliveries();
+    tellCourier(
+        [&peerFingerprint](OutboundCourier& courier) { courier.withdraw(peerFingerprint); });
+    std::vector<std::uint64_t> withdrawn;
+    for (const auto& [seq, entry] : outbox_) {
+        if (entry.peer == peerFingerprint && !entry.own) {
+            withdrawn.push_back(seq);
+        }
+    }
+    DeliveryOutcome outcome;
+    outcome.errorMessage = kWithdrawnMessage;
+    for (const std::uint64_t seq : withdrawn) {
+        for (const DeliveryWatch& watch : heldWatches_[seq]) {
+            if (watch.onOutcome) {
+                watch.onOutcome(outcome);
+            }
+        }
+        heldWatches_.erase(seq);
+        eraseOutboxEntry(seq);
+    }
+}
+
+bool Session::watchDelivery(
+    const std::string& peerFingerprint, const std::string& messageId, const DeliveryWatch& watch)
+{
+    const std::optional<std::uint64_t> seq
+        = queuedLetter(peerFingerprint, [&messageId](const OutboxEntry& entry) {
+              return std::find(entry.ids.begin(), entry.ids.end(), messageId) != entry.ids.end();
+          });
+    if (!seq.has_value()) {
+        return false;
+    }
+    attachWatch(*seq, watch);
+    return true;
+}
+
+void Session::attachWatch(const std::uint64_t seq, const DeliveryWatch& watch)
+{
+    const std::lock_guard<std::mutex> lock(outbound_->mutex);
+    if (!outbound_->courier) {
+        heldWatches_[seq].push_back(watch);
+        return;
+    }
+    attachLocked(seq, watch);
+}
+
+void Session::attachLocked(const std::uint64_t seq, const DeliveryWatch& watch)
+{
+    // Every letter of the outbox is handed to the courier it builds, so it knows them all.
+    if (!outbound_->courier->attach(seq, watch)) {
+        throw std::logic_error("the courier does not hold a letter the outbox holds");
+    }
+}
+
+void Session::applySettled(const std::uint64_t seq, const DeliveryOutcome& outcome)
+{
+    tellCourier([seq](OutboundCourier& courier) { courier.forget(seq); });
+    const auto found = outbox_.find(seq);
+    if (found == outbox_.end()) {
+        return;
+    }
+    const OutboxEntry entry = std::move(found->second);
+    eraseOutboxEntry(seq);
+    heldWatches_.erase(seq);
+    if (!outcome.stored) {
+        const std::string reason
+            = outcome.errorCode.empty() ? outcome.errorMessage : outcome.errorCode;
+        if (entry.establishes) {
+            bazarish::log::warn("the acceptance for {} was refused ({}): the request stands",
+                bazarish::log::redact(entry.peer), reason);
+        }
+        if (entry.terms.tellsRouting && routingFanoutSink_) {
+            routingFanoutSink_(entry.peer, false);
+        }
+        return;
+    }
+    const auto contact = contacts_.find(entry.peer);
+    if (entry.establishes && contact != contacts_.end() && !contact->second.issuedToThem) {
+        contact->second.issuedToThem = true;
+        persistContacts();
+        try {
+            sendSelf({
+                {"type", "device.contact-accepted"},
+                {"peer", entry.peer},
+            });
+        } catch (const std::exception& error) {
+            bazarish::log::warn("contact-accept self-sync failed: {}", error.what());
+        }
+        maybeSendAvatarToContact(entry.peer);
+        offerPresenceSchedule(entry.peer);
+    }
+    if (entry.terms.tellsRouting) {
+        dropFromRoutingFanout(entry.peer);
+        if (routingFanoutSink_) {
+            routingFanoutSink_(entry.peer, true);
+        }
+    }
+    if (entry.terms.scheduleThrough != 0 && contact != contacts_.end()) {
+        contact->second.presenceSentThrough
+            = std::max(contact->second.presenceSentThrough, entry.terms.scheduleThrough);
+        persistContacts();
+    }
+    if (!entry.terms.avatarDigest.empty() && contact != contacts_.end()
+        && entry.terms.avatarDigest == avatarDigest()) {
+        contact->second.avatarSentToPeer = true;
+        persistContacts();
+    }
+    for (const nlohmann::json& echoed : entry.echoes) {
+        try {
+            echoSentToSelf(entry.peer, echoed);
+        } catch (const std::exception& error) {
+            bazarish::log::warn(
+                "could not echo what was sent to our own devices: {}", error.what());
+        }
+    }
 }
 
 void Session::setOutboundAddressing(const OutboundAddressing addressing)
@@ -1977,10 +2339,20 @@ void Session::setDeliveryWorkers(const std::size_t workers)
     outbound_->workers = workers;
 }
 
-void Session::setOutboundCourier(std::unique_ptr<OutboundCourier> courier)
+void Session::setOutboundLinks(OutboundCourier::Links links, const CourierTimings timings)
 {
+    stopCourier();
     const std::lock_guard<std::mutex> lock(outbound_->mutex);
-    outbound_->courier = std::move(courier);
+    outbound_->links = std::move(links);
+    outbound_->timings = timings;
+}
+
+void Session::setSwitchedOff(const bool off)
+{
+    switchedOff_ = off;
+    if (off) {
+        stopCourier();
+    }
 }
 
 void Session::setFetchTransport(FetchTransport transport)
@@ -2099,10 +2471,9 @@ bool Session::contactAwaitsAnswer(const std::string& peerFingerprint) const
 }
 
 void Session::settleContactRequest(
-    const std::string& peerFingerprint, const OutboundCourier::Outcome& outcome)
+    const std::string& peerFingerprint, const DeliveryOutcome& outcome)
 {
-    if (outcome.stored
-        || errorCodeFromString(outcome.errorCode) == ErrorCode::eRecipientServerUnreachable) {
+    if (outcome.stored) {
         return;
     }
     forgetUnansweredContact(peerFingerprint);
@@ -2234,9 +2605,17 @@ void Session::sendContactRequest(const std::string& peerFingerprint,
     if (found == contacts_.end()) {
         throw std::runtime_error("no contact to send a request to: " + peerFingerprint);
     }
+    const std::optional<std::uint64_t> queued
+        = queuedLetter(peerFingerprint, [](const OutboxEntry& entry) {
+              return entry.deliveryClass == kContactDeliveryClass;
+          });
+    if (queued.has_value()) {
+        bazarish::log::info("a contact request to {} already waits to be delivered",
+            bazarish::log::redact(peerFingerprint));
+        attachWatch(*queued, watch);
+        return;
+    }
     const Key peerPrekey = Key::fromPublicDer(fromBase64(found->second.sealingPublicB64));
-    const Key peerServingKey = Key::fromPublicDer(fromBase64(found->second.servingSealingB64));
-    const std::string peerDest = found->second.dest;
 
     const std::string replyPass = registerPassFor(peerFingerprint);
 
@@ -2247,15 +2626,21 @@ void Session::sendContactRequest(const std::string& peerFingerprint,
     });
     nlohmann::json request = payload;
     signAuthorship(request, client_->identity(), /*withKeys=*/true);
-    const Bytes encrypted = hybrid::seal(encodedBody(request), peerPrekey);
-    deliver(peerDest, peerServingKey, "contact", peerFingerprint, {}, encrypted, watch, requestId);
+    OutboxEntry entry;
+    entry.peer = peerFingerprint;
+    entry.deliveryClass = kContactDeliveryClass;
+    entry.deliveryId = deliveryIdFor(requestId, peerFingerprint);
+    entry.payload = hybrid::seal(encodedBody(request), peerPrekey);
+    entry.kind = "contact.request";
+    entry.ids = {requestId};
+    deliver(std::move(entry), watch);
 }
 
 void Session::acceptContactRequest(const std::string& peerFingerprint)
 {
     const auto existing = contacts_.find(peerFingerprint);
     if (existing != contacts_.end()
-        && (existing->second.issuedToThem || existing->second.acceptInFlight)) {
+        && (existing->second.issuedToThem || bootstrapQueued(peerFingerprint))) {
         bazarish::log::info("contact request from {} was already agreed to",
             bazarish::log::redact(peerFingerprint));
         return;
@@ -2509,21 +2894,16 @@ void Session::tellRoutingTo(const std::string& peerFingerprint)
 {
     nlohmann::json inner = envelope("contact.routing", newMessageId(),
         {{"routing", {{"dest", myDest_}, {"servingKey", myServingKeyB64_}}}});
-    const std::shared_ptr<EchoQueue> queue = echoQueue_;
-    DeliveryWatch watch;
-    watch.onOutcome
-        = [queue, peerFingerprint](const OutboundCourier::Outcome& outcome) {
-              const std::lock_guard<std::mutex> lock(queue->mutex);
-              queue->routingTold.emplace_back(peerFingerprint, outcome.stored);
-          };
+    LetterTerms terms;
+    terms.tellsRouting = true;
     try {
-        sendContent(peerFingerprint, std::move(inner), watch,
-            /*establishOnFirstReply=*/false);
+        sendContent(peerFingerprint, std::move(inner), {}, /*establishOnFirstReply=*/false, terms);
     } catch (const std::exception& error) {
         bazarish::log::warn("routing update not sent to {}: {}",
             bazarish::log::redact(peerFingerprint), error.what());
-        const std::lock_guard<std::mutex> lock(queue->mutex);
-        queue->routingTold.emplace_back(peerFingerprint, false);
+        if (routingFanoutSink_) {
+            routingFanoutSink_(peerFingerprint, false);
+        }
     }
 }
 
@@ -2771,9 +3151,14 @@ void Session::sendTransferMail()
             continue;
         }
         try {
-            sendContent(item.peer,
-                envelope("file.offer", newMessageId(),
-                    {{"offer", fileOfferToJson(*item.offer)}, {"forAsk", item.forAsk}}));
+            nlohmann::json inner = envelope("file.offer", newMessageId(),
+                {{"offer", fileOfferToJson(*item.offer)}, {"forAsk", item.forAsk}});
+            LetterTerms terms;
+            terms.notAfterMs = inner.at("sentAt").get<std::int64_t>()
+                + std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::seconds(kServeWindowSeconds))
+                      .count();
+            sendContent(item.peer, std::move(inner), {}, false, terms);
         } catch (const std::exception& error) {
             item.stop->request();
             dropServe(*transfers_, item.serveId, item.stop);
@@ -2801,7 +3186,9 @@ void Session::requestFile(const std::string& peerFingerprint, const std::string&
     }
     emitTransfer(e2eId, TransferState::eRequested, 0, 0, {}, TransferStage::eAsking,
         peerFingerprint);
-    sendContent(peerFingerprint, std::move(inner));
+    LetterTerms terms;
+    terms.notAfterMs = answerByMs;
+    sendContent(peerFingerprint, std::move(inner), {}, false, terms);
 }
 
 void Session::expireFileRequests(const std::int64_t nowMs)
@@ -3109,28 +3496,24 @@ nlohmann::json Session::envelope(
 }
 
 void Session::sendContent(const std::string& peerFingerprint, nlohmann::json inner,
-    const DeliveryWatch& watch, bool establishOnFirstReply)
+    const DeliveryWatch& watch, const bool establishOnFirstReply, const LetterTerms& terms)
 {
     std::vector<nlohmann::json> items;
     items.push_back(std::move(inner));
-    sendContents(peerFingerprint, std::move(items), watch, establishOnFirstReply);
+    sendContents(peerFingerprint, std::move(items), watch, establishOnFirstReply, terms);
 }
 
 void Session::sendContents(const std::string& peerFingerprint, std::vector<nlohmann::json> items,
-    const DeliveryWatch& watch, bool establishOnFirstReply)
+    const DeliveryWatch& watch, const bool establishOnFirstReply, const LetterTerms& terms)
 {
     requireSwitchedOn();
     if (items.empty()) {
         throw std::invalid_argument("an envelope carries at least one message");
     }
     if (isSavedChat(peerFingerprint)) {
-        for (nlohmann::json& item : items) {
-            saveToSelf(std::move(item));
-        }
-        if (watch.onOutcome) {
-            OutboundCourier::Outcome outcome;
-            outcome.stored = true;
-            outboundCourier().report(watch.onOutcome, outcome);
+        const std::size_t last = items.size() - 1;
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            saveToSelf(std::move(items[i]), i == last ? watch : DeliveryWatch{});
         }
         return;
     }
@@ -3154,30 +3537,30 @@ void Session::sendContents(const std::string& peerFingerprint, std::vector<nlohm
     if (found == contacts_.end()) {
         throw std::runtime_error("unknown contact: " + peerFingerprint);
     }
-    Contact& contact = found->second;
+    const Contact& contact = found->second;
     if (contact.sealingPublicB64.empty() || contact.servingSealingB64.empty()) {
         throw std::runtime_error("contact not established yet: " + peerFingerprint);
     }
     if (contact.sendPass.empty()) {
         throw std::runtime_error("no delivery pass for this contact yet: " + peerFingerprint);
     }
-    bool bootstrapIssued = false;
-    DeliveryWatch watchWithLog = watch;
-
-    if (establishOnFirstReply && !contact.issuedToThem && !contact.acceptInFlight) {
+    const bool bootstrapIssued
+        = establishOnFirstReply && !contact.issuedToThem && !bootstrapQueued(peerFingerprint);
+    if (bootstrapIssued) {
         items.front()["bootstrap"] = bootstrapBlock(registerPassFor(peerFingerprint));
-        bootstrapIssued = true;
     }
 
     for (nlohmann::json& inner : items) {
         signAuthorship(inner, client_->identity(), /*withKeys=*/false);
     }
     std::string envelopeIds;
+    std::vector<std::string> ids;
     for (const nlohmann::json& inner : items) {
         if (!envelopeIds.empty()) {
             envelopeIds += kEnvelopeIdSeparator;
         }
-        envelopeIds += inner.value("id", std::string());
+        ids.push_back(inner.value("id", std::string()));
+        envelopeIds += ids.back();
     }
     const std::string firstType = items.front().value("type", std::string("?"));
     const Bytes innerBytes = encodedBatch(items);
@@ -3188,53 +3571,22 @@ void Session::sendContents(const std::string& peerFingerprint, std::vector<nlohm
             + std::to_string(payload.size() / 1024) + " KiB; the limit is "
             + std::to_string(kMaxMessagePayloadBytes / 1024) + " KiB) - send it as a file");
     }
-    const Key peerServingKey = Key::fromPublicDer(fromBase64(contact.servingSealingB64));
-    const Bytes pass = fromBase64(contact.sendPass);
 
-    if (bootstrapIssued) {
-        contact.acceptInFlight = true;
-    }
-    {
-        const std::string kind = items.size() == 1
-            ? firstType
-            : std::to_string(items.size()) + " messages";
-        const std::string peerLabel = wireName(peerFingerprint);
-        const std::string shortId
-            = deliveryIdFor(envelopeIds, peerFingerprint).substr(0, kShortFingerprintChars);
-        noteWire(true, kind + " to " + peerLabel, "sending",
-            "id " + shortId + ", pass " + toHex(pass).substr(0, kPassPrefixChars));
-        DeliveryWatch logged = watch;
-        const std::shared_ptr<WireLog> log = client_->wireLogHandle();
-        logged.onOutcome = [log, kind, peerLabel, shortId, peerFingerprint, echoPayloads,
-                               echoQueue = echoQueue_, onOutcome = watch.onOutcome,
-                               bootstrapIssued](const OutboundCourier::Outcome& outcome) {
-            const std::string status = outcome.stored
-                ? std::string("stored")
-                : "failed" + (outcome.errorCode.empty() ? std::string() : ": " + outcome.errorCode);
-            log->record({0, true, kind + " to " + peerLabel, status, "id " + shortId});
-            if (outcome.stored && !echoPayloads.empty()) {
-                const std::lock_guard<std::mutex> lock(echoQueue->mutex);
-                for (const nlohmann::json& echoed : echoPayloads) {
-                    echoQueue->pending.push_back({peerFingerprint, echoed});
-                }
-            }
-            if (bootstrapIssued) {
-                const std::lock_guard<std::mutex> lock(echoQueue->mutex);
-                if (outcome.stored) {
-                    echoQueue->established.push_back(peerFingerprint);
-                } else {
-                    echoQueue->notEstablished.push_back(peerFingerprint);
-                }
-            }
-            if (onOutcome) {
-                onOutcome(outcome);
-            }
-        };
-        watchWithLog = std::move(logged);
-    }
-
-    deliver(contact.dest, peerServingKey, "content", peerFingerprint, pass, payload, watchWithLog,
-        envelopeIds);
+    OutboxEntry entry;
+    entry.peer = peerFingerprint;
+    entry.deliveryClass = kContentDeliveryClass;
+    entry.deliveryId = deliveryIdFor(envelopeIds, peerFingerprint);
+    entry.pass = fromBase64(contact.sendPass);
+    entry.payload = payload;
+    entry.kind = items.size() == 1 ? firstType : std::to_string(items.size()) + " messages";
+    entry.ids = std::move(ids);
+    entry.establishes = bootstrapIssued;
+    entry.terms = terms;
+    entry.echoes = std::move(echoPayloads);
+    noteWire(true, entry.kind + " to " + wireName(peerFingerprint), "sending",
+        "id " + entry.deliveryId.substr(0, kShortFingerprintChars) + ", pass "
+            + toHex(entry.pass).substr(0, kPassPrefixChars));
+    deliver(std::move(entry), watch);
 }
 
 void Session::loadSentFiles()
@@ -3281,6 +3633,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
     if (serverAnswered_) {
         serverAnswered_();
     }
+    tellCourier([](OutboundCourier& courier) { courier.heard(kOwnMailboxRoute); });
     std::vector<PendingEntry> taking;
     for (const PendingEntry& entry : waiting) {
         if (awaitingAck_.find(entry.id) != awaitingAck_.end()) {
@@ -3323,6 +3676,7 @@ std::vector<IncomingMessage> Session::takeIn(
     std::vector<IncomingMessage> result;
     std::set<std::string> establishedPeers;
     std::set<std::string> reaskedPeers;
+    std::set<std::string> heardFrom;
     const log::Slow timedItems(
         "taking in " + std::to_string(items.size()) + " mailbox item(s)", kSlowStretch);
     for (MailboxItem& item : items) {
@@ -3406,8 +3760,12 @@ std::vector<IncomingMessage> Session::takeIn(
                         && (isBlocked(message.fromFingerprint) || (!known && !asking))) {
                         continue;
                     }
+                    if (!fromOurselves && known) {
+                        heardFrom.insert(message.fromFingerprint);
+                    }
                     if (!fromOurselves && !message.sentByUs && known && !asking
-                        && !sender->second.issuedToThem && !sender->second.acceptInFlight) {
+                        && !sender->second.issuedToThem
+                        && !bootstrapQueued(message.fromFingerprint)) {
                         bazarish::log::info("sync: {} from {}, whose request is not agreed to, dropped",
                             type, bazarish::log::redact(message.fromFingerprint));
                         noteWire(false, type + " from an unanswered request", "dropped", {});
@@ -3428,6 +3786,10 @@ std::vector<IncomingMessage> Session::takeIn(
                             peer.dest = dest;
                             peer.servingSealingB64 = servingKey;
                             persistContacts();
+                            tellCourier([&](OutboundCourier& courier) {
+                                courier.readdress(
+                                    message.fromFingerprint, dest, fromBase64(servingKey));
+                            });
                         }
                     }
 
@@ -3887,6 +4249,14 @@ std::vector<IncomingMessage> Session::takeIn(
         offerPresenceSchedule(peer);
     }
 
+    for (const std::string& peer : heardFrom) {
+        const auto contact = contacts_.find(peer);
+        if (contact != contacts_.end() && !contact->second.dest.empty()) {
+            tellCourier(
+                [&contact](OutboundCourier& courier) { courier.heard(contact->second.dest); });
+        }
+    }
+
     retryPendingRevokes();
     if (std::find(contactsAskedBy_.begin(), contactsAskedBy_.end(), client_->clientId())
         == contactsAskedBy_.end()) {
@@ -4061,75 +4431,23 @@ void Session::closeAccountOnServer()
 void Session::flushPendingEchoes()
 {
     sendTransferMail();
-    std::vector<std::pair<std::string, nlohmann::json>> ready;
-    std::vector<std::string> established;
-    std::vector<std::string> notEstablished;
-    std::vector<std::pair<std::string, bool>> told;
-    std::vector<EchoQueue::ScheduleTold> schedulesTold;
-    {
-        const std::lock_guard<std::mutex> lock(echoQueue_->mutex);
-        ready.swap(echoQueue_->pending);
-        established.swap(echoQueue_->established);
-        notEstablished.swap(echoQueue_->notEstablished);
-        told.swap(echoQueue_->routingTold);
-        schedulesTold.swap(echoQueue_->schedulesTold);
+    if (!switchedOff_ && !outbox_.empty()) {
+        resumeDeliveries();
     }
-    for (const std::string& peerFingerprint : established) {
-        const auto found = contacts_.find(peerFingerprint);
-        if (found == contacts_.end() || found->second.issuedToThem) {
-            continue;
-        }
-        found->second.issuedToThem = true;
-        found->second.acceptInFlight = false;
-        persistContacts();
-        try {
-            sendSelf({
-                {"type", "device.contact-accepted"},
-                {"peer", peerFingerprint},
-            });
-        } catch (const std::exception& error) {
-            bazarish::log::warn("contact-accept self-sync failed: {}", error.what());
-        }
-        maybeSendAvatarToContact(peerFingerprint);
-        offerPresenceSchedule(peerFingerprint);
-    }
-    for (const std::string& peerFingerprint : notEstablished) {
-        const auto found = contacts_.find(peerFingerprint);
-        if (found != contacts_.end() && found->second.acceptInFlight) {
-            found->second.acceptInFlight = false;
-            bazarish::log::warn("the acceptance for {} did not land: the request stands",
-                bazarish::log::redact(peerFingerprint));
-        }
-    }
-    for (const auto& [peerFingerprint, inner] : ready) {
-        try {
-            echoSentToSelf(peerFingerprint, inner);
-        } catch (const std::exception& error) {
-            bazarish::log::warn(
-                "could not echo what was sent to our own devices: {}", error.what());
-        }
-    }
-    for (const auto& [peerFingerprint, delivered] : told) {
-        if (delivered) {
-            dropFromRoutingFanout(peerFingerprint);
-        }
-        if (routingFanoutSink_) {
-            routingFanoutSink_(peerFingerprint, delivered);
-        }
-    }
-    for (const EchoQueue::ScheduleTold& schedule : schedulesTold) {
-        presenceInFlight_.erase(schedule.peer);
-        const auto found = contacts_.find(schedule.peer);
-        if (!schedule.stored || found == contacts_.end()) {
-            bazarish::log::info("presence: a schedule for {} did not land",
-                bazarish::log::redact(schedule.peer));
-            continue;
-        }
-        found->second.presenceSentThrough
-            = std::max(found->second.presenceSentThrough, schedule.through);
-        persistContacts();
-    }
+    settleDeliveries();
     keepPresenceSchedules();
+}
+
+void Session::settleDeliveries()
+{
+    std::vector<std::pair<std::uint64_t, DeliveryOutcome>> settled;
+    {
+        const std::lock_guard<std::mutex> lock(settledQueue_->mutex);
+        settled.swap(settledQueue_->settled);
+    }
+    for (const auto& [seq, outcome] : settled) {
+        applySettled(seq, outcome);
+    }
 }
 
 void Session::echoSentToSelf(const std::string& peerFingerprint, const nlohmann::json& inner)
@@ -4142,7 +4460,7 @@ void Session::echoSentToSelf(const std::string& peerFingerprint, const nlohmann:
         {"device", client_->clientId()},
         {"message", inner},
     });
-    submitSignedToSelf(echo, "device.message", /*later=*/true);
+    submitSignedToSelf(echo, "device.message");
 }
 
 void Session::askDevicesForContacts()
@@ -4343,7 +4661,8 @@ void Session::announceCallTaken(const std::string& callId)
         {"callId", callId},
     });
     try {
-        submitSignedToSelf(inner, "call.taken");
+        submitSignedToSelf(inner, "call.taken", {}, {},
+            inner.at("sentAt").get<std::int64_t>() + kCallAnswerWindowMs);
     } catch (const std::exception& error) {
         bazarish::log::warn("other devices not told the call was taken: {}", error.what());
     }
@@ -4356,7 +4675,9 @@ void Session::sendCallSignal(
     for (const auto& field : extra.items()) {
         inner[field.key()] = field.value();
     }
-    sendContent(peerFingerprint, std::move(inner));
+    LetterTerms terms;
+    terms.notAfterMs = inner.at("sentAt").get<std::int64_t>() + kCallAnswerWindowMs;
+    sendContent(peerFingerprint, std::move(inner), {}, false, terms);
 }
 
 void Session::requireAudioBackend() const
@@ -4522,22 +4843,23 @@ bool Session::sendsPresenceTo(const std::string& peerFingerprint) const
 void Session::sendPresenceSchedule(const std::string& peerFingerprint)
 {
     const PresenceSchedule schedule = presenceScheduleFrom(presenceSeed(), presenceToday());
-    const PresenceDay through = schedule.back().day;
-    DeliveryWatch watch;
-    watch.onOutcome = [echoQueue = echoQueue_, peerFingerprint, through](
-                          const OutboundCourier::Outcome& outcome) {
-        const std::lock_guard<std::mutex> lock(echoQueue->mutex);
-        echoQueue->schedulesTold.push_back({peerFingerprint, through, outcome.stored});
-    };
+    LetterTerms terms;
+    terms.scheduleThrough = schedule.back().day;
     sendContent(peerFingerprint,
         envelope(kTypePresenceSchedule, newMessageId(), {{"days", presenceScheduleJson(schedule)}}),
-        watch);
-    presenceInFlight_.insert(peerFingerprint);
+        {}, false, terms);
+}
+
+bool Session::scheduleQueued(const std::string& peerFingerprint) const
+{
+    return queuedLetter(peerFingerprint, [](const OutboxEntry& entry) {
+        return entry.terms.scheduleThrough != 0;
+    }).has_value();
 }
 
 void Session::offerPresenceSchedule(const std::string& peerFingerprint)
 {
-    if (!sendsPresenceTo(peerFingerprint) || presenceInFlight_.contains(peerFingerprint)) {
+    if (!sendsPresenceTo(peerFingerprint) || scheduleQueued(peerFingerprint)) {
         return;
     }
     presenceDue_.erase(peerFingerprint);
@@ -4568,7 +4890,7 @@ void Session::keepPresenceSchedules()
             const std::int64_t daysLeft
                 = contact.presenceSentThrough >= today ? contact.presenceSentThrough - today + 1 : 0;
             if (daysLeft < kPresenceRefreshBelowDays && sendsPresenceTo(peerFingerprint)
-                && !presenceInFlight_.contains(peerFingerprint)) {
+                && !scheduleQueued(peerFingerprint)) {
                 presenceDue_.try_emplace(peerFingerprint,
                     utc + static_cast<std::int64_t>(randomBelow(kPresenceScheduleSpreadSeconds)));
             }
