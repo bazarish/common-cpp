@@ -15,7 +15,7 @@ int main()
     const fs::path dir = testutil::freshDir("i2p-reseed");
     const std::string archive = (dir / "no-reseed.su3").string();
 
-    bazarish::i2p::setI2pLogging(true);
+    bazarish::i2p::setI2pLogLevel(bazarish::i2p::I2pLogLevel::eWarn);
     {
         bazarish::i2p::RouterConfig refused = bazarish::i2p::offlineRouter(dir);
         refused.reseedUrls.push_back("http://seed.example.org/");

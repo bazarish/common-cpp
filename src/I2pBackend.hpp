@@ -135,7 +135,7 @@ std::unique_ptr<RouterBackend> makeGatewayRouter(const RouterConfig& config);
 
 std::unique_ptr<RouterBackend> makeEmbeddedRouter(const RouterConfig& config);
 std::string embeddedRouterVersion();
-void setEmbeddedLogging(bool enabled);
+void setEmbeddedLogLevel(I2pLogLevel level);
 std::vector<Bytes> embeddedSampleRouterInfos(std::size_t count);
 Bytes generateKeysBlob();
 Bytes keysBlobFromSeeds(const Bytes& signingSeed, const Bytes& cryptoSeed);

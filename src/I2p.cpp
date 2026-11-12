@@ -34,7 +34,7 @@ namespace {
 constexpr auto kEndpointReadyPoll = std::chrono::milliseconds(200);
 constexpr auto kRouterReadyPoll = std::chrono::milliseconds(500);
 
-std::atomic<bool> g_i2pLogging{false};
+std::atomic<I2pLogLevel> g_i2pLogLevel{I2pLogLevel::eNone};
 std::atomic<std::uint64_t> g_carryReturns{0};
 std::mutex g_carryListenerMutex;
 // Held while the listener runs, so replacing it waits out a call already under way.
@@ -197,15 +197,38 @@ TunnelLength tunnelLengthFor(const Privacy privacy)
     return {kLongHops, 0};
 }
 
-void setI2pLogging(const bool enabled)
+std::optional<I2pLogLevel> i2pLogLevelFromString(const std::string_view text)
 {
-    g_i2pLogging = enabled;
-    backend::setEmbeddedLogging(enabled);
+    for (const I2pLogLevel level : {I2pLogLevel::eNone, I2pLogLevel::eError, I2pLogLevel::eWarn,
+             I2pLogLevel::eInfo, I2pLogLevel::eDebug}) {
+        if (text == i2pLogLevelName(level)) {
+            return level;
+        }
+    }
+    return std::nullopt;
 }
 
-bool i2pLogging()
+std::string_view i2pLogLevelName(const I2pLogLevel level)
 {
-    return g_i2pLogging;
+    switch (level) {
+        case I2pLogLevel::eNone: return "none";
+        case I2pLogLevel::eError: return "error";
+        case I2pLogLevel::eWarn: return "warn";
+        case I2pLogLevel::eInfo: return "info";
+        case I2pLogLevel::eDebug: return "debug";
+    }
+    return "none";
+}
+
+void setI2pLogLevel(const I2pLogLevel level)
+{
+    g_i2pLogLevel = level;
+    backend::setEmbeddedLogLevel(level);
+}
+
+I2pLogLevel i2pLogLevel()
+{
+    return g_i2pLogLevel;
 }
 
 std::uint64_t carryReturns()

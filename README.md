@@ -45,4 +45,4 @@ The other components consume this repository as a git submodule (`./common`)
 and add it with `add_subdirectory`. `third_party/` vendors single-header
 `nlohmann/json`. HTTP - server and client, plain or TLS - is Boost.Beast on an
 asio loop with C++20 coroutines (`HttpServer` / `HttpClient`); there is one HTTP
-stack in the fleet, not two.
+stack across the programs, not two.

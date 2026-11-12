@@ -287,8 +287,15 @@ struct TransportPeer {
     bool outbound = false;
 };
 
-void setI2pLogging(bool enabled);
-bool i2pLogging();
+enum class I2pLogLevel { eNone, eError, eWarn, eInfo, eDebug };
+
+std::optional<I2pLogLevel> i2pLogLevelFromString(std::string_view text);
+
+std::string_view i2pLogLevelName(I2pLogLevel level);
+
+// Applies at once: libi2pd stops producing, and lines already queued are dropped.
+void setI2pLogLevel(I2pLogLevel level);
+I2pLogLevel i2pLogLevel();
 
 // Grows when the link returns or the device moves network.
 std::uint64_t carryReturns();

@@ -83,8 +83,6 @@ constexpr std::size_t kDateStringBytes = 9;
 constexpr std::size_t kB32SuffixLen = 8;
 constexpr int kReceivePollSeconds = 5;
 constexpr int kServerShareRatio = 100;
-constexpr char kI2pdLogLevel[] = "warn";
-constexpr char kI2pdSilent[] = "none";
 constexpr int kSessionSnapshotSeconds = 2;
 constexpr int kDialRoundMillis = 30000;
 constexpr int kDialSliceMillis = 250;
@@ -103,6 +101,19 @@ void ensureCryptoInit()
 {
     static const bool kInit = []() { i2pd::crypto::InitCrypto(false); return true; }();
     (void)kInit;
+}
+
+LogLevel i2pdLevelOf(const I2pLogLevel level)
+{
+    switch (level)
+    {
+        case I2pLogLevel::eNone:  return eLogNone;
+        case I2pLogLevel::eError: return eLogError;
+        case I2pLogLevel::eWarn:  return eLogWarning;
+        case I2pLogLevel::eInfo:  return eLogInfo;
+        case I2pLogLevel::eDebug: return eLogDebug;
+    }
+    return eLogNone;
 }
 
 bazarish::log::Level mapLevel(LogLevel level)
@@ -327,9 +338,9 @@ std::string backend::embeddedRouterVersion()
     return I2PD_VERSION;
 }
 
-void backend::setEmbeddedLogging(const bool enabled)
+void backend::setEmbeddedLogLevel(const I2pLogLevel level)
 {
-    i2pd::log::Logger().SetLogLevel(enabled ? kI2pdLogLevel : kI2pdSilent);
+    i2pd::log::Logger().SetLogLevel(std::string(i2pLogLevelName(level)));
 }
 
 std::vector<Bytes> backend::embeddedSampleRouterInfos(const std::size_t count)
@@ -1147,10 +1158,10 @@ void EmbeddedRouter::start()
     if (started) { return; }
     i2pd::api::StartI2P([](LogLevel level, const std::string& text)
     {
-        if (!i2pLogging()) { return; }
+        if (level == eLogNone || level > i2pdLevelOf(i2pLogLevel())) { return; }
         bazarish::log::emit(mapLevel(level), text);
     });
-    backend::setEmbeddedLogging(i2pLogging());
+    backend::setEmbeddedLogLevel(i2pLogLevel());
     started = true;
     bazarish::log::info("i2p: engine running");
     io = std::make_shared<IoService>(ioContextCount());

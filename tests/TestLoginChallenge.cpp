@@ -66,7 +66,7 @@ void testRejections()
         const std::string blob = signLoginBlob(identity, t, challenge);
 
         LoginConsumer other = panel();
-        other.name = "Bazarish admin panel - south fleet";
+        other.name = "Another admin panel";
         CHECK_THROWS(LoginChallenge("portal-secret", other).verify(challenge, blob, t));
         other = panel();
         other.place = {"http://127.0.0.1:9460"};
