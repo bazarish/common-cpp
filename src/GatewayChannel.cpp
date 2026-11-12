@@ -54,6 +54,32 @@ Bytes bytesOfBinary(const nlohmann::json& value)
     return Bytes(binary.begin(), binary.end());
 }
 
+void mustFitRecord(const Bytes& frame)
+{
+    if (frame.size() > kMaxFrameBytes) {
+        throw ProtocolError(Fault::eBadFrame, "a frame over the cap does not go in a record");
+    }
+}
+
+Bytes recordOf(const Bytes& frame, const std::uint8_t flags, const std::size_t total)
+{
+    Bytes plaintext(total, 0);
+    plaintext[0] = flags;
+    putBigEndian(ByteBuffer(plaintext).subspan(kRecordFlagsBytes, kRecordLengthBytes),
+        static_cast<std::uint16_t>(frame.size()));
+    std::copy(frame.begin(), frame.end(), plaintext.begin() + kRecordHeaderBytes);
+    return plaintext;
+}
+
+bool isDatagram(const std::vector<unsigned char>& message)
+{
+    if (message.empty()) {
+        return false;
+    }
+    const std::optional<FrameType> type = frameTypeFromByte(message.front());
+    return type == FrameType::eRawSend || type == FrameType::eRawRecv;
+}
+
 }  // namespace
 
 Bytes issueCard(const Identity& identity, const Key& sealing)
@@ -108,20 +134,19 @@ shape::LogNormal bulkPad()
 
 Bytes padRecord(const Bytes& frame, const std::uint8_t flags, shape::RandomSource& random)
 {
-    if (frame.size() > kMaxFrameBytes) {
-        throw ProtocolError(Fault::eBadFrame, "a frame over the cap does not go in a record");
-    }
+    mustFitRecord(frame);
     const std::size_t needed = kRecordHeaderBytes + frame.size();
     const std::size_t total = static_cast<double>(needed) <= kRecordPadCeiling
         ? static_cast<std::size_t>(std::ceil(shape::drawAtLeast(
             recordPad(), static_cast<double>(needed), random)))
         : needed + static_cast<std::size_t>(shape::draw(bulkPad(), random));
-    Bytes plaintext(total, 0);
-    plaintext[0] = flags;
-    putBigEndian(ByteBuffer(plaintext).subspan(kRecordFlagsBytes, kRecordLengthBytes),
-        static_cast<std::uint16_t>(frame.size()));
-    std::copy(frame.begin(), frame.end(), plaintext.begin() + kRecordHeaderBytes);
-    return plaintext;
+    return recordOf(frame, flags, total);
+}
+
+Bytes bareRecord(const Bytes& frame, const std::uint8_t flags)
+{
+    mustFitRecord(frame);
+    return recordOf(frame, flags, kRecordHeaderBytes + frame.size());
 }
 
 std::optional<RecordBody> unpadRecord(const Bytes& plaintext)
@@ -298,11 +323,13 @@ ChannelSocket::ChannelSocket(
 void ChannelSocket::send(std::vector<unsigned char> message)
 {
     const std::uint8_t flags = hooks_.flags ? hooks_.flags() : 0;
+    const bool bare = media_.load() && isDatagram(message);
+    const Bytes frame(message.begin(), message.end());
     {
         // The nonce is the record's place in the stream, so sealing and queueing are one step.
         const std::lock_guard<std::mutex> lock(sending_);
-        const Bytes record
-            = records_->seal(padRecord(Bytes(message.begin(), message.end()), flags, random_));
+        const Bytes record = records_->seal(
+            bare ? bareRecord(frame, flags) : padRecord(frame, flags, random_));
         raw_->send(std::vector<unsigned char>(record.begin(), record.end()));
     }
     if (hooks_.sent) {

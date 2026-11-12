@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "bazarish/WebSocketClient.hpp"
 
+#include "ChromeTlsStream.hpp"
+#include "TlsEngine.hpp"
 #include "bazarish/Log.hpp"
 
 #include <utility>
@@ -10,19 +12,16 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/steady_timer.hpp>
-#include <boost/asio/ssl.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
-#include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
-#include <boost/beast/websocket/ssl.hpp>
-
 
 #include <algorithm>
 #include <atomic>
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <thread>
 
 namespace bazarish::http {
@@ -32,17 +31,60 @@ namespace {
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace bhttp = boost::beast::http;
-namespace ssl = boost::asio::ssl;
 namespace websocket = boost::beast::websocket;
 using asio::ip::tcp;
 
-using TlsStream = beast::ssl_stream<beast::tcp_stream>;
+using TlsStream = ChromeTlsStream;
 using SteadyClock = std::chrono::steady_clock;
+using HeaderList = std::vector<std::pair<std::string, std::string>>;
 
 thread_local bool tOnSocketThread = false;
 
 constexpr int kHttpVersion = 11;
 constexpr std::size_t kKeptAnswerMaxBytes = 16 * 1024 * 1024;
+constexpr int kHttpPort = 80;
+constexpr int kHttpsPort = 443;
+constexpr std::string_view kHttp2 = "h2";
+
+// Chrome 157.0.8103.78 as captured 2026-11-12: values, and in each list the order it sends.
+constexpr std::string_view kBrands
+    = R"("Not-A.Brand";v="99", "Google Chrome";v="157", "Chromium";v="157")";
+#if defined(__ANDROID__)
+constexpr std::string_view kUserAgent
+    = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) "
+      "Chrome/157.0.0.0 Mobile Safari/537.36";
+constexpr std::string_view kPlatform = R"("Android")";
+constexpr std::string_view kMobile = "?1";
+#elif defined(_WIN32)
+constexpr std::string_view kUserAgent
+    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+      "Chrome/157.0.0.0 Safari/537.36";
+constexpr std::string_view kPlatform = R"("Windows")";
+constexpr std::string_view kMobile = "?0";
+#elif defined(__APPLE__)
+constexpr std::string_view kUserAgent
+    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+      "Chrome/157.0.0.0 Safari/537.36";
+constexpr std::string_view kPlatform = R"("macOS")";
+constexpr std::string_view kMobile = "?0";
+#else
+constexpr std::string_view kUserAgent
+    = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+      "Chrome/157.0.0.0 Safari/537.36";
+constexpr std::string_view kPlatform = R"("Linux")";
+constexpr std::string_view kMobile = "?0";
+#endif
+constexpr std::string_view kAcceptDocument
+    = "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,"
+      "image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
+constexpr std::string_view kAcceptImage
+    = "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
+constexpr std::string_view kAcceptEncoding = "gzip, deflate, br, zstd";
+constexpr std::string_view kAcceptLanguage = "en-US,en;q=0.9";
+constexpr std::string_view kAcceptLanguageName = "Accept-Language";
+constexpr std::string_view kWebSocketExtensions = "permessage-deflate; client_max_window_bits";
+// RFC 6455 4.1.
+constexpr std::string_view kWebSocketVersion = "13";
 
 bool isAddressLiteral(const std::string& host)
 {
@@ -59,14 +101,118 @@ std::string hostHeader(const std::string& host)
     return !error && address.is_v6() ? "[" + host + "]" : host;
 }
 
+std::string authority(const SocketDial& dial)
+{
+    const int usual = dial.tls ? kHttpsPort : kHttpPort;
+    const std::string host = hostHeader(dial.host);
+    return dial.port == usual ? host : host + ":" + std::to_string(dial.port);
+}
+
+std::string origin(const SocketDial& dial)
+{
+    return (dial.tls ? "https://" : "http://") + authority(dial);
+}
+
+// A header the caller adds replaces a browser's own in place, or follows Accept-Language.
+HeaderList withAdded(HeaderList headers, const std::map<std::string, std::string>& added)
+{
+    for (const auto& [name, value] : added) {
+        const auto same = std::find_if(headers.begin(), headers.end(),
+            [&name](const auto& header) { return beast::iequals(header.first, name); });
+        if (same != headers.end()) {
+            same->second = value;
+            continue;
+        }
+        const auto language = std::find_if(headers.begin(), headers.end(),
+            [](const auto& header) { return header.first == kAcceptLanguageName; });
+        const auto at = language == headers.end() ? headers.end() : std::next(language);
+        headers.insert(at, {name, value});
+    }
+    return headers;
+}
+
+template <class Fields>
+void replaceFields(Fields& fields, const HeaderList& headers)
+{
+    fields.clear();
+    for (const auto& [name, value] : headers) {
+        fields.insert(name, value);
+    }
+}
+
+HeaderList upgradeHeaders(const SocketDial& dial, const std::string& key)
+{
+    HeaderList headers = withAdded(
+        {
+            {"Host", authority(dial)},
+            {"Connection", "Upgrade"},
+            {"Pragma", "no-cache"},
+            {"Cache-Control", "no-cache"},
+            {"User-Agent", std::string(kUserAgent)},
+            {"Upgrade", "websocket"},
+            {"Origin", origin(dial)},
+            {"Sec-WebSocket-Version", std::string(kWebSocketVersion)},
+            {"Accept-Encoding", std::string(kAcceptEncoding)},
+            {std::string(kAcceptLanguageName), std::string(kAcceptLanguage)},
+            {"Sec-WebSocket-Key", key},
+            {"Sec-WebSocket-Extensions", std::string(kWebSocketExtensions)},
+        },
+        dial.headers);
+    if (!dial.subprotocol.empty()) {
+        headers.emplace_back("Sec-WebSocket-Protocol", dial.subprotocol);
+    }
+    return headers;
+}
+
+HeaderList fetchHeaders(
+    const SocketDial& dial, const Fetch kind, const std::map<std::string, std::string>& added)
+{
+    if (kind == Fetch::eDocument) {
+        return withAdded(
+            {
+                {"Host", authority(dial)},
+                {"Connection", "keep-alive"},
+                {"sec-ch-ua", std::string(kBrands)},
+                {"sec-ch-ua-mobile", std::string(kMobile)},
+                {"sec-ch-ua-platform", std::string(kPlatform)},
+                {"Upgrade-Insecure-Requests", "1"},
+                {"User-Agent", std::string(kUserAgent)},
+                {"Accept", std::string(kAcceptDocument)},
+                {"Sec-Fetch-Site", "none"},
+                {"Sec-Fetch-Mode", "navigate"},
+                {"Sec-Fetch-User", "?1"},
+                {"Sec-Fetch-Dest", "document"},
+                {"Accept-Encoding", std::string(kAcceptEncoding)},
+                {std::string(kAcceptLanguageName), std::string(kAcceptLanguage)},
+            },
+            added);
+    }
+    return withAdded(
+        {
+            {"Host", authority(dial)},
+            {"Connection", "keep-alive"},
+            {"sec-ch-ua-platform", std::string(kPlatform)},
+            {"User-Agent", std::string(kUserAgent)},
+            {"sec-ch-ua", std::string(kBrands)},
+            {"sec-ch-ua-mobile", std::string(kMobile)},
+            {"Accept", std::string(kAcceptImage)},
+            {"Sec-Fetch-Site", "same-origin"},
+            {"Sec-Fetch-Mode", "no-cors"},
+            {"Sec-Fetch-Dest", "image"},
+            {"Referer", origin(dial) + dial.path},
+            {"Accept-Encoding", std::string(kAcceptEncoding)},
+            {std::string(kAcceptLanguageName), std::string(kAcceptLanguage)},
+        },
+        added);
+}
+
 // One thread owns the stream: no concurrent callers, and Beast pings only for async operations.
 template <class Stream>
 class ClientSocket : public Socket, public std::enable_shared_from_this<ClientSocket<Stream>> {
 public:
-    ClientSocket(std::unique_ptr<asio::io_context> loop, std::unique_ptr<ssl::context> tls,
+    ClientSocket(std::unique_ptr<asio::io_context> loop,
         std::unique_ptr<websocket::stream<Stream>> stream, const SocketDial& dial)
         : loop_(std::move(loop))
-        , tls_(std::move(tls))
         , stream_(std::move(stream))
         , keepalive_(*loop_)
         , silence_(dial.pingAfterSilence)
@@ -291,7 +437,6 @@ private:
     }
 
     std::unique_ptr<asio::io_context> loop_;
-    std::unique_ptr<ssl::context> tls_;
     std::unique_ptr<websocket::stream<Stream>> stream_;
     std::function<void(const SocketPtr&, const std::vector<unsigned char>&)> message_;
     std::function<void(const SocketPtr&)> closed_;
@@ -315,7 +460,6 @@ private:
 
 struct Connected {
     std::unique_ptr<asio::io_context> loop;
-    std::unique_ptr<ssl::context> tls;
     std::unique_ptr<TlsStream> secure;
     std::unique_ptr<beast::tcp_stream> plain;
     std::string error;
@@ -333,7 +477,7 @@ boost::system::error_code awaited(asio::io_context& loop, Start&& start)
 }
 
 // Every connection to a host, a socket's or a plain request's, is made here.
-Connected connect(const SocketDial& dial)
+Connected connect(const SocketDial& dial, const TlsProfile profile)
 {
     Connected out;
     out.loop = std::make_unique<asio::io_context>();
@@ -362,15 +506,10 @@ Connected connect(const SocketDial& dial)
         return out;
     }
 
-    out.tls = std::make_unique<ssl::context>(ssl::context::tls_client);
-    out.tls->set_verify_mode(ssl::verify_none);
-    out.secure = std::make_unique<TlsStream>(*out.loop, *out.tls);
-
-    if (!isAddressLiteral(dial.host)
-        && SSL_set_tlsext_host_name(out.secure->native_handle(), dial.host.c_str()) != 1) {
-        out.error = "the name would not go in the handshake";
-        return out;
-    }
+    const std::string serverName = isAddressLiteral(dial.host) ? std::string() : dial.host;
+    out.secure = std::make_unique<TlsStream>(*out.loop,
+        std::make_unique<TlsEngine>(
+            serverName, dial.host + ":" + std::to_string(dial.port), profile));
     beast::get_lowest_layer(*out.secure).expires_after(dial.connectTimeout);
     error = awaited(*out.loop, [&out, &found](auto&& handler) {
         beast::get_lowest_layer(*out.secure).async_connect(found, std::move(handler));
@@ -380,11 +519,15 @@ Connected connect(const SocketDial& dial)
         return out;
     }
     beast::get_lowest_layer(*out.secure).expires_after(dial.connectTimeout);
-    error = awaited(*out.loop, [&out](auto&& handler) {
-        out.secure->async_handshake(ssl::stream_base::client, std::move(handler));
-    });
+    error = awaited(*out.loop,
+        [&out](auto&& handler) { out.secure->async_handshake(std::move(handler)); });
     if (error) {
-        out.error = "the handshake failed: " + error.message();
+        const std::string& failure = out.secure->engine().failure();
+        out.error = "the handshake failed: " + (failure.empty() ? error.message() : failure);
+        return out;
+    }
+    if (profile == TlsProfile::ePage && out.secure->engine().protocol() == kHttp2) {
+        out.error = "the gateway's front chose h2; it must speak http/1.1";
         return out;
     }
 
@@ -410,12 +553,8 @@ std::string upgrade(
     stream.read_message_max(dial.maxMessageBytes);
     stream.set_option(
         websocket::stream_base::decorator([&dial](websocket::request_type& request) {
-            for (const auto& [name, value] : dial.headers) {
-                request.set(name, value);
-            }
-            if (!dial.subprotocol.empty()) {
-                request.set(bhttp::field::sec_websocket_protocol, dial.subprotocol);
-            }
+            const std::string key(request[bhttp::field::sec_websocket_key]);
+            replaceFields(request, upgradeHeaders(dial, key));
         }));
     const boost::system::error_code error = awaited(loop, [&stream, &dial](auto&& handler) {
         stream.async_handshake(hostHeader(dial.host), dial.path, std::move(handler));
@@ -434,7 +573,7 @@ SocketDialResult openSocket(const SocketDial& dial,
     std::function<void(const SocketPtr&)> closed)
 {
     SocketDialResult result;
-    Connected connected = connect(dial);
+    Connected connected = connect(dial, TlsProfile::eWebSocket);
     if (!connected.error.empty()) {
         result.error = connected.error;
         return result;
@@ -448,7 +587,7 @@ SocketDialResult openSocket(const SocketDial& dial,
             return result;
         }
         const auto socket = std::make_shared<ClientSocket<beast::tcp_stream>>(
-            std::move(connected.loop), std::move(connected.tls), std::move(stream), dial);
+            std::move(connected.loop), std::move(stream), dial);
         socket->run(std::move(message), std::move(closed));
         result.socket = socket;
         return result;
@@ -460,7 +599,7 @@ SocketDialResult openSocket(const SocketDial& dial,
         return result;
     }
     const auto socket = std::make_shared<ClientSocket<TlsStream>>(
-        std::move(connected.loop), std::move(connected.tls), std::move(stream), dial);
+        std::move(connected.loop), std::move(stream), dial);
     socket->run(std::move(message), std::move(closed));
     result.socket = socket;
     return result;
@@ -470,15 +609,11 @@ namespace {
 
 template <class Stream>
 KeptAnswer exchange(asio::io_context& loop, Stream& stream, const SocketDial& dial,
-    const std::string& target, const std::map<std::string, std::string>& headers)
+    const std::string& target, const Fetch kind, const std::map<std::string, std::string>& headers)
 {
     KeptAnswer answer;
     bhttp::request<bhttp::empty_body> out{bhttp::verb::get, target, kHttpVersion};
-    out.set(bhttp::field::host, hostHeader(dial.host));
-    for (const auto& [name, value] : headers) {
-        out.set(name, value);
-    }
-    out.keep_alive(true);
+    replaceFields(out, fetchHeaders(dial, kind, headers));
 
     beast::get_lowest_layer(stream).expires_after(dial.connectTimeout);
     boost::system::error_code error = awaited(loop, [&stream, &out](auto&& handler) {
@@ -508,6 +643,19 @@ KeptAnswer exchange(asio::io_context& loop, Stream& stream, const SocketDial& di
 
 }  // namespace
 
+std::size_t fetchBytes(const SocketDial& dial, const std::string& target, const Fetch kind,
+    const std::map<std::string, std::string>& headers)
+{
+    constexpr std::string_view kRequestLine = "GET  HTTP/1.1\r\n";
+    constexpr std::string_view kSeparator = ": ";
+    constexpr std::string_view kLineEnd = "\r\n";
+    std::size_t bytes = kRequestLine.size() + target.size();
+    for (const auto& [name, value] : fetchHeaders(dial, kind, headers)) {
+        bytes += name.size() + kSeparator.size() + value.size() + kLineEnd.size();
+    }
+    return bytes + kLineEnd.size();
+}
+
 struct KeptConnection::Impl {
     SocketDial dial;
     Connected connected;
@@ -518,22 +666,10 @@ KeptConnection::KeptConnection(const SocketDial& dial)
     : impl_(std::make_unique<Impl>())
 {
     impl_->dial = dial;
-    impl_->connected = connect(dial);
+    impl_->connected = connect(dial, TlsProfile::ePage);
 }
 
-KeptConnection::~KeptConnection()
-{
-    Connected& link = impl_->connected;
-    if (!link.secure || !link.error.empty() || impl_->broken) {
-        return;
-    }
-    beast::get_lowest_layer(*link.secure).expires_after(impl_->dial.connectTimeout);
-    const boost::system::error_code error = awaited(*link.loop,
-        [&link](auto&& handler) { link.secure->async_shutdown(std::move(handler)); });
-    if (error) {
-        bazarish::log::debug("a kept connection did not say goodbye: {}", error.message());
-    }
-}
+KeptConnection::~KeptConnection() = default;
 
 bool KeptConnection::connected() const
 {
@@ -546,7 +682,7 @@ const std::string& KeptConnection::error() const
 }
 
 KeptAnswer KeptConnection::get(
-    const std::string& target, const std::map<std::string, std::string>& headers)
+    const std::string& target, const Fetch kind, const std::map<std::string, std::string>& headers)
 {
     if (!connected()) {
         KeptAnswer refused;
@@ -555,8 +691,8 @@ KeptAnswer KeptConnection::get(
     }
     Connected& link = impl_->connected;
     const KeptAnswer answer = link.plain
-        ? exchange(*link.loop, *link.plain, impl_->dial, target, headers)
-        : exchange(*link.loop, *link.secure, impl_->dial, target, headers);
+        ? exchange(*link.loop, *link.plain, impl_->dial, target, kind, headers)
+        : exchange(*link.loop, *link.secure, impl_->dial, target, kind, headers);
     impl_->broken = !answer.reached;
     return answer;
 }

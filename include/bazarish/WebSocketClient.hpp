@@ -45,6 +45,12 @@ struct KeptAnswer {
     std::string error;
 };
 
+enum class Fetch { eDocument, eImage };
+
+// The size of the request KeptConnection::get sends for these arguments.
+std::size_t fetchBytes(const SocketDial& dial, const std::string& target, Fetch kind,
+    const std::map<std::string, std::string>& headers);
+
 // One connection that asks in turn, as a browser fetches a page and what it embeds.
 class KeptConnection {
 public:
@@ -55,7 +61,8 @@ public:
 
     bool connected() const;
     const std::string& error() const;
-    KeptAnswer get(const std::string& target, const std::map<std::string, std::string>& headers);
+    KeptAnswer get(const std::string& target, Fetch kind,
+        const std::map<std::string, std::string>& headers);
 
 private:
     struct Impl;

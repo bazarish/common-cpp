@@ -9,6 +9,7 @@
 #include "bazarish/WebSocket.hpp"
 #include "bazarish/WebSocketClient.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -66,6 +67,7 @@ shape::LogNormal bulkPad();
 
 // A record's plaintext: flags, the frame's length, the frame, zeros to the drawn length.
 Bytes padRecord(const Bytes& frame, std::uint8_t flags, shape::RandomSource& random);
+Bytes bareRecord(const Bytes& frame, std::uint8_t flags);
 
 struct RecordBody {
     std::uint8_t flags = 0;
@@ -138,6 +140,7 @@ public:
 
     const http::SocketPtr& raw() const { return raw_; }
     std::optional<RecordBody> openRecord(const Bytes& record);
+    void carryMedia() { media_.store(true); }
 
 private:
     http::SocketPtr raw_;
@@ -145,6 +148,7 @@ private:
     ChannelHooks hooks_;
     shape::SystemRandom random_;
     std::mutex sending_;
+    std::atomic<bool> media_{false};
 };
 
 struct ChannelJoin {
@@ -153,7 +157,7 @@ struct ChannelJoin {
 };
 
 struct ChannelOpened {
-    http::SocketPtr socket;
+    std::shared_ptr<ChannelSocket> socket;
     std::optional<Welcome> welcome;
     std::string error;
     bool wrongGateway = false;

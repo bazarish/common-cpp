@@ -2,3 +2,6 @@
 	path = third_party/i2pd
 	url = https://github.com/PurpleI2P/i2pd.git
 	branch = openssl
+[submodule "third_party/boringssl"]
+	path = third_party/boringssl
+	url = https://boringssl.googlesource.com/boringssl

@@ -312,6 +312,38 @@ std::string ApiClient::gatewayRefusal() const
     return gatewayRefusal_;
 }
 
+bool ApiClient::facadePublishedAnew()
+{
+    const std::lock_guard<std::mutex> lock(netMutex_);
+    if (!i2pOut_ || i2pOut_->lost() || i2pOutHost_.empty()) {
+        return false;
+    }
+    const auto running = sharedI2pRouterIfRunning();
+    if (!running.has_value() || !running->get().capabilities().leaseSetRefresh) {
+        return false;
+    }
+    bazarish::i2p::LeaseSetRefresh found;
+    try {
+        found = running->get().refreshLeaseSet(i2pOut_->routingHost(), i2pOutHost_);
+    } catch (const std::exception& error) {
+        bazarish::log::info("the facade's lease set was not looked up: {}", error.what());
+        return false;
+    }
+    if (!found.after.has_value() || !bazarish::i2p::publishedLater(*found.after, found.before)) {
+        return false;
+    }
+    messaging_.blockedUntil = 0;
+    serviceNode_.blockedUntil = 0;
+    return true;
+}
+
+void ApiClient::liftStandOff()
+{
+    const std::lock_guard<std::mutex> lock(netMutex_);
+    messaging_.blockedUntil = 0;
+    serviceNode_.blockedUntil = 0;
+}
+
 std::string ApiClient::activeFacadeAddress() const
 {
     if (endpoint_.facades.empty()) {

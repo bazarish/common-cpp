@@ -104,6 +104,16 @@ std::string Client::gatewayRefusal() const
     return api_.gatewayRefusal();
 }
 
+bool Client::facadePublishedAnew()
+{
+    return api_.facadePublishedAnew();
+}
+
+void Client::liftStandOff()
+{
+    api_.liftStandOff();
+}
+
 void Client::setAccountLabel(std::string accountLabel)
 {
     api_.setAccountLabel(std::move(accountLabel));

@@ -40,8 +40,6 @@ constexpr std::chrono::milliseconds kCoverTick{200};
 constexpr std::size_t kControlSocketsKept = 2;
 constexpr std::chrono::milliseconds kQuietBeforeChurn{1000};
 constexpr char kDecoyCookie[] = "sid";
-// What a decoy's request carries besides its target, host and cookie value.
-constexpr std::string_view kDecoyRequestFrame = "GET  HTTP/1.1\r\nHost: \r\nCookie: =\r\n\r\n";
 constexpr std::chrono::milliseconds kFirstRetry{500};
 constexpr std::chrono::milliseconds kSlowestRetry{15000};
 constexpr std::chrono::milliseconds kFarewellWait{2000};
@@ -121,10 +119,11 @@ bool askDecoy(http::KeptConnection& connection, const http::SocketDial& dial,
         ? dial.path + "?" + std::string(gateway::kDecoyResourceKey) + "="
             + std::string(gateway::kDecoyResourceValue)
         : dial.path;
-    const std::size_t taken = kDecoyRequestFrame.size() + target.size() + dial.host.size()
-        + std::string_view(kDecoyCookie).size();
-    const http::KeptAnswer answer = connection.get(target,
-        {{"Cookie", std::string(kDecoyCookie) + "=" + decoyFiller(request.bytes, taken)}});
+    const http::Fetch kind = request.resource ? http::Fetch::eImage : http::Fetch::eDocument;
+    const std::string cookie = std::string(kDecoyCookie) + "=";
+    const std::size_t taken = http::fetchBytes(dial, target, kind, {{"Cookie", cookie}});
+    const http::KeptAnswer answer = connection.get(
+        target, kind, {{"Cookie", cookie + decoyFiller(request.bytes, taken)}});
     if (!answer.reached) {
         bazarish::log::debug("i2p: a decoy went unanswered: {}", answer.error);
     }
@@ -331,7 +330,7 @@ private:
 class GatewayEndpoint : public EndpointBackend {
 public:
     GatewayEndpoint(std::shared_ptr<Link> link, std::uint32_t id, std::string host, bool raw,
-        bool published, bool exchange, std::string label, std::string accountLabel,
+        bool published, bool exchange, bool media, std::string label, std::string accountLabel,
         std::string target, std::optional<Keys> master);
     ~GatewayEndpoint() override;
 
@@ -380,6 +379,7 @@ public:
     std::uint32_t id() const { return id_; }
     bool raw() const { return raw_; }
     bool published() const { return published_; }
+    bool media() const { return media_; }
     bool exchange() const { return exchange_ && !stopped_.load(); }
     std::string label() const { return tag_.label(); }
     std::string accountLabel() const { return tag_.accountLabel(); }
@@ -402,6 +402,7 @@ private:
     bool raw_;
     bool published_;
     bool exchange_;
+    bool media_;
     DestTag tag_;
     std::string target_;
     const std::optional<Keys> master_;
@@ -699,13 +700,15 @@ void StreamState::close()
 
 GatewayEndpoint::GatewayEndpoint(std::shared_ptr<Link> link, const std::uint32_t id,
     std::string host, const bool raw, const bool published, const bool exchange,
-    std::string label, std::string accountLabel, std::string target, std::optional<Keys> master)
+    const bool media, std::string label, std::string accountLabel, std::string target,
+    std::optional<Keys> master)
     : link_(std::move(link))
     , id_(id)
     , host_(std::move(host))
     , raw_(raw)
     , published_(published)
     , exchange_(exchange)
+    , media_(media)
     , tag_(std::move(label), std::move(accountLabel))
     , target_(std::move(target))
     , master_(std::move(master))
@@ -1454,11 +1457,18 @@ bool GatewayRouter::attach(const std::uint32_t flow)
     if (flow == 0) {
         return false;
     }
+    bool media = false;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         if (link_->flows.count(flow) > 0
             || link_->flows.size() + kControlSocketsKept >= gateway::kMaxSocketsPerSession) {
             return false;
+        }
+        const auto endpoint = link_->endpoints.find(flow);
+        if (endpoint != link_->endpoints.end()) {
+            if (const std::shared_ptr<GatewayEndpoint> held = endpoint->second.lock()) {
+                media = held->media();
+            }
         }
     }
     const gateway::ChannelOpened opened = openChannelSocket(
@@ -1479,6 +1489,9 @@ bool GatewayRouter::attach(const std::uint32_t flow)
             flow);
         opened.socket->close();
         return false;
+    }
+    if (media) {
+        opened.socket->carryMedia();
     }
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
@@ -1680,8 +1693,8 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         throw std::runtime_error("bazarish::i2p: the gateway named no address");
     }
     const auto endpoint = std::make_shared<GatewayEndpoint>(link_, id, host, raw,
-        config.published, config.bulk || config.realtime, config.label, config.accountLabel,
-        config.target, config.keys);
+        config.published, config.bulk || config.realtime, raw && config.realtime, config.label,
+        config.accountLabel, config.target, config.keys);
     {
         // Under the lock, so a status that comes after it lands on top of it.
         const std::lock_guard<std::mutex> lock(link_->mutex);

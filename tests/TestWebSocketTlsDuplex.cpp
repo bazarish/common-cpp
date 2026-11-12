@@ -4,6 +4,7 @@
 #include "bazarish/Tls.hpp"
 #include "bazarish/WebSocket.hpp"
 #include "TestUtil.hpp"
+#include "WebCredential.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -140,7 +141,7 @@ int main()
     const std::filesystem::path root
         = testutil::freshDir("ws-tls-duplex-test");
     std::filesystem::create_directories(root);
-    const tls::Credential credential = tls::selfSigned(root);
+    const tls::Credential credential = testutil::webCredential(root);
 
     Server::Options options;
     options.host = kLoopback;

@@ -86,6 +86,9 @@ public:
     std::string gatewayRefusal() const;
     void setAccountLabel(std::string accountLabel);
     void releaseI2pLink();
+    // Asks the netDb for the facade's lease set past the link's cache; true when it is newer.
+    bool facadePublishedAnew();
+    void liftStandOff();
 
     static std::int64_t sessionBackoffSeconds(int httpStatus);
 

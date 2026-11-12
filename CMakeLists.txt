@@ -25,6 +25,7 @@ if(BAZARISH_SANITIZE)
 endif()
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/I2pdBazarish.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/BoringSslBazarish.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersion.cmake)
 
 option(BAZARISH_WITH_CLIENT "Build the client core library" ON)
@@ -93,6 +94,7 @@ target_include_directories(bazarish_common SYSTEM
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 target_link_libraries(bazarish_common PUBLIC OpenSSL::Crypto OpenSSL::SSL ZLIB::ZLIB)
+target_link_libraries(bazarish_common PRIVATE bazarish_gateway_tls)
 if(WIN32)
     target_link_libraries(bazarish_common PUBLIC ws2_32)
 endif()
@@ -180,6 +182,8 @@ if(NOT WIN32)
     bazarish_add_test(TestSam)
     bazarish_add_test(TestI2pHttp)
     bazarish_add_test(TestWebSocketTlsDuplex)
+    bazarish_add_test(TestChromeTls)
+    bazarish_add_test(TestBrowserHeaders)
 endif()
 
 if(BAZARISH_WITH_CLIENT)

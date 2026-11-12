@@ -110,6 +110,8 @@ public:
 
     void setAccountLabel(std::string accountLabel);
     void releaseI2pLink();
+    bool facadePublishedAnew();
+    void liftStandOff();
 
     PublishResult publishCard(const ContactCard& content, const Bytes& cardKey,
         const DestinationInfo& serving, std::int64_t notBefore);

@@ -128,6 +128,19 @@ struct OwnMailboxClient {
     std::unique_ptr<Client> client;
 };
 
+template <class Told>
+void tellServerAnswered(Told& told)
+{
+    std::function<void()> tell;
+    {
+        const std::lock_guard<std::mutex> lock(told.mutex);
+        tell = told.tell;
+    }
+    if (tell) {
+        tell();
+    }
+}
+
 // A client of its own: the courier's threads never touch the session's.
 std::function<std::optional<DeliveryOutcome>(const Letter&)> ownMailboxLink(
     Session::ContactFetchContext context, std::shared_ptr<WireLog> log)
@@ -2096,7 +2109,14 @@ void Session::buildCourierLocked()
         links.keepOwn = [&leases](const std::string& toDest) { leases.keepOwn(toDest); };
         links.release = [&leases](const std::string& toDest) { leases.release(toDest); };
     }
-    links.ownMailbox = ownMailboxLink(contactFetchContext(), client_->wireLogHandle());
+    links.ownMailbox = [mailbox = ownMailboxLink(contactFetchContext(), client_->wireLogHandle()),
+                           told = serverAnswered_](const Letter& letter) {
+        std::optional<DeliveryOutcome> outcome = mailbox(letter);
+        if (outcome.has_value()) {
+            tellServerAnswered(*told);
+        }
+        return outcome;
+    };
     outbound_->courier = std::make_unique<OutboundCourier>(std::move(links),
         [queue = settledQueue_](const std::uint64_t seq, const DeliveryOutcome& outcome) {
             const std::lock_guard<std::mutex> held(queue->mutex);
@@ -3630,9 +3650,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
         const log::Slow timed("asking what the mailbox holds", kSlowStretch);
         waiting = client_->listPending();
     }
-    if (serverAnswered_) {
-        serverAnswered_();
-    }
+    tellServerAnswered(*serverAnswered_);
     tellCourier([](OutboundCourier& courier) { courier.heard(kOwnMailboxRoute); });
     std::vector<PendingEntry> taking;
     for (const PendingEntry& entry : waiting) {
@@ -4284,7 +4302,8 @@ void Session::ackPending(const std::string& pendingId)
 
 void Session::onServerAnswered(std::function<void()> tell)
 {
-    serverAnswered_ = std::move(tell);
+    const std::lock_guard<std::mutex> lock(serverAnswered_->mutex);
+    serverAnswered_->tell = std::move(tell);
 }
 
 void Session::setAckSink(AckSink sink)

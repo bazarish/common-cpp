@@ -97,7 +97,7 @@ int main()
         const int askTook = secondsTaken([&]() {
             KeptConnection connection(dialTo(mute.port()));
             CHECK(connection.connected());
-            asked = connection.get(kAnswerPath, {});
+            asked = connection.get(kAnswerPath, Fetch::eDocument, {});
         });
         CHECK(!asked.reached);
         CHECK(!asked.error.empty());
@@ -139,7 +139,8 @@ int main()
         KeptConnection connection(dialTo(port));
         CHECK(connection.connected());
         for (int round = 0; round < kKeptRounds; ++round) {
-            const KeptAnswer answer = connection.get(kAnswerPath, {{"Cookie", "a=b"}});
+            const KeptAnswer answer
+                = connection.get(kAnswerPath, Fetch::eImage, {{"Cookie", "a=b"}});
             CHECK(answer.reached);
             CHECK(answer.status == 200);
             CHECK(answer.bytes == std::string("here").size());

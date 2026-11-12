@@ -1038,7 +1038,12 @@ private:
     std::string deliveryIdSeed_;
     std::deque<std::string> endedCalls_;
     std::set<std::string> awaitingAck_;
-    std::function<void()> serverAnswered_;
+    struct ServerAnswered {
+        std::mutex mutex;
+        std::function<void()> tell;
+    };
+    // Shared: the courier's threads tell it when our server takes a letter.
+    const std::shared_ptr<ServerAnswered> serverAnswered_ = std::make_shared<ServerAnswered>();
     AckSink ackSink_;
     // Taken in without an ack sink; acked together at the end of the pass.
     std::vector<std::string> owedAcks_;
