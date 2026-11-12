@@ -260,6 +260,7 @@ endif()
     bazarish_client_add_test(TestPresenceGateway)
     bazarish_client_add_test(TestPresenceDests)
     bazarish_client_add_test(TestTranscriptCore)
+    bazarish_client_add_test(TestTranscriptIngest)
 
     add_executable(alias_smoke client/tests/AliasSmoke.cpp)
     target_link_libraries(alias_smoke PRIVATE bazarish_client)

@@ -1139,24 +1139,36 @@ int main()
         {
             const Bytes face = {0xFF, 0xD8, 0xFF, 0xE0, 'j', 'p', 'g'};
             alice->setAvatar(face, "image/jpeg");
-            bob->sync();
-            CHECK(bob->contactAvatar(alice->fingerprint()) == face);
+            CHECK(testutil::waitFor([&]() {
+                alice->flushPendingEchoes();
+                bob->sync();
+                return bob->contactAvatar(alice->fingerprint()) == face;
+            }));
 
             alice->setAvatar({}, {});
             CHECK(alice->avatar().empty());
-            bob->sync();
-            CHECK(bob->contactAvatar(alice->fingerprint()).empty());
+            CHECK(testutil::waitFor([&]() {
+                alice->flushPendingEchoes();
+                bob->sync();
+                return bob->contactAvatar(alice->fingerprint()).empty();
+            }));
         }
 
         {
             constexpr std::size_t kBacklog = 12;
             const std::string kBacklogText = "backlog ";
+            std::atomic<std::size_t> backlogStored{0};
+            DeliveryWatch countStored;
+            countStored.onOutcome = [&backlogStored](const DeliveryOutcome& outcome) {
+                backlogStored += outcome.stored ? 1 : 0;
+            };
             for (std::size_t i = 0; i < kBacklog; ++i) {
-                bob->sendMessage(alice->fingerprint(), kBacklogText + std::to_string(i));
+                bob->sendMessage(alice->fingerprint(), kBacklogText + std::to_string(i), {},
+                    countStored);
             }
             CHECK(testutil::waitFor([&]() {
-                std::lock_guard<std::mutex> lock(m.mu);
-                return m.mailbox[alice->fingerprint()].size() >= kBacklog;
+                bob->flushPendingEchoes();
+                return backlogStored.load() == kBacklog;
             }));
             std::size_t fetchesBefore = 0;
             std::size_t acksBefore = 0;

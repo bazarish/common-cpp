@@ -254,7 +254,7 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
         return true;
     }
     if (type == kTypeContactAccept) {
-        const std::int64_t id = appendNote(message, notes_.contactAccepted(peer), false);
+        const std::int64_t id = appendNote(message, notes_.contactAccepted(peer), true);
         if (id == 0) {
             return false;
         }
