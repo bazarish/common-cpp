@@ -33,10 +33,11 @@ public:
     virtual ~PresenceLink() = default;
     virtual std::string host() const = 0;
     virtual void send(const std::string& host, const Bytes& datagram) = 0;
+    // Looks host's lease set up past what this address holds, then sends; returns at once.
+    virtual void sendAfterLookup(const std::string& host, const Bytes& datagram) = 0;
     virtual std::optional<Bytes> receive(std::chrono::milliseconds wait) = 0;
     // The transport took the address down (a gateway's lapsed delegation); it is raised again.
     virtual bool lost() const = 0;
-    virtual bool ready() const = 0;
 };
 
 using PresenceNet = std::function<std::unique_ptr<PresenceLink>(const PresenceLinkConfig&)>;
@@ -86,8 +87,6 @@ struct PresenceTimings {
     std::chrono::milliseconds onlineTail{60000};
     std::chrono::milliseconds typingPulse{5000};
     std::chrono::milliseconds readersSettle{10000};
-    // i2pd's TUNNEL_EXPIRATION_TIMEOUT: how long a gone holder's lease set can still be found.
-    std::chrono::milliseconds leaseSetLife{660000};
     std::chrono::milliseconds tick{250};
     UtcClock utcNow = systemUtcSeconds;
 };
@@ -101,6 +100,10 @@ public:
     Presence& operator=(const Presence&) = delete;
 
     void setFocused(bool focused);
+    // Unlike losing focus, ends online at once, with no tail.
+    void setAway(bool away);
+    // Away at once; returns after every holder has told its subscribers.
+    void leave();
     void setShown(bool shown);
     // In chat-list order: of those with a day in their schedule, the first kMaxPresenceReaders read it.
     void setContacts(std::vector<PresenceContact> ordered);

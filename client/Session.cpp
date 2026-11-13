@@ -4819,6 +4819,20 @@ void Session::setPresenceFocused(const bool focused)
     }
 }
 
+void Session::setPresenceAway(const bool away)
+{
+    if (presence_) {
+        presence_->setAway(away);
+    }
+}
+
+void Session::leavePresence()
+{
+    if (presence_) {
+        presence_->leave();
+    }
+}
+
 void Session::setPresenceOrder(const std::vector<std::string>& chatOrder)
 {
     presenceOrder_ = chatOrder;

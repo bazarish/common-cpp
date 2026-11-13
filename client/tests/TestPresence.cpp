@@ -47,8 +47,13 @@ constexpr std::uint8_t kWatchFrameType = 1;
 constexpr milliseconds kStaleRetry{600};
 constexpr milliseconds kShortTail{300};
 constexpr milliseconds kAwayBeforeReturn{1000};
-constexpr std::size_t kWatchersPerFocus = 2;
+constexpr std::size_t kWatchersPerFocus = 1;
 constexpr milliseconds kSlowPublish{3000};
+constexpr milliseconds kCachedLeaseSetLife{60000};
+constexpr milliseconds kSamLeaseSetLife{3000};
+constexpr milliseconds kSamMargin{500};
+constexpr milliseconds kAtOnce{300};
+constexpr milliseconds kReturnWithin{2000};
 constexpr milliseconds kBeforeOwnAddress{1500};
 // 2026-11-11, noon UTC.
 constexpr PresenceDay kDay = 20768;
@@ -81,8 +86,11 @@ PresenceTimings fastTimings()
 
 class FakeNet {
 public:
-    explicit FakeNet(const milliseconds holderPublishDelay = kPublishDelay)
+    explicit FakeNet(const milliseconds holderPublishDelay = kPublishDelay,
+        const milliseconds leaseSetLife = kCachedLeaseSetLife, const bool looksUp = true)
         : holderPublishDelay_(holderPublishDelay)
+        , leaseSetLife_(leaseSetLife)
+        , looksUp_(looksUp)
     {
     }
 
@@ -123,7 +131,7 @@ public:
         std::erase(live_, box);
     }
 
-    // As libi2pd: a sender keeps the lease set it found until it looks again from a new destination.
+    // As libi2pd: a sender keeps the lease set it found until it expires or is looked up again.
     void send(const Box& from, const std::string& host, const Bytes& datagram)
     {
         std::shared_ptr<Box> target;
@@ -131,10 +139,11 @@ public:
             std::lock_guard<std::mutex> lock(mutex_);
             ++sentTo_[host];
             const std::pair<std::uint64_t, std::string> route{from.generation, host};
-            if (const auto known = resolved_.find(route); known != resolved_.end()) {
-                target = known->second;
+            const auto now = std::chrono::steady_clock::now();
+            const auto known = resolved_.find(route);
+            if (known != resolved_.end() && known->second.until > now) {
+                target = known->second.box;
             } else {
-                const auto now = std::chrono::steady_clock::now();
                 for (const std::shared_ptr<Box>& box : published_) {
                     if (box->host == host && box->publishedAt <= now && readable(*box, from)
                         && (!target || box->generation > target->generation)) {
@@ -144,7 +153,7 @@ public:
                 if (!target) {
                     return;
                 }
-                resolved_[route] = target;
+                resolved_[route] = Resolved{target, now + leaseSetLife_};
             }
             const bool gone = std::find(live_.begin(), live_.end(), target) == live_.end();
             if (gone || target->lost.load()) {
@@ -157,6 +166,21 @@ public:
             ++target->received;
         }
         target->arrived.notify_all();
+    }
+
+    void lookUp(const Box& from, const std::string& host)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++lookups_[host];
+        if (looksUp_) {
+            resolved_.erase({from.generation, host});
+        }
+    }
+
+    std::uint64_t lookupsOf(const std::string& host)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lookups_[host];
     }
 
     static bool readable(const Box& leaseSet, const Box& reader)
@@ -244,12 +268,20 @@ public:
     }
 
 private:
+    struct Resolved {
+        std::shared_ptr<Box> box;
+        std::chrono::steady_clock::time_point until{};
+    };
+
     const milliseconds holderPublishDelay_;
+    const milliseconds leaseSetLife_;
+    const bool looksUp_;
     std::mutex mutex_;
     std::map<std::string, std::uint64_t> sentTo_;
+    std::map<std::string, std::uint64_t> lookups_;
     std::vector<std::shared_ptr<Box>> live_;
     std::vector<std::shared_ptr<Box>> published_;
-    std::map<std::pair<std::uint64_t, std::string>, std::shared_ptr<Box>> resolved_;
+    std::map<std::pair<std::uint64_t, std::string>, Resolved> resolved_;
     std::uint64_t opened_ = 0;
 };
 
@@ -276,13 +308,14 @@ public:
         return box_->lost.load();
     }
 
-    bool ready() const override
-    {
-        return std::chrono::steady_clock::now() >= box_->publishedAt;
-    }
-
     void send(const std::string& host, const Bytes& datagram) override
     {
+        net_.send(*box_, host, datagram);
+    }
+
+    void sendAfterLookup(const std::string& host, const Bytes& datagram) override
+    {
+        net_.lookUp(*box_, host);
         net_.send(*box_, host, datagram);
     }
 
@@ -373,12 +406,13 @@ public:
         return nlohmann::json::from_cbor(*plain);
     }
 
-    bool hearsMoved(const milliseconds within)
+    bool hearsOffline(const milliseconds within)
     {
+        const nlohmann::json offline = {{"online", false}, {"typing", false}};
         const auto deadline = std::chrono::steady_clock::now() + within;
         while (std::chrono::steady_clock::now() < deadline) {
             const std::optional<nlohmann::json> said = next(kPoll);
-            if (said && said->value("moved", false)) {
+            if (said && *said == offline) {
                 return true;
             }
         }
@@ -525,11 +559,13 @@ int main()
     }
     CHECK(!bobSees.sawSince(alice.fp(), secondMark, kTyping));
 
-    const std::size_t moveMark = bobSees.history(alice.fp()).size();
+    const std::size_t leaveMark = bobSees.history(alice.fp()).size();
+    const std::size_t bobWatchers = net.watchersOf(bob.presence);
     alice1.setFocused(false);
     CHECK(testutil::waitFor([&]() { return net.holdersOf(alice.dest) == 1; }));
     CHECK(typeUntilSeen(alice2, bob.fp(), bobSees, alice.fp()));
-    CHECK(!bobSees.sawSince(alice.fp(), moveMark, kOffline));
+    CHECK(bobSees.sawSince(alice.fp(), leaveMark, kOffline));
+    CHECK(net.watchersOf(bob.presence) == bobWatchers);
 
     alice2.setFocused(false);
     CHECK(bobSees.waitFor(alice.fp(), kOffline));
@@ -585,6 +621,7 @@ int main()
         Presence frank1(frank.account(), netFor(net), frankSees.sink(), slow);
         frank1.setContacts({erin.contact()});
         frank1.setFocused(true);
+        CHECK(testutil::waitFor([&]() { return net.published(frank.dest); }));
         frank1.watch({erin.fp()});
         CHECK(frankSees.waitFor(erin.fp(), kOnline, kWakeWithin));
         CHECK(erinSees.waitFor(frank.fp(), kOnline, kWakeWithin));
@@ -846,7 +883,7 @@ int main()
         CHECK(testutil::waitFor([&]() {
             return net.holdersOf(pia.dest) == 0 && net.holdersOf(quin.dest) == 0;
         }));
-        CHECK(before.hearsMoved(kSettle));
+        CHECK(before.hearsOffline(kSettle));
         CHECK(net.holdersOf(pia.seed.hostFor(kDay + 1)) == 1);
         CHECK(typeUntilSeen(pia1, quin.fp(), quinSees, pia.fp()));
         CHECK(quinSees.waitFor(pia.fp(), kOnline));
@@ -854,6 +891,85 @@ int main()
         CHECK(!piaSees.sawSince(quin.fp(), quinMark, kOffline));
         CHECK(piaSees.of(quin.fp()) == kOnline);
         g_utc.store(kNoon);
+    }
+
+    {
+        const Person kim;
+        const Person leo;
+        PresenceTimings longTail = fastTimings();
+        longTail.onlineTail = kLongSilence;
+        Observer kimSees;
+        Presence kim1(kim.account(), netFor(net), kimSees.sink(), longTail);
+        kim1.setContacts({leo.contact()});
+        Observer leoSees;
+        Presence leo1(leo.account(), netFor(net), leoSees.sink(), fastTimings());
+        leo1.setContacts({kim.contact()});
+        leo1.setFocused(true);
+        leo1.watch({kim.fp()});
+        kim1.setFocused(true);
+        CHECK(leoSees.waitFor(kim.fp(), kOnline));
+
+        kim1.setFocused(false);
+        std::this_thread::sleep_for(kKnockWait);
+        CHECK(net.holdersOf(kim.dest) == 1);
+        CHECK(leoSees.of(kim.fp()) == kOnline);
+
+        Door locked(net, leo.presence);
+        CHECK(locked.knock(leo, kim, kim.dest));
+        const std::size_t leoWatchers = net.watchersOf(leo.presence);
+        kim1.setAway(true);
+        CHECK(leoSees.waitFor(kim.fp(), kOffline, kAtOnce));
+        CHECK(locked.hearsOffline(kKnockWait));
+        CHECK(testutil::waitFor([&]() { return net.holdersOf(kim.dest) == 0; }));
+
+        const std::uint64_t lookupsBefore = net.lookupsOf(kim.dest);
+        kim1.setAway(false);
+        kim1.setFocused(true);
+        CHECK(leoSees.waitFor(kim.fp(), kOnline, kReturnWithin));
+        CHECK(net.lookupsOf(kim.dest) > lookupsBefore);
+        CHECK(net.watchersOf(leo.presence) == leoWatchers);
+        CHECK(testutil::waitFor([&]() { return net.holdersOf(kim.dest) == 1; }));
+
+        kim1.setAway(true);
+        CHECK(testutil::waitFor([&]() { return net.holdersOf(kim.dest) == 0; }));
+        CHECK(leoSees.waitFor(kim.fp(), kOffline));
+        const std::uint64_t awayGeneration = net.newestGeneration(kim.dest);
+        std::this_thread::sleep_for(kKnockWait);
+        CHECK(net.newestGeneration(kim.dest) == awayGeneration);
+        kim1.setAway(false);
+        CHECK(leoSees.waitFor(kim.fp(), kOnline));
+        CHECK(testutil::waitFor([&]() { return net.holdersOf(kim.dest) == 1; }));
+
+        Door quitting(net, leo.presence);
+        CHECK(quitting.knock(leo, kim, kim.dest));
+        kim1.leave();
+        CHECK(net.holdersOf(kim.dest) == 0);
+        CHECK(quitting.hearsOffline(kPoll));
+        CHECK(leoSees.waitFor(kim.fp(), kOffline));
+    }
+
+    {
+        FakeNet samNet(kPublishDelay, kSamLeaseSetLife, false);
+        const Person nia;
+        const Person oto;
+        Observer otoSees;
+        Presence oto1(oto.account(), netFor(samNet), otoSees.sink(), fastTimings());
+        oto1.setContacts({nia.contact()});
+        Observer niaSees;
+        Presence nia1(nia.account(), netFor(samNet), niaSees.sink(), fastTimings());
+        nia1.setContacts({oto.contact()});
+        oto1.setFocused(true);
+        oto1.watch({nia.fp()});
+        nia1.setFocused(true);
+        CHECK(otoSees.waitFor(nia.fp(), kOnline));
+        const auto found = std::chrono::steady_clock::now();
+        nia1.setAway(true);
+        CHECK(otoSees.waitFor(nia.fp(), kOffline, kAtOnce));
+        nia1.setAway(false);
+        CHECK(!otoSees.waitFor(nia.fp(), kOnline,
+            std::chrono::duration_cast<milliseconds>(
+                found + kSamLeaseSetLife - kSamMargin - std::chrono::steady_clock::now())));
+        CHECK(otoSees.waitFor(nia.fp(), kOnline, kSettle));
     }
 
     std::fprintf(stderr, "TestPresence passed\n");

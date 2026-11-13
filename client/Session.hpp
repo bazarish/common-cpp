@@ -344,6 +344,8 @@ public:
     void setShowPresence(bool on);
     void startPresence(PresenceSink sink);
     void setPresenceFocused(bool focused);
+    void setPresenceAway(bool away);
+    void leavePresence();
     void setPresenceOrder(const std::vector<std::string>& chatOrder);
     void presenceWatch(std::vector<std::string> peerFingerprints);
     void presenceTyped(const std::string& peerFingerprint);

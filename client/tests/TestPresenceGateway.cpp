@@ -148,6 +148,13 @@ int main()
             return seen.readerKeys == dayReaderKeys && seen.holderHosts == dayHosts
                 && seen.delegatedHosts == dayHosts;
         }));
+        const std::string bobToday = bobSeed.hostFor(kDay);
+        CHECK(testutil::waitFor([&]() {
+            const std::vector<nlohmann::json> asked = gateway.lookups();
+            return std::any_of(asked.begin(), asked.end(), [&bobToday](const nlohmann::json& lookup) {
+                return lookup.value("host", std::string()) == bobToday;
+            });
+        }));
     }
 
     const std::vector<Bytes> frames = gateway.received();
