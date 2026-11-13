@@ -107,6 +107,7 @@ public:
     const ServerEndpoint& endpoint() const;
     std::string activeFacadeAddress() const;
     std::string gatewayRefusal() const;
+    bool serverBehindFacadeDown() const;
 
     void setAccountLabel(std::string accountLabel);
     void releaseI2pLink();

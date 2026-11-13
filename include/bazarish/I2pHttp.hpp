@@ -19,6 +19,8 @@ inline constexpr int kI2pHttpOk = 200;
 inline constexpr int kI2pHttpBadRequest = 400;
 inline constexpr int kI2pHttpForbidden = 403;
 inline constexpr int kI2pHttpNotFound = 404;
+// RFC 9110 15.6.3: a facade that cannot reach the server behind it.
+inline constexpr int kI2pHttpBadGateway = 502;
 
 std::string buildI2pHttpRequest(const std::string& method, const std::string& host,
     const std::string& path, const std::map<std::string, std::string>& extraHeaders,

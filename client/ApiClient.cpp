@@ -312,6 +312,11 @@ std::string ApiClient::gatewayRefusal() const
     return gatewayRefusal_;
 }
 
+bool ApiClient::serverBehindFacadeDown() const
+{
+    return serverBehindFacadeDown_.load();
+}
+
 bool ApiClient::facadePublishedAnew()
 {
     const std::lock_guard<std::mutex> lock(netMutex_);
@@ -654,6 +659,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
                 continue;
             }
             activeFacade_ = index;
+            serverBehindFacadeDown_ = response->status == bazarish::kI2pHttpBadGateway;
             if (response->status < 200 || response->status >= 300) {
                 raiseFromResponse(response->status, response->body);
             }
@@ -673,6 +679,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
             continue;
         }
         activeFacade_ = index;
+        serverBehindFacadeDown_ = result.status == bazarish::kI2pHttpBadGateway;
 
         ApiResponse response;
         response.status = result.status;
@@ -682,6 +689,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
         }
         return response;
     }
+    serverBehindFacadeDown_ = false;
     throw ApiError(std::nullopt, 0, "no facade answered: " + lastError);
 }
 

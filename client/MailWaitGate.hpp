@@ -23,6 +23,18 @@ enum class MailWaitCause {
     eRegistered,
     eNewerLeaseSet,
     eStaleLeaseSet,
+    eServerPauseOver,
+};
+
+// Nothing tells a client that the server behind a facade is back: it asks at these pauses.
+inline constexpr std::chrono::seconds kServerDownFirstPause{1};
+inline constexpr std::chrono::seconds kServerDownSecondPause{5};
+inline constexpr std::chrono::seconds kServerDownSteadyPause{10};
+
+struct ServerDownPauses {
+    std::chrono::milliseconds first{kServerDownFirstPause};
+    std::chrono::milliseconds second{kServerDownSecondPause};
+    std::chrono::milliseconds steady{kServerDownSteadyPause};
 };
 
 inline std::string_view mailWaitCauseName(const MailWaitCause cause)
@@ -35,15 +47,19 @@ inline std::string_view mailWaitCauseName(const MailWaitCause cause)
         case MailWaitCause::eRegistered: return "this device was registered again";
         case MailWaitCause::eNewerLeaseSet: return "the facade published a newer lease set";
         case MailWaitCause::eStaleLeaseSet: return "the lease set of the failed ask has expired";
+        case MailWaitCause::eServerPauseOver:
+            return "the pause after the facade found its server down is over";
     }
     return "unknown";
 }
 
-// What a mail wait that failed waits for before it asks again; never a period of its own.
+// What a mail wait that failed waits for before it asks again; a period only after a 502.
 class MailWaitGate {
 public:
-    explicit MailWaitGate(const std::chrono::milliseconds staleBound = kStaleLeaseSetBound)
+    explicit MailWaitGate(const std::chrono::milliseconds staleBound = kStaleLeaseSetBound,
+        const ServerDownPauses serverDownPauses = ServerDownPauses())
         : staleBound_(staleBound)
+        , serverDownPauses_(serverDownPauses)
         , carry_([this]() { wake(); })
     {
     }
@@ -85,6 +101,7 @@ public:
         armed_ = false;
         lastAnswered_ = false;
         reasking_ = false;
+        serverDownNext_ = ServerDownPause::eFirst;
     }
 
     // An ask begins: whatever happened before it is no cause to ask once more.
@@ -105,6 +122,7 @@ public:
         lastAnswered_ = true;
         armed_ = armed_ || !reasking_;
         reasking_ = false;
+        serverDownNext_ = ServerDownPause::eFirst;
     }
 
     // After a failed ask: returns once the next ask has a cause. facadeAnew asks the netDb.
@@ -115,6 +133,7 @@ public:
             if (stopped_) {
                 return MailWaitCause::eStopped;
             }
+            serverDownNext_ = ServerDownPause::eFirst;
             if (followsAnswer_ && armed_) {
                 armed_ = false;
                 reasking_ = true;
@@ -144,7 +163,40 @@ public:
         return *cause;
     }
 
+    // After the facade answered that its server is down: no lease set is in question then.
+    MailWaitCause awaitServer()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        reasking_ = false;
+        const std::chrono::milliseconds pause = serverDownPauseLocked();
+        std::optional<MailWaitCause> cause;
+        if (!changed_.wait_for(lock, pause, [this, &cause]() {
+                cause = stopped_ ? std::optional<MailWaitCause>(MailWaitCause::eStopped)
+                                 : causeLocked();
+                return cause.has_value();
+            })) {
+            return MailWaitCause::eServerPauseOver;
+        }
+        return *cause;
+    }
+
 private:
+    enum class ServerDownPause { eFirst, eSecond, eSteady };
+
+    std::chrono::milliseconds serverDownPauseLocked()
+    {
+        switch (serverDownNext_) {
+            case ServerDownPause::eFirst:
+                serverDownNext_ = ServerDownPause::eSecond;
+                return serverDownPauses_.first;
+            case ServerDownPause::eSecond:
+                serverDownNext_ = ServerDownPause::eSteady;
+                return serverDownPauses_.second;
+            case ServerDownPause::eSteady: return serverDownPauses_.steady;
+        }
+        return serverDownPauses_.steady;
+    }
+
     std::optional<MailWaitCause> causeLocked() const
     {
         if (i2p::carryReturns() != carryAtAsk_) {
@@ -169,6 +221,7 @@ private:
     }
 
     const std::chrono::milliseconds staleBound_;
+    const ServerDownPauses serverDownPauses_;
     mutable std::mutex mutex_;
     std::condition_variable changed_;
     bool stopped_ = false;
@@ -178,6 +231,7 @@ private:
     bool lastAnswered_ = false;
     bool armed_ = false;
     bool reasking_ = false;
+    ServerDownPause serverDownNext_ = ServerDownPause::eFirst;
     std::uint64_t carryAtAsk_ = 0;
     // Last, so it goes first and no listener outlives the members it touches.
     i2p::CarryWatch carry_;

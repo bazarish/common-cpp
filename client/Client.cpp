@@ -104,6 +104,11 @@ std::string Client::gatewayRefusal() const
     return api_.gatewayRefusal();
 }
 
+bool Client::serverBehindFacadeDown() const
+{
+    return api_.serverBehindFacadeDown();
+}
+
 bool Client::facadePublishedAnew()
 {
     return api_.facadePublishedAnew();

@@ -11,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -84,6 +85,8 @@ public:
     const ServerEndpoint& endpoint() const;
     std::string activeFacadeAddress() const;
     std::string gatewayRefusal() const;
+    // The last facade that answered said the server behind it is unreachable.
+    bool serverBehindFacadeDown() const;
     void setAccountLabel(std::string accountLabel);
     void releaseI2pLink();
     // Asks the netDb for the facade's lease set past the link's cache; true when it is newer.
@@ -147,6 +150,7 @@ private:
     Tunnel messaging_{ServerCard::Service::eMessaging};
     Tunnel serviceNode_{ServerCard::Service::eServiceNode};
     std::string gatewayRefusal_;
+    std::atomic<bool> serverBehindFacadeDown_{false};
 
     std::shared_ptr<WireLog> wireLog_;
     std::shared_ptr<bazarish::i2p::Endpoint> i2pOut_;

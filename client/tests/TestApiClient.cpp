@@ -134,6 +134,7 @@ int main()
         CHECK(api.get("/v1/account/i2p-status").status == 200);
         CHECK(nodeStub.opened() == 1);
         CHECK(stub.opened() == 3);
+        CHECK(!api.serverBehindFacadeDown());
     }
 
     {
@@ -278,14 +279,20 @@ int main()
             }
             return false;
         };
+        CHECK(!api.serverBehindFacadeDown());
         CHECK(refused());
         CHECK(hellos.load() == 1);
+        CHECK(api.serverBehindFacadeDown());
         CHECK(refused());
         CHECK(hellos.load() == 1);
         bazarish::i2p::backend::noteCarryReturned();
         CHECK(refused());
         CHECK(hellos.load() == 2);
+        CHECK(api.serverBehindFacadeDown());
         upstreamless.stop();
+        api.liftStandOff();
+        CHECK(refused());
+        CHECK(!api.serverBehindFacadeDown());
     }
 
     CHECK(ApiClient::sessionBackoffSeconds(0) < ApiClient::sessionBackoffSeconds(401));
