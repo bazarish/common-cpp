@@ -61,14 +61,22 @@ constexpr char kTypeField[] = "t";
 constexpr char kIssuedAtField[] = "issuedAt";
 constexpr char kKindField[] = "kind";
 constexpr char kDestField[] = "dest";
-constexpr char kSealingKeyField[] = "sealingKey";
+constexpr char kEpochsField[] = "epochs";
 constexpr char kServingKeyField[] = "servingKey";
 
 const std::set<std::string_view>& contactCardFields()
 {
     static const std::set<std::string_view> kFields{kVersionField, kTypeField, kIssuedAtField,
-        kKindField, kDestField, kSealingKeyField, kServingKeyField};
+        kKindField, kDestField, kEpochsField, kServingKeyField};
     return kFields;
+}
+
+void requireCardEpochs(const std::vector<bazarish::EpochPublic>& epochs)
+{
+    if (bazarish::chosenEpochs(epochs).size() != epochs.size() || epochs.size() != bazarish::kCardEpochs
+        || epochs.back().n != epochs.front().n + 1) {
+        throw std::runtime_error("a contact card carries an epoch and the one after it");
+    }
 }
 
 const char* cardType(const bazarish::ServerCard::Service service)
@@ -89,10 +97,11 @@ Bytes ContactCard::issue(const Identity& userIdentity) const
         {kIssuedAtField, issuedAt},
         {kKindField, std::string(accountKindName(kind))},
         {kDestField, dest},
-        {kSealingKeyField, toBase64(sealingPublicKeyDer)},
+        {kEpochsField, epochsJson(epochs)},
         {kServingKeyField, toBase64(servingSealingKeyDer)},
     };
     requireExactFields(body, contactCardFields());
+    requireCardEpochs(epochs);
     return hybrid::signJson(body, userIdentity);
 }
 
@@ -104,7 +113,8 @@ ContactCard ContactCard::verify(const Bytes& der)
     card.issuedAt = verified.body.at(kIssuedAtField).get<std::int64_t>();
     card.kind = accountKindFromName(verified.body.at(kKindField).get<std::string>());
     card.dest = verified.body.at(kDestField).get<std::string>();
-    card.sealingPublicKeyDer = fromBase64(verified.body.at(kSealingKeyField).get<std::string>());
+    card.epochs = epochsFromJson(verified.body.at(kEpochsField));
+    requireCardEpochs(card.epochs);
     card.servingSealingKeyDer = fromBase64(verified.body.at(kServingKeyField).get<std::string>());
     card.identityClassicalDer = verified.signerClassicalDer;
     card.identityPqDer = verified.signerPqDer;
@@ -114,14 +124,6 @@ ContactCard ContactCard::verify(const Bytes& der)
 std::string ContactCard::fingerprint() const
 {
     return hybridFingerprint(identityClassicalDer, identityPqDer);
-}
-
-Key ContactCard::sealingKey() const
-{
-    if (sealingPublicKeyDer.empty()) {
-        throw std::runtime_error("contact card carries no sealing prekey");
-    }
-    return Key::fromPublicDer(sealingPublicKeyDer);
 }
 
 Key ContactCard::servingSealingKey() const

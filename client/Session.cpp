@@ -20,6 +20,7 @@
 #include <bazarish/Cms.hpp>
 #include <bazarish/DeliveryEnvelope.hpp>
 #include <bazarish/Descriptor.hpp>
+#include <bazarish/Epochs.hpp>
 #include <bazarish/Errors.hpp>
 #include <bazarish/Hybrid.hpp>
 #include <bazarish/I2pAddress.hpp>
@@ -179,6 +180,15 @@ constexpr int kBundleFormatVersion = 2;
 constexpr char kPresenceSeedRow[] = "presence-seed";
 constexpr std::int64_t kPresenceScheduleSpreadSeconds = kSecondsPerHour;
 constexpr char kAddressSealingRow[] = "address-sealing.pem";
+constexpr char kEpochRingRow[] = "epochs";
+constexpr std::int64_t kEpochsScheduleSpreadSeconds = kSecondsPerHour;
+constexpr std::int64_t kEpochCreationSpreadSeconds = kSecondsPerHour;
+
+// The id an epoch key names its maker by: the device, as the account's other devices know it.
+std::string epochCreator(const std::string& clientId)
+{
+    return clientId;
+}
 constexpr char kAddressSigningRow[] = "address-signing.pem";
 
 nlohmann::json readBundle(const Bytes& plain)
@@ -194,12 +204,10 @@ nlohmann::json readBundle(const Bytes& plain)
     return bundle;
 }
 
-void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap)
+void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap, const std::int64_t utc)
 {
     contact.kind = accountKindFromName(bootstrap.at("kind").get<std::string>());
-    if (bootstrap.contains("sealing")) {
-        contact.sealingPublicB64 = bootstrap.at("sealing").get<std::string>();
-    }
+    contact.epochs = mergedEpochs(contact.epochs, epochsFromJson(bootstrap.at("epochs")), utc);
     if (bootstrap.contains("dest")) {
         contact.dest = bootstrap.at("dest").get<std::string>();
         validateB32I2pHost(contact.dest);
@@ -476,11 +484,11 @@ std::string inlineKeyboardJson(const InlineKeyboard& keyboard)
     return keyboardToJson(keyboard).dump();
 }
 
-Session::Session(Made, fs::path accountFile, std::unique_ptr<Client> client, Key sealingKey,
-    std::map<std::string, Contact> contacts)
+Session::Session(Made, fs::path accountFile, std::unique_ptr<Client> client,
+    std::shared_ptr<EpochRing> ring, std::map<std::string, Contact> contacts)
     : accountPath_(std::move(accountFile))
     , client_(std::move(client))
-    , sealingKey_(std::move(sealingKey))
+    , ring_(std::move(ring))
     , contacts_(std::move(contacts))
 {
 }
@@ -510,8 +518,13 @@ std::unique_ptr<Session> Session::create(const fs::path& accountFile, const Acco
     Identity identity = Identity::generate();
     db->putText("identity.pem", identity.privatePem());
 
-    Key sealing = Key::generateSealing();
-    db->putText("sealing.pem", sealing.privatePem());
+    const std::string clientId = toHex(randomBytes(8));
+    const std::shared_ptr<EpochRing> ring = std::make_shared<EpochRing>();
+    const EpochNumber current = epochAt(systemUtcSeconds());
+    for (EpochNumber n = current; n < current + static_cast<EpochNumber>(kCardEpochs); ++n) {
+        ring->add(n, kFirstEpochGeneration, epochCreator(clientId), Key::generateSealing());
+    }
+    db->putText(kEpochRingRow, ring->toJson().dump());
 
     std::optional<PresenceSeed> presenceSeed;
     if (kind == AccountKind::eUser) {
@@ -519,7 +532,6 @@ std::unique_ptr<Session> Session::create(const fs::path& accountFile, const Acco
         db->put(kPresenceSeedRow, presenceSeed->bytes());
     }
 
-    const std::string clientId = toHex(randomBytes(8));
     const bool encrypted = !passphrase.empty();
     const std::string fingerprint = identity.fingerprint();
 
@@ -547,8 +559,8 @@ std::unique_ptr<Session> Session::create(const fs::path& accountFile, const Acco
 
     auto client = std::make_unique<Client>(
         std::move(identity), clientId, endpoint, i2pDirFor(accountFile));
-    std::unique_ptr<Session> session = std::make_unique<Session>(Made{}, accountFile,
-        std::move(client), std::move(sealing), std::map<std::string, Contact>{});
+    std::unique_ptr<Session> session = std::make_unique<Session>(
+        Made{}, accountFile, std::move(client), ring, std::map<std::string, Contact>{});
     session->db_ = std::move(db);
     session->encrypted_ = encrypted;
     session->passphrase_ = passphrase;
@@ -637,7 +649,8 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     const bool encrypted = meta.value("encrypted", false);
 
     Identity identity = Identity::fromPrivatePem(db->text("identity.pem"));
-    Key sealing = Key::fromPrivatePem(db->text("sealing.pem"));
+    const std::shared_ptr<EpochRing> ring = std::make_shared<EpochRing>();
+    ring->addAll(parseJson(db->text(kEpochRingRow)));
     const std::string clientId = meta.at("clientId").get<std::string>();
 
     const AccountKind ownKind = accountKindFromName(meta.at("kind").get<std::string>());
@@ -651,7 +664,8 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
                 contact.presence = presenceScheduleFromJson(entry.at("presence"));
                 contact.presenceSentThrough = entry.at("presenceSentThrough").get<PresenceDay>();
             }
-            contact.sealingPublicB64 = entry.at("sealingPublicB64").get<std::string>();
+            contact.epochs = epochsFromJson(entry.at("epochs"));
+            contact.epochsSentThrough = entry.at("epochsSentThrough").get<EpochNumber>();
             contact.dest = entry.at("dest").get<std::string>();
             contact.servingSealingB64 = entry.at("servingSealingB64").get<std::string>();
             if (const std::string cardKey = entry.at("cardKey").get<std::string>();
@@ -705,7 +719,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     auto client = std::make_unique<Client>(
         std::move(identity), clientId, endpoint, i2pDirFor(accountFile));
     std::unique_ptr<Session> session = std::make_unique<Session>(
-        Made{}, accountFile, std::move(client), std::move(sealing), std::move(contacts));
+        Made{}, accountFile, std::move(client), ring, std::move(contacts));
     session->db_ = std::move(db);
     session->blocked_ = std::move(blocked);
     session->botMenus_ = std::move(botMenus);
@@ -875,9 +889,54 @@ PresenceSchedule Session::contactPresence(const std::string& peerFingerprint) co
     return found == contacts_.end() ? PresenceSchedule{} : found->second.presence;
 }
 
-std::string Session::sealingPublicB64() const
+std::vector<EpochPublic> Session::ownEpochs() const
 {
-    return toBase64(sealingKey_.publicDer());
+    return ring_->inUse(currentEpoch());
+}
+
+void Session::setEpochClock(UtcClock clock)
+{
+    epochClock_ = std::move(clock);
+    stopCourier();
+}
+
+std::int64_t Session::ownEpochReserveSeconds() const
+{
+    const std::optional<EpochNumber> last = ring_->last();
+    return last.has_value() ? std::max<std::int64_t>(0, epochEnd(*last) - epochClock_()) : 0;
+}
+
+bool Session::ownEpochReserveLow() const
+{
+    return ownEpochReserveSeconds() < kLowEpochReserveDays * kSecondsPerDay;
+}
+
+// Part of the device's role: every device of an account is its primary while devices have no roles.
+bool Session::createsEpochs() const
+{
+    return true;
+}
+
+EpochNumber Session::currentEpoch() const
+{
+    return epochAt(epochClock_());
+}
+
+std::vector<EpochPublic> Session::cardEpochs() const
+{
+    const EpochNumber current = currentEpoch();
+    std::vector<EpochPublic> epochs;
+    for (const EpochPublic& epoch : ring_->inUse(current)) {
+        if (epoch.n < current + static_cast<EpochNumber>(kCardEpochs)) {
+            epochs.push_back(epoch);
+        }
+    }
+    return epochs;
+}
+
+void Session::persistRing() const
+{
+    db_->putText(kEpochRingRow, ring_->toJson().dump());
 }
 
 const PresenceSeed& Session::presenceSeed() const
@@ -892,7 +951,7 @@ ContactCard Session::cardContent() const
 {
     ContactCard card;
     card.kind = kind_;
-    card.sealingPublicKeyDer = sealingKey_.publicDer();
+    card.epochs = cardEpochs();
     return card;
 }
 
@@ -900,7 +959,7 @@ nlohmann::json Session::bootstrapBlock(const std::string& pass) const
 {
     return {
         {"kind", std::string(accountKindName(kind_))},
-        {"sealing", sealingPublicB64()},
+        {"epochs", epochsJson(cardEpochs())},
         {"dest", myDest_},
         {"servingKey", myServingKeyB64_},
         {"cardKey", linkKeyText(cardKey_)},
@@ -993,7 +1052,8 @@ nlohmann::json Session::contactsToJson() const
     for (const auto& [fingerprint, contact] : contacts_) {
         stored[fingerprint] = {
             {"kind", std::string(accountKindName(contact.kind))},
-            {"sealingPublicB64", contact.sealingPublicB64},
+            {"epochs", epochsJson(contact.epochs)},
+            {"epochsSentThrough", contact.epochsSentThrough},
             {"dest", contact.dest},
             {"servingSealingB64", contact.servingSealingB64},
             {"cardKey", contact.cardKey.empty() ? std::string() : linkKeyText(contact.cardKey)},
@@ -1283,7 +1343,7 @@ bool Session::adoptI2pMasterFromOwnMailbox(const std::string& wantedHost)
             begin = end;
         }
         for (const MailboxItem& item : held) {
-            for (const nlohmann::json& body : decodedBody(hybrid::unseal(item.blob, sealingKey_))) {
+            for (const nlohmann::json& body : decodedBody(ring_->open(item.blob))) {
                 if (body.value("type", std::string()) != "device.i2p-master"
                     || body.value("from", std::string()) != fingerprint()) {
                     continue;
@@ -1646,7 +1706,7 @@ void Session::maybeSendAvatarToContact(const std::string& peerFingerprint, const
     }
     const Contact& contact = found->second;
     if (!contact.issuedToThem || contact.avatarSentToPeer || contact.sendPass.empty()
-        || contact.sealingPublicB64.empty() || contact.servingSealingB64.empty()) {
+        || contact.servingSealingB64.empty()) {
         return;
     }
     LetterTerms terms;
@@ -1860,14 +1920,12 @@ void Session::submitSignedToSelf(nlohmann::json inner, const std::string& kind,
         return;
     }
     signAuthorship(inner, client_->identity(), /*withKeys=*/false);
-    const Bytes innerBytes = encodedBody(inner);
-    const Key ownSealing = Key::fromPublicDer(sealingKey_.publicDer());
     OutboxEntry entry;
     entry.peer = fingerprint();
     entry.own = true;
     entry.deliveryClass = kDeviceDeliveryClass;
     entry.deliveryId = toHex(randomBytes(kDeliveryIdBytes));
-    entry.payload = hybrid::seal(innerBytes, ownSealing);
+    entry.plain = encodedBody(inner);
     entry.kind = kind;
     entry.ids = std::move(ids);
     entry.terms.notAfterMs = notAfterMs;
@@ -1979,13 +2037,14 @@ Bytes Session::outboxEntryBytes(const OutboxEntry& entry)
         {"class", entry.deliveryClass},
         {"deliveryId", entry.deliveryId},
         {"pass", nlohmann::json::binary(entry.pass)},
-        {"payload", nlohmann::json::binary(entry.payload)},
+        {"plain", nlohmann::json::binary(entry.plain)},
         {"kind", entry.kind},
         {"ids", entry.ids},
         {"establishes", entry.establishes},
         {"notAfter", entry.terms.notAfterMs},
         {"routing", entry.terms.tellsRouting},
         {"schedule", entry.terms.scheduleThrough},
+        {"epochs", entry.terms.epochsThrough},
         {"avatar", entry.terms.avatarDigest},
         {"echoes", entry.echoes},
     };
@@ -2001,13 +2060,14 @@ Session::OutboxEntry Session::outboxEntryFrom(const Bytes& stored)
     entry.deliveryClass = held.at("class").get<std::string>();
     entry.deliveryId = held.at("deliveryId").get<std::string>();
     entry.pass = held.at("pass").get_binary();
-    entry.payload = held.at("payload").get_binary();
+    entry.plain = held.at("plain").get_binary();
     entry.kind = held.at("kind").get<std::string>();
     entry.ids = held.at("ids").get<std::vector<std::string>>();
     entry.establishes = held.at("establishes").get<bool>();
     entry.terms.notAfterMs = held.at("notAfter").get<std::int64_t>();
     entry.terms.tellsRouting = held.at("routing").get<bool>();
     entry.terms.scheduleThrough = held.at("schedule").get<PresenceDay>();
+    entry.terms.epochsThrough = held.at("epochs").get<EpochNumber>();
     entry.terms.avatarDigest = held.at("avatar").get<std::string>();
     entry.echoes = held.at("echoes").get<std::vector<nlohmann::json>>();
     return entry;
@@ -2065,14 +2125,16 @@ Letter Session::letterFor(const std::uint64_t seq, const OutboxEntry& entry) con
     letter.deliveryClass = entry.deliveryClass;
     letter.deliveryId = entry.deliveryId;
     letter.pass = entry.pass;
-    letter.payload = entry.payload;
+    letter.plain = entry.plain;
     letter.kind = entry.kind;
     letter.notAfterMs = entry.terms.notAfterMs;
     if (entry.own) {
         letter.route = kOwnMailboxRoute;
+        letter.sealTo = ring_->inUse(currentEpoch());
         return letter;
     }
     const Contact& contact = contacts_.at(entry.peer);
+    letter.sealTo = contact.epochs;
     letter.route = contact.dest;
     letter.servingSealingDer = fromBase64(contact.servingSealingB64);
     letter.peerName = contact.displayName.empty()
@@ -2117,12 +2179,14 @@ void Session::buildCourierLocked()
         }
         return outcome;
     };
+    CourierTimings timings = outbound_->timings;
+    timings.utcNow = epochClock_;
     outbound_->courier = std::make_unique<OutboundCourier>(std::move(links),
         [queue = settledQueue_](const std::uint64_t seq, const DeliveryOutcome& outcome) {
             const std::lock_guard<std::mutex> held(queue->mutex);
             queue->settled.emplace_back(seq, outcome);
         },
-        outbound_->timings, outbound_->workers);
+        timings, outbound_->workers);
     for (const auto& [seq, entry] : outbox_) {
         outbound_->courier->submit(letterFor(seq, entry), loggedWatch(entry, {}));
     }
@@ -2323,6 +2387,11 @@ void Session::applySettled(const std::uint64_t seq, const DeliveryOutcome& outco
         if (routingFanoutSink_) {
             routingFanoutSink_(entry.peer, true);
         }
+    }
+    if (entry.terms.epochsThrough != 0 && contact != contacts_.end()) {
+        contact->second.epochsSentThrough
+            = std::max(contact->second.epochsSentThrough, entry.terms.epochsThrough);
+        persistContacts();
     }
     if (entry.terms.scheduleThrough != 0 && contact != contacts_.end()) {
         contact->second.presenceSentThrough
@@ -2581,15 +2650,18 @@ void Session::recordRequestedContact(const std::string& peerFingerprint,
         throw std::runtime_error("the introduction may be at most "
             + std::to_string(kMaxContactGreetingBytes) + " bytes");
     }
-    const Key peerPrekey = info.card.sealingKey();
     const Key peerServingKey = info.card.servingSealingKey();
     validateB32I2pHost(info.card.dest);
+    const std::vector<EpochPublic> epochs = mergedEpochs({}, info.card.epochs, epochClock_());
+    if (!epochFor(epochs, epochClock_()).has_value()) {
+        throw std::runtime_error("their card names no key for this month: ask them to open Bazarish");
+    }
 
     Contact& contact = contacts_[peerFingerprint];
     contact.kind = info.card.kind;
     contact.dest = info.card.dest;
     contact.cardKey = info.cardKey;
-    contact.sealingPublicB64 = toBase64(peerPrekey.publicDer());
+    contact.epochs = epochs;
     contact.servingSealingB64 = toBase64(peerServingKey.publicDer());
     rememberKeys(contact, IdentityKeys{info.card.identityClassicalDer, info.card.identityPqDer});
     contact.issuedToThem = true;
@@ -2635,8 +2707,6 @@ void Session::sendContactRequest(const std::string& peerFingerprint,
         attachWatch(*queued, watch);
         return;
     }
-    const Key peerPrekey = Key::fromPublicDer(fromBase64(found->second.sealingPublicB64));
-
     const std::string replyPass = registerPassFor(peerFingerprint);
 
     const nlohmann::json payload = envelope("contact.request", requestId, {
@@ -2650,9 +2720,10 @@ void Session::sendContactRequest(const std::string& peerFingerprint,
     entry.peer = peerFingerprint;
     entry.deliveryClass = kContactDeliveryClass;
     entry.deliveryId = deliveryIdFor(requestId, peerFingerprint);
-    entry.payload = hybrid::seal(encodedBody(request), peerPrekey);
+    entry.plain = encodedBody(request);
     entry.kind = "contact.request";
     entry.ids = {requestId};
+    entry.terms.epochsThrough = cardEpochs().back().n;
     deliver(std::move(entry), watch);
 }
 
@@ -2941,7 +3012,7 @@ void Session::queueRoutingFanout()
 {
     fanout_.contacts.clear();
     for (const auto& [fingerprint, contact] : contacts_) {
-        if (contact.issuedToThem && !contact.sendPass.empty() && !contact.sealingPublicB64.empty()
+        if (contact.issuedToThem && !contact.sendPass.empty()
             && !contact.servingSealingB64.empty()) {
             fanout_.contacts.push_back(fingerprint);
         }
@@ -3558,7 +3629,7 @@ void Session::sendContents(const std::string& peerFingerprint, std::vector<nlohm
         throw std::runtime_error("unknown contact: " + peerFingerprint);
     }
     const Contact& contact = found->second;
-    if (contact.sealingPublicB64.empty() || contact.servingSealingB64.empty()) {
+    if (contact.servingSealingB64.empty()) {
         throw std::runtime_error("contact not established yet: " + peerFingerprint);
     }
     if (contact.sendPass.empty()) {
@@ -3583,12 +3654,10 @@ void Session::sendContents(const std::string& peerFingerprint, std::vector<nlohm
         envelopeIds += ids.back();
     }
     const std::string firstType = items.front().value("type", std::string("?"));
-    const Bytes innerBytes = encodedBatch(items);
-    const Key peerSealing = Key::fromPublicDer(fromBase64(contact.sealingPublicB64));
-    const Bytes payload = hybrid::seal(innerBytes, peerSealing);
-    if (payload.size() > kMaxMessagePayloadBytes) {
+    Bytes plain = encodedBatch(items);
+    if (plain.size() + kHybridSealOverheadBytes > kMaxMessagePayloadBytes) {
         throw std::runtime_error("this message is too large to send ("
-            + std::to_string(payload.size() / 1024) + " KiB; the limit is "
+            + std::to_string((plain.size() + kHybridSealOverheadBytes) / 1024) + " KiB; the limit is "
             + std::to_string(kMaxMessagePayloadBytes / 1024) + " KiB) - send it as a file");
     }
 
@@ -3597,16 +3666,22 @@ void Session::sendContents(const std::string& peerFingerprint, std::vector<nlohm
     entry.deliveryClass = kContentDeliveryClass;
     entry.deliveryId = deliveryIdFor(envelopeIds, peerFingerprint);
     entry.pass = fromBase64(contact.sendPass);
-    entry.payload = payload;
+    entry.plain = std::move(plain);
     entry.kind = items.size() == 1 ? firstType : std::to_string(items.size()) + " messages";
     entry.ids = std::move(ids);
     entry.establishes = bootstrapIssued;
     entry.terms = terms;
+    if (bootstrapIssued) {
+        entry.terms.epochsThrough = cardEpochs().back().n;
+    }
     entry.echoes = std::move(echoPayloads);
     noteWire(true, entry.kind + " to " + wireName(peerFingerprint), "sending",
         "id " + entry.deliveryId.substr(0, kShortFingerprintChars) + ", pass "
             + toHex(entry.pass).substr(0, kPassPrefixChars));
     deliver(std::move(entry), watch);
+    if (!epochFor(contact.epochs, epochClock_()).has_value()) {
+        refreshContactEpochs(peerFingerprint);
+    }
 }
 
 void Session::loadSentFiles()
@@ -3705,7 +3780,7 @@ std::vector<IncomingMessage> Session::takeIn(
         const log::Slow timedItem("taking in " + entry.id, kSlowStretch);
         try {
             const Bytes blob = std::move(item.blob);
-            const Bytes plain = hybrid::unseal(blob, sealingKey_);
+            const Bytes plain = ring_->open(blob);
             std::vector<nlohmann::json> bodies = decodedBody(plain);
             if (entry.deliveryClass == kContactDeliveryClass
                 && (bodies.size() != 1
@@ -3815,7 +3890,10 @@ std::vector<IncomingMessage> Session::takeIn(
                         Contact& peer = contacts_[message.fromFingerprint];
                         if (newerState("routing:" + message.fromFingerprint, message.sentAt)) {
                             rememberKeys(peer, keysIn(body));
-                            applyBootstrap(peer, body.at("bootstrap"));
+                            applyBootstrap(peer, body.at("bootstrap"), epochClock_());
+                            tellCourier([&](OutboundCourier& courier) {
+                                courier.rekey(message.fromFingerprint, peer.epochs);
+                            });
                         }
                         message.establishedContact = true;
                         establishedPeers.insert(message.fromFingerprint);
@@ -3987,6 +4065,7 @@ std::vector<IncomingMessage> Session::takeIn(
                         message.contentType = type;
                         if (body.value("device", std::string()) != client_->clientId()) {
                             sendContactBookTo(body.value("device", std::string()));
+                            sendRingToDevices({});
                         }
                     } else if (type == "device.contact") {
                         message.contentType = type;
@@ -4206,6 +4285,16 @@ std::vector<IncomingMessage> Session::takeIn(
                         message.contentType = type;
                         if (!fromOurselves && !message.sentByUs) {
                             takePresenceSchedule(message.fromFingerprint, body);
+                        }
+                    } else if (type == kTypeAccountEpochs) {
+                        message.contentType = type;
+                        if (!fromOurselves && !message.sentByUs) {
+                            takeEpochs(message.fromFingerprint, body);
+                        }
+                    } else if (type == kTypeDeviceEpochs) {
+                        message.contentType = type;
+                        if (fromOurselves) {
+                            takeOwnEpochs(body);
                         }
                     } else if (type == "contact.routing") {
                         message.contentType = type;
@@ -4454,6 +4543,7 @@ void Session::flushPendingEchoes()
         resumeDeliveries();
     }
     settleDeliveries();
+    keepEpochs();
     keepPresenceSchedules();
 }
 
@@ -4497,7 +4587,8 @@ nlohmann::json Session::contactBookEntry(
         {"peer", peerFingerprint},
         {"kind", std::string(accountKindName(contact.kind))},
         {"pass", contact.sendPass},
-        {"sealing", contact.sealingPublicB64},
+        {"epochs", epochsJson(contact.epochs)},
+        {"epochsSentThrough", contact.epochsSentThrough},
         {"dest", contact.dest},
         {"servingKey", contact.servingSealingB64},
         {"cardKey", contact.cardKey.empty() ? std::string() : linkKeyText(contact.cardKey)},
@@ -4572,7 +4663,9 @@ void Session::applyContactBook(const nlohmann::json& entries)
                 field = value;
             }
         };
-        fill(contact.sealingPublicB64, entry.value("sealing", std::string()));
+        contact.epochs = mergedEpochs(contact.epochs, epochsFromJson(entry.at("epochs")), epochClock_());
+        contact.epochsSentThrough
+            = std::max(contact.epochsSentThrough, entry.at("epochsSentThrough").get<EpochNumber>());
         fill(contact.dest, entry.value("dest", std::string()));
         fill(contact.servingSealingB64, entry.value("servingKey", std::string()));
         if (const std::string cardKey = entry.value("cardKey", std::string());
@@ -4802,7 +4895,7 @@ void Session::startPresence(PresenceSink sink)
     PresenceAccount account;
     account.fingerprint = fingerprint();
     account.identityPem = identity.privatePem();
-    account.sealingPem = sealingKey_.privatePem();
+    account.ring = ring_;
     account.seed = presenceSeed().bytes();
     account.shown = showPresence_;
     PresenceTimings timings;
@@ -4847,7 +4940,7 @@ void Session::setPresenceOrder(const std::vector<std::string>& chatOrder)
             continue;
         }
         const Contact& contact = found->second;
-        ordered.push_back(PresenceContact{peerFingerprint, fromBase64(contact.sealingPublicB64),
+        ordered.push_back(PresenceContact{peerFingerprint, contact.epochs,
             IdentityKeys{fromBase64(contact.identityClassicalB64), fromBase64(contact.identityPqB64)},
             contact.presence});
     }
@@ -4964,6 +5057,230 @@ void Session::takePresenceSchedule(const std::string& peerFingerprint, const nlo
     found->second.presence = std::move(kept);
     persistContacts();
     setPresenceOrder(presenceOrder_);
+}
+
+void Session::ensureOwnEpochs()
+{
+    const std::int64_t utc = epochClock_();
+    const EpochNumber current = epochAt(utc);
+    const bool erased = ring_->eraseEnded(utc);
+    if (!createsEpochs()) {
+        if (erased) {
+            persistRing();
+        }
+        return;
+    }
+    std::set<EpochNumber> wanted;
+    if (!ring_->holds(current)) {
+        wanted.insert(current);
+    }
+    for (EpochNumber n = std::max(current, ring_->last().value_or(current));
+         lessThanAnEpochAhead(n, utc); ++n) {
+        wanted.insert(n + 1);
+    }
+    std::erase_if(epochsMakeAt_, [&wanted](const auto& due) { return !wanted.contains(due.first); });
+    std::set<EpochNumber> made;
+    const std::string by = epochCreator(client_->clientId());
+    for (const EpochNumber n : wanted) {
+        const auto due = epochsMakeAt_
+                             .try_emplace(n,
+                                 utc + static_cast<std::int64_t>(randomBelow(kEpochCreationSpreadSeconds)))
+                             .first;
+        if (due->second > utc) {
+            continue;
+        }
+        epochsMakeAt_.erase(due);
+        ring_->add(n, kFirstEpochGeneration, by, Key::generateSealing());
+        made.insert(n);
+    }
+    if (made.empty()) {
+        if (erased) {
+            persistRing();
+        }
+        return;
+    }
+    persistRing();
+    bazarish::log::info("made the key of epoch {}", *made.rbegin());
+    epochsCheckedDay_.reset();
+    tellCourier([this](OutboundCourier& courier) {
+        courier.rekey(fingerprint(), ring_->inUse(currentEpoch()));
+    });
+    sendRingToDevices(made);
+}
+
+void Session::republishCardIfStale()
+{
+    if (cardB64_.empty() || !hasOwnRouting() || approval_.pending) {
+        return;
+    }
+    const std::vector<EpochPublic> epochs = cardEpochs();
+    if (epochs.size() != kCardEpochs || ContactCard::verify(fromBase64(cardB64_)).epochs == epochs) {
+        return;
+    }
+    try {
+        refreshOwnCard();
+        bazarish::log::info("the card names this month's keys now");
+    } catch (const std::exception& error) {
+        bazarish::log::warn("the card was not republished with this month's keys: {}", error.what());
+    }
+}
+
+bool Session::sendsEpochsTo(const std::string& peerFingerprint) const
+{
+    const auto found = contacts_.find(peerFingerprint);
+    return !switchedOff_ && found != contacts_.end() && found->second.issuedToThem
+        && !found->second.sendPass.empty()
+        && !isBlocked(peerFingerprint) && !isSavedChat(peerFingerprint);
+}
+
+bool Session::epochsQueued(const std::string& peerFingerprint) const
+{
+    return queuedLetter(peerFingerprint, [](const OutboxEntry& entry) {
+        return entry.terms.epochsThrough != 0;
+    }).has_value();
+}
+
+void Session::sendEpochsTo(const std::string& peerFingerprint)
+{
+    const std::vector<EpochPublic> epochs = ring_->inUse(currentEpoch());
+    LetterTerms terms;
+    terms.epochsThrough = epochs.back().n;
+    bazarish::log::info("epochs through {} on their way to {}", terms.epochsThrough,
+        bazarish::log::redact(peerFingerprint));
+    sendContent(peerFingerprint,
+        envelope(kTypeAccountEpochs, newMessageId(), {{"epochs", epochsJson(epochs)}}), {}, false,
+        terms);
+}
+
+void Session::keepEpochs()
+{
+    if (switchedOff_) {
+        return;
+    }
+    ensureOwnEpochs();
+    const std::int64_t utc = epochClock_();
+    const PresenceDay today = presenceDayOf(utc);
+    if (epochsCheckedDay_ != today) {
+        epochsCheckedDay_ = today;
+        std::vector<std::string> keyless;
+        for (const auto& [peerFingerprint, contact] : contacts_) {
+            if (sendsEpochsTo(peerFingerprint)
+                && lessThanAnEpochAhead(contact.epochsSentThrough, utc)
+                && !epochsQueued(peerFingerprint)) {
+                epochsDue_.try_emplace(peerFingerprint,
+                    utc + static_cast<std::int64_t>(randomBelow(kEpochsScheduleSpreadSeconds)));
+            }
+            if (!epochFor(contact.epochs, utc).has_value()
+                && queuedLetter(peerFingerprint, [](const OutboxEntry&) { return true; })) {
+                keyless.push_back(peerFingerprint);
+            }
+        }
+        for (const std::string& peerFingerprint : keyless) {
+            refreshContactEpochs(peerFingerprint);
+        }
+        republishCardIfStale();
+    }
+    std::vector<std::string> ready;
+    for (const auto& [peerFingerprint, dueAt] : epochsDue_) {
+        if (dueAt <= utc) {
+            ready.push_back(peerFingerprint);
+        }
+    }
+    for (const std::string& peerFingerprint : ready) {
+        epochsDue_.erase(peerFingerprint);
+        if (!sendsEpochsTo(peerFingerprint) || epochsQueued(peerFingerprint)) {
+            continue;
+        }
+        try {
+            sendEpochsTo(peerFingerprint);
+        } catch (const std::exception& error) {
+            bazarish::log::warn("epochs not sent to {}: {}", bazarish::log::redact(peerFingerprint),
+                error.what());
+        }
+    }
+}
+
+void Session::takeEpochs(const std::string& peerFingerprint, const nlohmann::json& body)
+{
+    const std::vector<EpochPublic> offered = epochsFromJson(body.at("epochs"));
+    if (offered.empty()) {
+        throw std::runtime_error("an epochs letter names no epoch");
+    }
+    takeContactEpochs(peerFingerprint, offered);
+}
+
+void Session::takeContactEpochs(
+    const std::string& peerFingerprint, const std::vector<EpochPublic>& offered)
+{
+    const auto found = contacts_.find(peerFingerprint);
+    if (found == contacts_.end() || isBlocked(peerFingerprint)) {
+        return;
+    }
+    std::vector<EpochPublic> merged = mergedEpochs(found->second.epochs, offered, epochClock_());
+    if (merged == found->second.epochs) {
+        return;
+    }
+    found->second.epochs = std::move(merged);
+    persistContacts();
+    tellCourier([&](OutboundCourier& courier) {
+        courier.rekey(peerFingerprint, found->second.epochs);
+    });
+    setPresenceOrder(presenceOrder_);
+}
+
+void Session::takeOwnEpochs(const nlohmann::json& body)
+{
+    if (!ring_->addAll(body.at("epochs"))) {
+        return;
+    }
+    persistRing();
+    epochsCheckedDay_.reset();
+    tellCourier([this](OutboundCourier& courier) {
+        courier.rekey(fingerprint(), ring_->inUse(currentEpoch()));
+    });
+}
+
+void Session::sendRingToDevices(const std::set<EpochNumber>& numbers)
+{
+    const nlohmann::json keys = numbers.empty() ? ring_->toJson() : ring_->toJson(numbers);
+    submitSignedToSelf(envelope(kTypeDeviceEpochs, toHex(randomBytes(kDeliveryIdBytes)),
+                           {{"device", client_->clientId()}, {"epochs", keys}}),
+        kTypeDeviceEpochs);
+}
+
+bool Session::refreshContactEpochs(const std::string& peerFingerprint)
+{
+    const auto found = contacts_.find(peerFingerprint);
+    if (found == contacts_.end() || found->second.dest.empty() || found->second.cardKey.empty()) {
+        return false;
+    }
+    const PresenceDay today = presenceDayOf(epochClock_());
+    const auto asked = epochsAskedDay_.find(peerFingerprint);
+    if (asked != epochsAskedDay_.end() && asked->second == today) {
+        return false;
+    }
+    epochsAskedDay_[peerFingerprint] = today;
+    Descriptor descriptor;
+    descriptor.fingerprint = peerFingerprint;
+    descriptor.dest = found->second.dest;
+    descriptor.cardKey = found->second.cardKey;
+    const FetchTransport transport = fetchTransportOverride_
+        ? fetchTransportOverride_
+        : FetchTransport([privacy = tunnelPrivacy(), label = accountLabel()](
+                             const std::string& toDest, const std::string& op,
+                             const Bytes& sealed) -> FetchOutcome {
+              return federationFetchOverI2p(readySharedI2pRouter(), toDest, op, sealed, privacy, label);
+          });
+    try {
+        const ContactInfo info = client_->fetchCard(descriptor, transport);
+        bazarish::log::info("fetched the card of {} for its keys", bazarish::log::redact(peerFingerprint));
+        takeContactEpochs(peerFingerprint, info.card.epochs);
+        return true;
+    } catch (const std::exception& error) {
+        bazarish::log::warn("the card of {} did not come for its keys: {}",
+            bazarish::log::redact(peerFingerprint), error.what());
+        return false;
+    }
 }
 
 void Session::presenceWatch(std::vector<std::string> peerFingerprints)
@@ -5800,7 +6117,7 @@ Bytes Session::accountBundle()
     nlohmann::json bundle = {
         {"v", kBundleFormatVersion},
         {"identityPem", client_->identity().privatePem()},
-        {"sealingPem", sealingKey_.privatePem()},
+        {"epochs", ring_->toJson()},
         {"i2pMaster", toBase64(i2pMaster_)},
         {"addressSealingPem", addressSealing_ ? addressSealing_->privatePem() : std::string()},
         {"addressSigningPem", addressSigning_ ? addressSigning_->privatePem() : std::string()},
@@ -5847,9 +6164,10 @@ void Session::importAccountBundle(
     const AccountKind kind = accountKindFromName(bundle.at("meta").at("kind").get<std::string>());
     AccountDb db(accountFile, atRestPassphrase);
     const Identity identity = Identity::fromPrivatePem(bundle.at("identityPem").get<std::string>());
-    const Key sealing = Key::fromPrivatePem(bundle.at("sealingPem").get<std::string>());
+    EpochRing ring;
+    ring.addAll(bundle.at("epochs"));
     db.putText("identity.pem", identity.privatePem());
-    db.putText("sealing.pem", sealing.privatePem());
+    db.putText(kEpochRingRow, ring.toJson().dump());
     if (kind == AccountKind::eUser) {
         db.put(kPresenceSeedRow,
             PresenceSeed(fromBase64(bundle.at("presenceSeed").get<std::string>())).bytes());

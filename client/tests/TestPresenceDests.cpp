@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "I2pRouter.hpp"
+#include "EpochTestRing.hpp"
 #include "Presence.hpp"
 #include "PresenceSeed.hpp"
 
@@ -53,7 +54,7 @@ PresenceTimings testTimings()
 
 struct Person {
     Identity identity = Identity::generate();
-    Key sealing = Key::generateSealing();
+    std::shared_ptr<EpochRing> ring = epochtest::ringAround(kDay * kSecondsPerDay, "p1");
     PresenceSeed seed = PresenceSeed::generate();
 
     PresenceAccount account(const bool shown) const
@@ -61,7 +62,7 @@ struct Person {
         PresenceAccount account;
         account.fingerprint = identity.fingerprint();
         account.identityPem = identity.privatePem();
-        account.sealingPem = sealing.privatePem();
+        account.ring = ring;
         account.seed = seed.bytes();
         account.shown = shown;
         return account;
@@ -71,7 +72,7 @@ struct Person {
     {
         PresenceContact contact;
         contact.fingerprint = identity.fingerprint();
-        contact.sealingKeyDer = sealing.publicDer();
+        contact.epochs = ring->inUse(0);
         contact.identity = IdentityKeys{identity.classical().publicDer(), identity.pq().publicDer()};
         contact.schedule = presenceScheduleFrom(seed, kDay, kScheduledDays);
         return contact;

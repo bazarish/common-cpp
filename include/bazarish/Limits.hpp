@@ -8,13 +8,13 @@ namespace bazarish {
 
 constexpr std::size_t kMaxMessagePayloadBytes = 512 * 1024;
 // What hybrid::seal adds to a body of 64 KiB or more, a few bytes less to a smaller one.
-constexpr std::size_t kHybridSealOverheadBytes = 1176;
+constexpr std::size_t kHybridSealOverheadBytes = 1207;
 constexpr std::size_t kMaxSealedBodyBytes = kMaxMessagePayloadBytes - kHybridSealOverheadBytes;
 constexpr std::size_t kMaxMessageIdBytes = 64;
 constexpr std::size_t kMaxMediaNameBytes = 255;
 constexpr std::size_t kMaxMediaMimeBytes = 255;
 // All but the media of the heaviest picture or voice message, as TestDeliveryPass weighs it.
-constexpr std::size_t kMediaMessageReserveBytes = 7755;
+constexpr std::size_t kMediaMessageReserveBytes = 9521;
 constexpr std::size_t kMaxMediaBytes = kMaxSealedBodyBytes - kMediaMessageReserveBytes;
 constexpr std::size_t kMaxPendingContactRequests = 30;
 
@@ -34,6 +34,7 @@ inline constexpr std::size_t kContactRequestsPerMinute = 3;
 inline constexpr std::int64_t kMinDelegationDays = 1;
 inline constexpr std::int64_t kMaxDelegationDays = 30;
 inline constexpr std::int64_t kDefaultDelegationDays = 14;
+inline constexpr std::int64_t kMailRetentionDays = 30;
 inline constexpr double kDelegationRenewAtFraction = 0.5;
 
 inline constexpr std::size_t kMaxPassesPerRequest = 256;

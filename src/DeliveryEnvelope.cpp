@@ -19,7 +19,7 @@ Bytes sealDeliveryEnvelope(const DeliveryEnvelope& envelope, const Key& recipien
         inner["pass"] = toBase64(*envelope.pass);
     }
     const std::string text = inner.dump();
-    return hybrid::seal(Bytes(text.begin(), text.end()), recipientSealingKey);
+    return hybrid::seal(Bytes(text.begin(), text.end()), recipientSealingKey, {});
 }
 
 DeliveryEnvelope openDeliveryEnvelope(const Bytes& sealed, const Key& sealingKey)

@@ -211,6 +211,20 @@ void OutboundCourier::readdress(
     cv_.notify_all();
 }
 
+void OutboundCourier::rekey(const std::string& mailbox, const std::vector<EpochPublic>& epochs)
+{
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& [seq, held] : letters_) {
+            if (held.letter.mailbox == mailbox) {
+                held.letter.sealTo = epochs;
+                held.keyless = false;
+            }
+        }
+    }
+    cv_.notify_all();
+}
+
 void OutboundCourier::withdraw(const std::string& mailbox)
 {
     {
@@ -309,7 +323,8 @@ std::optional<OutboundCourier::Job> OutboundCourier::pickLocked()
     std::set<std::string> seen;
     for (auto& [seq, held] : letters_) {
         const std::string& route = held.letter.route;
-        if (!seen.insert(route).second) {
+        if ((held.keyless && !epochFor(held.letter.sealTo, timings_.utcNow()).has_value())
+            || !seen.insert(route).second) {
             continue;
         }
         Gate& gate = gates_[route];
@@ -478,6 +493,14 @@ void OutboundCourier::runAttempt(const Job& job)
                 Outcome withdrawn;
                 withdrawn.errorMessage = kWithdrawnMessage;
                 settled.push_back(settleLocked(held, withdrawn));
+            } else if (answer == Answer::eKeyless) {
+                held->second.keyless = true;
+                held->second.phase = kPhaseWaiting;
+                for (const DeliveryWatch& watch : held->second.watches) {
+                    waiting.emplace_back(watch, held->second.phase);
+                }
+                bazarish::log::warn("a {} to {} waits: this device holds no current key of its"
+                                    " recipient", job.letter.kind, routeName(job.route));
             } else if (held->second.letter.route == job.route) {
                 waiting = closeGateLocked(job.route);
                 bazarish::log::warn("{} did not answer: what waits for it goes {} or in {} s",
@@ -525,8 +548,19 @@ void OutboundCourier::runLookup(const Job& job)
     cv_.notify_all();
 }
 
-OutboundCourier::Answer OutboundCourier::attempt(const Letter& letter, Outcome& outcome)
+OutboundCourier::Answer OutboundCourier::attempt(const Letter& plainLetter, Outcome& outcome)
 {
+    const std::optional<EpochPublic> epoch = epochFor(plainLetter.sealTo, timings_.utcNow());
+    if (!epoch.has_value()) {
+        return Answer::eKeyless;
+    }
+    Letter letter = plainLetter;
+    try {
+        letter.payload = sealToEpoch(letter.plain, *epoch);
+    } catch (const std::exception& error) {
+        outcome.errorMessage = std::string("the recipient's epoch key does not seal: ") + error.what();
+        return Answer::eAnswered;
+    }
     if (letter.route != kOwnMailboxRoute) {
         return attemptFederation(letter, outcome);
     }

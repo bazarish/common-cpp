@@ -2,9 +2,11 @@
 #pragma once
 
 #include "Authorship.hpp"
+#include "EpochRing.hpp"
 #include "PresenceSeed.hpp"
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/Epochs.hpp>
 #include <bazarish/I2p.hpp>
 
 #include <chrono>
@@ -50,15 +52,15 @@ struct PresenceWatch {
     std::int64_t sentAt = 0;
 };
 
-// Sealed by the hybrid seal to the watched account; signed by the Ed25519 half of the identity alone.
-Bytes presenceWatchFrame(const PresenceWatch& watch, const Key& signer, const Key& recipientSealing);
+// Sealed to the watched account's current epoch; signed by the Ed25519 half of the identity alone.
+Bytes presenceWatchFrame(const PresenceWatch& watch, const Key& signer, const EpochPublic& recipient);
 
 bazarish::i2p::EndpointConfig presenceEndpointShape();
 PresenceNet i2pPresenceNet(std::filesystem::path routerDir, std::string accountLabel);
 
 struct PresenceContact {
     std::string fingerprint;
-    Bytes sealingKeyDer;
+    std::vector<EpochPublic> epochs;
     IdentityKeys identity;
     PresenceSchedule schedule;
 };
@@ -66,7 +68,7 @@ struct PresenceContact {
 struct PresenceAccount {
     std::string fingerprint;
     std::string identityPem;
-    std::string sealingPem;
+    std::shared_ptr<const EpochRing> ring;
     Bytes seed;
     bool shown = true;
 };

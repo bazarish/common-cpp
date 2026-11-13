@@ -21,6 +21,11 @@ int main()
     const Identity user = Identity::generate();
     const Identity serverRoot = Identity::generate();
     const Key sealing = Key::generateSealing();
+    const Key nextSealing = Key::generateSealing();
+    constexpr EpochNumber kEpoch = 10;
+    const std::vector<EpochPublic> epochs{
+        {kEpoch, kFirstEpochGeneration, "dev1", sealing.publicDer()},
+        {kEpoch + 1, kFirstEpochGeneration, "dev1", nextSealing.publicDer()}};
 
     const Key servingSealing = Key::generateSealing();
     const std::string dest = "exampledestination.b32.i2p";
@@ -29,14 +34,14 @@ int main()
         card.kind = kind;
         card.issuedAt = kNow;
         card.dest = dest;
-        card.sealingPublicKeyDer = sealing.publicDer();
+        card.epochs = epochs;
         card.servingSealingKeyDer = servingSealing.publicDer();
         return card;
     };
     const auto bodyOf = [&](const AccountKind kind) {
         return nlohmann::json{{"v", kCertificateFormatVersion}, {"t", "contact-card"},
             {"issuedAt", kNow}, {"kind", std::string(accountKindName(kind))}, {"dest", dest},
-            {"sealingKey", toBase64(sealing.publicDer())},
+            {"epochs", epochsJson(epochs)},
             {"servingKey", toBase64(servingSealing.publicDer())}};
     };
 
@@ -46,7 +51,7 @@ int main()
         CHECK(contact.fingerprint() == user.fingerprint());
         CHECK(contact.issuedAt == kNow);
         CHECK(contact.dest == dest);
-        CHECK(contact.sealingKey().publicDer() == sealing.publicDer());
+        CHECK(contact.epochs == epochs);
         CHECK(contact.servingSealingKey().publicDer() == servingSealing.publicDer());
         CHECK(ContactCard::verify(hybrid::signJson(bodyOf(kind), user)).kind == kind);
 
@@ -83,8 +88,39 @@ int main()
         noDest.dest.clear();
         CHECK_THROWS(noDest.issue(user));
         ContactCard noSealing = cardOf(kind);
-        noSealing.sealingPublicKeyDer.clear();
+        noSealing.epochs.clear();
         CHECK_THROWS(noSealing.issue(user));
+        ContactCard oneEpoch = cardOf(kind);
+        oneEpoch.epochs.pop_back();
+        CHECK_THROWS(oneEpoch.issue(user));
+        ContactCard gap = cardOf(kind);
+        gap.epochs.back().n = kEpoch + 2;
+        CHECK_THROWS(gap.issue(user));
+        ContactCard twoMakers = cardOf(kind);
+        twoMakers.epochs.back() = EpochPublic{kEpoch, kFirstEpochGeneration, "dev2", nextSealing.publicDer()};
+        CHECK_THROWS(twoMakers.issue(user));
+
+        nlohmann::json legacy = bodyOf(kind);
+        legacy["sealingKey"] = toBase64(sealing.publicDer());
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(legacy, user)));
+        nlohmann::json three = bodyOf(kind);
+        three["epochs"].push_back(epochsJson({{kEpoch + 2, kFirstEpochGeneration, "dev1", sealing.publicDer()}}).at(0));
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(three, user)));
+        nlohmann::json wrongStart = bodyOf(kind);
+        wrongStart["epochs"][0]["from"] = epochStart(kEpoch) + 1;
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(wrongStart, user)));
+        nlohmann::json extraEpochField = bodyOf(kind);
+        extraEpochField["epochs"][0]["note"] = "x";
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(extraEpochField, user)));
+        nlohmann::json noMaker = bodyOf(kind);
+        noMaker["epochs"][0].erase("by");
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(noMaker, user)));
+        nlohmann::json signingKey = bodyOf(kind);
+        signingKey["epochs"][0]["key"] = toBase64(Key::generateSigning().publicDer());
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(signingKey, user)));
+        nlohmann::json backwards = bodyOf(kind);
+        std::swap(backwards["epochs"][0], backwards["epochs"][1]);
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(backwards, user)));
         ContactCard noServing = cardOf(kind);
         noServing.servingSealingKeyDer.clear();
         CHECK_THROWS(noServing.issue(user));

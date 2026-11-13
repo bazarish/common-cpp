@@ -40,7 +40,9 @@ int main()
         const Key recipient = Key::generateSealing();
         for (const std::size_t size : {std::size_t{0}, std::size_t{1}, kLargeBodyFrom - 1,
                  kLargeBodyFrom, kMaxSealedBodyBytes}) {
-            const std::size_t sealed = hybrid::seal(Bytes(size, 0x2a), recipient).size();
+            const std::size_t sealed
+                = hybrid::seal(Bytes(size, 0x2a), recipient, Bytes(hybrid::kMaxSealKidBytes, 0x6b))
+                      .size();
             CHECK(sealed <= size + kHybridSealOverheadBytes);
             CHECK(size < kLargeBodyFrom || sealed == size + kHybridSealOverheadBytes);
         }
@@ -125,14 +127,17 @@ int main()
 
     const Key sealingPublic = Key::fromPublicDer(sealing.publicDer());
     const Bytes plaintext = {'s', 'e', 'a', 'l', 'e', 'd'};
-    const Bytes envelope = hybrid::seal(plaintext, sealingPublic);
+    const Bytes kid = {0x01, 0x00, 0x00, 0x00, 0x0a, 'a', 'b'};
+    const Bytes envelope = hybrid::seal(plaintext, sealingPublic, kid);
     CHECK(!envelope.empty());
+    CHECK(hybrid::sealedKid(envelope) == kid);
     CHECK(hybrid::unseal(envelope, sealing) == plaintext);
-    CHECK(hybrid::seal(plaintext, sealingPublic) != envelope);
+    CHECK(hybrid::seal(plaintext, sealingPublic, kid) != envelope);
 
     CHECK_THROWS(hybrid::unseal(envelope, Key::generateSealing()));
     CHECK_THROWS(hybrid::unseal(envelope, sealingPublic));
-    CHECK_THROWS(hybrid::seal(plaintext, Key::generateSigning()));
+    CHECK_THROWS(hybrid::seal(plaintext, Key::generateSigning(), kid));
+    CHECK_THROWS(hybrid::seal(plaintext, sealingPublic, Bytes(hybrid::kMaxSealKidBytes + 1, 0x01)));
     CHECK_THROWS(hybrid::unseal(Bytes{0x00, 0x01, 0x02}, sealing));
 
     {
@@ -162,19 +167,31 @@ int main()
         CHECK_THROWS(hybrid::unseal(encode(tampered), sealing));
     }
     {
+        nlohmann::json tampered = decode(envelope);
+        Bytes otherKid = kid;
+        otherKid[4] ^= 0x01;
+        tampered["kid"] = nlohmann::json::binary(otherKid);
+        CHECK_THROWS(hybrid::unseal(encode(tampered), sealing));
+        tampered["kid"] = nlohmann::json::binary(Bytes{});
+        CHECK_THROWS(hybrid::unseal(encode(tampered), sealing));
+        tampered.erase("kid");
+        CHECK_THROWS(hybrid::unseal(encode(tampered), sealing));
+        CHECK_THROWS(hybrid::sealedKid(encode(tampered)));
+    }
+    {
         nlohmann::json wrongVersion = decode(envelope);
         wrongVersion["v"] = hybrid::kFrameVersion + 1;
         CHECK_THROWS(hybrid::unseal(encode(wrongVersion), sealing));
     }
 
     const Bytes empty;
-    CHECK(hybrid::unseal(hybrid::seal(empty, sealingPublic), sealing) == empty);
+    CHECK(hybrid::unseal(hybrid::seal(empty, sealingPublic, {}), sealing) == empty);
 
     Bytes large(100000);
     for (std::size_t i = 0; i < large.size(); ++i) {
         large[i] = static_cast<unsigned char>(i * 7 + 3);
     }
-    CHECK(hybrid::unseal(hybrid::seal(large, sealingPublic), sealing) == large);
+    CHECK(hybrid::unseal(hybrid::seal(large, sealingPublic, kid), sealing) == large);
 
     return 0;
 }

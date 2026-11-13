@@ -6,11 +6,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
 #include <string>
 
 namespace bazarish::hybrid {
 
 inline constexpr int kFrameVersion = 1;
+inline constexpr std::size_t kMaxSealKidBytes = 25;
 
 Bytes signJson(const nlohmann::json& body, const Identity& identity);
 
@@ -25,8 +27,9 @@ struct VerifiedJson {
 // Throws unless both signatures verify.
 VerifiedJson verifyJson(const Bytes& frame);
 
-// One AEAD layer keyed from both shared secrets.
-Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey);
+// One AEAD layer keyed from both shared secrets; `kid` names the recipient key and is bound in.
+Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey, const Bytes& kid);
+Bytes sealedKid(const Bytes& frame);
 Bytes unseal(const Bytes& frame, const Key& recipientPrivateKey);
 
 }  // namespace bazarish::hybrid

@@ -8,6 +8,7 @@
 #include "Authorship.hpp"
 #include "BotMenu.hpp"
 #include "Client.hpp"
+#include "EpochRing.hpp"
 #include "FileTransfer.hpp"
 #include "OutboundLeases.hpp"
 #include "Presence.hpp"
@@ -18,6 +19,7 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Clock.hpp>
 #include <bazarish/Crypto.hpp>
+#include <bazarish/Epochs.hpp>
 #include <bazarish/I2p.hpp>
 #include <bazarish/Limits.hpp>
 
@@ -60,7 +62,9 @@ struct Contact {
     PresenceSchedule presence;
     // The last day of the newest schedule of ours their server confirmed storing.
     PresenceDay presenceSentThrough = 0;
-    std::string sealingPublicB64;
+    std::vector<EpochPublic> epochs;
+    // The last epoch of ours their server confirmed storing.
+    EpochNumber epochsSentThrough = 0;
     std::string dest;
     std::string servingSealingB64;
     Bytes cardKey;
@@ -117,6 +121,8 @@ struct RelayedPost {
     bool contactable = false;
     bool fromHost = false;
 };
+
+inline constexpr std::int64_t kLowEpochReserveDays = 14;
 
 inline constexpr std::int64_t kDaysPerWeek = 7;
 inline constexpr std::int64_t kDaysPerMonth = 30;
@@ -222,6 +228,7 @@ struct LetterTerms {
     std::int64_t notAfterMs = 0;
     bool tellsRouting = false;
     PresenceDay scheduleThrough = 0;
+    EpochNumber epochsThrough = 0;
     std::string avatarDigest;
 };
 
@@ -298,7 +305,13 @@ public:
     std::string fingerprint() const;
     AccountKind kind() const { return kind_; }
     const PresenceSeed& presenceSeed() const;
-    std::string sealingPublicB64() const;
+    // The epochs contacts seal to, from the current one on.
+    std::vector<EpochPublic> ownEpochs() const;
+    // UTC seconds; epochs are counted on it.
+    void setEpochClock(UtcClock clock);
+    // Seconds from now to the end of the last epoch this account holds a key for.
+    std::int64_t ownEpochReserveSeconds() const;
+    bool ownEpochReserveLow() const;
     const std::string& displayName() const;
     void setDisplayName(const std::string& name);
 
@@ -742,7 +755,7 @@ public:
     std::vector<std::string> contactFingerprints() const;
 
     Session(Made, std::filesystem::path accountFile, std::unique_ptr<Client> client,
-        Key sealingKey, std::map<std::string, Contact> contacts);
+        std::shared_ptr<EpochRing> ring, std::map<std::string, Contact> contacts);
     ~Session();
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
@@ -826,6 +839,21 @@ private:
     void offerPresenceSchedule(const std::string& peerFingerprint);
     void keepPresenceSchedules();
     void takePresenceSchedule(const std::string& peerFingerprint, const nlohmann::json& body);
+    EpochNumber currentEpoch() const;
+    std::vector<EpochPublic> cardEpochs() const;
+    void persistRing() const;
+    bool createsEpochs() const;
+    void ensureOwnEpochs();
+    void republishCardIfStale();
+    void keepEpochs();
+    bool sendsEpochsTo(const std::string& peerFingerprint) const;
+    bool epochsQueued(const std::string& peerFingerprint) const;
+    void sendEpochsTo(const std::string& peerFingerprint);
+    void takeEpochs(const std::string& peerFingerprint, const nlohmann::json& body);
+    void takeOwnEpochs(const nlohmann::json& body);
+    void sendRingToDevices(const std::set<EpochNumber>& numbers);
+    void takeContactEpochs(const std::string& peerFingerprint, const std::vector<EpochPublic>& offered);
+    bool refreshContactEpochs(const std::string& peerFingerprint);
     void syncAvatarToSelf();
     void syncContactNameToSelf(const std::string& peerFingerprint, const std::string& name);
     void storeOwnAvatar(const Bytes& data, const std::string& mime);
@@ -851,7 +879,7 @@ private:
         std::string deliveryClass;
         std::string deliveryId;
         Bytes pass;
-        Bytes payload;
+        Bytes plain;
         std::string kind;
         std::vector<std::string> ids;
         bool establishes = false;
@@ -1036,7 +1064,13 @@ private:
         std::thread worker;
     };
     std::shared_ptr<PairingRegistry> pairing_ = std::make_shared<PairingRegistry>();
-    Key sealingKey_;
+    std::shared_ptr<EpochRing> ring_;
+    UtcClock epochClock_ = systemUtcSeconds;
+    std::map<std::string, std::int64_t> epochsDue_;
+    // UTC second each missing epoch of ours is made at, unless another device's key comes first.
+    std::map<EpochNumber, std::int64_t> epochsMakeAt_;
+    std::optional<PresenceDay> epochsCheckedDay_;
+    std::map<std::string, PresenceDay> epochsAskedDay_;
     std::string deliveryIdSeed_;
     std::deque<std::string> endedCalls_;
     std::set<std::string> awaitingAck_;

@@ -4,6 +4,7 @@
 #include "bazarish/AccountKind.hpp"
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
+#include "bazarish/Epochs.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -21,7 +22,8 @@ inline constexpr std::int64_t kClockSkewSeconds = 300;
 struct ContactCard {
     AccountKind kind = AccountKind::eUser;
     std::string dest;
-    Bytes sealingPublicKeyDer;
+    // The current epoch and the next.
+    std::vector<EpochPublic> epochs;
     std::int64_t issuedAt = 0;
     Bytes servingSealingKeyDer;
     // SPKI DER.
@@ -33,7 +35,6 @@ struct ContactCard {
     Bytes issue(const Identity& userIdentity) const;
     static ContactCard verify(const Bytes& der);
 
-    Key sealingKey() const;
     Key servingSealingKey() const;
 };
 

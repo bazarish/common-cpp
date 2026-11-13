@@ -79,7 +79,7 @@ SealedChannelRequest sealChannelRequest(const ChannelRequest& request, const Key
     sealed.replyKey = newLinkKey();
     const Bytes plain = cbor({{"op", request.op}, {"body", nlohmann::json::binary(request.body)},
         {"replyKey", nlohmann::json::binary(sealed.replyKey)}});
-    sealed.message = hybrid::seal(padToLadder(plain), channelKey);
+    sealed.message = hybrid::seal(padToLadder(plain), channelKey, {});
     return sealed;
 }
 

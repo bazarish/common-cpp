@@ -1,4 +1,5 @@
 // Bazarish project (c) 2026
+#include "EpochTestRing.hpp"
 #include "Presence.hpp"
 #include "PresenceSeed.hpp"
 
@@ -337,7 +338,7 @@ private:
 
 struct Person {
     Identity identity = Identity::generate();
-    Key sealing = Key::generateSealing();
+    std::shared_ptr<EpochRing> ring = epochtest::ringAround(kNoon, "p1");
     PresenceSeed seed = PresenceSeed::generate();
     Key presence = seed.readerFor(kDay);
     std::string dest = seed.hostFor(kDay);
@@ -347,7 +348,7 @@ struct Person {
         PresenceAccount account;
         account.fingerprint = identity.fingerprint();
         account.identityPem = identity.privatePem();
-        account.sealingPem = sealing.privatePem();
+        account.ring = ring;
         account.seed = seed.bytes();
         return account;
     }
@@ -361,7 +362,7 @@ struct Person {
     {
         PresenceContact contact;
         contact.fingerprint = identity.fingerprint();
-        contact.sealingKeyDer = sealing.publicDer();
+        contact.epochs = ring->inUse(0);
         contact.identity = IdentityKeys{identity.classical().publicDer(), identity.pq().publicDer()};
         contact.schedule = presenceScheduleFrom(seed, kDay, kScheduledDays);
         return contact;
@@ -386,7 +387,7 @@ public:
         watch.sentAt = g_utc.load();
         key_ = watch.key;
         link_.send(toHost,
-            presenceWatchFrame(watch, from.identity.classical(), Key::fromPublicDer(to.sealing.publicDer())));
+            presenceWatchFrame(watch, from.identity.classical(), *epochFor(to.ring->inUse(0), watch.sentAt)));
         return next(kKnockWait).has_value();
     }
 
@@ -666,7 +667,7 @@ int main()
             PresenceLinkConfig door;
             door.readerKey = dave.presence.rawPrivate();
             FakeLink inbox(net, net.open(door));
-            const Key aliceSealing = Key::fromPublicDer(alice.sealing.publicDer());
+            const EpochPublic aliceSealing = *epochFor(alice.ring->inUse(0), g_utc.load());
             const auto knock = [&](const Key& signer) {
                 PresenceWatch watch;
                 watch.id = randomBytes(kPresenceSubscriptionIdBytes);
@@ -682,7 +683,7 @@ int main()
                 const Bytes id = randomBytes(kPresenceSubscriptionIdBytes);
                 frame.insert(frame.end(), id.begin(), id.end());
                 const Bytes sealed
-                    = hybrid::seal(nlohmann::json::to_cbor(nlohmann::json{{"t", 1}}), aliceSealing);
+                    = sealToEpoch(nlohmann::json::to_cbor(nlohmann::json{{"t", 1}}), aliceSealing);
                 frame.insert(frame.end(), sealed.begin(), sealed.end());
                 inbox.send(alice.dest, frame);
             };

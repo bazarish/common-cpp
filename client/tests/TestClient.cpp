@@ -39,11 +39,6 @@ constexpr std::uint32_t kBusyBits = 2;
 constexpr std::size_t kBusyStampBytes = 16;
 constexpr unsigned char kBusyStampFill = 0x5a;
 
-std::int64_t nowSeconds()
-{
-    return static_cast<std::int64_t>(std::time(nullptr));
-}
-
 std::string requireCaller(const http::Request& request)
 {
     const std::string caller = request.header(bazarish::teststub::kCallerHeader);
@@ -111,7 +106,7 @@ int main()
                 = fromBase64(nlohmann::json::parse(request.body).at("card").get<std::string>());
             const ContactCard card = ContactCard::verify(der);
             CHECK(card.fingerprint() == user);
-            CHECK(!card.sealingPublicKeyDer.empty());
+            CHECK(card.epochs.size() == kCardEpochs);
             CHECK(card.dest == aliceDest);
             CHECK(card.servingSealingKeyDer == servingSealing.publicDer());
             CHECK(linkKeyFromText(nlohmann::json::parse(request.body).at("cardKey").get<std::string>())
@@ -137,12 +132,13 @@ int main()
             }
             const CardFetchQuery query = cardFetchQueryFromJson(nlohmann::json::parse(*opened));
             CHECK(query.fingerprint == bob.fingerprint());
-            const Key bobSealing = Key::generateSealing();
             outcome.ok = true;
             ContactCard card;
             card.issuedAt = static_cast<std::int64_t>(std::time(nullptr));
             card.dest = bobDest;
-            card.sealingPublicKeyDer = bobSealing.publicDer();
+            const EpochNumber current = epochAt(card.issuedAt);
+            card.epochs = {{current, kFirstEpochGeneration, "bob1", Key::generateSealing().publicDer()},
+                {current + 1, kFirstEpochGeneration, "bob1", Key::generateSealing().publicDer()}};
             card.servingSealingKeyDer = servingSealing.publicDer();
             outcome.sealed = KeyedSeal(bobCardKey, kCardReplyLabel).seal(card.issue(bob));
             return outcome;
@@ -270,13 +266,14 @@ int main()
     Client client(Identity::fromPrivatePem(alice.privatePem()), "client01", endpoint);
 
     {
-        const Key aliceSealing = Key::generateSealing();
         DestinationInfo serving = client.myDestination();
         CHECK(serving.dest == aliceDest);
         CHECK(serving.servingSealingKeyDer.empty());
         serving.servingSealingKeyDer = servingSealing.publicDer();
         ContactCard content;
-        content.sealingPublicKeyDer = aliceSealing.publicDer();
+        const EpochNumber current = epochAt(nowSeconds());
+        content.epochs = {{current, kFirstEpochGeneration, "client01", Key::generateSealing().publicDer()},
+            {current + 1, kFirstEpochGeneration, "client01", Key::generateSealing().publicDer()}};
         const PublishResult result = client.publishCard(content, aliceCardKey, serving, 0);
         CHECK(!result.approvalPending);
         CHECK(result.dest == aliceDest);
@@ -292,7 +289,7 @@ int main()
         CHECK(info.card.fingerprint() == bob.fingerprint());
         CHECK(info.card.dest == bobDest);
         CHECK(info.card.servingSealingKey().publicDer() == servingSealing.publicDer());
-        CHECK(!info.card.sealingPublicKeyDer.empty());
+        CHECK(info.card.epochs.size() == kCardEpochs);
     }
 
     const ResolverCoordinate resolver{resolverRoot.fingerprint(), resolverDest};

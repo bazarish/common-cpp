@@ -186,7 +186,7 @@ Hello makeHello(const Cover& cover, const Key& gatewaySealing)
         = {{"v", kHelloVersion}, {"ephemeral", nlohmann::json::binary(ephemeral.publicDer())}};
     const std::vector<std::uint8_t> encoded = nlohmann::json::to_cbor(body);
     const Bytes message
-        = cover.seal(hybrid::seal(padded(Bytes(encoded.begin(), encoded.end())), gatewaySealing));
+        = cover.seal(hybrid::seal(padded(Bytes(encoded.begin(), encoded.end())), gatewaySealing, {}));
     return Hello{std::move(ephemeral), message};
 }
 
@@ -219,7 +219,7 @@ Bytes makeWelcome(const Cover& cover, const Welcome& welcome, const Key& clientE
     const nlohmann::json body = {{"key", toBase64(welcome.sessionKey)},
         {"salt", toBase64(welcome.salt)}, {"tickets", tickets},
         {"client", clientEphemeral.fingerprint()}};
-    return cover.seal(hybrid::seal(padded(hybrid::signJson(body, gateway)), clientEphemeral));
+    return cover.seal(hybrid::seal(padded(hybrid::signJson(body, gateway)), clientEphemeral, {}));
 }
 
 std::optional<Welcome> openWelcome(const Cover& cover, const Bytes& message,

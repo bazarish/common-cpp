@@ -1,7 +1,10 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include "PresenceSeed.hpp"
+
 #include <bazarish/Bytes.hpp>
+#include <bazarish/Epochs.hpp>
 #include <bazarish/I2p.hpp>
 
 #include <chrono>
@@ -56,6 +59,8 @@ struct CourierTimings {
     std::chrono::seconds dial{kDeliveryDialSeconds};
     std::chrono::seconds reply{kReplyGraceSeconds};
     std::chrono::seconds staleBound{kStaleLeaseSetBound};
+    // The epoch a letter is sealed to is the one current by this clock at each attempt.
+    UtcClock utcNow = systemUtcSeconds;
 };
 
 struct DeliveryOutcome {
@@ -79,6 +84,8 @@ struct Letter {
     std::string deliveryId;
     Bytes pass;
     Bytes servingSealingDer;
+    Bytes plain;
+    std::vector<EpochPublic> sealTo;
     Bytes payload;
     std::string kind;
     // UTC milliseconds; zero for a letter that stays current.
@@ -119,6 +126,8 @@ public:
     void heard(const std::string& route);
     void readdress(
         const std::string& mailbox, const std::string& toDest, const Bytes& servingSealingDer);
+    // A letter that found no current epoch of its recipient waits for this.
+    void rekey(const std::string& mailbox, const std::vector<EpochPublic>& epochs);
     void withdraw(const std::string& mailbox);
     // What is still on its way is not reported: the outbox keeps it.
     void stop();
@@ -131,6 +140,7 @@ private:
         bool started = false;
         bool inFlight = false;
         bool withdrawn = false;
+        bool keyless = false;
     };
 
     struct Gate {
@@ -165,7 +175,7 @@ private:
         bool releaseOwn = false;
     };
 
-    enum class Answer { eAnswered, eUnanswered };
+    enum class Answer { eAnswered, eUnanswered, eKeyless };
 
     void workerLoop();
     std::optional<Job> pickLocked();

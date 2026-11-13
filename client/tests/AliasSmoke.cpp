@@ -27,11 +27,6 @@ namespace {
 
 constexpr int kRouterWaitSeconds = 300;
 
-std::int64_t nowSeconds()
-{
-    return static_cast<std::int64_t>(std::time(nullptr));
-}
-
 }  // namespace
 
 int main(const int argc, const char** argv)

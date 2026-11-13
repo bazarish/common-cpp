@@ -536,15 +536,15 @@ int main()
         // What a device of the account has posted to the account's own mailbox.
         const auto postedToSelf = [&](const fs::path& accountDir, const std::string& owner,
                                       const std::string& type) {
-            const Key sealing
-                = Key::fromPrivatePem(AccountDb(accountDir, std::string{}).text("sealing.pem"));
+            EpochRing ring;
+            ring.addAll(nlohmann::json::parse(AccountDb(accountDir, std::string{}).text("epochs")));
             const std::lock_guard<std::mutex> lock(m.mu);
             for (const Mock::Item& item : m.mailbox[owner]) {
                 if (item.cls != "device") {
                     continue;
                 }
                 const nlohmann::json bodies = nlohmann::json::from_cbor(
-                    unpadFromLadder(hybrid::unseal(item.payload, sealing)));
+                    unpadFromLadder(ring.open(item.payload)));
                 for (const nlohmann::json& body : bodies) {
                     if (body.value("type", std::string()) == type) {
                         return true;
@@ -1371,8 +1371,8 @@ int main()
                 signAuthorship(saved, aliceIdentity, /*withKeys=*/false);
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice->fingerprint()].push_back({"saved-echo", "device",
-                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({saved}))),
-                        Key::fromPublicDer(fromBase64(alice->sealingPublicB64())))});
+                    sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({saved}))),
+                        alice->ownEpochs().front())});
             }
             bool sawSaved = false;
             for (const IncomingMessage& item : alice->sync()) {
@@ -1496,8 +1496,8 @@ int main()
             const auto intoAliceMailbox = [&](const std::string& id, nlohmann::json content) {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice->fingerprint()].push_back({id, "content",
-                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({content}))),
-                        Key::fromPublicDer(fromBase64(alice->sealingPublicB64())))});
+                    sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({content}))),
+                        alice->ownEpochs().front())});
             };
             const auto text = [](const std::string& from, const std::string& id,
                                   const std::string& body) {
@@ -1519,9 +1519,9 @@ int main()
             {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice->fingerprint()].push_back({"mixed-1", "content",
-                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(
+                    sealToEpoch(padToLadder(nlohmann::json::to_cbor(
                                      nlohmann::json::array({forgedInBatch, honestInBatch}))),
-                        Key::fromPublicDer(fromBase64(alice->sealingPublicB64())))});
+                        alice->ownEpochs().front())});
             }
 
             const std::string plantedPeer = Identity::generate().fingerprint();
@@ -2188,8 +2188,8 @@ int main()
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice->fingerprint()].push_back({"self-" + notice.at("id").get<std::string>(),
                     "device",
-                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({notice}))),
-                        Key::fromPublicDer(fromBase64(alice->sealingPublicB64())))});
+                    sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({notice}))),
+                        alice->ownEpochs().front())});
             };
             std::int64_t noticeClock = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch())
@@ -2294,8 +2294,8 @@ int main()
             {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice->fingerprint()].push_back({"stranger-blob", "content",
-                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({inner}))),
-                        Key::fromPublicDer(fromBase64(alice->sealingPublicB64())))});
+                    sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({inner}))),
+                        alice->ownEpochs().front())});
             }
             for (const IncomingMessage& item : alice->sync()) {
                 CHECK(item.fromFingerprint != stranger);
@@ -2306,7 +2306,8 @@ int main()
         {
             const Identity sneak = Identity::generate();
             const nlohmann::json bootstrap = {{"kind", "user"},
-                {"sealing", toBase64(Key::generateSealing().publicDer())},
+                {"epochs",
+                    epochsJson({{epochAt(nowSeconds()), kFirstEpochGeneration, "sneak1", Key::generateSealing().publicDer()}})},
                 {"dest", std::string(52, 'q') + ".b32.i2p"},
                 {"servingKey", toBase64(Key::generateSealing().publicDer())},
                 {"pass", toBase64(randomBytes(kSneakPassBytes))}};
@@ -2321,8 +2322,8 @@ int main()
                                      const std::vector<nlohmann::json>& items) {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice->fingerprint()].push_back({id, cls,
-                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json(items))),
-                        Key::fromPublicDer(fromBase64(alice->sealingPublicB64())))});
+                    sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json(items))),
+                        alice->ownEpochs().front())});
             };
             const auto fromSneak = [&]() {
                 std::size_t count = 0;
@@ -2465,9 +2466,9 @@ int main()
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[bob->fingerprint()].push_back({"unasked-offer", "content",
-                    hybrid::seal(
+                    sealToEpoch(
                         padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({unasked}))),
-                        Key::fromPublicDer(fromBase64(bob->sealingPublicB64())))});
+                        bob->ownEpochs().front())});
             }
             bool offerSeen = false;
             for (const IncomingMessage& item : bob->sync()) {
@@ -2554,8 +2555,8 @@ int main()
                     const std::lock_guard<std::mutex> lock(m.mu);
                     m.mailbox[to.fingerprint()].push_back({inner.at("id").get<std::string>(),
                         "content",
-                        hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({inner}))),
-                            Key::fromPublicDer(fromBase64(to.sealingPublicB64())))});
+                        sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({inner}))),
+                        to.ownEpochs().front())});
                 }
                 for (const IncomingMessage& item : to.sync()) {
                     CHECK(item.contentType != "unsupported");
@@ -2714,6 +2715,190 @@ int main()
                 quin->sync();
                 return quin->contactPresence(pam->fingerprint()) == refreshed;
             }));
+        }
+
+        {
+            std::atomic<std::int64_t> utc{nowSeconds()};
+            const UtcClock clock = [&utc]() { return utc.load(); };
+            const auto accountAt = [&](const std::string& name, const std::string& dest) {
+                const fs::path dir = scratch / name;
+                fs::remove(dir);
+                std::unique_ptr<Session> session
+                    = Session::create(dir, AccountKind::eUser, endpoint, std::string{});
+                {
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    m.destFor[session->fingerprint()] = dest;
+                }
+                session->setEpochClock(clock);
+                session->registerAccount();
+                session->setFetchTransport(directDial);
+                session->setOutboundLinks(courierFor());
+                return session;
+            };
+            const auto keysOf = [&](const std::string& name, const EpochNumber n) {
+                std::size_t keys = 0;
+                for (const nlohmann::json& entry :
+                    nlohmann::json::parse(AccountDb(scratch / name, std::string{}).text("epochs"))) {
+                    keys += entry.at("n").get<EpochNumber>() == n ? 1 : 0;
+                }
+                return keys;
+            };
+            // The mock keeps one mailbox per account: a device that leaves the item unacked shares it.
+            const auto hears = [](Session& session, const std::string& text, const bool ack) {
+                return testutil::waitFor([&]() {
+                    for (const IncomingMessage& item : session.sync(ack)) {
+                        if (item.text == text) {
+                            return true;
+                        }
+                    }
+                    return false;
+                });
+            };
+            const auto pastPause = [&utc]() { utc.store(utc.load() + kSecondsPerHour + 1); };
+
+            std::unique_ptr<Session> gina = accountAt(
+                "bz-epochs-gina", "rlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+            std::unique_ptr<Session> hal = accountAt(
+                "bz-epochs-hal", "slkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+            const EpochNumber start = epochAt(utc.load());
+            CHECK(gina->ownEpochs().size() == kCardEpochs);
+            CHECK(gina->ownEpochs().front().n == start);
+            CHECK(gina->ownEpochReserveSeconds() == epochEnd(start + 1) - utc.load());
+            CHECK(!gina->ownEpochReserveLow());
+            const EpochPublic firstEpoch = gina->ownEpochs().front();
+
+            addByInvite(*gina, hal->inviteUri(), "epochs");
+            CHECK(testutil::waitFor([&]() {
+                hal->sync();
+                return hal->contactIsPending(gina->fingerprint());
+            }));
+            hal->acceptContactRequest(gina->fingerprint());
+            CHECK(testutil::waitFor([&]() {
+                gina->sync();
+                return gina->canWriteTo(hal->fingerprint());
+            }));
+
+            const fs::path twinDir = scratch / "bz-epochs-gina2";
+            fs::remove(twinDir);
+            Session::importAccountBundle(gina->accountBundle(), twinDir);
+            const std::unique_ptr<Session> gina2 = Session::open(twinDir, std::string{});
+            CHECK(gina2->ownEpochs() == gina->ownEpochs());
+            gina2->setEpochClock(clock);
+            gina2->setFetchTransport(directDial);
+            gina2->setOutboundLinks(courierFor());
+            CHECK(testutil::waitFor([&]() {
+                gina2->sync();
+                gina->sync();
+                return gina2->hasContact(hal->fingerprint());
+            }));
+
+            const std::size_t heldForHal = [&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[hal->fingerprint()].size();
+            }();
+            utc.store(epochStart(start + 1) + kSecondsPerDay);
+            CHECK(gina->ownEpochReserveSeconds() < kEpochSeconds);
+            gina->flushPendingEchoes();
+            gina2->flushPendingEchoes();
+            CHECK(keysOf("bz-epochs-gina", start + 2) == 0);
+            pastPause();
+            gina->flushPendingEchoes();
+            gina2->flushPendingEchoes();
+            CHECK(keysOf("bz-epochs-gina", start + 2) == 1);
+            CHECK(keysOf("bz-epochs-gina2", start + 2) == 1);
+            const std::string madeFirst = gina->ownEpochs().back().by;
+            const std::string madeSecond = gina2->ownEpochs().back().by;
+            CHECK(madeFirst != madeSecond);
+            CHECK(testutil::waitFor([&]() {
+                gina->sync(false);
+                return keysOf("bz-epochs-gina", start + 2) == 2;
+            }));
+            CHECK(testutil::waitFor([&]() {
+                gina2->sync();
+                return keysOf("bz-epochs-gina2", start + 2) == 2;
+            }));
+            CHECK(gina->ownEpochs() == gina2->ownEpochs());
+            CHECK(gina->ownEpochs().back().n == start + 2);
+            CHECK(gina->ownEpochs().back().by == std::min(madeFirst, madeSecond));
+            std::printf("TestDeliveryPass: two devices made epoch %lld at once; both use the key of %s\n",
+                static_cast<long long>(start + 2), std::min(madeFirst, madeSecond).c_str());
+
+            pastPause();
+            gina->sync();
+            gina->sendMessage(hal->fingerprint(), "while you were away");
+            CHECK(testutil::waitFor([&]() {
+                gina->sync();
+                gina2->sync();
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[hal->fingerprint()].size() >= heldForHal + 3;
+            }));
+
+            utc.store(epochStart(start + 2) + kSecondsPerDay);
+            gina->flushPendingEchoes();
+            pastPause();
+            gina->flushPendingEchoes();
+            CHECK(keysOf("bz-epochs-gina", start + 3) == 1);
+            CHECK(testutil::waitFor([&]() {
+                gina2->sync();
+                return keysOf("bz-epochs-gina2", start + 3) == 1;
+            }));
+            pastPause();
+            gina2->flushPendingEchoes();
+            CHECK(keysOf("bz-epochs-gina2", start + 3) == 1);
+            CHECK(gina2->ownEpochs() == gina->ownEpochs());
+            CHECK(keysOf("bz-epochs-gina", start) == 0);
+            CHECK(testutil::waitFor([&]() {
+                gina->sync();
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return ContactCard::verify(fromBase64(m.certFor.at(gina->fingerprint())))
+                           .epochs.front()
+                           .n
+                    == start + 2;
+            }));
+
+            CHECK(hears(*hal, "while you were away", true));
+            hal->sendMessage(gina->fingerprint(), "back again");
+            CHECK(hears(*gina, "back again", false));
+            CHECK(hears(*gina2, "back again", true));
+
+            gina->sendMessage(hal->fingerprint(), "after the turn");
+            pastPause();
+            CHECK(testutil::waitFor([&]() {
+                gina->sync();
+                for (const IncomingMessage& item : hal->sync()) {
+                    if (item.text == "after the turn") {
+                        return true;
+                    }
+                }
+                return false;
+            }));
+
+            const Identity halIdentity = Identity::fromPrivatePem(
+                AccountDb(scratch / "bz-epochs-hal", std::string{}).text("identity.pem"));
+            const auto sealedFromHal = [&](const std::string& text, const EpochPublic& epoch) {
+                nlohmann::json inner = {{"v", 1}, {"type", "text"},
+                    {"id", toHex(randomBytes(kMessageIdBytes))}, {"from", hal->fingerprint()},
+                    {"sentAt", nowMillis()}, {"text", text}};
+                signAuthorship(inner, halIdentity, /*withKeys=*/false);
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[gina->fingerprint()].push_back({inner.at("id").get<std::string>(),
+                    "content",
+                    sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({inner}))),
+                        epoch)});
+            };
+            sealedFromHal("to an erased epoch", firstEpoch);
+            sealedFromHal("to this epoch", gina->ownEpochs().front());
+            bool sawErased = false;
+            bool sawCurrent = false;
+            for (const IncomingMessage& item : gina->sync()) {
+                sawErased = sawErased || item.text == "to an erased epoch";
+                sawCurrent = sawCurrent || item.text == "to this epoch";
+            }
+            CHECK(!sawErased);
+            CHECK(sawCurrent);
+
+            utc.store(epochEnd(gina->ownEpochs().back().n) - kLowEpochReserveDays * kSecondsPerDay + 1);
+            CHECK(gina->ownEpochReserveLow());
         }
     }
 

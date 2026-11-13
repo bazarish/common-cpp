@@ -81,12 +81,22 @@ Bytes signedMessage(
 }
 
 Bytes sealTranscript(const Bytes& kemCiphertext, const Bytes& ephemeralPublic,
-    const Bytes& recipientPublicDer)
+    const Bytes& recipientPublicDer, const Bytes& kid)
 {
     Bytes transcript = kemCiphertext;
     append(transcript, ephemeralPublic);
     append(transcript, recipientPublicDer);
+    append(transcript, bazarish::sha256(kid));
     return transcript;
+}
+
+Bytes kidOf(const nlohmann::json& frame)
+{
+    const Bytes kid = bytesOf(frame.at("kid").get_binary());
+    if (kid.size() > bazarish::hybrid::kMaxSealKidBytes) {
+        throw std::runtime_error("a sealed frame names a key id longer than any key has");
+    }
+    return kid;
 }
 
 PkeyPtr generateEphemeral()
@@ -275,8 +285,11 @@ VerifiedJson verifyJson(const Bytes& frame)
     };
 }
 
-Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey)
+Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey, const Bytes& kid)
 {
+    if (kid.size() > kMaxSealKidBytes) {
+        throw std::logic_error("a key id is at most " + std::to_string(kMaxSealKidBytes) + " bytes");
+    }
     if (!recipientPublicKey.hasKem()) {
         throw std::logic_error("sealing requires a hybrid (ML-KEM) recipient key");
     }
@@ -289,7 +302,7 @@ Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey)
     const Bytes ephemeralPublic = rawPublicKey(ephemeral.get());
     Bytes classicalSecret = agree(ephemeral.get(), recipientPublicKey.raw());
     const Bytes transcript = sealTranscript(
-        encapsulated.ciphertext, ephemeralPublic, recipientPublicKey.publicDer());
+        encapsulated.ciphertext, ephemeralPublic, recipientPublicKey.publicDer(), kid);
 
     Bytes key = deriveSealKey(encapsulated.sharedSecret, classicalSecret, transcript);
     cleanse(encapsulated.sharedSecret);
@@ -301,12 +314,20 @@ Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey)
 
     const nlohmann::json frame = {
         {"v", kFrameVersion},
+        {"kid", nlohmann::json::binary(kid)},
         {"kem", nlohmann::json::binary(encapsulated.ciphertext)},
         {"eph", nlohmann::json::binary(ephemeralPublic)},
         {"n", nlohmann::json::binary(nonce)},
         {"ct", nlohmann::json::binary(ciphertext)},
     };
     return nlohmann::json::to_cbor(frame);
+}
+
+Bytes sealedKid(const Bytes& frame)
+{
+    const nlohmann::json parsed = parseFrame(frame);
+    requireVersion(parsed);
+    return kidOf(parsed);
 }
 
 Bytes unseal(const Bytes& frame, const Key& recipientPrivateKey)
@@ -323,6 +344,7 @@ Bytes unseal(const Bytes& frame, const Key& recipientPrivateKey)
 
     const nlohmann::json parsed = parseFrame(frame);
     requireVersion(parsed);
+    const Bytes kid = kidOf(parsed);
     const Bytes kemCiphertext = bytesOf(parsed.at("kem").get_binary());
     const Bytes ephemeralPublic = bytesOf(parsed.at("eph").get_binary());
     const Bytes nonce = bytesOf(parsed.at("n").get_binary());
@@ -332,7 +354,7 @@ Bytes unseal(const Bytes& frame, const Key& recipientPrivateKey)
     Bytes pqSecret = decapsulate(recipientPrivateKey.kem().raw(), kemCiphertext);
     Bytes classicalSecret = agree(recipientPrivateKey.raw(), ephemeral.get());
     const Bytes transcript = sealTranscript(
-        kemCiphertext, ephemeralPublic, recipientPrivateKey.publicDer());
+        kemCiphertext, ephemeralPublic, recipientPrivateKey.publicDer(), kid);
 
     Bytes key = deriveSealKey(pqSecret, classicalSecret, transcript);
     cleanse(pqSecret);

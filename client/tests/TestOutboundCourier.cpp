@@ -1,4 +1,5 @@
 // Bazarish project (c) 2026
+#include "EpochTestRing.hpp"
 #include "OutboundCourier.hpp"
 #include "OutboundLeases.hpp"
 
@@ -137,6 +138,7 @@ private:
 struct TestKeys {
     Key signing = Key::generateSigning();
     Key serving = Key::generateSealing();
+    std::shared_ptr<EpochRing> recipient = epochtest::ringAround(nowSeconds(), "r1");
 };
 
 std::string deliveredReply(const Key& signing, const std::string& deliveryId)
@@ -161,7 +163,8 @@ Letter letterTo(const TestKeys& keys, const std::string& route, const std::uint6
     letter.deliveryId = "d-" + std::to_string(seq);
     letter.pass = Bytes{1, 2, 3};
     letter.servingSealingDer = keys.serving.publicDer();
-    letter.payload = Bytes(kPayloadBytes, 0x41);
+    letter.plain = Bytes(kPayloadBytes, 0x41);
+    letter.sealTo = keys.recipient->inUse(0);
     letter.kind = "text";
     return letter;
 }
@@ -369,6 +372,18 @@ int main()
         CHECK(record.saw(1, kPhasePreparing) && record.saw(1, kPhaseDialing)
             && record.saw(1, kPhaseSending));
         CHECK(testutil::waitFor([&record]() { return record.settledCount() == 1; }));
+
+        Letter keyless = letterTo(keys, other, 2);
+        keyless.sealTo = {keyless.sealTo.front()};
+        CHECK(keyless.sealTo.front().n < epochAt(nowSeconds()));
+        courier.submit(keyless, record.watchFor(2));
+        CHECK(waits(record, 2));
+        CHECK(staysUnsettled(record, 2));
+        CHECK(dials.load() == 1);
+        courier.rekey(keyless.mailbox, keys.recipient->inUse(0));
+        CHECK(settles(record, 2));
+        CHECK(record.outcome(2)->stored);
+        CHECK(dials.load() == 2);
 
         Record late;
         CHECK(courier.attach(1, late.watchFor(1)));

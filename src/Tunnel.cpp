@@ -92,7 +92,7 @@ Bytes sealHello(const Hello& hello, const Key& serverSealingPublic)
     const nlohmann::json frame = {
         {kVersionField, kFrameVersion},
         {kTypeField, kHelloType},
-        {kSealedField, asBinary(hybrid::seal(padToLadder(toCbor(inner)), serverSealingPublic))},
+        {kSealedField, asBinary(hybrid::seal(padToLadder(toCbor(inner)), serverSealingPublic, {}))},
     };
     return toCbor(frame);
 }
@@ -115,7 +115,7 @@ Hello openHello(const Bytes& frame, const Key& serverSealingPrivate)
 Bytes sealWelcome(const Welcome& welcome, const Key& replyKeyPublic)
 {
     const nlohmann::json inner = {{"expiresUnix", welcome.expiresUnix}};
-    return hybrid::seal(padToLadder(toCbor(inner)), replyKeyPublic);
+    return hybrid::seal(padToLadder(toCbor(inner)), replyKeyPublic, {});
 }
 
 Welcome openWelcome(const Bytes& sealed, const Key& replyKeyPrivate)

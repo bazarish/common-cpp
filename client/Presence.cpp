@@ -4,7 +4,6 @@
 #include "I2pRouter.hpp"
 
 #include <bazarish/Crypto.hpp>
-#include <bazarish/Hybrid.hpp>
 #include <bazarish/JsonRead.hpp>
 #include <bazarish/Log.hpp>
 
@@ -231,7 +230,6 @@ private:
 struct Outgoing {
     std::string peer;
     std::string host;
-    Bytes sealingKeyDer;
     Bytes id;
     Bytes key;
     std::uint64_t sent = 0;
@@ -258,7 +256,7 @@ struct Incoming {
 
 }  // namespace
 
-Bytes presenceWatchFrame(const PresenceWatch& watch, const Key& signer, const Key& recipientSealing)
+Bytes presenceWatchFrame(const PresenceWatch& watch, const Key& signer, const EpochPublic& recipient)
 {
     nlohmann::json content = {
         {"t", kWatchTag},
@@ -269,7 +267,7 @@ Bytes presenceWatchFrame(const PresenceWatch& watch, const Key& signer, const Ke
         {"sentAt", watch.sentAt},
     };
     content[kWatchSignatureField] = nlohmann::json::binary(sign(signer, watchSigningInput(content)));
-    const Bytes sealed = hybrid::seal(nlohmann::json::to_cbor(content), recipientSealing);
+    const Bytes sealed = sealToEpoch(nlohmann::json::to_cbor(content), recipient);
     Bytes frame = headerFor(kWatchType, watch.id);
     frame.insert(frame.end(), sealed.begin(), sealed.end());
     return frame;
@@ -335,7 +333,7 @@ struct Presence::Impl {
     PresenceTimings timings;
     const std::uint64_t id = ++g_lastPresenceId;
     Identity identity;
-    Key sealingKey;
+    std::shared_ptr<const EpochRing> ring;
     PresenceSeed seed;
     PresenceNet net;
     PresenceSink sink;
@@ -375,7 +373,7 @@ struct Presence::Impl {
         : account(std::move(accountIn))
         , timings(std::move(timingsIn))
         , identity(Identity::fromPrivatePem(account.identityPem))
-        , sealingKey(Key::fromPrivatePem(account.sealingPem))
+        , ring(account.ring)
         , seed(std::exchange(account.seed, {}))
         , net(std::move(netIn))
         , sink(std::move(sinkIn))
@@ -516,7 +514,6 @@ struct Presence::Impl {
         Outgoing outgoing;
         outgoing.peer = contact.fingerprint;
         outgoing.host = host;
-        outgoing.sealingKeyDer = contact.sealingKeyDer;
         rewatch(outgoing);
         return outgoing;
     }
@@ -540,10 +537,18 @@ struct Presence::Impl {
 
     void sendWatch(WatcherLane& lane, Outgoing& outgoing, const Clock::time_point now)
     {
+        const auto contact = contactFor(outgoing.peer);
+        const std::int64_t utc = timings.utcNow();
+        const std::optional<EpochPublic> epoch
+            = contact.has_value() ? epochFor(contact->get().epochs, utc) : std::nullopt;
+        if (!epoch.has_value()) {
+            bazarish::log::debug("presence: no current key of {} to watch with",
+                bazarish::log::redact(outgoing.peer));
+            return;
+        }
         const PresenceWatch watch{outgoing.id, outgoing.key, account.fingerprint,
-            lane.runner->link->host(), timings.utcNow()};
-        const Bytes frame
-            = presenceWatchFrame(watch, identity.classical(), Key::fromPublicDer(outgoing.sealingKeyDer));
+            lane.runner->link->host(), utc};
+        const Bytes frame = presenceWatchFrame(watch, identity.classical(), *epoch);
         if (outgoing.sentBefore) {
             sendAfterLookup(*lane.runner, outgoing.host, frame);
         } else {
@@ -594,7 +599,7 @@ struct Presence::Impl {
         nlohmann::json content;
         try {
             content = parseCbor(
-                hybrid::unseal(Bytes(frame.begin() + kHeaderBytes, frame.end()), sealingKey));
+                ring->open(Bytes(frame.begin() + kHeaderBytes, frame.end())));
         } catch (const std::exception& error) {
             bazarish::log::debug("presence: a watch that does not open was dropped: {}", error.what());
             return;

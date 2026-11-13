@@ -37,6 +37,7 @@ add_library(bazarish_common STATIC
     src/Crypto.cpp
     src/Cms.cpp
     src/Hybrid.cpp
+    src/Epochs.cpp
     src/Tunnel.cpp
     src/Certificates.cpp
     src/Pass.cpp
@@ -209,6 +210,7 @@ if(BAZARISH_WITH_CLIENT)
         client/ResolverAsk.cpp
         client/FileTransfer.cpp
         client/DevicePairing.cpp
+        client/EpochRing.cpp
         client/I2pKeys.cpp
         client/GatewayAddress.cpp
         client/I2pRouter.cpp
@@ -282,6 +284,7 @@ endif()
     bazarish_client_add_test(TestInvite)
     bazarish_client_add_test(TestLogin)
     bazarish_client_add_test(TestOutboundCourier)
+    bazarish_client_add_test(TestEpochRing)
     bazarish_client_add_test(TestSocksProxy)
     bazarish_client_add_test(TestDeliveryPass)
     bazarish_client_add_test(TestWireLog)

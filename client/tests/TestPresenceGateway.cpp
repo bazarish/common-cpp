@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "GatewayAddress.hpp"
 #include "I2pRouter.hpp"
+#include "EpochTestRing.hpp"
 #include "Presence.hpp"
 #include "PresenceSeed.hpp"
 
@@ -110,20 +111,20 @@ int main()
     const std::filesystem::path dataDir = testutil::freshDir("presence-gateway");
 
     const Identity alice = Identity::generate();
-    const Key aliceSealing = Key::generateSealing();
+    const std::shared_ptr<EpochRing> aliceRing = epochtest::ringAround(g_utc.load(), "a1");
     const PresenceSeed aliceSeed = PresenceSeed::generate();
     const Identity bob = Identity::generate();
-    const Key bobSealing = Key::generateSealing();
+    const std::shared_ptr<EpochRing> bobRing = epochtest::ringAround(g_utc.load(), "b1");
     const PresenceSeed bobSeed = PresenceSeed::generate();
 
     PresenceAccount account;
     account.fingerprint = alice.fingerprint();
     account.identityPem = alice.privatePem();
-    account.sealingPem = aliceSealing.privatePem();
+    account.ring = aliceRing;
     account.seed = aliceSeed.bytes();
     PresenceContact contact;
     contact.fingerprint = bob.fingerprint();
-    contact.sealingKeyDer = bobSealing.publicDer();
+    contact.epochs = bobRing->inUse(0);
     contact.identity = IdentityKeys{bob.classical().publicDer(), bob.pq().publicDer()};
     contact.schedule = presenceScheduleFrom(bobSeed, kDay, kScheduledDays);
     PresenceTimings timings;
