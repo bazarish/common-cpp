@@ -1056,16 +1056,24 @@ bool GatewayRouter::ready() const
 
 void GatewayRouter::openControl()
 {
+    const std::shared_ptr<Pending> pending = std::make_shared<Pending>();
     const gateway::ChannelOpened opened = openChannelSocket(
         [this](const http::SocketPtr& socket, const std::vector<unsigned char>& message) {
             arrived(socket, message);
         },
-        [link = link_](const http::SocketPtr& gone) {
-            const std::lock_guard<std::mutex> lock(link->mutex);
-            if (link->control == gone) {
-                link->control.reset();
-                link->aloneSince.store(millisNow());
+        [link = link_, pending](const http::SocketPtr& gone) {
+            {
+                const std::lock_guard<std::mutex> lock(link->mutex);
+                if (link->control == gone) {
+                    link->control.reset();
+                    link->aloneSince.store(millisNow());
+                }
             }
+            // Taken so the hello's waiter cannot miss the close between its check and its wait.
+            {
+                const std::lock_guard<std::mutex> lock(pending->mutex);
+            }
+            pending->answered.notify_all();
         });
     if (opened.socket == nullptr) {
         if (opened.wrongGateway) {
@@ -1075,7 +1083,6 @@ void GatewayRouter::openControl()
     }
 
     const std::uint32_t id = link_->nextId();
-    const std::shared_ptr<Pending> pending = std::make_shared<Pending>();
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->awaited[id] = pending;
@@ -1097,12 +1104,18 @@ void GatewayRouter::openControl()
     bool said = false;
     {
         std::unique_lock<std::mutex> lock(pending->mutex);
-        said = pending->answered.wait_for(lock, kCallTimeout, [&]() { return pending->done; });
+        const bool settled = pending->answered.wait_for(lock, kCallTimeout,
+            [&]() { return pending->done || !opened.socket->open(); });
+        said = settled && pending->done;
         answer = pending->answer;
     }
     {
         const std::lock_guard<std::mutex> held(link_->mutex);
         link_->awaited.erase(id);
+    }
+    if (!said && !opened.socket->open()) {
+        throw std::runtime_error(
+            "bazarish::i2p: the gateway closed the connection before it was ready");
     }
     if (!said || answer.type != FrameType::eReady) {
         opened.socket->close();

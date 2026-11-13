@@ -7,6 +7,7 @@
 #include <bazarish/HttpServer.hpp>
 #include <bazarish/WebSocket.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -50,6 +51,33 @@ public:
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         return lookups_;
+    }
+
+    void closeOnHello()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        closeOnHello_ = true;
+    }
+
+    void dropSockets()
+    {
+        std::vector<std::shared_ptr<gateway::ChannelSocket>> held;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& [raw, channel] : channels_) {
+                (void)raw;
+                held.push_back(channel);
+            }
+        }
+        for (const std::shared_ptr<gateway::ChannelSocket>& channel : held) {
+            channel->close();
+        }
+    }
+
+    std::vector<std::chrono::steady_clock::time_point> hellosClosed()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return hellosClosed_;
     }
 
     void askRenewals()
@@ -130,6 +158,18 @@ private:
             socket->send(gateway::encode(FrameType::eEndpointRenew, endpoint));
         }
         if (frame.type == FrameType::eHello) {
+            bool refuse = false;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                refuse = closeOnHello_;
+                if (refuse) {
+                    hellosClosed_.push_back(std::chrono::steady_clock::now());
+                }
+            }
+            if (refuse) {
+                socket->close();
+                return;
+            }
             socket->send(gateway::encodeJson(FrameType::eReady, frame.ref,
                 {{"version", gateway::kProtocolVersion}, {"i2pd", "test"},
                     {"capabilities", {{"destinationCounters", true}, {"warmPool", true}}},
@@ -172,6 +212,8 @@ private:
     std::vector<std::uint32_t> renewDue_;
     i2p::LeaseSetRefresh lookupAnswer_;
     std::vector<nlohmann::json> lookups_;
+    bool closeOnHello_ = false;
+    std::vector<std::chrono::steady_clock::time_point> hellosClosed_;
 };
 
 }  // namespace bazarish::test
