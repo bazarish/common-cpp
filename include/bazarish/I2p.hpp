@@ -316,6 +316,24 @@ std::uint64_t carryReturns();
 void networkChanged();
 // Grows only when the device moves network.
 std::uint64_t networkChanges();
+// Until the next networkChanged(): gateway calls fail at once and no stream is dialled.
+void networkLost();
+bool networkDown();
+
+enum class TransportState { eUp, eNoNetwork, eGatewayUnreachable };
+TransportState transportState();
+
+// Calls its listener, on whichever thread changes transportState(), for as long as it lives.
+class TransportWatch {
+public:
+    explicit TransportWatch(std::function<void()> listener);
+    ~TransportWatch();
+    TransportWatch(const TransportWatch&) = delete;
+    TransportWatch& operator=(const TransportWatch&) = delete;
+
+private:
+    const std::uint64_t id_;
+};
 
 // What the user does shapes a gateway's cover traffic; the screen counts as on until told.
 void windowActive(bool active);

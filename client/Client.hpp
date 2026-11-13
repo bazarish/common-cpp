@@ -108,6 +108,7 @@ public:
     std::string activeFacadeAddress() const;
     std::string gatewayRefusal() const;
     bool serverBehindFacadeDown() const;
+    LinkFailure linkFailure() const;
 
     void setAccountLabel(std::string accountLabel);
     void releaseI2pLink();

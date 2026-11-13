@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -131,6 +132,19 @@ public:
 };
 
 void noteCarryReturned();
+void noteGatewayReach(bool reachable);
+
+// Calls its listener on the thread that calls networkLost(), for as long as it lives.
+class LossWatch {
+public:
+    explicit LossWatch(std::function<void()> listener);
+    ~LossWatch();
+    LossWatch(const LossWatch&) = delete;
+    LossWatch& operator=(const LossWatch&) = delete;
+
+private:
+    const std::uint64_t id_;
+};
 
 shape::Activity activityNow(bool exchanging);
 std::uint64_t userActions();

@@ -59,6 +59,12 @@ public:
         closeOnHello_ = true;
     }
 
+    void acceptHellos()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        closeOnHello_ = false;
+    }
+
     void dropSockets()
     {
         std::vector<std::shared_ptr<gateway::ChannelSocket>> held;

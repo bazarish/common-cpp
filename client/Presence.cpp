@@ -799,7 +799,8 @@ struct Presence::Impl {
                 }
             }
             if (!lane.runner) {
-                if (online && !lane.wanted.empty() && now >= lane.raiseAfter) {
+                if (online && !lane.wanted.empty() && now >= lane.raiseAfter
+                    && i2p::transportState() == i2p::TransportState::eUp) {
                     raise(day, lane, now);
                 }
                 continue;
@@ -887,7 +888,7 @@ struct Presence::Impl {
 
     void openWatchers(const std::vector<PresenceDay>& days)
     {
-        if (!active()) {
+        if (!active() || i2p::transportState() != i2p::TransportState::eUp) {
             return;
         }
         for (const PresenceDay day : days) {

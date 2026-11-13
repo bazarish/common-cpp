@@ -108,6 +108,7 @@ struct Pending {
     std::mutex mutex;
     std::condition_variable answered;
     bool done = false;
+    std::atomic<bool> abandoned{false};
     Frame answer;
     Bytes request;
 };
@@ -224,7 +225,7 @@ public:
     explicit Link(const bool odd) : ids_(odd) {}
 
     std::uint32_t nextId() { return ids_.next(); }
-    void send(const Bytes& frame);
+    void send(const Bytes& frame, const Pending* call = nullptr);
     http::SocketPtr socketFor(std::uint32_t flow) const;
     std::optional<Frame> call(const Bytes& frame, std::uint32_t ref, std::chrono::seconds timeout);
     std::shared_ptr<Pending> expect(const Bytes& frame, std::uint32_t ref);
@@ -255,6 +256,8 @@ public:
     std::atomic<std::int64_t> lastUse{0};
     std::atomic<std::int64_t> lastArrival{0};
     std::atomic<std::int64_t> aloneSince{0};
+    std::atomic<bool> unreachable{false};
+    std::atomic<std::uint64_t> unreachableOnNetwork{0};
 
     std::string describe() const
     {
@@ -498,6 +501,7 @@ private:
     void openControl();
     void closeControl();
     void dropSockets();
+    void networkLost();
     void coverLoop();
     void startBurst();
     void decoyBurst(const std::vector<shape::DecoyRequest>& burst);
@@ -524,6 +528,8 @@ private:
     std::atomic<bool> live_{false};
     std::atomic<bool> stopping_{false};
     std::atomic<bool> openFailing_{false};
+    std::unique_ptr<LossWatch> loss_;
+    bool givenUp_ = false;
 };
 
 StreamState::StreamState(
@@ -787,7 +793,7 @@ std::unique_ptr<StreamBackend> GatewayEndpoint::connect(
         stream = std::make_unique<GatewayStream>(link_, id, id_);
         dial = link_->expect(ask, id);
     }
-    link_->send(ask);
+    link_->send(ask, dial.get());
     const std::optional<Frame> answer = link_->await(dial, id, timeout + kCallTimeout);
     if (!answer || answer->type != FrameType::eStreamOpened) {
         return nullptr;
@@ -983,11 +989,13 @@ void GatewayRouter::start()
     }
     openControl();
     live_.store(true);
+    loss_ = std::make_unique<LossWatch>([this]() { networkLost(); });
     cover_ = std::thread([this]() { coverLoop(); });
 }
 
 void GatewayRouter::stop()
 {
+    loss_.reset();
     {
         const std::lock_guard<std::mutex> lock(pauseMutex_);
         stopping_.store(true);
@@ -996,6 +1004,10 @@ void GatewayRouter::stop()
     if (live_.exchange(false) && cover_.joinable()) {
         link_->abandonCalls();
         cover_.join();
+    }
+    if (openFailing_.exchange(false)) {
+        link_->unreachable.store(false);
+        noteGatewayReach(true);
     }
     if (burst_.joinable()) {
         burst_.join();
@@ -1242,6 +1254,10 @@ void GatewayRouter::closeControl()
 
 void GatewayRouter::abandon()
 {
+    if (givenUp_) {
+        return;
+    }
+    givenUp_ = true;
     std::vector<std::shared_ptr<StreamState>> stranded;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
@@ -1319,6 +1335,27 @@ void GatewayRouter::dropSockets()
     closeControl();
 }
 
+void GatewayRouter::networkLost()
+{
+    link_->abandonCalls();
+    std::vector<std::shared_ptr<StreamState>> cut;
+    {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        for (const auto& [id, held] : link_->streams) {
+            (void)id;
+            if (std::shared_ptr<StreamState> stream = held.lock()) {
+                cut.push_back(std::move(stream));
+            }
+        }
+    }
+    for (const std::shared_ptr<StreamState>& stream : cut) {
+        stream->reset();
+    }
+    dropSockets();
+    bazarish::log::info("i2p: the network is gone: the gateway's sockets closed, {} stream(s) cut",
+        cut.size());
+}
+
 bool GatewayRouter::pause(const std::chrono::milliseconds span)
 {
     std::unique_lock<std::mutex> lock(pauseMutex_);
@@ -1382,6 +1419,9 @@ void GatewayRouter::coverLoop()
             networkSeen = moved;
             bazarish::log::info("i2p: the device moved network: the gateway's sockets open anew");
             dropSockets();
+            if (openFailing_.exchange(false)) {
+                link_->unreachable.store(false);
+            }
             openAt = now;
             backoff = kFirstRetry;
         }
@@ -1404,18 +1444,26 @@ void GatewayRouter::coverLoop()
         burstSeen = burstNow;
 
         if (!hasControl()) {
-            if (now < openAt) {
+            if (now < openAt || networkDown()) {
                 continue;
             }
             try {
                 openControl();
+                givenUp_ = false;
                 if (openFailing_.exchange(false)) {
+                    link_->unreachable.store(false);
+                    noteGatewayReach(true);
                     noteCarryReturned();
                     carrySeen = carryReturns();
                 }
                 backoff = kFirstRetry;
             } catch (const std::exception& error) {
-                openFailing_.store(true);
+                if (!openFailing_.exchange(true)) {
+                    link_->unreachableOnNetwork.store(networkSeen);
+                    link_->unreachable.store(true);
+                    link_->abandonCalls();
+                    noteGatewayReach(false);
+                }
                 bazarish::log::warn(
                     "i2p: the gateway would not take a socket: {}", error.what());
                 openAt = std::chrono::steady_clock::now() + backoff;
@@ -1440,11 +1488,18 @@ void GatewayRouter::coverLoop()
     }
 }
 
-void Link::send(const Bytes& frame)
+void Link::send(const Bytes& frame, const Pending* const call)
 {
     http::SocketPtr socket;
     {
         const std::lock_guard<std::mutex> lock(mutex);
+        if (call != nullptr && call->abandoned.load()) {
+            return;
+        }
+        // A call waiting for an answer goes again from the awaited ones when the socket opens.
+        if (control == nullptr && call != nullptr) {
+            return;
+        }
         if (control == nullptr) {
             if (holding || (!frame.empty()
                 && static_cast<FrameType>(frame.front()) != FrameType::eStreamData)) {
@@ -1541,7 +1596,7 @@ std::optional<Frame> Link::call(
     const Bytes& frame, const std::uint32_t ref, const std::chrono::seconds timeout)
 {
     const std::shared_ptr<Pending> pending = expect(frame, ref);
-    send(frame);
+    send(frame, pending.get());
     return await(pending, ref, timeout);
 }
 
@@ -1550,6 +1605,11 @@ std::shared_ptr<Pending> Link::expect(const Bytes& frame, const std::uint32_t re
     const std::shared_ptr<Pending> pending = std::make_shared<Pending>();
     pending->request = frame;
     const std::lock_guard<std::mutex> lock(mutex);
+    if (networkDown() || (unreachable.load() && unreachableOnNetwork.load() == networkChanges())) {
+        pending->abandoned.store(true);
+        pending->done = true;
+        return pending;
+    }
     awaited[ref] = pending;
     return pending;
 }
@@ -1573,6 +1633,9 @@ std::optional<Frame> Link::await(const std::shared_ptr<Pending>& pending,
     {
         const std::lock_guard<std::mutex> held(mutex);
         awaited.erase(ref);
+    }
+    if (pending->abandoned.load()) {
+        return std::nullopt;
     }
     if (!answered) {
         bazarish::log::warn("i2p: the gateway left {} #{} unanswered for {} s, sent {}",
@@ -1627,6 +1690,7 @@ void Link::abandonCalls()
     {
         const std::lock_guard<std::mutex> lock(mutex);
         for (const auto& [ref, pending] : awaited) {
+            pending->abandoned.store(true);
             calls.push_back(pending);
         }
     }

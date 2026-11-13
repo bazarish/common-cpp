@@ -83,6 +83,7 @@ void setRouterTransit(bool transit);
 
 void setGatewayTransport(const GatewayAddress& address);
 void clearGatewayTransport();
+bool usingGatewayTransport();
 // No router starts until another choice is made.
 void refuseI2pTransport(std::string reason);
 

@@ -189,12 +189,6 @@ bool usingSamTransport()
     return !g_samHost.empty();
 }
 
-bool usingGatewayTransport()
-{
-    const std::lock_guard<std::mutex> lock(proxyMutex());
-    return g_gateway.has_value();
-}
-
 std::string samTransportHost()
 {
     const std::lock_guard<std::mutex> lock(proxyMutex());
@@ -219,6 +213,12 @@ int i2pSocksProxyPort()
     return g_proxyPort;
 }
 }  // namespace
+
+bool usingGatewayTransport()
+{
+    const std::lock_guard<std::mutex> lock(proxyMutex());
+    return g_gateway.has_value();
+}
 
 void setReseedUrls(std::vector<std::string> urls)
 {

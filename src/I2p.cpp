@@ -44,6 +44,62 @@ std::mutex g_carryCalling;
 std::map<std::uint64_t, std::function<void()>> g_carryListeners;
 std::uint64_t g_nextCarryWatch = 0;
 std::atomic<std::uint64_t> g_networkChanges{0};
+std::atomic<bool> g_networkDown{false};
+std::atomic<bool> g_gatewayUnreachable{false};
+
+class Listeners {
+public:
+    std::uint64_t add(std::function<void()> listener)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        const std::uint64_t id = ++next_;
+        listeners_.emplace(id, std::move(listener));
+        return id;
+    }
+
+    // Waits out a call already under way, so the listener's owner may go once this returns.
+    void remove(const std::uint64_t id)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            listeners_.erase(id);
+        }
+        const std::lock_guard<std::mutex> waited(calling_);
+    }
+
+    void call()
+    {
+        const std::lock_guard<std::mutex> calling(calling_);
+        std::vector<std::function<void()>> listeners;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& [id, listener] : listeners_) {
+                listeners.push_back(listener);
+            }
+        }
+        for (const std::function<void()>& listener : listeners) {
+            listener();
+        }
+    }
+
+private:
+    std::mutex mutex_;
+    std::mutex calling_;
+    std::map<std::uint64_t, std::function<void()>> listeners_;
+    std::uint64_t next_ = 0;
+};
+
+Listeners& lossListeners()
+{
+    static Listeners listeners;
+    return listeners;
+}
+
+Listeners& transportListeners()
+{
+    static Listeners listeners;
+    return listeners;
+}
 std::mutex g_activityMutex;
 shape::ActivityState g_activity;
 
@@ -252,13 +308,51 @@ std::uint64_t carryReturns()
 
 void networkChanged()
 {
+    const bool wasDown = g_networkDown.exchange(false);
+    const bool wasUnreachable = g_gatewayUnreachable.exchange(false);
     ++g_networkChanges;
     backend::noteCarryReturned();
+    if (wasDown || wasUnreachable) {
+        transportListeners().call();
+    }
 }
 
 std::uint64_t networkChanges()
 {
     return g_networkChanges.load();
+}
+
+void networkLost()
+{
+    const bool wasDown = g_networkDown.exchange(true);
+    lossListeners().call();
+    if (!wasDown) {
+        transportListeners().call();
+    }
+}
+
+bool networkDown()
+{
+    return g_networkDown.load();
+}
+
+TransportState transportState()
+{
+    if (g_networkDown.load()) {
+        return TransportState::eNoNetwork;
+    }
+    return g_gatewayUnreachable.load() ? TransportState::eGatewayUnreachable
+                                       : TransportState::eUp;
+}
+
+TransportWatch::TransportWatch(std::function<void()> listener)
+    : id_(transportListeners().add(std::move(listener)))
+{
+}
+
+TransportWatch::~TransportWatch()
+{
+    transportListeners().remove(id_);
 }
 
 void windowActive(const bool active)
@@ -303,6 +397,24 @@ CarryWatch::~CarryWatch()
         g_carryListeners.erase(id_);
     }
     const std::lock_guard<std::mutex> waited(g_carryCalling);
+}
+
+backend::LossWatch::LossWatch(std::function<void()> listener)
+    : id_(lossListeners().add(std::move(listener)))
+{
+}
+
+backend::LossWatch::~LossWatch()
+{
+    lossListeners().remove(id_);
+}
+
+void backend::noteGatewayReach(const bool reachable)
+{
+    if (g_gatewayUnreachable.exchange(!reachable) != reachable) {
+        return;
+    }
+    transportListeners().call();
 }
 
 void backend::noteCarryReturned()
@@ -389,7 +501,7 @@ bool Endpoint::waitReady(const std::chrono::seconds timeout)
         if (ready()) {
             return true;
         }
-        if (lost()) {
+        if (lost() || networkDown()) {
             return false;
         }
         std::this_thread::sleep_for(kEndpointReadyPoll);
@@ -426,6 +538,9 @@ std::unique_ptr<Stream> Endpoint::connect(
     const std::string& host, const std::chrono::seconds timeout)
 {
     validateB32I2pHost(host);
+    if (networkDown()) {
+        return nullptr;
+    }
     std::unique_ptr<backend::StreamBackend> transport = impl_->transport->connect(host, timeout);
     if (!transport) {
         return nullptr;

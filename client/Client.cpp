@@ -109,6 +109,11 @@ bool Client::serverBehindFacadeDown() const
     return api_.serverBehindFacadeDown();
 }
 
+LinkFailure Client::linkFailure() const
+{
+    return api_.linkFailure();
+}
+
 bool Client::facadePublishedAnew()
 {
     return api_.facadePublishedAnew();

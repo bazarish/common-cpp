@@ -283,16 +283,30 @@ int main()
         CHECK(refused());
         CHECK(hellos.load() == 1);
         CHECK(api.serverBehindFacadeDown());
+        CHECK(api.linkFailure() == LinkFailure::eServerDown);
         CHECK(refused());
         CHECK(hellos.load() == 1);
         bazarish::i2p::backend::noteCarryReturned();
         CHECK(refused());
         CHECK(hellos.load() == 2);
         CHECK(api.serverBehindFacadeDown());
+
+        bazarish::i2p::networkLost();
+        api.liftStandOff();
+        CHECK(refused());
+        CHECK(hellos.load() == 2);
+        CHECK(api.linkFailure() == LinkFailure::eNoNetwork);
+        CHECK(!api.serverBehindFacadeDown());
+        bazarish::i2p::networkChanged();
+        CHECK(refused());
+        CHECK(hellos.load() == 3);
+        CHECK(api.linkFailure() == LinkFailure::eServerDown);
+
         upstreamless.stop();
         api.liftStandOff();
         CHECK(refused());
         CHECK(!api.serverBehindFacadeDown());
+        CHECK(api.linkFailure() == LinkFailure::eServerUnreachable);
     }
 
     CHECK(ApiClient::sessionBackoffSeconds(0) < ApiClient::sessionBackoffSeconds(401));

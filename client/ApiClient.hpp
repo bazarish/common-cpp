@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #pragma once
 
+#include "LinkFailure.hpp"
 #include "WireLog.hpp"
 
 #include <bazarish/Bytes.hpp>
@@ -87,6 +88,7 @@ public:
     std::string gatewayRefusal() const;
     // The last facade that answered said the server behind it is unreachable.
     bool serverBehindFacadeDown() const;
+    LinkFailure linkFailure() const;
     void setAccountLabel(std::string accountLabel);
     void releaseI2pLink();
     // Asks the netDb for the facade's lease set past the link's cache; true when it is newer.
@@ -111,7 +113,8 @@ private:
     std::optional<ApiResponse> i2pExchange(const Facade& facade, const std::string& method,
         const std::string& path, const std::map<std::string, std::string>& headers,
         std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody,
-        int readTimeoutSeconds);
+        int readTimeoutSeconds, LinkAttempt& tried);
+    void noteLinkFailure(LinkAttempt attempt);
 
     const Identity& identity_;
     const std::string clientId_;
@@ -150,7 +153,7 @@ private:
     Tunnel messaging_{ServerCard::Service::eMessaging};
     Tunnel serviceNode_{ServerCard::Service::eServiceNode};
     std::string gatewayRefusal_;
-    std::atomic<bool> serverBehindFacadeDown_{false};
+    std::atomic<LinkFailure> linkFailure_{LinkFailure::eNone};
 
     std::shared_ptr<WireLog> wireLog_;
     std::shared_ptr<bazarish::i2p::Endpoint> i2pOut_;

@@ -249,8 +249,13 @@ bool ApiClient::ensureSessionLocked(Tunnel& tunnel)
             = bazarish::tunnel::sealHello(hello, Key::fromPublicDer(tunnel.sealingKeyDer));
         const ApiResponse response = transmitLocked("POST", tunnelPathOf(tunnel.service), frame,
             "application/octet-stream", kDefaultReadTimeoutSeconds);
-        const bazarish::tunnel::Welcome welcome
-            = bazarish::tunnel::openWelcome(response.body, replyKey);
+        bazarish::tunnel::Welcome welcome;
+        try {
+            welcome = bazarish::tunnel::openWelcome(response.body, replyKey);
+        } catch (const std::exception&) {
+            linkFailure_.store(LinkFailure::eServerRefused);
+            throw;
+        }
         tunnel.sessionSecret = hello.secret;
         tunnel.sessionId = toHex(sha256(hello.secret)).substr(0, kSessionIdChars);
         tunnel.sessionKey = auth::deriveSessionKey(hello.secret, tunnel.sessionId);
@@ -314,7 +319,21 @@ std::string ApiClient::gatewayRefusal() const
 
 bool ApiClient::serverBehindFacadeDown() const
 {
-    return serverBehindFacadeDown_.load();
+    return linkFailure_.load() == LinkFailure::eServerDown;
+}
+
+LinkFailure ApiClient::linkFailure() const
+{
+    return linkFailure_.load();
+}
+
+void ApiClient::noteLinkFailure(LinkAttempt attempt)
+{
+    if (attempt.viaGateway) {
+        const auto running = sharedI2pRouterIfRunning();
+        attempt.gatewayReady = running.has_value() && running->get().ready();
+    }
+    linkFailure_.store(classifyLinkFailure(bazarish::i2p::networkDown(), attempt));
 }
 
 bool ApiClient::facadePublishedAnew()
@@ -361,8 +380,9 @@ std::string ApiClient::activeFacadeAddress() const
 std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const std::string& method,
     const std::string& path, const std::map<std::string, std::string>& headers,
     const std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody,
-    const int readTimeoutSeconds)
+    const int readTimeoutSeconds, LinkAttempt& tried)
 {
+    tried.reached = LinkStage::eRouter;
     reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eRouterStarting);
     setReseedUrls(endpoint_.reseeds);
     if (bootstrapI2pRouter(i2pDataDir_) == I2pBootstrap::eEmpty) {
@@ -370,6 +390,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     }
     gatewayRefusal_.clear();
     const auto buildLink = [&]() {
+        tried.reached = LinkStage::eLink;
         reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eTunnelsBuilding);
         i2pStream_.reset();
         try {
@@ -383,6 +404,9 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
             const std::lock_guard<std::mutex> lock(linkMutex_);
             link_ = i2pOut_;
         }
+        if (i2pOut_) {
+            tried.reached = LinkStage::eTunnels;
+        }
         return static_cast<bool>(i2pOut_);
     };
     if (i2pOut_ && (i2pOut_->lost() || i2pOutHost_ != facade.host)) {
@@ -392,10 +416,12 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     if (!i2pOut_ && !buildLink()) {
         return std::nullopt;
     }
+    tried.reached = LinkStage::eTunnels;
     if (!i2pOut_->waitReady(std::chrono::seconds(kOutboundReadySeconds))) {
         reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eTunnelsStillBuilding);
         return std::nullopt;
     }
+    tried.reached = LinkStage::eDial;
     if (i2pStream_
         && std::chrono::steady_clock::now() - i2pStreamUsedAt_ >= kKeptStreamIdleSeconds) {
         i2pStream_.reset();
@@ -411,6 +437,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
                     || !i2pOut_->waitReady(std::chrono::seconds(kOutboundReadySeconds))) {
                     return std::nullopt;
                 }
+                tried.reached = LinkStage::eDial;
                 i2pStream_
                     = i2pOut_->connect(facade.host, std::chrono::seconds(kFacadeDialSeconds));
             }
@@ -418,6 +445,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
                 return std::nullopt;
             }
         }
+        tried.reached = LinkStage::eExchange;
         reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eServerReached);
         i2pStream_->setReadTimeout(std::chrono::seconds(readTimeoutSeconds));
         const auto askedAt = std::chrono::steady_clock::now();
@@ -535,6 +563,7 @@ ApiResponse ApiClient::tunnelledLocked(Tunnel& tunnel, const std::string& method
         answered = bazarish::tunnel::decodeResponse(
             bazarish::tunnel::open(carried.body, tunnel.tunnelKey));
     } catch (const std::exception&) {
+        linkFailure_.store(LinkFailure::eServerRefused);
         throw ApiError(ErrorCode::eSessionInvalid, carried.status,
             "the tunnel did not answer under the key it was opened with");
     }
@@ -548,6 +577,11 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     const std::string& query, const Bytes& body, const std::string& contentType,
     const int readTimeoutSeconds, const std::string& note)
 {
+    if (bazarish::i2p::networkDown()) {
+        linkFailure_.store(LinkFailure::eNoNetwork);
+        noteWire(method, path, note, "failed: no network", 0, 0);
+        throw ApiError(std::nullopt, 0, "no network");
+    }
     const std::lock_guard<std::mutex> lock(netMutex_);
     Tunnel& tunnel = tunnelFor(path);
     if (!ensureSessionLocked(tunnel)) {
@@ -574,7 +608,8 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
             .count();
     };
     const auto accept = [&](const ApiResponse& response) {
-        if (response.status < 200 || response.status >= 300) {
+        if (!answeredWell(response.status)) {
+            linkFailure_.store(LinkFailure::eServerRefused);
             raiseFromResponse(response.status, response.body);
         }
         if (!quietOnSuccess) {
@@ -648,18 +683,31 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
                 lastError = "i2p facade without an I2P transport: " + shortHost(facade.host);
                 continue;
             }
-            const std::optional<ApiResponse> response
-                = i2pExchange(facade, method, path, i2pHeaders, body.size(),
+            LinkAttempt attempt;
+            attempt.viaGateway = usingGatewayTransport();
+            std::optional<ApiResponse> response;
+            try {
+                response = i2pExchange(facade, method, path, i2pHeaders, body.size(),
                     [&body](bazarish::i2p::Stream& stream) {
                         stream.writeAll(body);
                     },
-                    readTimeoutSeconds);
+                    readTimeoutSeconds, attempt);
+            } catch (const bazarish::i2p::GatewayRefusal&) {
+                attempt.gatewayRefused = true;
+                noteLinkFailure(attempt);
+                throw;
+            } catch (const std::exception&) {
+                noteLinkFailure(attempt);
+                throw;
+            }
             if (!response) {
+                noteLinkFailure(attempt);
                 lastError = "i2p facade unreachable: " + shortHost(facade.host);
                 continue;
             }
             activeFacade_ = index;
-            serverBehindFacadeDown_ = response->status == bazarish::kI2pHttpBadGateway;
+            attempt.status = response->status;
+            noteLinkFailure(attempt);
             if (response->status < 200 || response->status >= 300) {
                 raiseFromResponse(response->status, response->body);
             }
@@ -671,6 +719,10 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
             continue;
         }
         const bazarish::http::ClientResponse result = clearnetAttempt(facade);
+        LinkAttempt attempt;
+        attempt.reached = LinkStage::eExchange;
+        attempt.status = result.status;
+        noteLinkFailure(attempt);
         if (result.status == 0) {
             lastError = result.readTimedOut
                 ? "no response within " + std::to_string(readTimeoutSeconds)
@@ -679,7 +731,6 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
             continue;
         }
         activeFacade_ = index;
-        serverBehindFacadeDown_ = result.status == bazarish::kI2pHttpBadGateway;
 
         ApiResponse response;
         response.status = result.status;
@@ -689,7 +740,6 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
         }
         return response;
     }
-    serverBehindFacadeDown_ = false;
     throw ApiError(std::nullopt, 0, "no facade answered: " + lastError);
 }
 

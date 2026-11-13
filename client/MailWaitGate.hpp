@@ -144,6 +144,9 @@ public:
                 return *cause;
             }
         }
+        if (i2p::networkDown()) {
+            return awaitNetwork();
+        }
         const bool anew = facadeAnew && facadeAnew();
         std::unique_lock<std::mutex> lock(mutex_);
         if (stopped_) {
@@ -182,6 +185,19 @@ public:
 
 private:
     enum class ServerDownPause { eFirst, eSecond, eSteady };
+
+    // No lease set ages while there is no network: only its return is a cause.
+    MailWaitCause awaitNetwork()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        std::optional<MailWaitCause> cause;
+        changed_.wait(lock, [this, &cause]() {
+            cause = stopped_ ? std::optional<MailWaitCause>(MailWaitCause::eStopped)
+                             : causeLocked();
+            return cause.has_value();
+        });
+        return *cause;
+    }
 
     std::chrono::milliseconds serverDownPauseLocked()
     {
