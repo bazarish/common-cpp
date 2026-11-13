@@ -4,6 +4,7 @@
 #include "bazarish/AccountKind.hpp"
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
+#include "bazarish/Devices.hpp"
 #include "bazarish/Epochs.hpp"
 
 #include <cstdint>
@@ -26,13 +27,14 @@ struct ContactCard {
     std::vector<EpochPublic> epochs;
     std::int64_t issuedAt = 0;
     Bytes servingSealingKeyDer;
-    // SPKI DER.
-    Bytes identityClassicalDer;
-    Bytes identityPqDer;
+    // The account's active devices and its newest revocation list, each signed by its root.
+    DeviceBook devices;
+    // The device that signed the card.
+    std::string signer;
 
     std::string fingerprint() const;
 
-    Bytes issue(const Identity& userIdentity) const;
+    Bytes issue(const Identity& deviceSigning) const;
     static ContactCard verify(const Bytes& der);
 
     Key servingSealingKey() const;

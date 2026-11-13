@@ -12,7 +12,8 @@
 namespace bazarish::hybrid {
 
 inline constexpr int kFrameVersion = 1;
-inline constexpr std::size_t kMaxSealKidBytes = 25;
+// An epoch key id: tag, epoch, generation and the maker device's id.
+inline constexpr std::size_t kMaxSealKidBytes = 19;
 
 Bytes signJson(const nlohmann::json& body, const Identity& identity);
 

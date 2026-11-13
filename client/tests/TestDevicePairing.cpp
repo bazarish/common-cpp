@@ -4,6 +4,8 @@
 
 #include "TestUtil.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <bazarish/Crypto.hpp>
 #include <bazarish/KeyedSeal.hpp>
 
@@ -183,10 +185,20 @@ Bytes patternOf(const std::size_t size)
 }
 
 const Bytes kKey = newLinkKey();
+const DeviceKeys kNewDevice = DeviceKeys::generate();
+const DevicePublic kDevice = DevicePublic::of(kNewDevice);
 
 std::string requestWith(const std::string& code)
 {
-    return pairRequest("pair.b32.i2p", code, kKey);
+    return pairRequest("pair.b32.i2p", code, kKey, kDevice);
+}
+
+PairBundleFn fixed(const Bytes& bundle)
+{
+    return [bundle](const DevicePublic& device) {
+        CHECK(device.id() == kDevice.id());
+        return bundle;
+    };
 }
 
 int cannedInto(FakeEndpoint& endpoint, const std::string& answer, const bool eof)
@@ -234,10 +246,15 @@ int main()
         };
         const Bytes right = helloOf(requestWith(code));
         const Bytes wrong = helloOf(requestWith("0000"));
-        const Bytes stranger = helloOf(pairRequest("pair.b32.i2p", code, newLinkKey()));
+        const Bytes stranger = helloOf(pairRequest("pair.b32.i2p", code, newLinkKey(), kDevice));
 
         CHECK(requestWith(code).find(code) == std::string::npos);
         CHECK(pairVerdict("POST", "/hello", right, code, kKey).status == kI2pHttpOk);
+        CHECK(pairVerdict("POST", "/hello", right, code, kKey).device->id() == kDevice.id());
+        CHECK(pairVerdict("POST", "/hello", right, code, kKey).device->sealingDer
+            == kDevice.sealingDer);
+        CHECK(!pairVerdict("POST", "/hello", wrong, code, kKey).device.has_value());
+        CHECK(helloOf(requestWith(code)).size() <= kMaxPairHelloBytes);
         CHECK(!pairVerdict("POST", "/hello", right, code, kKey).counted);
         CHECK(pairVerdict("POST", "/hello", wrong, code, kKey).status == kI2pHttpForbidden);
         CHECK(pairVerdict("POST", "/hello", wrong, code, kKey).counted);
@@ -251,6 +268,15 @@ int main()
 
         const Bytes plain = patternOf(100);
         CHECK(openPairBundle(kKey, sealPairBundle(kKey, plain)) == plain);
+
+        const std::string made = nlohmann::json{{kBundleDeviceField, {{kBundleDeviceCertField, "c"}}}}.dump();
+        const nlohmann::json completed = nlohmann::json::parse(
+            openPairBundle(kKey, completePairBundle(kKey, sealPairBundle(kKey, Bytes(made.begin(), made.end())), kNewDevice)));
+        CHECK(completed.at(kBundleDeviceField).at(kBundleDeviceCertField) == "c");
+        CHECK(DeviceKeys::fromPems(completed.at(kBundleDeviceField).at(kBundleDeviceSigningField),
+                  completed.at(kBundleDeviceField).at(kBundleDeviceSealingField))
+                  .id()
+            == kNewDevice.id());
         CHECK_THROWS(openPairBundle(newLinkKey(), sealPairBundle(kKey, plain)));
     }
 
@@ -262,7 +288,7 @@ int main()
 
         PairServeResult result;
         std::thread serving([&]() {
-            result = servePairBundle(endpoint, bundle, code, kKey, nullptr, countWrong, cancel);
+            result = servePairBundle(endpoint, fixed(bundle), code, kKey, nullptr, countWrong, cancel);
         });
 
         writeTo(refused, requestWith("0000"));
@@ -296,7 +322,7 @@ int main()
 
         PairServeResult result;
         std::thread serving([&]() {
-            result = servePairBundle(endpoint, bundle, code, kKey, nullptr, countWrong, cancel);
+            result = servePairBundle(endpoint, fixed(bundle), code, kKey, nullptr, countWrong, cancel);
         });
 
         for (int guess = 0; guess < kMaxWrongCodes; ++guess) {
@@ -327,7 +353,7 @@ int main()
 
         PairServeResult result;
         std::thread serving([&]() {
-            result = servePairBundle(endpoint, big, code, kKey, nullptr, nullptr, cancel);
+            result = servePairBundle(endpoint, fixed(big), code, kKey, nullptr, nullptr, cancel);
         });
 
         writeTo(reader, requestWith(code));
@@ -355,7 +381,7 @@ int main()
 
         PairServeResult result;
         std::thread serving([&]() {
-            result = servePairBundle(endpoint, patternOf(2 * kPacedChunkBytes), code, kKey, nullptr,
+            result = servePairBundle(endpoint, fixed(patternOf(2 * kPacedChunkBytes)), code, kKey, nullptr,
                 nullptr, cancel);
         });
 
@@ -376,7 +402,7 @@ int main()
 
         PairServeResult result;
         std::thread serving([&]() {
-            result = servePairBundle(endpoint, bundle, code, kKey, nullptr, countWrong, cancel);
+            result = servePairBundle(endpoint, fixed(bundle), code, kKey, nullptr, countWrong, cancel);
         });
 
         ::shutdown(broken, SHUT_WR);
@@ -397,7 +423,7 @@ int main()
         FakeEndpoint endpoint(nullptr);
         (void)cannedInto(endpoint, pairRefusal(kI2pHttpForbidden, 7), false);
         const PairFetchResult refused
-            = fetchPairBundle(endpoint, "pair.b32.i2p", "0000", kKey, nullptr, cancel);
+            = fetchPairBundle(endpoint, "pair.b32.i2p", "0000", kKey, kDevice, nullptr, cancel);
         CHECK(refused.wrongCode);
         CHECK(refused.triesLeft == 7);
         CHECK(refused.bundle.empty());
@@ -407,7 +433,7 @@ int main()
         std::atomic<bool> cancel{false};
         FakeEndpoint endpoint(nullptr);
         (void)cannedInto(endpoint, buildI2pHttpResponse(kI2pHttpForbidden, {}, 0), false);
-        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", "0000", kKey, nullptr, cancel));
+        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", "0000", kKey, kDevice, nullptr, cancel));
     }
 
     {
@@ -416,7 +442,7 @@ int main()
         const std::string body(bundle.begin(), bundle.end());
         (void)cannedInto(endpoint, pairBundleHead(bundle.size()) + body, true);
         const PairFetchResult got
-            = fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, nullptr, cancel);
+            = fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel);
         CHECK(!got.wrongCode);
         CHECK(got.bundle == bundle);
     }
@@ -431,7 +457,7 @@ int main()
         const PairProgressFn watch
             = [&lastSeen](const std::uint64_t done, const std::uint64_t) { lastSeen = done; };
         const PairFetchResult got
-            = fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, watch, cancel);
+            = fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, watch, cancel);
         CHECK(got.bundle == big);
         CHECK(lastSeen == big.size());
     }
@@ -440,16 +466,16 @@ int main()
         std::atomic<bool> cancel{false};
         FakeEndpoint endpoint(nullptr);
         (void)cannedInto(endpoint, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nxyz", true);
-        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, nullptr, cancel));
+        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel));
     }
 
     {
         std::atomic<bool> cancel{false};
         FakeEndpoint endpoint(nullptr);
         (void)cannedInto(endpoint, pairBundleHead(kMaxPairBundleBytes + 1), false);
-        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, nullptr, cancel));
+        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel));
         (void)cannedInto(endpoint, pairBundleHead(0), false);
-        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, nullptr, cancel));
+        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel));
     }
 
     {
@@ -458,7 +484,7 @@ int main()
         (void)cannedInto(endpoint, pairBundleHead(bundle.size()) + "ten-bytes!", true);
         std::string said;
         try {
-            (void)fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, nullptr, cancel);
+            (void)fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel);
         } catch (const std::exception& error) {
             said = error.what();
         }
@@ -469,13 +495,13 @@ int main()
         std::atomic<bool> cancel{false};
         FakeEndpoint endpoint(nullptr);
         endpoint.ready = false;
-        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, nullptr, cancel));
+        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel));
     }
 
     {
         std::atomic<bool> cancel{false};
         FakeEndpoint endpoint(nullptr);
-        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, nullptr, cancel));
+        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel));
     }
 
     {

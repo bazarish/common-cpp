@@ -20,6 +20,7 @@ inline constexpr char kTypeContactRequest[] = "contact.request";
 inline constexpr char kTypeContactAccept[] = "contact.accept";
 inline constexpr char kTypePresenceSchedule[] = "presence.schedule";
 inline constexpr char kTypeAccountEpochs[] = "account.epochs";
+inline constexpr char kTypeAccountDevices[] = "account.devices";
 inline constexpr char kTypeUnsupported[] = "unsupported";
 inline constexpr char kTypeGroupState[] = "group.state";
 inline constexpr char kTypeGroupReactions[] = "group.reactions";
@@ -37,6 +38,7 @@ inline constexpr char kTypeDeviceContact[] = "device.contact";
 inline constexpr char kTypeDeviceRead[] = "device.read";
 inline constexpr char kTypeDeviceChatPin[] = "device.chat-pin";
 inline constexpr char kTypeDeviceEpochs[] = "device.epochs";
+inline constexpr char kTypeDeviceDevices[] = "device.devices";
 
 inline constexpr char kGroupKindGroup[] = "group";
 inline constexpr char kGroupKindChannel[] = "channel";

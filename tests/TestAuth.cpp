@@ -81,20 +81,40 @@ int main()
     }
 
     {
-        const auth::Headers named
-            = auth::signRequest(identity, kNow, "POST", "/v1/messaging/ack", body, "dev-a");
-        CHECK(auth::verifyRequest(named, kNow, "POST", "/v1/messaging/ack", body, "dev-a")
-            == identity.fingerprint());
-        CHECK_THROWS(auth::verifyRequest(named, kNow, "POST", "/v1/messaging/ack", body, "dev-b"));
-        CHECK_THROWS(auth::verifyRequest(named, kNow, "POST", "/v1/messaging/ack", body));
-        const auth::Headers anonymous
-            = auth::signRequest(identity, kNow, "POST", "/v1/messaging/ack", body);
+        const Identity root = Identity::generate();
+        const DeviceKeys deviceKeys = DeviceKeys::generate();
+        const DeviceCredential device(Identity::fromPrivatePem(deviceKeys.signingPem()),
+            DeviceCertificate::issue(root, DevicePublic::of(deviceKeys), DeviceRole::eSecondary, kNow));
+        auth::ReplayCache cache;
+        const auth::Headers signedByDevice
+            = auth::signDeviceRequest(device, kNow, "POST", "/v1/messaging/ack", body);
+        CHECK(signedByDevice.count(auth::kHeaderKeys) == 0);
+        const auth::DeviceCaller caller = auth::verifyDeviceRequest(
+            signedByDevice, kNow, "POST", "/v1/messaging/ack", body, cache);
+        CHECK(caller.user == root.fingerprint());
+        CHECK(caller.device == deviceKeys.id());
+        CHECK(caller.role == DeviceRole::eSecondary);
+        CHECK_THROWS(auth::verifyDeviceRequest(
+            signedByDevice, kNow, "POST", "/v1/messaging/ack", body, cache));
+        CHECK_THROWS(auth::verifyDeviceRequest(
+            auth::signDeviceRequest(device, kNow, "POST", "/v1/messaging/ack", body), kNow, "POST",
+            "/v1/messaging/pending", body, cache));
+        CHECK_THROWS(auth::verifyDeviceRequest(
+            auth::signDeviceRequest(device, kNow, "POST", "/v1/messaging/ack", body),
+            kNow + auth::kAuthFreshnessWindowSeconds + 1, "POST", "/v1/messaging/ack", body, cache));
+
+        const DeviceKeys otherKeys = DeviceKeys::generate();
+        auth::Headers borrowed = auth::signDeviceRequest(
+            DeviceCredential(Identity::fromPrivatePem(otherKeys.signingPem()),
+                DeviceCertificate::issue(Identity::generate(), DevicePublic::of(otherKeys),
+                    DeviceRole::ePrimary, kNow)),
+            kNow, "POST", "/v1/messaging/ack", body);
+        borrowed[auth::kHeaderDevice] = toBase64(device.certDer());
         CHECK_THROWS(
-            auth::verifyRequest(anonymous, kNow, "POST", "/v1/messaging/ack", body, "dev-a"));
-        CHECK(auth::makeCanonicalString(kNow, "GET", "/healthz", body)
-            == auth::makeCanonicalString(kNow, "GET", "/healthz", body, std::string()));
-        CHECK(auth::makeCanonicalString(kNow, "GET", "/healthz", body, "dev-a")
-            != auth::makeCanonicalString(kNow, "GET", "/healthz", body));
+            auth::verifyDeviceRequest(borrowed, kNow, "POST", "/v1/messaging/ack", body, cache));
+        CHECK_THROWS(auth::verifyDeviceRequest(
+            auth::signRequest(identity, kNow, "POST", "/v1/messaging/ack", body), kNow, "POST",
+            "/v1/messaging/ack", body, cache));
     }
 
     {
@@ -114,38 +134,35 @@ int main()
 
         constexpr std::uint64_t kSeq = 7;
         const auth::Headers maced = auth::macRequest(
-            auth::sessionHandle(secret, kSeq), key, kSeq, kNow, "POST", "/v1/messaging/ack", body,
-            "dev-a");
+            auth::sessionHandle(secret, kSeq), key, kSeq, kNow, "POST", "/v1/messaging/ack", body);
         CHECK(auth::hasSessionHeaders(maced));
         CHECK(!auth::hasSessionHeaders(
             auth::signRequest(identity, kNow, "POST", "/v1/messaging/ack", body)));
-        CHECK(auth::verifyMac(maced, key, kNow, "POST", "/v1/messaging/ack", body, "dev-a")
+        CHECK(auth::verifyMac(maced, key, kNow, "POST", "/v1/messaging/ack", body)
             == kSeq);
 
-        CHECK_THROWS(auth::verifyMac(maced, key, kNow, "GET", "/v1/messaging/ack", body, "dev-a"));
+        CHECK_THROWS(auth::verifyMac(maced, key, kNow, "GET", "/v1/messaging/ack", body));
         CHECK_THROWS(
-            auth::verifyMac(maced, key, kNow, "POST", "/v1/messaging/pending", body, "dev-a"));
+            auth::verifyMac(maced, key, kNow, "POST", "/v1/messaging/pending", body));
         CHECK_THROWS(auth::verifyMac(
-            maced, key, kNow, "POST", "/v1/messaging/ack", Bytes{'x'}, "dev-a"));
-        CHECK_THROWS(auth::verifyMac(maced, key, kNow, "POST", "/v1/messaging/ack", body, "dev-b"));
-        CHECK_THROWS(auth::verifyMac(maced, key, kNow, "POST", "/v1/messaging/ack", body));
+            maced, key, kNow, "POST", "/v1/messaging/ack", Bytes{'x'}));
         CHECK_THROWS(auth::verifyMac(maced, auth::deriveSessionKey(randomBytes(32), sessionId),
-            kNow, "POST", "/v1/messaging/ack", body, "dev-a"));
+            kNow, "POST", "/v1/messaging/ack", body));
 
         {
             auth::Headers renumbered = maced;
             renumbered[auth::kHeaderSeq] = "8";
             CHECK_THROWS(
-                auth::verifyMac(renumbered, key, kNow, "POST", "/v1/messaging/ack", body, "dev-a"));
+                auth::verifyMac(renumbered, key, kNow, "POST", "/v1/messaging/ack", body));
         }
 
         CHECK(auth::verifyMac(maced, key, kNow + auth::kAuthFreshnessWindowSeconds, "POST",
-                  "/v1/messaging/ack", body, "dev-a")
+                  "/v1/messaging/ack", body)
             == kSeq);
         CHECK_THROWS(auth::verifyMac(maced, key, kNow + auth::kAuthFreshnessWindowSeconds + 1,
-            "POST", "/v1/messaging/ack", body, "dev-a"));
+            "POST", "/v1/messaging/ack", body));
         CHECK_THROWS(auth::verifyMac(maced, key, kNow - auth::kAuthFreshnessWindowSeconds - 1,
-            "POST", "/v1/messaging/ack", body, "dev-a"));
+            "POST", "/v1/messaging/ack", body));
 
         {
             auth::Headers broken = maced;
@@ -158,14 +175,14 @@ int main()
             auth::Headers broken = maced;
             broken.erase(name);
             CHECK_THROWS(
-                auth::verifyMac(broken, key, kNow, "POST", "/v1/messaging/ack", body, "dev-a"));
+                auth::verifyMac(broken, key, kNow, "POST", "/v1/messaging/ack", body));
         }
         {
             auth::Headers broken = maced;
             std::string& mac = broken[auth::kHeaderMac];
             mac[0] = mac[0] == 'a' ? 'b' : 'a';
             CHECK_THROWS(
-                auth::verifyMac(broken, key, kNow, "POST", "/v1/messaging/ack", body, "dev-a"));
+                auth::verifyMac(broken, key, kNow, "POST", "/v1/messaging/ack", body));
         }
     }
 

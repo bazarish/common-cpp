@@ -2,6 +2,7 @@
 #include "Client.hpp"
 
 #include "ResolverStub.hpp"
+#include "DeviceTestKit.hpp"
 #include "TunnelStub.hpp"
 
 #include <bazarish/Auth.hpp>
@@ -92,8 +93,8 @@ int main()
     const Bytes resolverDelegationDer
         = DelegationCertificate::issue(resolverRoot, resolverDelegated, now, now + resolverWeek);
 
-    const Identity alice = Identity::generate();
-    const Identity bob = Identity::generate();
+    const devicetest::Account alice;
+    const devicetest::Account bob;
     const Bytes bobCardKey = newLinkKey();
     const Bytes aliceCardKey = newLinkKey();
 
@@ -137,10 +138,12 @@ int main()
             card.issuedAt = static_cast<std::int64_t>(std::time(nullptr));
             card.dest = bobDest;
             const EpochNumber current = epochAt(card.issuedAt);
-            card.epochs = {{current, kFirstEpochGeneration, "bob1", Key::generateSealing().publicDer()},
-                {current + 1, kFirstEpochGeneration, "bob1", Key::generateSealing().publicDer()}};
+            card.epochs = {{current, kFirstEpochGeneration, bob.keys.id(), Key::generateSealing().publicDer()},
+                {current + 1, kFirstEpochGeneration, bob.keys.id(), Key::generateSealing().publicDer()}};
             card.servingSealingKeyDer = servingSealing.publicDer();
-            outcome.sealed = KeyedSeal(bobCardKey, kCardReplyLabel).seal(card.issue(bob));
+            card.devices = bob.book();
+            outcome.sealed
+                = KeyedSeal(bobCardKey, kCardReplyLabel).seal(card.issue(bob.device.signing()));
             return outcome;
         }
 
@@ -172,7 +175,7 @@ int main()
         const Descriptor descriptor{bob.fingerprint(), bobDest, bobCardKey};
         const ResolveRecord record{recordAlias, descriptor, now, now + resolverWeek};
         const ResolveResponse resp{signResolveRecord(record, resolverDelegated),
-            resolverDelegationDer, AliasCertificate::issue(bob, recordAlias, now)};
+            resolverDelegationDer, AliasCertificate::issue(bob.root, recordAlias, now)};
         const std::string respJson = toJson(resp).dump();
         outcome.ok = true;
         outcome.sealed = Bytes(respJson.begin(), respJson.end());
@@ -196,8 +199,8 @@ int main()
     server.post("/v1/messaging/clients",
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
-            CHECK(request.header("X-Bazarish-Client") == "client01");
-            CHECK(nlohmann::json::parse(request.body).at("clientId") == "client01");
+            CHECK(request.header(teststub::kCallerDeviceHeader) == alice.keys.id());
+            CHECK(nlohmann::json::parse(request.body).at("install") == "install01");
             respondJson(response, {{"ok", true}});
         }));
 
@@ -263,7 +266,7 @@ int main()
     endpoint.serverFingerprint = stubServerIdentity.fingerprint();
     endpoint.facades = {Facade{"127.0.0.1", port}};
 
-    Client client(Identity::fromPrivatePem(alice.privatePem()), "client01", endpoint);
+    Client client(alice.device.copy(), endpoint);
 
     {
         DestinationInfo serving = client.myDestination();
@@ -272,8 +275,9 @@ int main()
         serving.servingSealingKeyDer = servingSealing.publicDer();
         ContactCard content;
         const EpochNumber current = epochAt(nowSeconds());
-        content.epochs = {{current, kFirstEpochGeneration, "client01", Key::generateSealing().publicDer()},
-            {current + 1, kFirstEpochGeneration, "client01", Key::generateSealing().publicDer()}};
+        content.epochs = {{current, kFirstEpochGeneration, alice.keys.id(), Key::generateSealing().publicDer()},
+            {current + 1, kFirstEpochGeneration, alice.keys.id(), Key::generateSealing().publicDer()}};
+        content.devices = alice.book();
         const PublishResult result = client.publishCard(content, aliceCardKey, serving, 0);
         CHECK(!result.approvalPending);
         CHECK(result.dest == aliceDest);
@@ -348,7 +352,7 @@ int main()
     }
 
     {
-        client.registerThisClient();
+        client.registerThisDevice("install01");
         client.registerPasses({Bytes(kDeliveryPassSize, 0x44), Bytes(kDeliveryPassSize, 0x55)});
         CHECK(client.revokePasses({Bytes(kDeliveryPassSize, 0x44)}) == 1);
     }

@@ -5,6 +5,7 @@
 
 #include "AudioIo.hpp"
 #include "CallMedia.hpp"
+#include "DevicePairing.hpp"
 #include "Authorship.hpp"
 #include "BotMenu.hpp"
 #include "Client.hpp"
@@ -19,6 +20,7 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Clock.hpp>
 #include <bazarish/Crypto.hpp>
+#include <bazarish/Devices.hpp>
 #include <bazarish/Epochs.hpp>
 #include <bazarish/I2p.hpp>
 #include <bazarish/Limits.hpp>
@@ -71,8 +73,7 @@ struct Contact {
     std::string sendPass;
     bool issuedToThem = false;
     std::string displayName;
-    std::string identityClassicalB64;
-    std::string identityPqB64;
+    DeviceBook devices;
     Bytes avatar;
     std::string avatarMime;
     bool avatarSentToPeer = false;
@@ -144,6 +145,8 @@ std::string newMessageId();
 struct IncomingMessage {
     std::string contentType;
     std::string fromFingerprint;
+    // The device that signed it: of the contact, or of this account for an echo of its own.
+    std::string fromDevice;
     std::string text;
     bool sentByUs = false;
     bool establishedContact = false;
@@ -232,6 +235,25 @@ struct LetterTerms {
     std::string avatarDigest;
 };
 
+// What a secondary device may not do: the work of the account's root.
+class DeviceRoleRefusal : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+struct OwnDevice {
+    std::string id;
+    DeviceRole role = DeviceRole::eSecondary;
+    std::int64_t issuedAt = 0;
+    bool revoked = false;
+    bool current = false;
+};
+
+struct ContactDevice {
+    std::string id;
+    bool revoked = false;
+};
+
 // One thread, its owner, calls a Session; only the static functions may run on any thread.
 class Session {
     // Only the factories make a Session: its threads and callbacks hold its address.
@@ -284,13 +306,18 @@ public:
 
     using PairingEventFn = std::function<void(const PairingEvent&)>;
 
-    PairingOffer startPairing(PairingEventFn onEvent);
+    // The new device becomes `role`; only a primary pairs, and only a primary device gets the root.
+    PairingOffer startPairing(PairingEventFn onEvent, DeviceRole role = DeviceRole::ePrimary);
     void stopPairing();
+    // What a pairing hands the device that gave the right code: its certificate as `role`.
+    PairBundleFn pairingBundle(DeviceRole role, const Bytes& linkKey);
 
-    Bytes exportAccountBytes(const std::string& password);
+    // A primary bundle carries the root; a secondary one, a device made for it, good for one import.
+    Bytes exportAccountBytes(const std::string& password, DeviceRole role = DeviceRole::ePrimary);
     // The account as it travels, unsealed: kept in memory only, sealed before it leaves.
-    Bytes accountBundle();
-    void exportAccount(const std::filesystem::path& outFile, const std::string& password);
+    Bytes accountBundle(DeviceRole role);
+    void exportAccount(const std::filesystem::path& outFile, const std::string& password,
+        DeviceRole role = DeviceRole::ePrimary);
     static AccountKind bundleKind(const Bytes& bundle, const std::string& password);
     static AccountKind bundleKindOf(const Bytes& plain);
     static void importAccountBundle(const Bytes& plain, const std::filesystem::path& accountFile,
@@ -303,6 +330,15 @@ public:
         const std::string& atRestPassphrase = {});
 
     std::string fingerprint() const;
+    const std::string& deviceId() const;
+    DeviceRole role() const;
+    bool isPrimary() const;
+    // Active devices oldest first, then the revoked ones.
+    std::vector<OwnDevice> ownDevices() const;
+    // A new revocation list, card and key for the current epoch; only the devices left get the key.
+    void revokeDevice(const std::string& deviceId);
+    // Active devices oldest first, then the revoked ones; empty for an account not in the book.
+    std::vector<ContactDevice> contactDevices(const std::string& peerFingerprint) const;
     AccountKind kind() const { return kind_; }
     const PresenceSeed& presenceSeed() const;
     // The epochs contacts seal to, from the current one on.
@@ -389,8 +425,8 @@ public:
         const Bytes& bytes, const std::string& e2eId = {}, const DeliveryWatch& watch = {},
         const std::string& replyTo = {}, bool forwarded = false);
 
+    // The devices this account's server holds mail for.
     std::vector<Client::DeviceEntry> devices();
-    void retireDevice(const std::string& clientId);
     void closeAccountOnServer();
 
     std::string ensureI2pDestination();
@@ -444,8 +480,8 @@ public:
     void acceptContactRequest(const std::string& peerFingerprint);
 
     struct ContactFetchContext {
-        std::string identityPem;
-        std::string clientId;
+        std::string deviceSigningPem;
+        Bytes deviceCert;
         ServerEndpoint endpoint;
         std::filesystem::path i2pDataDir;
         ResolverCoordinate resolver;
@@ -454,7 +490,7 @@ public:
         FetchTransport transport;
     };
     struct AliasErrandContext {
-        std::string identityPem;
+        std::string rootPem;
         ResolverCoordinate resolver;
         bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax;
         std::string accountLabel;
@@ -754,7 +790,7 @@ public:
     bool hasContact(const std::string& peerFingerprint) const;
     std::vector<std::string> contactFingerprints() const;
 
-    Session(Made, std::filesystem::path accountFile, std::unique_ptr<Client> client,
+    Session(Made, std::filesystem::path accountFile, std::unique_ptr<Client> client, Key deviceSealing,
         std::shared_ptr<EpochRing> ring, std::map<std::string, Contact> contacts);
     ~Session();
     Session(const Session&) = delete;
@@ -800,12 +836,27 @@ private:
     void shareContactWithDevices(const std::string& peerFingerprint);
     void applyContactBook(const nlohmann::json& entries);
 
-    IdentityKeys knownKeysFor(const std::string& peerFingerprint) const;
-    static void rememberKeys(Contact& contact, const IdentityKeys& keys);
+    const DeviceBook& bookFor(const std::string& peerFingerprint) const;
+    void requirePrimary(const std::string& what) const;
+    Bytes openItem(const Bytes& sealed) const;
+    std::vector<std::string> siblingDevices() const;
+    void persistOwnDevices() const;
+    nlohmann::json ownDevicesLetter() const;
+    void sendOwnDevicesToDevices();
+    void sendDevicesTo(const std::string& peerFingerprint);
+    void announceThisDevice();
+    void takeOwnDevices(const nlohmann::json& body);
+    void takeContactDevices(const std::string& peerFingerprint, const nlohmann::json& body);
+    void takeContactBook(Contact& contact, const DeviceBook& offered);
+    void withdrawSelfDeliveriesTo(const std::string& device);
+    nlohmann::json bundleBase() const;
 
     void submitSignedToSelf(nlohmann::json inner, const std::string& kind,
         std::vector<std::string> ids = {}, const DeliveryWatch& watch = {},
         std::int64_t notAfterMs = 0);
+    void submitSignedToDevices(const std::vector<std::string>& devices, nlohmann::json inner,
+        const std::string& kind, std::vector<std::string> ids = {},
+        const DeliveryWatch& watch = {}, std::int64_t notAfterMs = 0, bool withCert = false);
 
     void noteWire(bool outgoing, std::string what, std::string status, std::string detail) const;
     std::string wireName(const std::string& peerFingerprint) const;
@@ -849,9 +900,11 @@ private:
     bool sendsEpochsTo(const std::string& peerFingerprint) const;
     bool epochsQueued(const std::string& peerFingerprint) const;
     void sendEpochsTo(const std::string& peerFingerprint);
-    void takeEpochs(const std::string& peerFingerprint, const nlohmann::json& body);
-    void takeOwnEpochs(const nlohmann::json& body);
-    void sendRingToDevices(const std::set<EpochNumber>& numbers);
+    void takeEpochs(const std::string& peerFingerprint, const std::string& fromDevice,
+        const nlohmann::json& body);
+    void takeOwnEpochs(const std::string& fromDevice, const nlohmann::json& body);
+    void sendRingToDevices(const std::set<EpochNumber>& numbers, std::vector<std::string> devices);
+    void dropUnmadeEpochs(Contact& contact) const;
     void takeContactEpochs(const std::string& peerFingerprint, const std::vector<EpochPublic>& offered);
     bool refreshContactEpochs(const std::string& peerFingerprint);
     void syncAvatarToSelf();
@@ -876,6 +929,7 @@ private:
     struct OutboxEntry {
         std::string peer;
         bool own = false;
+        std::string toDevice;
         std::string deliveryClass;
         std::string deliveryId;
         Bytes pass;
@@ -1065,6 +1119,12 @@ private:
     };
     std::shared_ptr<PairingRegistry> pairing_ = std::make_shared<PairingRegistry>();
     std::shared_ptr<EpochRing> ring_;
+    Key deviceSealing_;
+    std::optional<Identity> root_;
+    std::string install_;
+    DeviceBook ownBook_;
+    // The sealing key of each of the account's devices, this one too.
+    std::map<std::string, Bytes> ownSealing_;
     UtcClock epochClock_ = systemUtcSeconds;
     std::map<std::string, std::int64_t> epochsDue_;
     // UTC second each missing epoch of ours is made at, unless another device's key comes first.

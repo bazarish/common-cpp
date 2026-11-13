@@ -40,6 +40,8 @@ add_library(bazarish_common STATIC
     src/Epochs.cpp
     src/Tunnel.cpp
     src/Certificates.cpp
+    src/Devices.cpp
+    src/SignedDocument.cpp
     src/Pass.cpp
     src/Padding.cpp
     src/JsonRead.cpp
@@ -137,6 +139,7 @@ bazarish_add_test(TestHybrid)
 bazarish_add_test(TestTunnel)
 bazarish_add_test(TestReseedSu3)
 bazarish_add_test(TestCertificates)
+bazarish_add_test(TestDevices)
 bazarish_add_test(TestPass)
 bazarish_add_test(TestPadding)
 bazarish_add_test(TestJsonRead)

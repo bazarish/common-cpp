@@ -6,6 +6,7 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Clock.hpp>
 #include <bazarish/Crypto.hpp>
+#include <bazarish/Devices.hpp>
 #include <bazarish/Hybrid.hpp>
 #include <nlohmann/json.hpp>
 
@@ -338,7 +339,7 @@ private:
 
 struct Person {
     Identity identity = Identity::generate();
-    std::shared_ptr<EpochRing> ring = epochtest::ringAround(kNoon, "p1");
+    std::shared_ptr<EpochRing> ring = epochtest::ringAround(kNoon, "pppppppppp");
     PresenceSeed seed = PresenceSeed::generate();
     Key presence = seed.readerFor(kDay);
     std::string dest = seed.hostFor(kDay);
@@ -347,7 +348,8 @@ struct Person {
     {
         PresenceAccount account;
         account.fingerprint = identity.fingerprint();
-        account.identityPem = identity.privatePem();
+        account.device = deviceIdOf(identity.classical().publicDer(), identity.pq().publicDer());
+        account.deviceSigningPem = identity.privatePem();
         account.ring = ring;
         account.seed = seed.bytes();
         return account;
@@ -363,7 +365,7 @@ struct Person {
         PresenceContact contact;
         contact.fingerprint = identity.fingerprint();
         contact.epochs = ring->inUse(0);
-        contact.identity = IdentityKeys{identity.classical().publicDer(), identity.pq().publicDer()};
+        contact.devices = {{deviceIdOf(identity.classical().publicDer(), identity.pq().publicDer()), identity.classical().publicDer()}};
         contact.schedule = presenceScheduleFrom(seed, kDay, kScheduledDays);
         return contact;
     }
@@ -383,6 +385,7 @@ public:
         watch.id = randomBytes(kPresenceSubscriptionIdBytes);
         watch.key = randomBytes(kAeadKeyBytes);
         watch.from = from.fp();
+        watch.device = deviceIdOf(from.identity.classical().publicDer(), from.identity.pq().publicDer());
         watch.reply = link_.host();
         watch.sentAt = g_utc.load();
         key_ = watch.key;
@@ -673,6 +676,8 @@ int main()
                 watch.id = randomBytes(kPresenceSubscriptionIdBytes);
                 watch.key = randomBytes(kAeadKeyBytes);
                 watch.from = dave.fp();
+                watch.device
+                    = deviceIdOf(dave.identity.classical().publicDer(), dave.identity.pq().publicDer());
                 watch.reply = inbox.host();
                 watch.sentAt = g_utc.load();
                 inbox.send(alice.dest, presenceWatchFrame(watch, signer, aliceSealing));

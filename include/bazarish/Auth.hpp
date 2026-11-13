@@ -3,6 +3,7 @@
 
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
+#include "bazarish/Devices.hpp"
 
 #include <cstdint>
 #include <map>
@@ -20,7 +21,7 @@ extern const char* const kHeaderTimestamp;
 extern const char* const kHeaderSignatureClassical;
 extern const char* const kHeaderSignaturePq;
 extern const char* const kHeaderNonce;
-extern const char* const kHeaderClient;
+extern const char* const kHeaderDevice;
 
 // Ed25519 is deterministic: without a nonce a retry is indistinguishable from a replay.
 inline constexpr std::size_t kAuthNonceBytes = 16;
@@ -40,24 +41,21 @@ std::string sessionHandle(const Bytes& secret, std::uint64_t seq);
 
 // The signed target is the request target as sent: the path, and ?query when it has one.
 Headers macRequest(const std::string& handle, const Bytes& sessionKey, std::uint64_t seq,
-    std::int64_t timestamp, const std::string& method, const std::string& target, const Bytes& body,
-    const std::string& clientId = {});
+    std::int64_t timestamp, const std::string& method, const std::string& target, const Bytes& body);
 
 std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, std::int64_t now,
-    const std::string& method, const std::string& target, const Bytes& body,
-    const std::string& clientId = {});
+    const std::string& method, const std::string& target, const Bytes& body);
 
 bool hasSessionHeaders(const Headers& headers);
 
 std::string makeCanonicalString(std::int64_t timestamp, const std::string& method,
-    const std::string& target, const Bytes& body, const std::string& clientId = {});
+    const std::string& target, const Bytes& body);
 
 Headers signRequest(const Identity& identity, std::int64_t timestamp,
-    const std::string& method, const std::string& target, const Bytes& body,
-    const std::string& clientId = {});
+    const std::string& method, const std::string& target, const Bytes& body);
 
 std::string verifyRequest(const Headers& headers, std::int64_t now, const std::string& method,
-    const std::string& target, const Bytes& body, const std::string& clientId = {});
+    const std::string& target, const Bytes& body);
 
 class ReplayCache {
 public:
@@ -74,7 +72,20 @@ std::string authorizeRequest(const Headers& headers, std::int64_t now,
     const std::vector<std::string>& authorizedFingerprints, ReplayCache& replayCache);
 
 std::string verifyRequest(const Headers& headers, std::int64_t now, const std::string& method,
-    const std::string& target, const Bytes& body, ReplayCache& replayCache,
-    const std::string& clientId = {});
+    const std::string& target, const Bytes& body, ReplayCache& replayCache);
+
+// Signed by a device key; the device's certificate rides along and names the account.
+Headers signDeviceRequest(const DeviceCredential& credential, std::int64_t timestamp,
+    const std::string& method, const std::string& target, const Bytes& body);
+
+struct DeviceCaller {
+    std::string user;
+    std::string device;
+    DeviceRole role = DeviceRole::eSecondary;
+};
+
+DeviceCaller verifyDeviceRequest(const Headers& headers, std::int64_t now,
+    const std::string& method, const std::string& target, const Bytes& body,
+    ReplayCache& replayCache);
 
 }  // namespace bazarish::auth

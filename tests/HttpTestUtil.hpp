@@ -42,11 +42,18 @@ inline bazarish::http::ClientResponse callTls(const int port, const std::string&
 }
 
 inline Headers signedHeaders(const bazarish::Identity& identity, const std::string& method,
-    const std::string& path, const std::string& body, const std::string& clientId = {})
+    const std::string& path, const std::string& body)
 {
     const bazarish::auth::Headers signature = bazarish::auth::signRequest(identity,
-        bazarish::nowSeconds(), method, path, bazarish::Bytes(body.begin(), body.end()),
-        clientId);
+        bazarish::nowSeconds(), method, path, bazarish::Bytes(body.begin(), body.end()));
+    return Headers(signature.begin(), signature.end());
+}
+
+inline Headers deviceHeaders(const bazarish::DeviceCredential& device, const std::string& method,
+    const std::string& path, const std::string& body)
+{
+    const bazarish::auth::Headers signature = bazarish::auth::signDeviceRequest(device,
+        bazarish::nowSeconds(), method, path, bazarish::Bytes(body.begin(), body.end()));
     return Headers(signature.begin(), signature.end());
 }
 

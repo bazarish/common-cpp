@@ -138,7 +138,7 @@ private:
 struct TestKeys {
     Key signing = Key::generateSigning();
     Key serving = Key::generateSealing();
-    std::shared_ptr<EpochRing> recipient = epochtest::ringAround(nowSeconds(), "r1");
+    std::shared_ptr<EpochRing> recipient = epochtest::ringAround(nowSeconds(), "rrrrrrrrrr");
 };
 
 std::string deliveredReply(const Key& signing, const std::string& deliveryId)

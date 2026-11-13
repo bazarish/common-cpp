@@ -96,14 +96,14 @@ std::string deliveryIdFor(
 
 class Client {
 public:
-    Client(Identity identity, std::string clientId, ServerEndpoint endpoint,
+    Client(DeviceCredential credential, ServerEndpoint endpoint,
         std::filesystem::path i2pDataDir = {});
 
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
 
-    const Identity& identity() const;
-    const std::string& clientId() const;
+    const DeviceCredential& credential() const;
+    const std::string& deviceId() const;
     const ServerEndpoint& endpoint() const;
     std::string activeFacadeAddress() const;
     std::string gatewayRefusal() const;
@@ -132,14 +132,14 @@ public:
         const std::function<void()>& solving = {});
     DestinationInfo myDestination();
 
-    void registerThisClient();
+    // `install` tells this copy of the device from any other copy of its keys.
+    void registerThisDevice(const std::string& install);
     struct DeviceEntry {
-        std::string clientId;
+        std::string device;
         bool current = false;
         std::size_t queued = 0;
     };
     std::vector<DeviceEntry> listClients();
-    void retireClient(const std::string& clientId);
     void registerPasses(const std::vector<Bytes>& handles);
     std::size_t revokePasses(const std::vector<Bytes>& handles);
     std::vector<PendingEntry> listPending();
@@ -149,14 +149,15 @@ public:
     // Items no longer held are left out of the answer.
     std::vector<FetchedItem> fetch(const std::vector<std::string>& ids);
     void ack(const std::vector<std::string>& ids);
-    void submitSelf(const std::string& deliveryId, const Bytes& payload, const std::string& kind);
+    void submitSelf(const std::string& deliveryId, const Bytes& payload, const std::string& kind,
+        const std::string& toDevice);
 
     WireLog& wireLog();
     std::shared_ptr<WireLog> wireLogHandle() const;
     void shareWireLog(std::shared_ptr<WireLog> log);
 
 private:
-    const Identity identity_;
+    const DeviceCredential credential_;
     std::shared_ptr<WireLog> log_ = std::make_shared<WireLog>();
     ApiClient api_;
 };

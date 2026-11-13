@@ -86,6 +86,9 @@ struct Letter {
     Bytes servingSealingDer;
     Bytes plain;
     std::vector<EpochPublic> sealTo;
+    // Set on a letter to one of the account's own devices: sealed to that device's key instead.
+    std::string toDevice;
+    Bytes deviceSealingDer;
     Bytes payload;
     std::string kind;
     // UTC milliseconds; zero for a letter that stays current.

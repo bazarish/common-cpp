@@ -19,6 +19,7 @@
 namespace bazarish::teststub {
 
 inline constexpr const char* kCallerHeader = "x-bazarish-test-caller";
+inline constexpr const char* kCallerDeviceHeader = "x-bazarish-test-device";
 
 class Tunnel {
 public:
@@ -75,12 +76,12 @@ private:
         };
         if (bazarish::tunnel::isHello(frame)) {
             const bazarish::tunnel::Hello hello = bazarish::tunnel::openHello(frame, sealing_);
-            const std::string user
-                = auth::verifyRequest(hello.signature, static_cast<std::int64_t>(std::time(nullptr)),
-                    bazarish::tunnel::kHelloMethod, bazarish::tunnel::kHelloPath, hello.secret);
+            const auth::DeviceCaller caller = auth::verifyDeviceRequest(hello.signature,
+                static_cast<std::int64_t>(std::time(nullptr)), bazarish::tunnel::kHelloMethod,
+                bazarish::tunnel::kHelloPath, hello.secret, replays_);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                secrets_.push_back({hello.secret, user, 0});
+                secrets_.push_back({hello.secret, caller.user, caller.device, 0});
                 ++opened_;
             }
             sealed(bazarish::tunnel::sealWelcome(
@@ -92,6 +93,7 @@ private:
         const std::string handle = bazarish::tunnel::handleOf(frame);
         Bytes key;
         std::string caller;
+        std::string device;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             for (Opened& open : secrets_) {
@@ -102,6 +104,7 @@ private:
                         key = bazarish::tunnel::deriveTunnelKey(
                             open.secret, toHex(sha256(open.secret)).substr(0, 32));
                         caller = open.user;
+                        device = open.device;
                         break;
                     }
                 }
@@ -151,6 +154,7 @@ private:
             inner.headers[lowered] = value;
         }
         inner.headers[kCallerHeader] = caller;
+        inner.headers[kCallerDeviceHeader] = device;
         server.dispatch(inner, [sealed, handle, key](bazarish::http::Response answer) {
             bazarish::tunnel::Response out;
             out.status = answer.status;
@@ -167,10 +171,12 @@ private:
     struct Opened {
         Bytes secret;
         std::string user;
+        std::string device;
         std::uint64_t lastSeq = 0;
     };
 
     Key sealing_;
+    auth::ReplayCache replays_;
     mutable std::mutex mutex_;
     std::vector<Opened> secrets_;
     int opened_ = 0;

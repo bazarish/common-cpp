@@ -34,6 +34,7 @@ AccountDb::AccountDb(const fs::path& file, const std::string& passphrase)
     : file_(file)
     , db_(opened(file, passphrase), "account database")
 {
+    db_.run("PRAGMA secure_delete = ON");
     db_.run("CREATE TABLE IF NOT EXISTS state (name TEXT PRIMARY KEY, value BLOB)");
 }
 

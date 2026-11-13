@@ -4,6 +4,8 @@
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Clock.hpp"
 #include "bazarish/Crypto.hpp"
+#include "bazarish/Devices.hpp"
+#include "bazarish/Hybrid.hpp"
 #include "bazarish/Limits.hpp"
 
 #include <nlohmann/json.hpp>
@@ -31,7 +33,9 @@ inline constexpr std::size_t kCardEpochs = 2;
 inline constexpr std::uint8_t kEpochKidTag = 0x01;
 inline constexpr std::size_t kEpochKidNumberBytes = 4;
 inline constexpr std::size_t kEpochKidGenerationBytes = 4;
-inline constexpr std::size_t kMaxEpochCreatorBytes = 16;
+static_assert(sizeof(kEpochKidTag) + kEpochKidNumberBytes + kEpochKidGenerationBytes + kDeviceIdLength
+        <= hybrid::kMaxSealKidBytes,
+    "an epoch key id fits a sealed frame");
 
 EpochNumber epochAt(std::int64_t utcSeconds);
 std::int64_t epochStart(EpochNumber n);

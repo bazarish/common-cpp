@@ -10,6 +10,7 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Clock.hpp>
 #include <bazarish/Crypto.hpp>
+#include <bazarish/Devices.hpp>
 #include <bazarish/GatewayProtocol.hpp>
 #include <bazarish/HttpServer.hpp>
 #include <bazarish/I2p.hpp>
@@ -111,21 +112,22 @@ int main()
     const std::filesystem::path dataDir = testutil::freshDir("presence-gateway");
 
     const Identity alice = Identity::generate();
-    const std::shared_ptr<EpochRing> aliceRing = epochtest::ringAround(g_utc.load(), "a1");
+    const std::shared_ptr<EpochRing> aliceRing = epochtest::ringAround(g_utc.load(), "aaaaaaaaaa");
     const PresenceSeed aliceSeed = PresenceSeed::generate();
     const Identity bob = Identity::generate();
-    const std::shared_ptr<EpochRing> bobRing = epochtest::ringAround(g_utc.load(), "b1");
+    const std::shared_ptr<EpochRing> bobRing = epochtest::ringAround(g_utc.load(), "bbbbbbbbbb");
     const PresenceSeed bobSeed = PresenceSeed::generate();
 
     PresenceAccount account;
     account.fingerprint = alice.fingerprint();
-    account.identityPem = alice.privatePem();
+    account.device = deviceIdOf(alice.classical().publicDer(), alice.pq().publicDer());
+    account.deviceSigningPem = alice.privatePem();
     account.ring = aliceRing;
     account.seed = aliceSeed.bytes();
     PresenceContact contact;
     contact.fingerprint = bob.fingerprint();
     contact.epochs = bobRing->inUse(0);
-    contact.identity = IdentityKeys{bob.classical().publicDer(), bob.pq().publicDer()};
+    contact.devices = {{deviceIdOf(bob.classical().publicDer(), bob.pq().publicDer()), bob.classical().publicDer()}};
     contact.schedule = presenceScheduleFrom(bobSeed, kDay, kScheduledDays);
     PresenceTimings timings;
     timings.tick = kTick;

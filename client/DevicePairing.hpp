@@ -2,6 +2,7 @@
 #pragma once
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/Devices.hpp>
 #include <bazarish/I2p.hpp>
 #include <bazarish/I2pHttp.hpp>
 #include <bazarish/PairLink.hpp>
@@ -20,6 +21,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -30,13 +32,20 @@ namespace bazarish::client {
 inline constexpr std::size_t kPairCodeDigits = 4;
 inline constexpr int kMaxWrongCodes = 10;
 inline constexpr std::size_t kMaxPairBundleBytes = 32 * 1024 * 1024;
-inline constexpr std::size_t kMaxPairHelloBytes = 256;
+// The code and the new device's public keys, sealed under the link's key.
+inline constexpr std::size_t kMaxPairHelloBytes = 8 * 1024;
 
 inline constexpr int kPairAcceptPollSeconds = 5;
 inline constexpr int kPairRequestQuietSeconds = 60;
 inline constexpr int kPairPeerQuietSeconds = 120;
 inline constexpr int kPairDrainSeconds = 60;
 inline constexpr char kPairingAccountLabel[] = "pairing";
+
+// The account bundle's device block: the certificate, and the keys only the device itself holds.
+inline constexpr char kBundleDeviceField[] = "device";
+inline constexpr char kBundleDeviceCertField[] = "cert";
+inline constexpr char kBundleDeviceSigningField[] = "signing";
+inline constexpr char kBundleDeviceSealingField[] = "sealing";
 
 void notePairingTrouble(const std::string& reason);
 
@@ -46,13 +55,16 @@ bool isPairCode(const std::string& text);
 struct PairVerdict {
     int status = kI2pHttpNotFound;
     bool counted = false;
+    // The device asking, once its code is right.
+    std::optional<DevicePublic> device;
 };
 
 // A hello that does not open under the link's key is not counted: without the key no guess is.
 PairVerdict pairVerdict(const std::string& method, const std::string& target, const Bytes& hello,
     const std::string& code, const Bytes& key);
 
-std::string pairRequest(const std::string& dest, const std::string& code, const Bytes& key);
+std::string pairRequest(
+    const std::string& dest, const std::string& code, const Bytes& key, const DevicePublic& device);
 Bytes sealPairBundle(const Bytes& key, const Bytes& bundle);
 Bytes openPairBundle(const Bytes& key, const Bytes& sealed);
 std::string pairRefusal(int status, int triesLeft);
@@ -61,6 +73,11 @@ int pairTriesLeft(const std::map<std::string, std::string>& headers);
 
 using PairProgressFn = std::function<void(std::uint64_t done, std::uint64_t total)>;
 using PairRefusedFn = std::function<void(int wrongCodes)>;
+// The sealed bundle for the device that gave the right code.
+using PairBundleFn = std::function<Bytes(const DevicePublic& device)>;
+
+// Puts the keys this device made into the bundle the other device made for them; sealed again.
+Bytes completePairBundle(const Bytes& key, const Bytes& sealed, const DeviceKeys& made);
 
 struct PairServeResult {
     bool delivered = false;
@@ -137,9 +154,9 @@ Bytes readPairHello(Stream& stream, const I2pHttpRequestHead& head)
 }
 
 template <class Endpoint>
-PairServeResult servePairBundle(Endpoint& endpoint, const Bytes& bundle, const std::string& code,
-    const Bytes& key, const PairProgressFn& onProgress, const PairRefusedFn& onWrongCode,
-    const std::atomic<bool>& cancel)
+PairServeResult servePairBundle(Endpoint& endpoint, const PairBundleFn& makeBundle,
+    const std::string& code, const Bytes& key, const PairProgressFn& onProgress,
+    const PairRefusedFn& onWrongCode, const std::atomic<bool>& cancel)
 {
     PairServeResult result;
     while (!cancel.load()) {
@@ -169,7 +186,7 @@ PairServeResult servePairBundle(Endpoint& endpoint, const Bytes& bundle, const s
                 }
                 continue;
             }
-            if (writePairBundle(*stream, bundle, onProgress, cancel)) {
+            if (writePairBundle(*stream, makeBundle(*verdict.device), onProgress, cancel)) {
                 stream->close();
                 result.delivered = true;
                 return result;
@@ -222,8 +239,8 @@ Bytes readPairBundle(Stream& stream, const I2pHttpHead& head, const PairProgress
 
 template <class Endpoint>
 PairFetchResult fetchPairBundle(Endpoint& endpoint, const std::string& dest,
-    const std::string& code, const Bytes& key, const PairProgressFn& onProgress,
-    const std::atomic<bool>& cancel)
+    const std::string& code, const Bytes& key, const DevicePublic& device,
+    const PairProgressFn& onProgress, const std::atomic<bool>& cancel)
 {
     if (!endpoint.waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
         throw std::runtime_error("this device could not build I2P tunnels");
@@ -233,7 +250,7 @@ PairFetchResult fetchPairBundle(Endpoint& endpoint, const std::string& dest,
         throw std::runtime_error("cannot reach the other device");
     }
     stream->setReadTimeout(std::chrono::seconds(kPairPeerQuietSeconds));
-    const std::string request = pairRequest(dest, code, key);
+    const std::string request = pairRequest(dest, code, key, device);
     stream->writeAll(viewOf(request));
     const I2pHttpHead head = readI2pHttpHead(*stream);
     if (head.status == kI2pHttpForbidden) {
@@ -250,6 +267,21 @@ PairFetchResult fetchPairBundle(Endpoint& endpoint, const std::string& dest,
     PairFetchResult got;
     got.bundle = readPairBundle(*stream, head, onProgress, cancel);
     stream->close();
+    return got;
+}
+
+// Makes this device's keys, asks for the account with them and keeps them in what comes back.
+template <class Endpoint>
+PairFetchResult fetchPairBundle(Endpoint& endpoint, const std::string& dest,
+    const std::string& code, const Bytes& key, const PairProgressFn& onProgress,
+    const std::atomic<bool>& cancel)
+{
+    const DeviceKeys made = DeviceKeys::generate();
+    PairFetchResult got
+        = fetchPairBundle(endpoint, dest, code, key, DevicePublic::of(made), onProgress, cancel);
+    if (!got.wrongCode) {
+        got.bundle = completePairBundle(key, got.bundle, made);
+    }
     return got;
 }
 

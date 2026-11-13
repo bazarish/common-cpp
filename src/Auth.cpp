@@ -35,41 +35,37 @@ const char* const kHeaderTimestamp = "X-Bazarish-Timestamp";
 const char* const kHeaderSignatureClassical = "X-Bazarish-Sig-Classical";
 const char* const kHeaderSignaturePq = "X-Bazarish-Sig-Pq";
 const char* const kHeaderNonce = "X-Bazarish-Nonce";
-const char* const kHeaderClient = "X-Bazarish-Client";
+const char* const kHeaderDevice = "X-Bazarish-Device";
 
 namespace {
 
 std::string canonicalFromDigest(const std::int64_t timestamp, const std::string& method,
-    const std::string& target, const std::string& bodySha256Hex, const std::string& clientId)
+    const std::string& target, const std::string& bodySha256Hex)
 {
-    const std::string base = "v2\n" + std::to_string(timestamp) + "\n" + method + "\n" + target
-        + "\n" + bodySha256Hex + "\n";
-    return clientId.empty() ? base : base + clientId + "\n";
+    return "v2\n" + std::to_string(timestamp) + "\n" + method + "\n" + target + "\n"
+        + bodySha256Hex + "\n";
 }
 
 }  // namespace
 
 std::string makeCanonicalString(const std::int64_t timestamp, const std::string& method,
-    const std::string& target, const Bytes& body, const std::string& clientId)
+    const std::string& target, const Bytes& body)
 {
-    return canonicalFromDigest(timestamp, method, target, toHex(sha256(body)), clientId);
+    return canonicalFromDigest(timestamp, method, target, toHex(sha256(body)));
 }
 
 namespace {
 
 std::string signatureCanonical(const std::int64_t timestamp, const std::string& method,
-    const std::string& target, const std::string& bodySha256Hex, const std::string& clientId,
-    const std::string& nonce)
+    const std::string& target, const std::string& bodySha256Hex, const std::string& nonce)
 {
-    return canonicalFromDigest(timestamp, method, target, bodySha256Hex, clientId) + nonce + "\n";
+    return canonicalFromDigest(timestamp, method, target, bodySha256Hex) + nonce + "\n";
 }
 
 std::string macCanonical(const std::int64_t timestamp, const std::string& method,
-    const std::string& target, const Bytes& body, const std::uint64_t seq,
-    const std::string& clientId)
+    const std::string& target, const Bytes& body, const std::uint64_t seq)
 {
-    return makeCanonicalString(timestamp, method, target, body, clientId) + std::to_string(seq)
-        + "\n";
+    return makeCanonicalString(timestamp, method, target, body) + std::to_string(seq) + "\n";
 }
 
 }  // namespace
@@ -89,7 +85,7 @@ std::string sessionHandle(const Bytes& secret, const std::uint64_t seq)
 
 Headers macRequest(const std::string& handle, const Bytes& sessionKey, const std::uint64_t seq,
     const std::int64_t timestamp, const std::string& method, const std::string& target,
-    const Bytes& body, const std::string& clientId)
+    const Bytes& body)
 {
     Headers headers;
     headers[kHeaderSession] = handle;
@@ -97,7 +93,7 @@ Headers macRequest(const std::string& handle, const Bytes& sessionKey, const std
     headers[kHeaderTimestamp] = std::to_string(timestamp);
     headers[kHeaderMac] = bazarish::service::hmacSha256Hex(
         std::string(sessionKey.begin(), sessionKey.end()),
-        macCanonical(timestamp, method, target, body, seq, clientId));
+        macCanonical(timestamp, method, target, body, seq));
     return headers;
 }
 
@@ -108,8 +104,7 @@ bool hasSessionHeaders(const Headers& headers)
 }
 
 std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, const std::int64_t now,
-    const std::string& method, const std::string& target, const Bytes& body,
-    const std::string& clientId)
+    const std::string& method, const std::string& target, const Bytes& body)
 {
     const std::int64_t timestamp = std::strtoll(
         requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
@@ -120,7 +115,7 @@ std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, const s
         = std::strtoull(requireHeader(headers, kHeaderSeq).c_str(), nullptr, 10);
     const std::string expected = bazarish::service::hmacSha256Hex(
         std::string(sessionKey.begin(), sessionKey.end()),
-        macCanonical(timestamp, method, target, body, seq, clientId));
+        macCanonical(timestamp, method, target, body, seq));
     const std::string presented = requireHeader(headers, kHeaderMac);
     if (expected.size() != presented.size()
         || CRYPTO_memcmp(expected.data(), presented.data(), expected.size()) != 0) {
@@ -131,23 +126,14 @@ std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, const s
 
 namespace {
 
-Headers signRequestDigest(const Identity& identity, const std::int64_t timestamp,
-    const std::string& method, const std::string& target, const std::string& bodySha256Hex,
-    const std::string& clientId)
+Headers signedWith(const Identity& identity, const std::int64_t timestamp,
+    const std::string& method, const std::string& target, const Bytes& body)
 {
     const std::string nonce = toBase64(randomBytes(kAuthNonceBytes));
     const std::string canonical
-        = signatureCanonical(timestamp, method, target, bodySha256Hex, clientId, nonce);
+        = signatureCanonical(timestamp, method, target, toHex(sha256(body)), nonce);
     const Bytes canonicalBytes(canonical.begin(), canonical.end());
-
-    const nlohmann::json keys = {
-        {"c", toBase64(identity.classical().publicDer())},
-        {"pq", toBase64(identity.pq().publicDer())},
-    };
-    const std::string keysText = keys.dump();
-
     Headers headers;
-    headers[kHeaderKeys] = toBase64(Bytes(keysText.begin(), keysText.end()));
     headers[kHeaderTimestamp] = std::to_string(timestamp);
     headers[kHeaderNonce] = nonce;
     headers[kHeaderSignatureClassical] = toBase64(sign(identity.classical(), canonicalBytes));
@@ -158,17 +144,29 @@ Headers signRequestDigest(const Identity& identity, const std::int64_t timestamp
 }  // namespace
 
 Headers signRequest(const Identity& identity, const std::int64_t timestamp,
-    const std::string& method, const std::string& target, const Bytes& body,
-    const std::string& clientId)
+    const std::string& method, const std::string& target, const Bytes& body)
 {
-    return signRequestDigest(identity, timestamp, method, target, toHex(sha256(body)), clientId);
+    const nlohmann::json keys = {
+        {"c", toBase64(identity.classical().publicDer())},
+        {"pq", toBase64(identity.pq().publicDer())},
+    };
+    const std::string keysText = keys.dump();
+    Headers headers = signedWith(identity, timestamp, method, target, body);
+    headers[kHeaderKeys] = toBase64(Bytes(keysText.begin(), keysText.end()));
+    return headers;
+}
+
+Headers signDeviceRequest(const DeviceCredential& credential, const std::int64_t timestamp,
+    const std::string& method, const std::string& target, const Bytes& body)
+{
+    Headers headers = signedWith(credential.signing(), timestamp, method, target, body);
+    headers[kHeaderDevice] = toBase64(credential.certDer());
+    return headers;
 }
 
 namespace {
 
-std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
-    const std::string& method, const std::string& target, const std::string& bodySha256Hex,
-    const std::string& clientId)
+std::int64_t freshTimestamp(const Headers& headers, const std::int64_t now)
 {
     const std::int64_t timestamp = std::strtoll(
         requireHeader(headers, kHeaderTimestamp).c_str(), nullptr, 10);
@@ -176,7 +174,21 @@ std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
         || timestamp > now + kAuthFreshnessWindowSeconds) {
         throw std::runtime_error("auth timestamp outside the freshness window");
     }
+    return timestamp;
+}
 
+Bytes signedCanonical(const Headers& headers, const std::int64_t now, const std::string& method,
+    const std::string& target, const Bytes& body)
+{
+    const std::string canonical = signatureCanonical(freshTimestamp(headers, now), method, target,
+        toHex(sha256(body)), requireHeader(headers, kHeaderNonce));
+    return Bytes(canonical.begin(), canonical.end());
+}
+
+std::string verifiedSigner(const Headers& headers, const std::int64_t now,
+    const std::string& method, const std::string& target, const Bytes& body)
+{
+    const Bytes canonicalBytes = signedCanonical(headers, now, method, target, body);
     const Bytes keysRaw = fromBase64(requireHeader(headers, kHeaderKeys));
     const nlohmann::json keys = parseJson(keysRaw);
     const Bytes classicalDer = fromBase64(keys.at("c").get<std::string>());
@@ -190,10 +202,6 @@ std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
     if (!pq.isA(kPqSigningAlgorithm)) {
         throw std::runtime_error("auth pq key is not ML-DSA-65");
     }
-
-    const std::string canonical = signatureCanonical(
-        timestamp, method, target, bodySha256Hex, clientId, requireHeader(headers, kHeaderNonce));
-    const Bytes canonicalBytes(canonical.begin(), canonical.end());
     if (!verify(classical, canonicalBytes,
             fromBase64(requireHeader(headers, kHeaderSignatureClassical)))) {
         throw std::runtime_error("auth classical signature verification failed");
@@ -201,17 +209,15 @@ std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
     if (!verify(pq, canonicalBytes, fromBase64(requireHeader(headers, kHeaderSignaturePq)))) {
         throw std::runtime_error("auth pq signature verification failed");
     }
-
     return hybridFingerprint(classicalDer, pqDer);
 }
 
 }  // namespace
 
 std::string verifyRequest(const Headers& headers, const std::int64_t now,
-    const std::string& method, const std::string& target, const Bytes& body,
-    const std::string& clientId)
+    const std::string& method, const std::string& target, const Bytes& body)
 {
-    return verifyRequestDigest(headers, now, method, target, toHex(sha256(body)), clientId);
+    return verifiedSigner(headers, now, method, target, body);
 }
 
 namespace {
@@ -261,26 +267,26 @@ bool ReplayCache::checkAndRecord(
     return seen_.emplace(nonce, timestamp).second;
 }
 
-namespace {
-
-std::string verifyRequestDigest(const Headers& headers, const std::int64_t now,
-    const std::string& method, const std::string& target, const std::string& bodySha256Hex,
-    ReplayCache& replayCache, const std::string& clientId)
+std::string verifyRequest(const Headers& headers, const std::int64_t now,
+    const std::string& method, const std::string& target, const Bytes& body,
+    ReplayCache& replayCache)
 {
-    const std::string fingerprint
-        = verifyRequestDigest(headers, now, method, target, bodySha256Hex, clientId);
+    const std::string fingerprint = verifiedSigner(headers, now, method, target, body);
     requireFirstUse(headers, now, replayCache);
     return fingerprint;
 }
 
-}  // namespace
-
-std::string verifyRequest(const Headers& headers, const std::int64_t now,
+DeviceCaller verifyDeviceRequest(const Headers& headers, const std::int64_t now,
     const std::string& method, const std::string& target, const Bytes& body,
-    ReplayCache& replayCache, const std::string& clientId)
+    ReplayCache& replayCache)
 {
-    return verifyRequestDigest(
-        headers, now, method, target, toHex(sha256(body)), replayCache, clientId);
+    const Bytes canonicalBytes = signedCanonical(headers, now, method, target, body);
+    const DeviceCertificate cert
+        = DeviceCertificate::verify(fromBase64(requireHeader(headers, kHeaderDevice)));
+    cert.requireSigned(canonicalBytes, fromBase64(requireHeader(headers, kHeaderSignatureClassical)),
+        fromBase64(requireHeader(headers, kHeaderSignaturePq)));
+    requireFirstUse(headers, now, replayCache);
+    return DeviceCaller{cert.root, cert.device, cert.role};
 }
 
 }  // namespace bazarish::auth

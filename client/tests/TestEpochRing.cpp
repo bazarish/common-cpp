@@ -38,43 +38,44 @@ int main()
     CHECK(lessThanAnEpochAhead(kEpoch, inside(kEpoch)));
     CHECK(!lessThanAnEpochAhead(kEpoch + 1, inside(kEpoch)));
 
-    const Bytes kid = epochKid(kEpoch, kFirstEpochGeneration, "dev1");
-    CHECK(kid == (Bytes{kEpochKidTag, 0, 0, 0, kEpoch, 0, 0, 0, 0, 'd', 'e', 'v', '1'}));
-    CHECK(kid.size() <= hybrid::kMaxSealKidBytes);
-    CHECK(epochKid(kEpoch, kFirstEpochGeneration, std::string(kMaxEpochCreatorBytes, 'z')).size()
-        <= hybrid::kMaxSealKidBytes);
-    CHECK_THROWS(epochKid(kEpoch, kFirstEpochGeneration, std::string(kMaxEpochCreatorBytes + 1, 'z')));
+    const Bytes kid = epochKid(kEpoch, kFirstEpochGeneration, "devaaaaaaa");
+    CHECK(kid
+        == (Bytes{kEpochKidTag, 0, 0, 0, kEpoch, 0, 0, 0, 0, 'd', 'e', 'v', 'a', 'a', 'a', 'a', 'a',
+            'a', 'a'}));
+    CHECK(kid.size() == hybrid::kMaxSealKidBytes);
+    CHECK_THROWS(epochKid(kEpoch, kFirstEpochGeneration, std::string(kDeviceIdLength + 1, 'z')));
+    CHECK_THROWS(epochKid(kEpoch, kFirstEpochGeneration, "devaaaaaa1"));
     CHECK_THROWS(epochKid(kEpoch, kFirstEpochGeneration, ""));
     CHECK_THROWS(epochKid(kEpoch, kFirstEpochGeneration, "dev/1"));
-    CHECK_THROWS(epochKid(-1, kFirstEpochGeneration, "dev1"));
+    CHECK_THROWS(epochKid(-1, kFirstEpochGeneration, "devaaaaaaa"));
 
     EpochRing ring;
     Key early = Key::generateSealing();
     const Bytes earlyDer = early.publicDer();
-    CHECK(ring.add(kEpoch, kFirstEpochGeneration, "dev2", std::move(early)));
-    CHECK(!ring.add(kEpoch, kFirstEpochGeneration, "dev2", Key::generateSealing()));
-    CHECK(ring.inUse(kEpoch).front().by == "dev2");
+    CHECK(ring.add(kEpoch, kFirstEpochGeneration, "devbbbbbbb", std::move(early)));
+    CHECK(!ring.add(kEpoch, kFirstEpochGeneration, "devbbbbbbb", Key::generateSealing()));
+    CHECK(ring.inUse(kEpoch).front().by == "devbbbbbbb");
     Key smaller = Key::generateSealing();
     const Bytes smallerDer = smaller.publicDer();
-    CHECK(ring.add(kEpoch, kFirstEpochGeneration, "dev1", std::move(smaller)));
+    CHECK(ring.add(kEpoch, kFirstEpochGeneration, "devaaaaaaa", std::move(smaller)));
     CHECK(ring.inUse(kEpoch).size() == 1);
-    CHECK(ring.inUse(kEpoch).front().by == "dev1");
-    CHECK(ring.add(kEpoch, kLaterGeneration, "dev9", Key::generateSealing()));
-    CHECK(ring.inUse(kEpoch).front().by == "dev9");
+    CHECK(ring.inUse(kEpoch).front().by == "devaaaaaaa");
+    CHECK(ring.add(kEpoch, kLaterGeneration, "devddddddd", Key::generateSealing()));
+    CHECK(ring.inUse(kEpoch).front().by == "devddddddd");
     CHECK(ring.inUse(kEpoch).front().g == kLaterGeneration);
-    CHECK(ring.add(kEpoch + 1, kFirstEpochGeneration, "dev2", Key::generateSealing()));
+    CHECK(ring.add(kEpoch + 1, kFirstEpochGeneration, "devbbbbbbb", Key::generateSealing()));
     CHECK(ring.inUse(kEpoch).size() == 2);
     CHECK(ring.inUse(kEpoch + 1).size() == 1);
     CHECK(ring.last() == kEpoch + 1);
     CHECK(ring.holds(kEpoch) && !ring.holds(kEpoch + 2));
 
     const std::vector<EpochPublic> offered = ring.inUse(kEpoch);
-    CHECK(epochFor(offered, inside(kEpoch))->by == "dev9");
+    CHECK(epochFor(offered, inside(kEpoch))->by == "devddddddd");
     CHECK(epochFor(offered, inside(kEpoch + 1))->n == kEpoch + 1);
     CHECK(!epochFor(offered, inside(kEpoch + 2)).has_value());
-    const std::vector<EpochPublic> both{{kEpoch, kFirstEpochGeneration, "dev2", earlyDer},
-        {kEpoch, kFirstEpochGeneration, "dev1", smallerDer}};
-    CHECK(epochFor(both, inside(kEpoch))->by == "dev1");
+    const std::vector<EpochPublic> both{{kEpoch, kFirstEpochGeneration, "devbbbbbbb", earlyDer},
+        {kEpoch, kFirstEpochGeneration, "devaaaaaaa", smallerDer}};
+    CHECK(epochFor(both, inside(kEpoch))->by == "devaaaaaaa");
     CHECK(chosenEpochs(both).size() == 1);
     CHECK(mergedEpochs(both, offered, inside(kEpoch + 1)).size() == 1);
     CHECK(mergedEpochs(both, offered, inside(kEpoch)).size() == 4);
@@ -90,10 +91,10 @@ int main()
         nlohmann::json frame = parseCbor(sealed);
         frame["kid"] = nlohmann::json::binary(both.back().kid());
         CHECK_THROWS(ring.open(nlohmann::json::to_cbor(frame)));
-        frame["kid"] = nlohmann::json::binary(epochKid(kEpoch, kFirstEpochGeneration, "dev7"));
+        frame["kid"] = nlohmann::json::binary(epochKid(kEpoch, kFirstEpochGeneration, "devccccccc"));
         CHECK_THROWS(ring.open(nlohmann::json::to_cbor(frame)));
     }
-    const EpochPublic stranger{kEpoch, kFirstEpochGeneration, "dev2", Key::generateSealing().publicDer()};
+    const EpochPublic stranger{kEpoch, kFirstEpochGeneration, "devbbbbbbb", Key::generateSealing().publicDer()};
     CHECK_THROWS(ring.open(sealToEpoch(plain, stranger)));
 
     EpochRing copy;

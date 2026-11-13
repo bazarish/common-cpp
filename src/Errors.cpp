@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErrorNames = {{
+constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 16> kErrorNames = {{
     {bazarish::ErrorCode::eStorageFull, "STORAGE_FULL"},
     {bazarish::ErrorCode::eDeliveryRejected, "DELIVERY_REJECTED"},
     {bazarish::ErrorCode::eContactRequestTooLarge, "CONTACT_REQUEST_TOO_LARGE"},
@@ -16,6 +16,9 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErro
     {bazarish::ErrorCode::eAliasTaken, "ALIAS_TAKEN"},
     {bazarish::ErrorCode::eAliasUnknown, "ALIAS_UNKNOWN"},
     {bazarish::ErrorCode::eClientUnregistered, "CLIENT_UNREGISTERED"},
+    {bazarish::ErrorCode::eDeviceRevoked, "DEVICE_REVOKED"},
+    {bazarish::ErrorCode::eDeviceTaken, "DEVICE_TAKEN"},
+    {bazarish::ErrorCode::eDeviceNotPrimary, "DEVICE_NOT_PRIMARY"},
     {bazarish::ErrorCode::eSessionInvalid, "SESSION_INVALID"},
     {bazarish::ErrorCode::eAccountPendingApproval, "ACCOUNT_PENDING_APPROVAL"},
     {bazarish::ErrorCode::eAccountUnknown, "ACCOUNT_UNKNOWN"},
@@ -23,7 +26,7 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErro
     {bazarish::ErrorCode::eRequestFailed, "REQUEST_FAILED"},
 }};
 
-constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErrorTexts = {{
+constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 16> kErrorTexts = {{
     {bazarish::ErrorCode::eStorageFull, "The server has run out of storage."},
     {bazarish::ErrorCode::eDeliveryRejected, "Their server refused to take this."},
     {bazarish::ErrorCode::eContactRequestTooLarge, "The contact request is too long."},
@@ -35,6 +38,9 @@ constexpr std::array<std::pair<bazarish::ErrorCode, std::string_view>, 13> kErro
         "Nobody answers to that alias. Either it is not registered, or its owner has not "
         "pointed it at an identity yet."},
     {bazarish::ErrorCode::eClientUnregistered, "This account is not registered on the server."},
+    {bazarish::ErrorCode::eDeviceRevoked, "This device was removed from the account."},
+    {bazarish::ErrorCode::eDeviceTaken, "This device is already registered from another copy."},
+    {bazarish::ErrorCode::eDeviceNotPrimary, "Only a primary device can do this."},
     {bazarish::ErrorCode::eSessionInvalid,
         "The session with the server has lapsed; it will be opened again."},
     {bazarish::ErrorCode::eAccountPendingApproval,

@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -48,11 +49,12 @@ struct PresenceWatch {
     Bytes id;
     Bytes key;
     std::string from;
+    std::string device;
     std::string reply;
     std::int64_t sentAt = 0;
 };
 
-// Sealed to the watched account's current epoch; signed by the Ed25519 half of the identity alone.
+// Sealed to the watched account's current epoch; signed by the Ed25519 half of the device key alone.
 Bytes presenceWatchFrame(const PresenceWatch& watch, const Key& signer, const EpochPublic& recipient);
 
 bazarish::i2p::EndpointConfig presenceEndpointShape();
@@ -61,13 +63,15 @@ PresenceNet i2pPresenceNet(std::filesystem::path routerDir, std::string accountL
 struct PresenceContact {
     std::string fingerprint;
     std::vector<EpochPublic> epochs;
-    IdentityKeys identity;
+    // Ed25519 SPKI DER of each active device, by device id.
+    std::map<std::string, Bytes> devices;
     PresenceSchedule schedule;
 };
 
 struct PresenceAccount {
     std::string fingerprint;
-    std::string identityPem;
+    std::string device;
+    std::string deviceSigningPem;
     std::shared_ptr<const EpochRing> ring;
     Bytes seed;
     bool shown = true;

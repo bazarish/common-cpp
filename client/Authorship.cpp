@@ -1,11 +1,17 @@
 // Bazarish project (c) 2026
 #include "Authorship.hpp"
 
+#include <optional>
 #include <stdexcept>
 
 namespace bazarish::client {
 
 namespace {
+
+constexpr char kDeviceField[] = "d";
+constexpr char kClassicalField[] = "c";
+constexpr char kPqField[] = "p";
+constexpr char kCertField[] = "cert";
 
 Bytes encodedContent(const nlohmann::json& content)
 {
@@ -26,62 +32,72 @@ Bytes fromBytes(const nlohmann::json& value)
     return Bytes(binary.begin(), binary.end());
 }
 
+const nlohmann::json& blockOf(const nlohmann::json& content)
+{
+    if (!content.contains(kAuthorshipField) || !content.at(kAuthorshipField).is_object()) {
+        throw std::runtime_error("this letter names no author");
+    }
+    return content.at(kAuthorshipField);
+}
+
 }  // namespace
 
-void signAuthorship(nlohmann::json& content, const Identity& identity, const bool withKeys)
+void signAuthorship(nlohmann::json& content, const DeviceCredential& device, const bool withCert)
 {
     const Bytes signedBytes = encodedContent(content);
     nlohmann::json block = {
-        {"c", asBytes(sign(identity.classical(), signedBytes))},
-        {"p", asBytes(sign(identity.pq(), signedBytes))},
+        {kDeviceField, device.device()},
+        {kClassicalField, asBytes(sign(device.signing().classical(), signedBytes))},
+        {kPqField, asBytes(sign(device.signing().pq(), signedBytes))},
     };
-    if (withKeys) {
-        block["kc"] = asBytes(identity.classical().publicDer());
-        block["kp"] = asBytes(identity.pq().publicDer());
+    if (withCert) {
+        block[kCertField] = asBytes(device.certDer());
     }
     content[kAuthorshipField] = std::move(block);
 }
 
-IdentityKeys keysIn(const nlohmann::json& content)
+std::string authorDevice(const nlohmann::json& content)
 {
-    if (!content.contains(kAuthorshipField)) {
-        return {};
-    }
-    const nlohmann::json& block = content.at(kAuthorshipField);
-    if (!block.contains("kc") || !block.contains("kp")) {
-        return {};
-    }
-    return IdentityKeys{fromBytes(block.at("kc")), fromBytes(block.at("kp"))};
+    const std::string device = blockOf(content).at(kDeviceField).get<std::string>();
+    requireDeviceId(device);
+    return device;
 }
 
-std::string authorOf(const nlohmann::json& content, const IdentityKeys& known)
+Bytes carriedCert(const nlohmann::json& content)
 {
-    const nlohmann::json& block = content.at(kAuthorshipField);
-    const IdentityKeys carried = keysIn(content);
-    const IdentityKeys& keys = carried.empty() ? known : carried;
-    if (keys.empty()) {
-        throw std::runtime_error("no keys to check this author against");
+    const nlohmann::json& block = blockOf(content);
+    return block.contains(kCertField) ? fromBytes(block.at(kCertField)) : Bytes{};
+}
+
+Author authorOf(const nlohmann::json& content, const DeviceBook& known)
+{
+    const nlohmann::json& block = blockOf(content);
+    const std::string device = authorDevice(content);
+    const Bytes carried = carriedCert(content);
+    std::optional<DeviceCertificate> cert;
+    if (!carried.empty()) {
+        cert = DeviceCertificate::verify(carried);
+        if (!known.empty() && cert->root != known.root()) {
+            throw std::runtime_error("the carried certificate is of another account");
+        }
+        if (known.revoked(cert->device)) {
+            throw std::runtime_error("the author's device was revoked");
+        }
+    } else {
+        cert = known.active(device);
+    }
+    if (!cert.has_value()) {
+        throw std::runtime_error("the author's device is not one this account holds");
+    }
+    if (cert->device != device) {
+        throw std::runtime_error("the carried certificate is of another device");
     }
 
     nlohmann::json signedPart = content;
     signedPart.erase(kAuthorshipField);
-    const Bytes signedBytes = encodedContent(signedPart);
-
-    const Key classical = Key::fromPublicDer(keys.classicalDer);
-    const Key pq = Key::fromPublicDer(keys.pqDer);
-    if (!classical.isA(kClassicalSigningAlgorithm)) {
-        throw std::runtime_error("author's classical key is not Ed25519");
-    }
-    if (!pq.isA(kPqSigningAlgorithm)) {
-        throw std::runtime_error("author's pq key is not ML-DSA-65");
-    }
-    if (!verify(classical, signedBytes, fromBytes(block.at("c")))) {
-        throw std::runtime_error("the author's classical signature does not verify");
-    }
-    if (!verify(pq, signedBytes, fromBytes(block.at("p")))) {
-        throw std::runtime_error("the author's post-quantum signature does not verify");
-    }
-    return hybridFingerprint(keys.classicalDer, keys.pqDer);
+    cert->requireSigned(
+        encodedContent(signedPart), fromBytes(block.at(kClassicalField)), fromBytes(block.at(kPqField)));
+    return Author{cert->root, cert->device};
 }
 
 }  // namespace bazarish::client

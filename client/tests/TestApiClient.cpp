@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "ApiClient.hpp"
 
+#include "DeviceTestKit.hpp"
 #include "TunnelStub.hpp"
 #include "../../src/I2pBackend.hpp"
 
@@ -40,7 +41,8 @@ http::Server::Options localOptions()
 int main()
 {
     bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
-    const Identity alice = Identity::generate();
+    const devicetest::Account aliceAccount;
+    const DeviceCredential& alice = aliceAccount.device;
     const Identity serverIdentity = Identity::generate();
     const Key serverSealing = Key::generateSealing();
 
@@ -60,14 +62,14 @@ int main()
         sawMethod = request.method;
         sawPath = request.path;
         sawQuery = request.query("wait");
-        sawDevice = request.header("X-Bazarish-Client");
+        sawDevice = request.header(teststub::kCallerDeviceHeader);
         http::Response response;
         response.body = nlohmann::json{{"used", 7}}.dump();
         return response;
     });
     server.post("/v1/messaging/clients", [&](const http::Request& request) {
         sawBody = request.body;
-        sawDevice = request.header("X-Bazarish-Client");
+        sawDevice = request.header(teststub::kCallerDeviceHeader);
         http::Response response;
         response.body = nlohmann::json{{"ok", true}}.dump();
         return response;
@@ -101,20 +103,20 @@ int main()
     endpoint.facades = {Facade{"127.0.0.1", port}};
 
     {
-        ApiClient api(alice, "abc123", endpoint);
+        ApiClient api(alice, endpoint);
         const ApiResponse response = api.get("/v1/messaging/storage-usage", "wait=30");
         CHECK(response.status == 200);
         CHECK(response.json().at("used") == 7);
         CHECK(sawMethod == "GET");
         CHECK(sawPath == "/v1/messaging/storage-usage");
         CHECK(sawQuery == "30");
-        CHECK(sawDevice == "abc123");
+        CHECK(sawDevice == aliceAccount.keys.id());
         CHECK(stub.opened() == 1);
 
         const ApiResponse posted
-            = api.postJson("/v1/messaging/clients", {{"clientId", "abc123"}});
+            = api.postJson("/v1/messaging/clients", {{"install", "abc123"}});
         CHECK(posted.status == 200);
-        CHECK(nlohmann::json::parse(sawBody).at("clientId") == "abc123");
+        CHECK(nlohmann::json::parse(sawBody).at("install") == "abc123");
         CHECK(stub.opened() == 1);
 
         stub.refuseNext();
@@ -129,7 +131,7 @@ int main()
         CHECK(api.get("/v1/account/i2p-status").status == 200);
         CHECK(nodeStub.opened() == 1);
         CHECK(stub.opened() == 3);
-        CHECK(sawCaller == alice.fingerprint());
+        CHECK(sawCaller == aliceAccount.fingerprint());
         CHECK(api.get("/v1/messaging/storage-usage").status == 200);
         CHECK(api.get("/v1/account/i2p-status").status == 200);
         CHECK(nodeStub.opened() == 1);
@@ -138,7 +140,7 @@ int main()
     }
 
     {
-        ApiClient api(alice, "abc123", endpoint);
+        ApiClient api(alice, endpoint);
         bool threw = false;
         try {
             (void)api.get("/v1/messaging/pending");
@@ -152,7 +154,7 @@ int main()
     }
 
     {
-        ApiClient api(alice, "abc123", endpoint);
+        ApiClient api(alice, endpoint);
         bool threw = false;
         try {
             (void)api.get("/v1/messaging/destination");
@@ -167,7 +169,7 @@ int main()
     {
         ServerEndpoint impostor = endpoint;
         impostor.serverFingerprint = Identity::generate().fingerprint();
-        ApiClient api(alice, "abc123", impostor);
+        ApiClient api(alice, impostor);
         bool threw = false;
         try {
             (void)api.get("/v1/messaging/storage-usage");
@@ -209,7 +211,7 @@ int main()
 
         ServerEndpoint both = endpoint;
         both.facades = {Facade{"127.0.0.1", firstPort}, Facade{"127.0.0.1", secondPort}};
-        ApiClient api(alice, "abc123", both);
+        ApiClient api(alice, both);
         CHECK(api.get("/v1/messaging/storage-usage").status == 200);
         CHECK(firstCarried.load() > 0);
         CHECK(secondCarried.load() == 0);
@@ -238,7 +240,7 @@ int main()
     {
         ServerEndpoint dead = endpoint;
         dead.facades[0].port = 1;
-        ApiClient api(alice, "abc123", dead);
+        ApiClient api(alice, dead);
         bool threw = false;
         try {
             (void)api.get("/v1/messaging/storage-usage");
@@ -270,7 +272,7 @@ int main()
         });
         ServerEndpoint behind = endpoint;
         behind.facades[0].port = upstreamless.start();
-        ApiClient api(alice, "abc123", behind);
+        ApiClient api(alice, behind);
         const auto refused = [&api]() {
             try {
                 (void)api.get("/v1/messaging/storage-usage");

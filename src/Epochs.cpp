@@ -4,7 +4,6 @@
 #include "bazarish/Hybrid.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <climits>
 #include <limits>
 #include <map>
@@ -40,10 +39,8 @@ void appendBigEndian(Bytes& out, const std::int64_t value, const std::size_t byt
 
 void requireCreator(const std::string& by)
 {
-    if (by.empty() || by.size() > kMaxEpochCreatorBytes
-        || !std::all_of(by.begin(), by.end(),
-            [](const char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0; })) {
-        throw std::runtime_error("an epoch key names its maker by a short id of letters and digits");
+    if (!isDeviceId(by)) {
+        throw std::runtime_error("an epoch key names its maker by the device's id");
     }
 }
 

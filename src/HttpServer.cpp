@@ -818,7 +818,7 @@ void Server::routeAsync(const std::string& method, const std::string& pattern, A
 auth::Headers collectAuthHeaders(const Request& request)
 {
     auth::Headers headers;
-    for (const char* const name : {auth::kHeaderKeys, auth::kHeaderTimestamp,
+    for (const char* const name : {auth::kHeaderKeys, auth::kHeaderDevice, auth::kHeaderTimestamp,
              auth::kHeaderNonce, auth::kHeaderSignatureClassical, auth::kHeaderSignaturePq,
              auth::kHeaderSession, auth::kHeaderSeq, auth::kHeaderMac}) {
         if (request.hasHeader(name)) {

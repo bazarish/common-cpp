@@ -142,10 +142,9 @@ ApiError::ApiError(
 {
 }
 
-ApiClient::ApiClient(const Identity& identity, std::string clientId, ServerEndpoint endpoint,
+ApiClient::ApiClient(const DeviceCredential& credential, ServerEndpoint endpoint,
     std::filesystem::path i2pDataDir)
-    : identity_(identity)
-    , clientId_(std::move(clientId))
+    : credential_(credential)
     , endpoint_(std::move(endpoint))
     , i2pDataDir_(std::move(i2pDataDir))
 {
@@ -183,11 +182,6 @@ std::vector<std::size_t> ApiClient::facadeOrder() const
         std::rotate(order.begin(), lastAnswered, order.end());
     }
     return order;
-}
-
-const std::string& ApiClient::clientId() const
-{
-    return clientId_;
 }
 
 const ServerEndpoint& ApiClient::endpoint() const
@@ -243,7 +237,7 @@ bool ApiClient::ensureSessionLocked(Tunnel& tunnel)
         hello.secret = randomBytes(kSessionSecretBytes);
         const Key replyKey = Key::generateSealing();
         hello.replyKeyDer = replyKey.publicDer();
-        hello.signature = auth::signRequest(identity_, now, bazarish::tunnel::kHelloMethod,
+        hello.signature = auth::signDeviceRequest(credential_, now, bazarish::tunnel::kHelloMethod,
             bazarish::tunnel::kHelloPath, hello.secret);
         const Bytes frame
             = bazarish::tunnel::sealHello(hello, Key::fromPublicDer(tunnel.sealingKeyDer));
@@ -383,7 +377,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     const int readTimeoutSeconds, LinkAttempt& tried)
 {
     tried.reached = LinkStage::eRouter;
-    reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eRouterStarting);
+    reportConnectProgress(credential_.account(), ConnectMilestone::eRouterStarting);
     setReseedUrls(endpoint_.reseeds);
     if (bootstrapI2pRouter(i2pDataDir_) == I2pBootstrap::eEmpty) {
         return std::nullopt;
@@ -391,10 +385,10 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     gatewayRefusal_.clear();
     const auto buildLink = [&]() {
         tried.reached = LinkStage::eLink;
-        reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eTunnelsBuilding);
+        reportConnectProgress(credential_.account(), ConnectMilestone::eTunnelsBuilding);
         i2pStream_.reset();
         try {
-            i2pOut_ = facadeLinkFor(identity_.fingerprint(), accountLabel_, tunnelPrivacy(), facade.host);
+            i2pOut_ = facadeLinkFor(credential_.account(), accountLabel_, tunnelPrivacy(), facade.host);
         } catch (const bazarish::i2p::GatewayRefusal& refusal) {
             gatewayRefusal_ = refusal.what();
             throw;
@@ -418,7 +412,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     }
     tried.reached = LinkStage::eTunnels;
     if (!i2pOut_->waitReady(std::chrono::seconds(kOutboundReadySeconds))) {
-        reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eTunnelsStillBuilding);
+        reportConnectProgress(credential_.account(), ConnectMilestone::eTunnelsStillBuilding);
         return std::nullopt;
     }
     tried.reached = LinkStage::eDial;
@@ -429,7 +423,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     for (int attempt = 0; attempt < kKeepAliveAttempts; ++attempt) {
         const bool reused = static_cast<bool>(i2pStream_);
         if (!reused) {
-            reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eServerLookup);
+            reportConnectProgress(credential_.account(), ConnectMilestone::eServerLookup);
             i2pStream_ = i2pOut_->connect(facade.host, std::chrono::seconds(kFacadeDialSeconds));
             // A gateway that replaced its session under the dial lost the link; no facade refused.
             if (!i2pStream_ && i2pOut_->lost()) {
@@ -446,7 +440,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
             }
         }
         tried.reached = LinkStage::eExchange;
-        reportConnectProgress(identity_.fingerprint(), ConnectMilestone::eServerReached);
+        reportConnectProgress(credential_.account(), ConnectMilestone::eServerReached);
         i2pStream_->setReadTimeout(std::chrono::seconds(readTimeoutSeconds));
         const auto askedAt = std::chrono::steady_clock::now();
         i2pStreamUsedAt_ = askedAt;
@@ -595,10 +589,8 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
         const std::uint64_t seq = tunnel.sessionSeq + 1;
         const auth::Headers mac = auth::macRequest(auth::sessionHandle(tunnel.sessionSecret, seq),
             tunnel.sessionKey, seq, nowSeconds(), method, query.empty() ? path : path + "?" + query,
-            body, clientId_);
-        std::map<std::string, std::string> headers(mac.begin(), mac.end());
-        headers.emplace(auth::kHeaderClient, clientId_);
-        return headers;
+            body);
+        return std::map<std::string, std::string>(mac.begin(), mac.end());
     };
     const bool quietOnSuccess = path == kEventsPath;
     const auto startedAt = std::chrono::steady_clock::now();

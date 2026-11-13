@@ -55,10 +55,10 @@ Bytes cardQueryBytes(const CardFetchQuery& query)
 
 }  // namespace
 
-Client::Client(Identity identity, std::string clientId, ServerEndpoint endpoint,
+Client::Client(DeviceCredential credential, ServerEndpoint endpoint,
     std::filesystem::path i2pDataDir)
-    : identity_(std::move(identity))
-    , api_(identity_, std::move(clientId), std::move(endpoint), std::move(i2pDataDir))
+    : credential_(std::move(credential))
+    , api_(credential_, std::move(endpoint), std::move(i2pDataDir))
 {
     api_.setWireLog(log_);
 }
@@ -79,14 +79,14 @@ void Client::shareWireLog(std::shared_ptr<WireLog> log)
     api_.setWireLog(log_);
 }
 
-const Identity& Client::identity() const
+const DeviceCredential& Client::credential() const
 {
-    return identity_;
+    return credential_;
 }
 
-const std::string& Client::clientId() const
+const std::string& Client::deviceId() const
 {
-    return api_.clientId();
+    return credential_.device();
 }
 
 const ServerEndpoint& Client::endpoint() const
@@ -142,7 +142,7 @@ PublishResult Client::publishCard(const ContactCard& content, const Bytes& cardK
     signedCard.issuedAt = std::max(nowSeconds(), notBefore + 1);
     signedCard.dest = serving.dest;
     signedCard.servingSealingKeyDer = serving.servingSealingKeyDer;
-    const Bytes card = signedCard.issue(identity_);
+    const Bytes card = signedCard.issue(credential_.signing());
     const nlohmann::json answer = api_.postJson(
         "/v1/account/card", {{"card", toBase64(card)}, {"cardKey", linkKeyText(cardKey)}}).json();
 
@@ -286,9 +286,9 @@ DestinationInfo Client::myDestination()
     return info;
 }
 
-void Client::registerThisClient()
+void Client::registerThisDevice(const std::string& install)
 {
-    api_.postJson("/v1/messaging/clients", {{"clientId", api_.clientId()}});
+    api_.postJson("/v1/messaging/clients", {{"install", install}});
 }
 
 std::vector<Client::DeviceEntry> Client::listClients()
@@ -297,16 +297,11 @@ std::vector<Client::DeviceEntry> Client::listClients()
     const nlohmann::json body = parseJson(response.body);
     std::vector<DeviceEntry> devices;
     for (const nlohmann::json& entry : body.at("clients")) {
-        devices.push_back(DeviceEntry{entry.at("clientId").get<std::string>(),
+        devices.push_back(DeviceEntry{entry.at("device").get<std::string>(),
             entry.value("current", false),
             entry.value("queue", static_cast<std::size_t>(0))});
     }
     return devices;
-}
-
-void Client::retireClient(const std::string& clientId)
-{
-    api_.del("/v1/messaging/clients/" + clientId);
 }
 
 void Client::registerPasses(const std::vector<Bytes>& handles)
@@ -391,11 +386,11 @@ void Client::ack(const std::vector<std::string>& ids)
     }
 }
 
-void Client::submitSelf(
-    const std::string& deliveryId, const Bytes& payload, const std::string& kind)
+void Client::submitSelf(const std::string& deliveryId, const Bytes& payload,
+    const std::string& kind, const std::string& toDevice)
 {
     api_.postJson("/v1/messaging/self",
-        {{"deliveryId", deliveryId}, {"payload", toBase64(payload)}},
+        {{"deliveryId", deliveryId}, {"payload", toBase64(payload)}, {"to", toDevice}},
         ApiClient::kDefaultReadTimeoutSeconds, kind);
 }
 

@@ -6,6 +6,7 @@
 
 #include <bazarish/Clock.hpp>
 #include <bazarish/Crypto.hpp>
+#include <bazarish/Devices.hpp>
 #include <bazarish/I2p.hpp>
 
 #include "TestUtil.hpp"
@@ -54,14 +55,15 @@ PresenceTimings testTimings()
 
 struct Person {
     Identity identity = Identity::generate();
-    std::shared_ptr<EpochRing> ring = epochtest::ringAround(kDay * kSecondsPerDay, "p1");
+    std::shared_ptr<EpochRing> ring = epochtest::ringAround(kDay * kSecondsPerDay, "pppppppppp");
     PresenceSeed seed = PresenceSeed::generate();
 
     PresenceAccount account(const bool shown) const
     {
         PresenceAccount account;
         account.fingerprint = identity.fingerprint();
-        account.identityPem = identity.privatePem();
+        account.device = deviceIdOf(identity.classical().publicDer(), identity.pq().publicDer());
+        account.deviceSigningPem = identity.privatePem();
         account.ring = ring;
         account.seed = seed.bytes();
         account.shown = shown;
@@ -73,7 +75,7 @@ struct Person {
         PresenceContact contact;
         contact.fingerprint = identity.fingerprint();
         contact.epochs = ring->inUse(0);
-        contact.identity = IdentityKeys{identity.classical().publicDer(), identity.pq().publicDer()};
+        contact.devices = {{deviceIdOf(identity.classical().publicDer(), identity.pq().publicDer()), identity.classical().publicDer()}};
         contact.schedule = presenceScheduleFrom(seed, kDay, kScheduledDays);
         return contact;
     }

@@ -261,6 +261,7 @@ Bytes presenceWatchFrame(const PresenceWatch& watch, const Key& signer, const Ep
     nlohmann::json content = {
         {"t", kWatchTag},
         {"from", watch.from},
+        {"dev", watch.device},
         {"reply", watch.reply},
         {"sub", toHex(watch.id)},
         {"key", toBase64(watch.key)},
@@ -372,7 +373,7 @@ struct Presence::Impl {
         PresenceTimings timingsIn)
         : account(std::move(accountIn))
         , timings(std::move(timingsIn))
-        , identity(Identity::fromPrivatePem(account.identityPem))
+        , identity(Identity::fromPrivatePem(account.deviceSigningPem))
         , ring(account.ring)
         , seed(std::exchange(account.seed, {}))
         , net(std::move(netIn))
@@ -546,7 +547,7 @@ struct Presence::Impl {
                 bazarish::log::redact(outgoing.peer));
             return;
         }
-        const PresenceWatch watch{outgoing.id, outgoing.key, account.fingerprint,
+        const PresenceWatch watch{outgoing.id, outgoing.key, account.fingerprint, account.device,
             lane.runner->link->host(), utc};
         const Bytes frame = presenceWatchFrame(watch, identity.classical(), *epoch);
         if (outgoing.sentBefore) {
@@ -618,8 +619,9 @@ struct Presence::Impl {
         }
         const Bytes signature = content.at(kWatchSignatureField).get_binary();
         content.erase(kWatchSignatureField);
-        if (!verify(Key::fromPublicDer(contact->get().identity.classicalDer), watchSigningInput(content),
-                signature)) {
+        const auto device = contact->get().devices.find(content.value("dev", std::string()));
+        if (device == contact->get().devices.end()
+            || !verify(Key::fromPublicDer(device->second), watchSigningInput(content), signature)) {
             return;
         }
         const std::int64_t sentAt = content.value("sentAt", std::int64_t{0});

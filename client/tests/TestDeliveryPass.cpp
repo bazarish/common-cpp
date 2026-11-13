@@ -12,6 +12,7 @@
 #include "WireLog.hpp"
 
 #include "FakeGateway.hpp"
+#include "DeviceTestKit.hpp"
 #include "TunnelStub.hpp"
 
 #include <bazarish/AliasMaintenance.hpp>
@@ -61,6 +62,18 @@ using namespace bazarish::client;
 namespace {
 
 namespace fs = std::filesystem;
+
+std::string requireDevice(const http::Request& request)
+{
+    return request.header(bazarish::teststub::kCallerDeviceHeader);
+}
+
+DeviceCredential deviceOf(const fs::path& accountDir)
+{
+    const AccountDb db(accountDir, std::string{});
+    return DeviceCredential(
+        Identity::fromPrivatePem(db.text("device-signing.pem")), *db.get("device-cert"));
+}
 
 std::string requireCaller(const http::Request& request)
 {
@@ -114,14 +127,25 @@ struct Mock {
     std::set<std::string> delegated;
     std::set<std::string> signedUp;
     struct Item {
+        Item(std::string itemId, std::string itemClass, Bytes itemPayload, std::string to = {})
+            : id(std::move(itemId))
+            , cls(std::move(itemClass))
+            , payload(std::move(itemPayload))
+            , forDevice(std::move(to))
+        {
+        }
+
         std::string id;
         std::string cls;
         Bytes payload;
+        std::string forDevice;
     };
     std::map<std::string, std::vector<Item>> mailbox;
     std::map<std::string, std::size_t> fetches;
     std::map<std::string, std::size_t> acks;
     std::map<std::string, std::set<std::string>> registered;
+    // Account, then device, to the install token it registered with.
+    std::map<std::string, std::map<std::string, std::string>> installs;
     std::map<std::string, std::set<std::string>> seenIds;
     std::size_t largestContactRequest = 0;
     int nextId = 1;
@@ -409,13 +433,40 @@ int main()
             const nlohmann::json body = nlohmann::json::parse(request.body);
             std::lock_guard<std::mutex> lock(m.mu);
             m.mailbox[caller].push_back({body.at("deliveryId").get<std::string>(), "device",
-                fromBase64(body.at("payload").get<std::string>())});
+                fromBase64(body.at("payload").get<std::string>()), body.at("to").get<std::string>()});
             respondJson(response, {{"ok", true}});
         }));
 
+    // Under the lock: what the account's published card says of the device.
+    const auto revokedHere = [&m](const std::string& account, const std::string& device) {
+        const auto card = m.certFor.find(account);
+        return card != m.certFor.end() && !card->second.empty()
+            && ContactCard::verify(fromBase64(card->second)).devices.revoked(device);
+    };
+    const auto refuseRevoked = [](http::Response& response) {
+        response.status = 403;
+        respondJson(response,
+            {{"error", {{"code", "DEVICE_REVOKED"}, {"message", "this device was revoked"}}}});
+    };
+
     server.post("/v1/messaging/clients",
         stub([&](const http::Request& request, http::Response& response) {
-            (void)requireCaller(request);
+            const std::string caller = requireCaller(request);
+            const std::string device = requireDevice(request);
+            const std::string install
+                = nlohmann::json::parse(request.body).at("install").get<std::string>();
+            std::lock_guard<std::mutex> lock(m.mu);
+            if (revokedHere(caller, device)) {
+                refuseRevoked(response);
+                return;
+            }
+            const auto [held, added] = m.installs[caller].emplace(device, install);
+            if (!added && held->second != install) {
+                response.status = 409;
+                respondJson(response,
+                    {{"error", {{"code", "DEVICE_TAKEN"}, {"message", "another copy"}}}});
+                return;
+            }
             respondJson(response, {{"ok", true}});
         }));
 
@@ -445,9 +496,17 @@ int main()
     server.get("/v1/messaging/pending",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
+            const std::string device = requireDevice(request);
             std::lock_guard<std::mutex> lock(m.mu);
+            if (revokedHere(caller, device)) {
+                refuseRevoked(response);
+                return;
+            }
             nlohmann::json pending = nlohmann::json::array();
             for (const Mock::Item& item : m.mailbox[caller]) {
+                if (!item.forDevice.empty() && item.forDevice != device) {
+                    continue;
+                }
                 pending.push_back(
                     {{"id", item.id}, {"class", item.cls}, {"bytes", item.payload.size()}});
             }
@@ -457,12 +516,14 @@ int main()
     server.post("/v1/messaging/fetch",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
+            const std::string device = requireDevice(request);
             const nlohmann::json ids = nlohmann::json::parse(request.body).at("ids");
             std::lock_guard<std::mutex> lock(m.mu);
             nlohmann::json items = nlohmann::json::array();
             for (const nlohmann::json& id : ids) {
                 for (const Mock::Item& item : m.mailbox[caller]) {
-                    if (item.id == id.get<std::string>()) {
+                    if (item.id == id.get<std::string>()
+                        && (item.forDevice.empty() || item.forDevice == device)) {
                         items.push_back({{"id", item.id},
                             {"blob", nlohmann::json::binary(std::vector<std::uint8_t>(
                                          item.payload.begin(), item.payload.end()))}});
@@ -531,20 +592,20 @@ int main()
         const ResolverCoordinate resolver{resolverRoot.fingerprint(), kTestResolverDest};
         alice->setResolverCoordinate(resolver);
         bob->setResolverCoordinate(resolver);
-        const Identity aliceIdentity
-            = Identity::fromPrivatePem(AccountDb(aDir, std::string{}).text("identity.pem"));
+        const DeviceCredential aliceIdentity = deviceOf(aDir);
         // What a device of the account has posted to the account's own mailbox.
         const auto postedToSelf = [&](const fs::path& accountDir, const std::string& owner,
                                       const std::string& type) {
-            EpochRing ring;
-            ring.addAll(nlohmann::json::parse(AccountDb(accountDir, std::string{}).text("epochs")));
+            const AccountDb db(accountDir, std::string{});
+            const Key sealing = Key::fromPrivatePem(db.text("device-sealing.pem"));
+            const std::string device = deviceOf(accountDir).device();
             const std::lock_guard<std::mutex> lock(m.mu);
             for (const Mock::Item& item : m.mailbox[owner]) {
-                if (item.cls != "device") {
+                if (item.cls != "device" || item.forDevice != device) {
                     continue;
                 }
-                const nlohmann::json bodies = nlohmann::json::from_cbor(
-                    unpadFromLadder(ring.open(item.payload)));
+                const nlohmann::json bodies
+                    = nlohmann::json::from_cbor(unpadFromLadder(hybrid::unseal(item.payload, sealing)));
                 for (const nlohmann::json& body : bodies) {
                     if (body.value("type", std::string()) == type) {
                         return true;
@@ -876,10 +937,8 @@ int main()
                 CHECK(m.mailbox[bob->fingerprint()].size() == waiting);
             }
             alice->setDisplayName("Alice of the log");
-            CHECK(testutil::waitFor([&]() {
-                return logHas(alice->connectionLog(),
-                    "POST /v1/messaging/self (device.account-name)", "200");
-            }));
+            alice->flushPendingEchoes();
+            CHECK(!logHas(alice->connectionLog(), "POST /v1/messaging/self (device.account-name)", "200"));
         }
 
         {
@@ -1218,11 +1277,9 @@ int main()
             CHECK(deviceItems() == quiet);
 
             alice->setDeviceSync(true);
-            sendToBob("told to the other devices");
-            CHECK(testutil::waitFor([&]() {
-                alice->flushPendingEchoes();
-                return deviceItems() > quiet;
-            }));
+            sendToBob("no other device of the account to tell");
+            alice->flushPendingEchoes();
+            CHECK(deviceItems() == quiet);
             bob->sync();
         }
 
@@ -1348,7 +1405,7 @@ int main()
                     deviceItems += item.cls == "device" ? 1 : 0;
                 }
             }
-            CHECK(deviceItems >= 1);
+            CHECK(deviceItems == 0);
 
             nlohmann::json saved = {
                 {"v", 1},
@@ -1368,7 +1425,7 @@ int main()
                     }},
             };
             {
-                signAuthorship(saved, aliceIdentity, /*withKeys=*/false);
+                signAuthorship(saved, aliceIdentity, /*withCert=*/false);
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice->fingerprint()].push_back({"saved-echo", "device",
                     sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({saved}))),
@@ -1490,8 +1547,7 @@ int main()
         }
 
         {
-            const Identity bobIdentity
-                = Identity::fromPrivatePem(AccountDb(bDir, std::string{}).text("identity.pem"));
+            const DeviceCredential bobIdentity = deviceOf(bDir);
             const std::string strangerFingerprint = Identity::generate().fingerprint();
             const auto intoAliceMailbox = [&](const std::string& id, nlohmann::json content) {
                 std::lock_guard<std::mutex> lock(m.mu);
@@ -1506,16 +1562,16 @@ int main()
             };
 
             nlohmann::json forged = text(strangerFingerprint, "forged-1", "trust me, I am them");
-            signAuthorship(forged, bobIdentity, /*withKeys=*/true);
+            signAuthorship(forged, bobIdentity, /*withCert=*/true);
             intoAliceMailbox("forged-1", forged);
             intoAliceMailbox("unsigned-1", text(bob->fingerprint(), "unsigned-1", "no signature"));
             nlohmann::json honest = text(bob->fingerprint(), "honest-1", "this one is mine");
-            signAuthorship(honest, bobIdentity, /*withKeys=*/false);
+            signAuthorship(honest, bobIdentity, /*withCert=*/false);
             intoAliceMailbox("honest-1", honest);
             nlohmann::json forgedInBatch = text(strangerFingerprint, "forged-2", "slipped in first");
-            signAuthorship(forgedInBatch, bobIdentity, /*withKeys=*/true);
+            signAuthorship(forgedInBatch, bobIdentity, /*withCert=*/true);
             nlohmann::json honestInBatch = text(bob->fingerprint(), "honest-2", "after a forged one");
-            signAuthorship(honestInBatch, bobIdentity, /*withKeys=*/false);
+            signAuthorship(honestInBatch, bobIdentity, /*withCert=*/false);
             {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice->fingerprint()].push_back({"mixed-1", "content",
@@ -1531,7 +1587,7 @@ int main()
                 extra["from"] = bob->fingerprint();
                 extra["sentAt"] = 1;
                 extra["device"] = "not-a-device-of-hers";
-                signAuthorship(extra, bobIdentity, /*withKeys=*/false);
+                signAuthorship(extra, bobIdentity, /*withCert=*/false);
                 intoAliceMailbox(id, extra);
             };
             const std::int64_t termBefore = alice->delegationDays();
@@ -1676,7 +1732,7 @@ int main()
             }
             CHECK(!askedTwice);
             const std::size_t beforeRequests = heldForAlice();
-            CHECK(beforeRequests == beforeAdding + 1);
+            CHECK(beforeRequests == beforeAdding);
             CHECK(alice->hasContact(dana->fingerprint()));
             CHECK(testutil::waitFor([&]() {
                 dana->sync();
@@ -2184,7 +2240,7 @@ int main()
 
         {
             const auto fromAnotherDevice = [&](nlohmann::json notice) {
-                signAuthorship(notice, aliceIdentity, /*withKeys=*/false);
+                signAuthorship(notice, aliceIdentity, /*withCert=*/false);
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[alice->fingerprint()].push_back({"self-" + notice.at("id").get<std::string>(),
                     "device",
@@ -2304,20 +2360,21 @@ int main()
         }
 
         {
-            const Identity sneak = Identity::generate();
+            const devicetest::Account sneakAccount;
+            const DeviceCredential& sneak = sneakAccount.device;
             const nlohmann::json bootstrap = {{"kind", "user"},
                 {"epochs",
-                    epochsJson({{epochAt(nowSeconds()), kFirstEpochGeneration, "sneak1", Key::generateSealing().publicDer()}})},
+                    epochsJson({{epochAt(nowSeconds()), kFirstEpochGeneration, sneak.device(), Key::generateSealing().publicDer()}})},
                 {"dest", std::string(52, 'q') + ".b32.i2p"},
                 {"servingKey", toBase64(Key::generateSealing().publicDer())},
                 {"pass", toBase64(randomBytes(kSneakPassBytes))}};
             nlohmann::json request = {{"v", 1}, {"type", "contact.request"}, {"id", "sneak-request"},
-                {"from", sneak.fingerprint()}, {"sentAt", 1}, {"text", "hello"}, {"dn", "Sneak"},
+                {"from", sneak.account()}, {"sentAt", 1}, {"text", "hello"}, {"dn", "Sneak"},
                 {"bootstrap", bootstrap}};
-            signAuthorship(request, sneak, /*withKeys=*/true);
+            signAuthorship(request, sneak, /*withCert=*/true);
             nlohmann::json invite = {{"v", 1}, {"type", "call.invite"}, {"id", "sneak-call"},
-                {"from", sneak.fingerprint()}, {"sentAt", 1}, {"callId", "sneak-call-id"}};
-            signAuthorship(invite, sneak, /*withKeys=*/false);
+                {"from", sneak.account()}, {"sentAt", 1}, {"callId", "sneak-call-id"}};
+            signAuthorship(invite, sneak, /*withCert=*/false);
             const auto deliver = [&](const std::string& id, const std::string& cls,
                                      const std::vector<nlohmann::json>& items) {
                 std::lock_guard<std::mutex> lock(m.mu);
@@ -2328,23 +2385,23 @@ int main()
             const auto fromSneak = [&]() {
                 std::size_t count = 0;
                 for (const IncomingMessage& item : alice->sync()) {
-                    count += item.fromFingerprint == sneak.fingerprint() ? 1 : 0;
+                    count += item.fromFingerprint == sneak.account() ? 1 : 0;
                 }
                 return count;
             };
 
             deliver("sneak-both", kContactDeliveryClass, {request, invite});
             CHECK(fromSneak() == 0);
-            CHECK(!alice->hasContact(sneak.fingerprint()));
+            CHECK(!alice->hasContact(sneak.account()));
 
             deliver("sneak-asks", kContactDeliveryClass, {request});
             CHECK(fromSneak() == 1);
-            CHECK(alice->contactIsPending(sneak.fingerprint()));
+            CHECK(alice->contactIsPending(sneak.account()));
             deliver("sneak-rings", "content", {invite});
             CHECK(fromSneak() == 0);
             CHECK(alice->currentCall().state == Session::CallState::eIdle);
-            CHECK(alice->contactIsPending(sneak.fingerprint()));
-            alice->removeContact(sneak.fingerprint());
+            CHECK(alice->contactIsPending(sneak.account()));
+            alice->removeContact(sneak.account());
         }
 
         {
@@ -2446,8 +2503,7 @@ int main()
                 = fileTargetAt(scratch / "bz-pass-offered-copy.bin");
             bob->requestFile(gail->fingerprint(), announced.e2eId, announced.attachmentRef, copy);
 
-            const Identity gailIdentity
-                = Identity::fromPrivatePem(AccountDb(gDir, std::string{}).text("identity.pem"));
+            const DeviceCredential gailIdentity = deviceOf(gDir);
             FileOffer elsewhere;
             elsewhere.fileId = announced.e2eId;
             elsewhere.host = std::string(52, 'w') + ".b32.i2p";
@@ -2462,7 +2518,7 @@ int main()
                         std::chrono::system_clock::now().time_since_epoch())
                         .count()},
                 {"offer", fileOfferToJson(elsewhere)}, {"forAsk", "not-the-ask"}};
-            signAuthorship(unasked, gailIdentity, /*withKeys=*/false);
+            signAuthorship(unasked, gailIdentity, /*withCert=*/false);
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[bob->fingerprint()].push_back({"unasked-offer", "content",
@@ -2546,11 +2602,11 @@ int main()
                 }));
                 asked.acceptContactRequest(asking.fingerprint());
             };
-            const auto offer = [&](const Identity& from, const nlohmann::json& days, Session& to) {
+            const auto offer = [&](const DeviceCredential& from, const nlohmann::json& days, Session& to) {
                 nlohmann::json inner = {{"v", 1}, {"type", "presence.schedule"},
-                    {"id", toHex(randomBytes(kMessageIdBytes))}, {"from", from.fingerprint()},
+                    {"id", toHex(randomBytes(kMessageIdBytes))}, {"from", from.account()},
                     {"sentAt", nowMillis()}, {"days", days}};
-                signAuthorship(inner, from, /*withKeys=*/false);
+                signAuthorship(inner, from, /*withCert=*/false);
                 {
                     const std::lock_guard<std::mutex> lock(m.mu);
                     m.mailbox[to.fingerprint()].push_back({inner.at("id").get<std::string>(),
@@ -2613,13 +2669,12 @@ int main()
                 }));
             }
 
-            const Identity quinIdentity = Identity::fromPrivatePem(
-                AccountDb(scratch / "bz-presence-quin", std::string{}).text("identity.pem"));
+            const DeviceCredential quinIdentity = deviceOf(scratch / "bz-presence-quin");
             const PresenceSeed otherSeed = PresenceSeed::generate();
             const auto unchanged = [&]() {
                 return pam->contactPresence(quin->fingerprint()) == quinDays;
             };
-            offer(Identity::generate(), presenceScheduleJson(presenceScheduleFrom(otherSeed, today + 1)),
+            offer(devicetest::Account{}.device, presenceScheduleJson(presenceScheduleFrom(otherSeed, today + 1)),
                 *pam);
             CHECK(unchanged());
             {
@@ -2666,12 +2721,10 @@ int main()
                 pam->sync();
                 CHECK(pam->contactPresence(robot->fingerprint()).empty());
                 CHECK(robot->contactPresence(pam->fingerprint()).empty());
-                const Identity robotIdentity = Identity::fromPrivatePem(
-                    AccountDb(scratch / "bz-presence-bot", std::string{}).text("identity.pem"));
+                const DeviceCredential robotIdentity = deviceOf(scratch / "bz-presence-bot");
                 offer(robotIdentity, presenceScheduleJson(presenceScheduleFrom(otherSeed, today)), *pam);
                 CHECK(pam->contactPresence(robot->fingerprint()).empty());
-                const Identity pamIdentity = Identity::fromPrivatePem(
-                    AccountDb(scratch / "bz-presence-pam", std::string{}).text("identity.pem"));
+                const DeviceCredential pamIdentity = deviceOf(scratch / "bz-presence-pam");
                 offer(pamIdentity, presenceScheduleJson(presenceScheduleFrom(otherSeed, today)), *robot);
                 CHECK(robot->contactPresence(pam->fingerprint()).empty());
 
@@ -2780,7 +2833,7 @@ int main()
 
             const fs::path twinDir = scratch / "bz-epochs-gina2";
             fs::remove(twinDir);
-            Session::importAccountBundle(gina->accountBundle(), twinDir);
+            Session::importAccountBundle(gina->accountBundle(DeviceRole::ePrimary), twinDir);
             const std::unique_ptr<Session> gina2 = Session::open(twinDir, std::string{});
             CHECK(gina2->ownEpochs() == gina->ownEpochs());
             gina2->setEpochClock(clock);
@@ -2873,13 +2926,12 @@ int main()
                 return false;
             }));
 
-            const Identity halIdentity = Identity::fromPrivatePem(
-                AccountDb(scratch / "bz-epochs-hal", std::string{}).text("identity.pem"));
+            const DeviceCredential halIdentity = deviceOf(scratch / "bz-epochs-hal");
             const auto sealedFromHal = [&](const std::string& text, const EpochPublic& epoch) {
                 nlohmann::json inner = {{"v", 1}, {"type", "text"},
                     {"id", toHex(randomBytes(kMessageIdBytes))}, {"from", hal->fingerprint()},
                     {"sentAt", nowMillis()}, {"text", text}};
-                signAuthorship(inner, halIdentity, /*withKeys=*/false);
+                signAuthorship(inner, halIdentity, /*withCert=*/false);
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.mailbox[gina->fingerprint()].push_back({inner.at("id").get<std::string>(),
                     "content",
@@ -2899,6 +2951,245 @@ int main()
 
             utc.store(epochEnd(gina->ownEpochs().back().n) - kLowEpochReserveDays * kSecondsPerDay + 1);
             CHECK(gina->ownEpochReserveLow());
+        }
+
+        {
+            const auto accountNamed = [&](const std::string& name, const std::string& dest) {
+                const fs::path dir = scratch / name;
+                fs::remove(dir);
+                std::unique_ptr<Session> session
+                    = Session::create(dir, AccountKind::eUser, endpoint, std::string{});
+                {
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    m.destFor[session->fingerprint()] = dest;
+                }
+                session->registerAccount();
+                session->setFetchTransport(directDial);
+                session->setOutboundLinks(courierFor());
+                return session;
+            };
+            const auto opened = [&](const std::string& name) {
+                std::unique_ptr<Session> session = Session::open(scratch / name, std::string{});
+                session->setFetchTransport(directDial);
+                session->setOutboundLinks(courierFor());
+                return session;
+            };
+            const auto refusedForRole = [](const std::function<void()>& step) {
+                try {
+                    step();
+                } catch (const DeviceRoleRefusal&) {
+                    return true;
+                } catch (const std::exception&) {
+                    return false;
+                }
+                return false;
+            };
+            const auto hearsText = [](Session& session, const std::string& text) {
+                std::optional<IncomingMessage> heard;
+                CHECK(testutil::waitFor([&]() {
+                    for (const IncomingMessage& item : session.sync()) {
+                        if (item.text == text) {
+                            heard = item;
+                        }
+                    }
+                    return heard.has_value();
+                }));
+                return *heard;
+            };
+            // A card is dated by the second: the next device's must be newer than the last one's.
+            const auto waitPastPublished = [&](const std::string& account) {
+                const std::int64_t publishedAt = [&]() {
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    return ContactCard::verify(fromBase64(m.certFor[account])).issuedAt;
+                }();
+                CHECK(testutil::waitFor([&]() { return nowSeconds() > publishedAt; }));
+            };
+            const auto sealedTo = [&](const std::string& account, const nlohmann::json& inner,
+                                      const EpochPublic& epoch) {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[account].push_back({inner.at("id").get<std::string>(), "content",
+                    sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({inner}))),
+                        epoch)});
+            };
+
+            const std::unique_ptr<Session> ann = accountNamed(
+                "bz-devices-ann", "tlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+            const std::unique_ptr<Session> ben = accountNamed(
+                "bz-devices-ben", "ulkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+            CHECK(ann->isPrimary());
+            CHECK(ann->ownDevices().size() == 1);
+            CHECK(ann->ownDevices().front().current);
+            addByInvite(*ann, ben->inviteUri(), "devices");
+            CHECK(testutil::waitFor([&]() {
+                ben->sync();
+                return ben->contactIsPending(ann->fingerprint());
+            }));
+            ben->acceptContactRequest(ann->fingerprint());
+            CHECK(testutil::waitFor([&]() {
+                ann->sync();
+                return ann->canWriteTo(ben->fingerprint());
+            }));
+            CHECK(ben->contactDevices(ann->fingerprint()).size() == 1);
+            CHECK(ben->contactDevices(ann->fingerprint()).front().id == ann->deviceId());
+
+            const Bytes tabletBundle = ann->exportAccountBytes("pw", DeviceRole::eSecondary);
+            fs::remove(scratch / "bz-devices-tab");
+            Session::importAccountBytes(tabletBundle, scratch / "bz-devices-tab", "pw");
+            const std::unique_ptr<Session> tab = opened("bz-devices-tab");
+            CHECK(tab->fingerprint() == ann->fingerprint());
+            CHECK(tab->role() == DeviceRole::eSecondary);
+            CHECK(tab->deviceId() != ann->deviceId());
+            CHECK(!AccountDb(scratch / "bz-devices-tab", std::string{}).has("root.pem"));
+            tab->registerAccount();
+
+            fs::remove(scratch / "bz-devices-twin");
+            Session::importAccountBytes(tabletBundle, scratch / "bz-devices-twin", "pw");
+            const std::unique_ptr<Session> twin = opened("bz-devices-twin");
+            CHECK(twin->deviceId() == tab->deviceId());
+            bool twinTaken = false;
+            waitPastPublished(ann->fingerprint());
+            try {
+                twin->registerAccount();
+            } catch (const ApiError& error) {
+                twinTaken = error.code == ErrorCode::eDeviceTaken;
+            }
+            CHECK(twinTaken);
+
+            CHECK(refusedForRole([&]() { (void)tab->exportAccountBytes("pw", DeviceRole::eSecondary); }));
+            CHECK(refusedForRole([&]() { (void)tab->exportAccountBytes("pw", DeviceRole::ePrimary); }));
+            CHECK(refusedForRole([&]() { (void)tab->pairingBundle(DeviceRole::eSecondary, newLinkKey()); }));
+            CHECK(refusedForRole([&]() { (void)tab->startPairing({}, DeviceRole::eSecondary); }));
+            CHECK(refusedForRole([&]() { tab->revokeDevice(ann->deviceId()); }));
+            CHECK(refusedForRole([&]() { tab->closeAccountOnServer(); }));
+            CHECK(refusedForRole([&]() { tab->replaceOwnAddress(); }));
+            CHECK(refusedForRole([&]() { (void)tab->signLogin("challenge"); }));
+            CHECK(refusedForRole([&]() { (void)tab->loginSigner(); }));
+            CHECK(refusedForRole([&]() { (void)tab->aliasErrandContext(); }));
+            CHECK(!tab->aliasServicingDue());
+
+            for (const DeviceRole role : {DeviceRole::ePrimary, DeviceRole::eSecondary}) {
+                const Bytes key = newLinkKey();
+                const DeviceKeys made = DeviceKeys::generate();
+                const Bytes sealed = ann->pairingBundle(role, key)(DevicePublic::of(made));
+                const std::string name
+                    = role == DeviceRole::ePrimary ? "bz-devices-paired-1" : "bz-devices-paired-2";
+                fs::remove(scratch / name);
+                Session::importAccountBundle(
+                    openPairBundle(key, completePairBundle(key, sealed, made)), scratch / name);
+                const std::unique_ptr<Session> paired = Session::open(scratch / name, std::string{});
+                CHECK(paired->deviceId() == made.id());
+                CHECK(paired->role() == role);
+                CHECK(paired->fingerprint() == ann->fingerprint());
+                CHECK(AccountDb(scratch / name, std::string{}).has("root.pem")
+                    == (role == DeviceRole::ePrimary));
+            }
+
+            CHECK(testutil::waitFor([&]() {
+                ann->sync();
+                const std::vector<OwnDevice> devices = ann->ownDevices();
+                return std::any_of(devices.begin(), devices.end(),
+                    [&](const OwnDevice& device) { return device.id == tab->deviceId(); });
+            }));
+            ann->setDisplayName("Ann of two devices");
+            CHECK(testutil::waitFor([&]() {
+                ann->flushPendingEchoes();
+                tab->sync();
+                return tab->displayName() == "Ann of two devices";
+            }));
+            {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                for (const Mock::Item& item : m.mailbox[ann->fingerprint()]) {
+                    CHECK(item.cls != "device" || !item.forDevice.empty());
+                }
+            }
+
+            CHECK(testutil::waitFor([&]() {
+                ben->sync();
+                return ben->contactDevices(ann->fingerprint()).size() == 2;
+            }));
+            tab->sendMessage(ben->fingerprint(), "from the tablet");
+            CHECK(hearsText(*ben, "from the tablet").fromDevice == tab->deviceId());
+
+            const DeviceCredential tabletKey = deviceOf(scratch / "bz-devices-tab");
+            const std::vector<EpochPublic> annBefore = ann->ownEpochs();
+            {
+                nlohmann::json offer = {{"v", 1}, {"type", "account.epochs"},
+                    {"id", toHex(randomBytes(kMessageIdBytes))}, {"from", ann->fingerprint()},
+                    {"sentAt", nowMillis()},
+                    {"epochs",
+                        epochsJson({{annBefore.front().n, kFirstEpochGeneration + 7, tabletKey.device(),
+                            Key::generateSealing().publicDer()}})}};
+                signAuthorship(offer, tabletKey, /*withCert=*/false);
+                sealedTo(ben->fingerprint(), offer, ben->ownEpochs().front());
+                ben->sync();
+                const nlohmann::json held = nlohmann::json::parse(
+                    AccountDb(scratch / "bz-devices-ben", std::string{}).text("contacts"));
+                for (const nlohmann::json& epoch : held.at(ann->fingerprint()).at("epochs")) {
+                    CHECK(epoch.at("by").get<std::string>() != tabletKey.device());
+                }
+            }
+
+            waitPastPublished(ann->fingerprint());
+            ann->revokeDevice(tab->deviceId());
+            const std::vector<OwnDevice> afterRevoke = ann->ownDevices();
+            CHECK(afterRevoke.back().id == tab->deviceId());
+            CHECK(afterRevoke.back().revoked);
+            CHECK(ann->ownEpochs().front().g == kFirstRevocationNumber + 1);
+            CHECK(ann->ownEpochs().front().by == ann->deviceId());
+
+            bool tabletRefused = false;
+            try {
+                (void)tab->sync();
+            } catch (const ApiError& error) {
+                tabletRefused = error.code == ErrorCode::eDeviceRevoked;
+            }
+            CHECK(tabletRefused);
+
+            CHECK(testutil::waitFor([&]() {
+                ann->flushPendingEchoes();
+                ben->sync();
+                const std::vector<ContactDevice> devices = ben->contactDevices(ann->fingerprint());
+                return devices.size() == 2 && devices.back().revoked
+                    && devices.back().id == tab->deviceId();
+            }));
+            {
+                nlohmann::json forged = {{"v", 1}, {"type", "text"},
+                    {"id", toHex(randomBytes(kMessageIdBytes))}, {"from", ann->fingerprint()},
+                    {"sentAt", nowMillis()}, {"text", "from a revoked tablet"}};
+                signAuthorship(forged, tabletKey, /*withCert=*/true);
+                sealedTo(ben->fingerprint(), forged, ben->ownEpochs().front());
+                for (const IncomingMessage& item : ben->sync()) {
+                    CHECK(item.text != "from a revoked tablet");
+                }
+            }
+
+            CHECK(testutil::waitFor([&]() {
+                ann->flushPendingEchoes();
+                ben->sync();
+                const nlohmann::json held = nlohmann::json::parse(
+                    AccountDb(scratch / "bz-devices-ben", std::string{}).text("contacts"));
+                const nlohmann::json& epochs = held.at(ann->fingerprint()).at("epochs");
+                return std::any_of(epochs.begin(), epochs.end(), [](const nlohmann::json& epoch) {
+                    return epoch.at("g").get<EpochGeneration>() == kFirstRevocationNumber + 1;
+                });
+            }));
+            ben->sendMessage(ann->fingerprint(), "after the revocation");
+            Bytes sealedAfter;
+            const Bytes newKid = ann->ownEpochs().front().kid();
+            CHECK(testutil::waitFor([&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                for (const Mock::Item& item : m.mailbox[ann->fingerprint()]) {
+                    if (item.cls == "content" && hybrid::sealedKid(item.payload) == newKid) {
+                        sealedAfter = item.payload;
+                    }
+                }
+                return !sealedAfter.empty();
+            }));
+            EpochRing tabletRing;
+            tabletRing.addAll(nlohmann::json::parse(
+                AccountDb(scratch / "bz-devices-tab", std::string{}).text("epochs")));
+            CHECK_THROWS(tabletRing.open(sealedAfter));
+            CHECK(hearsText(*ann, "after the revocation").fromDevice == ben->deviceId());
         }
     }
 

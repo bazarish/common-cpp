@@ -5,8 +5,11 @@
 
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Hmac.hpp>
+#include <bazarish/JsonRead.hpp>
 #include <bazarish/KeyedSeal.hpp>
 #include <bazarish/Log.hpp>
+
+#include <nlohmann/json.hpp>
 
 #include <cctype>
 
@@ -24,6 +27,10 @@ constexpr char kPairTriesLeftHeader[] = "X-Bazarish-Pair-Left";
 constexpr char kPairTriesLeftHeaderKey[] = "x-bazarish-pair-left";
 constexpr char kPairBundleContentType[] = "application/octet-stream";
 constexpr char kPairDestLabel[] = "Device pairing";
+constexpr char kHelloCodeField[] = "code";
+constexpr char kHelloSigningClassicalField[] = "c";
+constexpr char kHelloSigningPqField[] = "pq";
+constexpr char kHelloSealingField[] = "s";
 
 constexpr unsigned pairCodeSpace()
 {
@@ -76,24 +83,60 @@ PairVerdict pairVerdict(const std::string& method, const std::string& target, co
     const std::string& code, const Bytes& key)
 {
     if (method != kPairMethod || target != kPairPath) {
-        return {kI2pHttpNotFound, false};
+        return {kI2pHttpNotFound, false, std::nullopt};
     }
     const std::optional<Bytes> given = KeyedSeal(key, kPairHelloLabel).open(hello);
     if (!given.has_value()) {
-        return {kI2pHttpBadRequest, false};
+        return {kI2pHttpBadRequest, false, std::nullopt};
     }
-    if (!service::constantTimeEqual(std::string(given->begin(), given->end()), code)) {
-        return {kI2pHttpForbidden, true};
+    nlohmann::json asked;
+    try {
+        asked = parseCbor(*given);
+    } catch (const std::exception&) {
+        return {kI2pHttpBadRequest, false, std::nullopt};
     }
-    return {kI2pHttpOk, false};
+    if (!asked.is_object() || !asked.contains(kHelloCodeField) || !asked.at(kHelloCodeField).is_string()) {
+        return {kI2pHttpBadRequest, false, std::nullopt};
+    }
+    if (!service::constantTimeEqual(asked.at(kHelloCodeField).get<std::string>(), code)) {
+        return {kI2pHttpForbidden, true, std::nullopt};
+    }
+    try {
+        const auto bytesAt = [&asked](const char* const field) {
+            const nlohmann::json::binary_t& value = asked.at(field).get_binary();
+            return Bytes(value.begin(), value.end());
+        };
+        DevicePublic device{bytesAt(kHelloSigningClassicalField), bytesAt(kHelloSigningPqField),
+            bytesAt(kHelloSealingField)};
+        return {kI2pHttpOk, false, std::move(device)};
+    } catch (const std::exception&) {
+        return {kI2pHttpBadRequest, false, std::nullopt};
+    }
 }
 
-std::string pairRequest(const std::string& dest, const std::string& code, const Bytes& key)
+std::string pairRequest(
+    const std::string& dest, const std::string& code, const Bytes& key, const DevicePublic& device)
 {
-    const Bytes hello = KeyedSeal(key, kPairHelloLabel).seal(Bytes(code.begin(), code.end()));
+    const nlohmann::json asked = {
+        {kHelloCodeField, code},
+        {kHelloSigningClassicalField, nlohmann::json::binary(device.signingClassicalDer)},
+        {kHelloSigningPqField, nlohmann::json::binary(device.signingPqDer)},
+        {kHelloSealingField, nlohmann::json::binary(device.sealingDer)},
+    };
+    const Bytes hello = KeyedSeal(key, kPairHelloLabel).seal(nlohmann::json::to_cbor(asked));
     return buildI2pHttpRequest(kPairMethod, dest, kPairPath,
                {{"Content-Type", kPairBundleContentType}}, hello.size())
         + std::string(hello.begin(), hello.end());
+}
+
+Bytes completePairBundle(const Bytes& key, const Bytes& sealed, const DeviceKeys& made)
+{
+    nlohmann::json bundle = parseJson(openPairBundle(key, sealed));
+    nlohmann::json& device = bundle.at(kBundleDeviceField);
+    device[kBundleDeviceSigningField] = made.signingPem();
+    device[kBundleDeviceSealingField] = made.sealingPem();
+    const std::string text = bundle.dump();
+    return sealPairBundle(key, Bytes(text.begin(), text.end()));
 }
 
 Bytes sealPairBundle(const Bytes& key, const Bytes& bundle)

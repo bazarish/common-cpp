@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "ApiClient.hpp"
+#include "DeviceTestKit.hpp"
 #include <bazarish/ServerDescriptor.hpp>
 #include "Invite.hpp"
 
@@ -66,17 +67,18 @@ void testServerLink()
 
 void testI2pOnly()
 {
-    const bazarish::Identity id = bazarish::Identity::generate();
+    const bazarish::devicetest::Account account;
+    const bazarish::DeviceCredential& id = account.device;
     const std::vector<Facade> facades
         = {parseFacadeAddress("clear.example:8443"), parseFacadeAddress(kI2pHost)};
     {
         bazarish::setAllowFacadeWithoutI2pForDevPurposes(false);
-        ApiClient api(id, "cid", ServerEndpoint{"srvfp", facades, {}}, "/tmp/bazarish-test/i2p");
+        ApiClient api(id, ServerEndpoint{"srvfp", facades, {}}, "/tmp/bazarish-test/i2p");
         CHECK(api.activeFacadeAddress() == kI2pHost);
     }
     {
         bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
-        ApiClient api(id, "cid", ServerEndpoint{"srvfp", facades, {}}, "/tmp/bazarish-test/i2p");
+        ApiClient api(id, ServerEndpoint{"srvfp", facades, {}}, "/tmp/bazarish-test/i2p");
         CHECK(api.activeFacadeAddress() == "clear.example:8443");
     }
 }

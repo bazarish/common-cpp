@@ -3,28 +3,29 @@
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Crypto.hpp>
+#include <bazarish/Devices.hpp>
 
 #include <nlohmann/json.hpp>
 
-#include <cstddef>
 #include <string>
 
 namespace bazarish::client {
 
 inline constexpr const char* kAuthorshipField = "auth";
 
-// SPKI DER.
-struct IdentityKeys {
-    Bytes classicalDer;
-    Bytes pqDer;
+// Names the signing device; a first letter to an account also carries the device's certificate.
+void signAuthorship(nlohmann::json& content, const DeviceCredential& device, bool withCert);
 
-    bool empty() const { return classicalDer.empty() || pqDer.empty(); }
+struct Author {
+    std::string account;
+    std::string device;
 };
 
-void signAuthorship(nlohmann::json& content, const Identity& identity, bool withKeys);
+std::string authorDevice(const nlohmann::json& content);
+// Empty when the letter does not carry one.
+Bytes carriedCert(const nlohmann::json& content);
 
-IdentityKeys keysIn(const nlohmann::json& content);
-
-std::string authorOf(const nlohmann::json& content, const IdentityKeys& known = {});
+// Checked against the certificate carried, else against the account's device in `known`.
+Author authorOf(const nlohmann::json& content, const DeviceBook& known);
 
 }  // namespace bazarish::client

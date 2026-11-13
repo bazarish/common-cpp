@@ -3,7 +3,9 @@
 
 #include <bazarish/Crypto.hpp>
 #include <bazarish/DeliveryEnvelope.hpp>
+#include <bazarish/Devices.hpp>
 #include <bazarish/FederationFrame.hpp>
+#include <bazarish/Hybrid.hpp>
 #include <bazarish/Limits.hpp>
 #include <bazarish/Log.hpp>
 
@@ -550,16 +552,27 @@ void OutboundCourier::runLookup(const Job& job)
 
 OutboundCourier::Answer OutboundCourier::attempt(const Letter& plainLetter, Outcome& outcome)
 {
-    const std::optional<EpochPublic> epoch = epochFor(plainLetter.sealTo, timings_.utcNow());
-    if (!epoch.has_value()) {
-        return Answer::eKeyless;
-    }
     Letter letter = plainLetter;
-    try {
-        letter.payload = sealToEpoch(letter.plain, *epoch);
-    } catch (const std::exception& error) {
-        outcome.errorMessage = std::string("the recipient's epoch key does not seal: ") + error.what();
-        return Answer::eAnswered;
+    if (!letter.toDevice.empty()) {
+        try {
+            letter.payload = hybrid::seal(
+                letter.plain, Key::fromPublicDer(letter.deviceSealingDer), deviceKid(letter.toDevice));
+        } catch (const std::exception& error) {
+            outcome.errorMessage = std::string("the device's key does not seal: ") + error.what();
+            return Answer::eAnswered;
+        }
+    } else {
+        const std::optional<EpochPublic> epoch = epochFor(plainLetter.sealTo, timings_.utcNow());
+        if (!epoch.has_value()) {
+            return Answer::eKeyless;
+        }
+        try {
+            letter.payload = sealToEpoch(letter.plain, *epoch);
+        } catch (const std::exception& error) {
+            outcome.errorMessage
+                = std::string("the recipient's epoch key does not seal: ") + error.what();
+            return Answer::eAnswered;
+        }
     }
     if (letter.route != kOwnMailboxRoute) {
         return attemptFederation(letter, outcome);

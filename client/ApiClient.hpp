@@ -7,6 +7,7 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Crypto.hpp>
+#include <bazarish/Devices.hpp>
 #include <bazarish/Errors.hpp>
 #include <bazarish/I2p.hpp>
 
@@ -71,7 +72,7 @@ public:
     static constexpr int kConnectTimeoutSeconds = 30;
     static constexpr int kWriteTimeoutSeconds = kDefaultReadTimeoutSeconds;
 
-    ApiClient(const Identity& identity, std::string clientId, ServerEndpoint endpoint,
+    ApiClient(const DeviceCredential& credential, ServerEndpoint endpoint,
         std::filesystem::path i2pDataDir = {});
 
     ApiResponse get(const std::string& path, const std::string& query = "");
@@ -82,7 +83,6 @@ public:
 
     void setWireLog(std::shared_ptr<WireLog> log);
 
-    const std::string& clientId() const;
     const ServerEndpoint& endpoint() const;
     std::string activeFacadeAddress() const;
     std::string gatewayRefusal() const;
@@ -116,8 +116,7 @@ private:
         int readTimeoutSeconds, LinkAttempt& tried);
     void noteLinkFailure(LinkAttempt attempt);
 
-    const Identity& identity_;
-    const std::string clientId_;
+    const DeviceCredential& credential_;
     const ServerEndpoint endpoint_;
     const std::filesystem::path i2pDataDir_;
     std::string accountLabel_;
