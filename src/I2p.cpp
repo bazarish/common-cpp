@@ -89,17 +89,8 @@ private:
     std::uint64_t next_ = 0;
 };
 
-Listeners& lossListeners()
-{
-    static Listeners listeners;
-    return listeners;
-}
-
-Listeners& transportListeners()
-{
-    static Listeners listeners;
-    return listeners;
-}
+Listeners g_lossListeners;
+Listeners g_transportListeners;
 std::mutex g_activityMutex;
 shape::ActivityState g_activity;
 
@@ -313,7 +304,7 @@ void networkChanged()
     ++g_networkChanges;
     backend::noteCarryReturned();
     if (wasDown || wasUnreachable) {
-        transportListeners().call();
+        g_transportListeners.call();
     }
 }
 
@@ -325,9 +316,9 @@ std::uint64_t networkChanges()
 void networkLost()
 {
     const bool wasDown = g_networkDown.exchange(true);
-    lossListeners().call();
+    g_lossListeners.call();
     if (!wasDown) {
-        transportListeners().call();
+        g_transportListeners.call();
     }
 }
 
@@ -346,13 +337,13 @@ TransportState transportState()
 }
 
 TransportWatch::TransportWatch(std::function<void()> listener)
-    : id_(transportListeners().add(std::move(listener)))
+    : id_(g_transportListeners.add(std::move(listener)))
 {
 }
 
 TransportWatch::~TransportWatch()
 {
-    transportListeners().remove(id_);
+    g_transportListeners.remove(id_);
 }
 
 void windowActive(const bool active)
@@ -400,13 +391,13 @@ CarryWatch::~CarryWatch()
 }
 
 backend::LossWatch::LossWatch(std::function<void()> listener)
-    : id_(lossListeners().add(std::move(listener)))
+    : id_(g_lossListeners.add(std::move(listener)))
 {
 }
 
 backend::LossWatch::~LossWatch()
 {
-    lossListeners().remove(id_);
+    g_lossListeners.remove(id_);
 }
 
 void backend::noteGatewayReach(const bool reachable)
@@ -414,7 +405,7 @@ void backend::noteGatewayReach(const bool reachable)
     if (g_gatewayUnreachable.exchange(!reachable) != reachable) {
         return;
     }
-    transportListeners().call();
+    g_transportListeners.call();
 }
 
 void backend::noteCarryReturned()
