@@ -3121,6 +3121,19 @@ int main()
             CHECK(storedDeviceId(AccountDb(scratch / "bz-devices-tab", std::string{}))
                 == tab->deviceId());
 
+            {
+                std::atomic<std::int64_t> tabUtc{
+                    epochStart(epochAt(nowSeconds()) + 1) + kSecondsPerDay};
+                tab->setEpochClock([&tabUtc]() { return tabUtc.load(); });
+                tab->flushPendingEchoes();
+                tabUtc.store(tabUtc.load() + kSecondsPerHour + 1);
+                tab->flushPendingEchoes();
+                tab->setEpochClock(systemUtcSeconds);
+                for (const WireEvent& event : tab->connectionLog()) {
+                    CHECK(!event.what.starts_with(kTypeAccountEpochs));
+                }
+            }
+
             const DeviceCredential tabletKey = deviceOf(scratch / "bz-devices-tab");
             const std::vector<EpochPublic> annBefore = ann->ownEpochs();
             {

@@ -5451,7 +5451,7 @@ void Session::keepEpochs()
         epochsCheckedDay_ = today;
         std::vector<std::string> keyless;
         for (const auto& [peerFingerprint, contact] : contacts_) {
-            if (sendsEpochsTo(peerFingerprint)
+            if (createsEpochs() && sendsEpochsTo(peerFingerprint)
                 && lessThanAnEpochAhead(contact.epochsSentThrough, utc)
                 && !epochsQueued(peerFingerprint)) {
                 epochsDue_.try_emplace(peerFingerprint,
@@ -5475,7 +5475,7 @@ void Session::keepEpochs()
     }
     for (const std::string& peerFingerprint : ready) {
         epochsDue_.erase(peerFingerprint);
-        if (!sendsEpochsTo(peerFingerprint) || epochsQueued(peerFingerprint)) {
+        if (!createsEpochs() || !sendsEpochsTo(peerFingerprint) || epochsQueued(peerFingerprint)) {
             continue;
         }
         try {
