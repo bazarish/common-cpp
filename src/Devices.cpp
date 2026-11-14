@@ -9,6 +9,7 @@
 #include <openssl/crypto.h>
 
 #include <algorithm>
+#include <iterator>
 #include <set>
 #include <stdexcept>
 #include <string_view>
@@ -117,8 +118,9 @@ void requireDeviceId(const std::string& text)
 Bytes deviceKid(const std::string& deviceId)
 {
     requireDeviceId(deviceId);
-    Bytes kid{kDeviceKidTag};
-    kid.insert(kid.end(), deviceId.begin(), deviceId.end());
+    Bytes kid(sizeof(kDeviceKidTag) + deviceId.size());
+    kid.front() = kDeviceKidTag;
+    std::copy(deviceId.begin(), deviceId.end(), std::next(kid.begin()));
     return kid;
 }
 
