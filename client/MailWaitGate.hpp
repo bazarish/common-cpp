@@ -12,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <string_view>
+#include <utility>
 
 namespace bazarish::client {
 
@@ -115,14 +116,28 @@ public:
         carryAtAsk_ = i2p::carryReturns();
     }
 
+    // Called on the waiting thread each time the mail wait is answered.
+    void onAnswered(std::function<void()> tell)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        onAnswered_ = std::move(tell);
+    }
+
     // Only an answer to an ask that had a cause of its own earns the next free re-ask.
     void answered()
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        lastAnswered_ = true;
-        armed_ = armed_ || !reasking_;
-        reasking_ = false;
-        serverDownNext_ = ServerDownPause::eFirst;
+        std::function<void()> tell;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            lastAnswered_ = true;
+            armed_ = armed_ || !reasking_;
+            reasking_ = false;
+            serverDownNext_ = ServerDownPause::eFirst;
+            tell = onAnswered_;
+        }
+        if (tell) {
+            tell();
+        }
     }
 
     // After a failed ask: returns once the next ask has a cause. facadeAnew asks the netDb.
@@ -249,6 +264,7 @@ private:
     bool reasking_ = false;
     ServerDownPause serverDownNext_ = ServerDownPause::eFirst;
     std::uint64_t carryAtAsk_ = 0;
+    std::function<void()> onAnswered_;
     // Last, so it goes first and no listener outlives the members it touches.
     i2p::CarryWatch carry_;
 };

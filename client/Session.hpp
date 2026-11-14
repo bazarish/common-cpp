@@ -43,6 +43,7 @@
 namespace bazarish::client {
 
 class AccountDb;
+class MailWaitGate;
 
 struct InlineButton {
     std::string text;
@@ -773,6 +774,8 @@ public:
     void releasePending(const std::vector<std::string>& pendingIds);
 
     void onServerAnswered(std::function<void()> tell);
+    // What waits since the link came back goes once this mail wait is answered.
+    void openOutboxWhenAnswered(MailWaitGate& gate);
 
     using AckSink = std::function<void(const std::string& pendingId)>;
     void setAckSink(AckSink sink);

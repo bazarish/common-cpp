@@ -182,17 +182,26 @@ void OutboundCourier::heard(const std::string& route)
 {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        const auto gate = gates_.find(route);
-        if (gate == gates_.end() || !gate->second.closed) {
-            return;
-        }
         if (route == kOwnMailboxRoute) {
-            gate->second.closed = false;
-            bazarish::log::info("our server answered: what waits for this account's mailbox goes");
-        } else if (links_.lookup && !gate->second.lookupDue) {
-            gate->second.lookupDue = true;
+            bool opened = false;
+            for (auto& [gated, gate] : gates_) {
+                if (gate.closed && (gate.awaitsServer || gated == kOwnMailboxRoute)) {
+                    gate.closed = false;
+                    gate.awaitsServer = false;
+                    opened = true;
+                }
+            }
+            if (!opened) {
+                return;
+            }
+            bazarish::log::info("our server answered: what waits in the outbox goes");
         } else {
-            return;
+            const auto gate = gates_.find(route);
+            if (gate == gates_.end() || !gate->second.closed || !links_.lookup
+                || gate->second.lookupDue) {
+                return;
+            }
+            gate->second.lookupDue = true;
         }
     }
     cv_.notify_all();
@@ -251,19 +260,18 @@ void OutboundCourier::withdraw(const std::string& mailbox)
 
 void OutboundCourier::carryReturned()
 {
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        bool opened = false;
-        for (auto& [route, gate] : gates_) {
-            opened = opened || gate.closed;
-            gate.closed = false;
+    const std::lock_guard<std::mutex> lock(mutex_);
+    bool held = false;
+    for (auto& [route, gate] : gates_) {
+        if (gate.closed) {
+            gate.awaitsServer = true;
             gate.lookupDue = false;
-        }
-        if (opened) {
-            bazarish::log::info("the link came back: every waiting recipient is tried again");
+            held = true;
         }
     }
-    cv_.notify_all();
+    if (held) {
+        bazarish::log::info("the link came back: what waits goes once our server answers");
+    }
 }
 
 void OutboundCourier::openDueLocked(const std::chrono::steady_clock::time_point now)
@@ -272,6 +280,7 @@ void OutboundCourier::openDueLocked(const std::chrono::steady_clock::time_point 
         if (gate.closed && gate.opensAt <= now) {
             gate.closed = false;
             gate.lookupDue = false;
+            gate.awaitsServer = false;
             bazarish::log::info(
                 "{}: the lease set of the failed attempt has expired, trying again",
                 routeName(route));
@@ -459,6 +468,7 @@ std::vector<std::pair<DeliveryWatch, std::string>> OutboundCourier::closeGateLoc
     gate.closed = true;
     gate.opensAt = std::chrono::steady_clock::now() + timings_.staleBound;
     gate.lookupDue = route != kOwnMailboxRoute && static_cast<bool>(links_.lookup);
+    gate.awaitsServer = false;
     gate.failedSeenKnown = false;
     gate.failedSeen.reset();
     std::vector<std::pair<DeliveryWatch, std::string>> told;
@@ -542,6 +552,7 @@ void OutboundCourier::runLookup(const Job& job)
             }
             if (found->after.has_value() && i2p::publishedLater(*found->after, gate.failedSeen)) {
                 gate.closed = false;
+                gate.awaitsServer = false;
                 bazarish::log::info(
                     "{} published a newer lease set: trying again", routeName(job.route));
             }

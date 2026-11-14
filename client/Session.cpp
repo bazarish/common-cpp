@@ -13,6 +13,7 @@
 #include "ResolverAsk.hpp"
 #include "I2pKeys.hpp"
 #include "I2pRouter.hpp"
+#include "MailWaitGate.hpp"
 
 #include <bazarish/Address.hpp>
 #include <bazarish/Certificates.hpp>
@@ -4661,6 +4662,20 @@ void Session::onServerAnswered(std::function<void()> tell)
 {
     const std::lock_guard<std::mutex> lock(serverAnswered_->mutex);
     serverAnswered_->tell = std::move(tell);
+}
+
+void Session::openOutboxWhenAnswered(MailWaitGate& gate)
+{
+    gate.onAnswered([outbound = std::weak_ptr<Outbound>(outbound_)]() {
+        const std::shared_ptr<Outbound> held = outbound.lock();
+        if (!held) {
+            return;
+        }
+        const std::lock_guard<std::mutex> lock(held->mutex);
+        if (held->courier) {
+            held->courier->heard(kOwnMailboxRoute);
+        }
+    });
 }
 
 void Session::setAckSink(AckSink sink)

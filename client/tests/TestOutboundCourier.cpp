@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "EpochTestRing.hpp"
+#include "MailWaitGate.hpp"
 #include "OutboundCourier.hpp"
 #include "OutboundLeases.hpp"
 
@@ -517,15 +518,23 @@ int main()
             return std::make_shared<ServerStream>(keys.signing, keys.serving);
         }),
             {}, quick(kFarBound));
+        MailWaitGate mailGate;
+        mailGate.onAnswered([&courier]() { courier.heard(kOwnMailboxRoute); });
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
-        CHECK(waits(record, 1));
-        CHECK(staysUnsettled(record, 1));
-        CHECK(dials.load() == 1);
+        courier.submit(letterTo(keys, other, 2), record.watchFor(2));
+        CHECK(waits(record, 1) && waits(record, 2));
+        CHECK(testutil::waitFor([&dials]() { return dials.load() == 2; }));
         answers = true;
         i2p::networkChanged();
-        CHECK(settles(record, 1));
-        CHECK(record.outcome(1)->stored);
+        CHECK(staysUnsettled(record, 1) && staysUnsettled(record, 2));
         CHECK(dials.load() == 2);
+        mailGate.asking();
+        mailGate.answered();
+        CHECK(settles(record, 1) && settles(record, 2));
+        CHECK(record.outcome(1)->stored && record.outcome(2)->stored);
+        CHECK(dials.load() == 4);
+        std::printf("TestOutboundCourier: after the link came back the outbox waited for the"
+                    " mail wait's answer\n");
     }
 
     {

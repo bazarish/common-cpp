@@ -5,6 +5,7 @@
 #include "I2pRouter.hpp"
 #include "Client.hpp"
 #include "OutboundCourier.hpp"
+#include "MailWaitGate.hpp"
 #include "AccountDb.hpp"
 #include "Authorship.hpp"
 #include "PresenceSeed.hpp"
@@ -1855,8 +1856,12 @@ int main()
             alice->sendContactRequest(
                 erin->fingerprint(), "second-request", "are you there", requestWatch);
             CHECK(contactRequestsFor(erin->fingerprint()) == 0);
+            MailWaitGate aliceWait;
+            alice->openOutboxWhenAnswered(aliceWait);
             erinDown = false;
             i2p::networkChanged();
+            CHECK(!testutil::waitFor([&]() { return requestsSettled() > 0; }, kStillWaiting));
+            aliceWait.answered();
             CHECK(testutil::waitFor([&]() { return requestsSettled() == 2; }));
             {
                 const std::lock_guard<std::mutex> lock(settledMutex);
@@ -1952,7 +1957,10 @@ int main()
                 const std::lock_guard<std::mutex> lock(outcomeMutex);
                 return told.has_value();
             }, std::chrono::milliseconds(1000)));
+            MailWaitGate aliceWait;
+            alice->openOutboxWhenAnswered(aliceWait);
             i2p::networkChanged();
+            aliceWait.answered();
             CHECK(testutil::waitFor([&]() {
                 const std::lock_guard<std::mutex> lock(outcomeMutex);
                 return told.has_value();

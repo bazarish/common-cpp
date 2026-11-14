@@ -125,7 +125,7 @@ public:
     // Watches run on the courier's threads; a settled letter not yet forgotten tells its outcome.
     bool attach(std::uint64_t seq, DeliveryWatch watch);
     void forget(std::uint64_t seq);
-    // Something came from the route: a closed gate looks the lease set up, our mailbox opens.
+    // Something came from the route: a closed gate looks the lease set up; our server opens all.
     void heard(const std::string& route);
     void readdress(
         const std::string& mailbox, const std::string& toDest, const Bytes& servingSealingDer);
@@ -150,6 +150,8 @@ private:
         bool busy = false;
         bool closed = false;
         bool lookupDue = false;
+        // Closed when the link came back: opens once our server has answered.
+        bool awaitsServer = false;
         bool failedSeenKnown = false;
         std::optional<i2p::LeaseSetSeen> failedSeen;
         std::chrono::steady_clock::time_point opensAt;
