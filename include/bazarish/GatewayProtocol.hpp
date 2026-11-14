@@ -26,10 +26,14 @@ inline constexpr std::size_t kStreamWindowBytes = 256 * 1024;
 inline constexpr std::chrono::seconds kDialRetryDelay{2};
 inline constexpr std::size_t kInboundQueue = 8;
 inline constexpr std::size_t kDatagramQueue = 64;
-// Under the five minutes a mobile carrier's NAT keeps a silent TCP flow.
-inline constexpr std::chrono::seconds kIdleKeepalive{270};
+// Idle waits are drawn in here, under the five minutes a carrier's NAT keeps a silent TCP flow.
+inline constexpr std::chrono::seconds kIdleKeepaliveMin{180};
+inline constexpr std::chrono::seconds kIdleKeepaliveMax{260};
 inline constexpr std::chrono::seconds kPongTimeout{15};
-inline constexpr std::chrono::seconds kSilenceLimit = kIdleKeepalive + kPongTimeout;
+// Room for a ping drawn at the longest to reach the gateway.
+inline constexpr std::chrono::seconds kSilenceMargin{10};
+inline constexpr std::chrono::seconds kSilenceLimit
+    = kIdleKeepaliveMax + kPongTimeout + kSilenceMargin;
 inline constexpr std::chrono::milliseconds kStatusPeriod{250};
 inline constexpr std::size_t kMaxSocketsPerSession = 16;
 inline constexpr std::chrono::seconds kMaxDialDeadline{90};

@@ -75,6 +75,9 @@ struct RecordBody {
 };
 std::optional<RecordBody> unpadRecord(const Bytes& plaintext);
 
+// Uniform in [kIdleKeepaliveMin, kIdleKeepaliveMax].
+std::chrono::milliseconds drawIdleKeepalive(shape::RandomSource& random);
+
 // A keepalive ping carries the same flags a record does.
 std::string pingCarrying(std::uint8_t flags);
 std::optional<std::uint8_t> flagsOfPing(const std::string& payload);

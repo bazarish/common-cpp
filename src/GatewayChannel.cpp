@@ -132,6 +132,15 @@ shape::LogNormal bulkPad()
     return {kBulkPadMedian, kBulkPadSigma, 0, static_cast<double>(kBulkPadMax)};
 }
 
+std::chrono::milliseconds drawIdleKeepalive(shape::RandomSource& random)
+{
+    const std::chrono::milliseconds least = kIdleKeepaliveMin;
+    const std::chrono::milliseconds span = kIdleKeepaliveMax - kIdleKeepaliveMin;
+    return least
+        + std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(
+            std::floor(shape::uniformOpen(random) * static_cast<double>(span.count()))));
+}
+
 Bytes padRecord(const Bytes& frame, const std::uint8_t flags, shape::RandomSource& random)
 {
     mustFitRecord(frame);

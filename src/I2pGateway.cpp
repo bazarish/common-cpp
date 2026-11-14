@@ -899,7 +899,10 @@ http::SocketDial GatewayRouter::dialLocked() const
     dial.path = config_.gatewayPath;
     dial.tls = config_.gatewayTls;
     dial.maxMessageBytes = gateway::kMaxRecordBytes;
-    dial.pingAfterSilence = gateway::kIdleKeepalive;
+    dial.silenceBeforePing = []() {
+        shape::SystemRandom random;
+        return gateway::drawIdleKeepalive(random);
+    };
     dial.pongTimeout = gateway::kPongTimeout;
     dial.pingPayload = [traffic = traffic_]() {
         return gateway::pingCarrying(recordFlags(*traffic));

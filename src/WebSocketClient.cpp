@@ -215,7 +215,7 @@ public:
         : loop_(std::move(loop))
         , stream_(std::move(stream))
         , keepalive_(*loop_)
-        , silence_(dial.pingAfterSilence)
+        , drawSilence_(dial.silenceBeforePing)
         , pongWait_(dial.pongTimeout)
         , pingPayload_(dial.pingPayload)
     {
@@ -295,12 +295,13 @@ public:
         closed_ = std::move(closed);
         const std::shared_ptr<ClientSocket> self = this->shared_from_this();
         loop_->restart();
-        if (silence_.count() > 0) {
+        if (drawSilence_) {
             lastSent_ = SteadyClock::now();
             lastHeard_ = lastSent_;
             stream_->control_callback(
                 [this](const websocket::frame_type, const beast::string_view) {
                     lastHeard_ = SteadyClock::now();
+                    quietMoved();
                 });
             armKeepalive();
         }
@@ -331,6 +332,7 @@ private:
             return;
         }
         lastHeard_ = SteadyClock::now();
+        quietMoved();
         if (message_) {
             const unsigned char* const at = static_cast<const unsigned char*>(buffer_.data().data());
             message_(this->shared_from_this(), std::vector<unsigned char>(at, at + buffer_.size()));
@@ -380,6 +382,7 @@ private:
                     self->queue_.pop_front();
                 }
                 self->lastSent_ = SteadyClock::now();
+                self->quietMoved();
                 if (error) {
                     self->close();
                 }
@@ -387,12 +390,36 @@ private:
             });
     }
 
+    // Each quiet spell draws its own wait, so no two pings need be the same time apart.
+    SteadyClock::duration silence()
+    {
+        const SteadyClock::time_point quietSince = std::min(lastSent_, lastHeard_);
+        if (quietSince != drawnFor_) {
+            drawnFor_ = quietSince;
+            silence_ = drawSilence_();
+        }
+        return silence_;
+    }
+
+    void quietMoved()
+    {
+        if (!drawSilence_ || !open_.load()) {
+            return;
+        }
+        if (pingOut_ && lastHeard_ >= pingSentAt_) {
+            pingOut_ = false;
+        }
+        if (!pingOut_ && std::min(lastSent_, lastHeard_) != drawnFor_) {
+            armKeepalive();
+        }
+    }
+
     // A ping only after silence either way; one left unanswered past its wait ends the link.
     void armKeepalive()
     {
         const SteadyClock::time_point due = pingOut_
             ? pingSentAt_ + pongWait_
-            : std::min(lastSent_, lastHeard_) + silence_;
+            : std::min(lastSent_, lastHeard_) + silence();
         keepalive_.expires_at(due);
         keepalive_.async_wait(
             [self = this->shared_from_this()](const boost::system::error_code& error) {
@@ -417,7 +444,7 @@ private:
             close();
             return;
         }
-        if (!pingOut_ && now - std::min(lastSent_, lastHeard_) >= silence_) {
+        if (!pingOut_ && now - std::min(lastSent_, lastHeard_) >= silence()) {
             websocket::ping_data payload;
             if (pingPayload_) {
                 const std::string carried = pingPayload_();
@@ -449,7 +476,9 @@ private:
     bool writing_ = false;
     std::atomic<bool> open_{true};
     asio::steady_timer keepalive_;
-    const std::chrono::seconds silence_;
+    const std::function<std::chrono::milliseconds()> drawSilence_;
+    SteadyClock::duration silence_{};
+    SteadyClock::time_point drawnFor_ = SteadyClock::time_point::max();
     const std::chrono::seconds pongWait_;
     const std::function<std::string()> pingPayload_;
     SteadyClock::time_point lastSent_{};
@@ -544,7 +573,7 @@ std::string upgrade(
 {
     websocket::stream_base::timeout timeouts{};
     timeouts.handshake_timeout = dial.connectTimeout;
-    const bool ownKeepalive = dial.pingAfterSilence.count() > 0;
+    const bool ownKeepalive = static_cast<bool>(dial.silenceBeforePing);
     timeouts.idle_timeout = ownKeepalive
         ? websocket::stream_base::none()
         : std::chrono::duration_cast<std::chrono::steady_clock::duration>(dial.idleTimeout);

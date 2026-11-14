@@ -23,8 +23,8 @@ struct SocketDial {
     std::chrono::seconds connectTimeout{15};
     std::chrono::seconds idleTimeout{45};
     std::size_t maxMessageBytes = 64 * 1024;
-    // Zero leaves keepalive to Beast's pings at half idleTimeout.
-    std::chrono::seconds pingAfterSilence{0};
+    // Empty leaves keepalive to Beast's pings at half idleTimeout; else it draws each quiet spell's wait.
+    std::function<std::chrono::milliseconds()> silenceBeforePing;
     std::chrono::seconds pongTimeout{0};
     std::function<std::string()> pingPayload;
 };

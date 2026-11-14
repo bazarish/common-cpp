@@ -6,6 +6,7 @@
 #include "TestUtil.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <random>
 #include <set>
@@ -30,6 +31,9 @@ constexpr std::size_t kDistinctLengths = 200;
 constexpr std::uint32_t kAnyRef = 7;
 constexpr std::uint64_t kAnyCredit = 123456;
 constexpr std::size_t kVoiceBytes = 160;
+constexpr int kKeepaliveBins = 4;
+// A bin of a uniform draw holds a quarter of kRecords, give or take far less than a twentieth.
+constexpr int kKeepaliveBinSlack = 20;
 
 class SeededRandom final : public shape::RandomSource {
 public:
@@ -207,6 +211,31 @@ void checkRecordPadding(const Bytes& sessionKey, const Bytes& salt)
     }
 }
 
+void checkIdleKeepalive()
+{
+    CHECK(kIdleKeepaliveMin < kIdleKeepaliveMax);
+    CHECK(kIdleKeepaliveMax + kPongTimeout < kSilenceLimit);
+    SeededRandom random(kSeed);
+    const std::chrono::milliseconds least = kIdleKeepaliveMin;
+    const std::chrono::milliseconds most = kIdleKeepaliveMax;
+    const double binWidth = static_cast<double>((most - least).count()) / kKeepaliveBins;
+    std::vector<int> bins(kKeepaliveBins, 0);
+    std::set<std::chrono::milliseconds::rep> distinct;
+    for (int i = 0; i < kRecords; ++i) {
+        const std::chrono::milliseconds wait = drawIdleKeepalive(random);
+        CHECK(wait >= least);
+        CHECK(wait <= most);
+        CHECK(wait + kPongTimeout + kSilenceMargin <= kSilenceLimit);
+        distinct.insert(wait.count());
+        const auto bin = static_cast<std::size_t>(static_cast<double>((wait - least).count()) / binWidth);
+        ++bins.at(std::min(bin, bins.size() - 1));
+    }
+    CHECK(distinct.size() > kDistinctLengths);
+    for (const int filled : bins) {
+        CHECK(filled > kRecords / kKeepaliveBins - kRecords / kKeepaliveBinSlack);
+    }
+}
+
 std::size_t widest(const Bytes& sent, const Bytes& paddedBody)
 {
     const nlohmann::json framed = bazarish::parseCbor(paddedBody);
@@ -217,6 +246,7 @@ std::size_t widest(const Bytes& sent, const Bytes& paddedBody)
 
 int main()
 {
+    checkIdleKeepalive();
     const Identity gatewayIdentity = Identity::generate();
     const Key gatewaySealing = Key::generateSealing();
     const std::string fingerprint = gatewayIdentity.fingerprint();

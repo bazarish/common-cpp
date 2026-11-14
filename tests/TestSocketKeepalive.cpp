@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -39,6 +40,12 @@ constexpr std::chrono::seconds kWatchFor{3};
 constexpr std::chrono::seconds kPatience{10};
 constexpr int kLeastQuietPings = 2;
 const std::string kPayload = "x";
+constexpr std::chrono::milliseconds kDrawnSilences[] = {
+    std::chrono::milliseconds(300), std::chrono::milliseconds(1200),
+    std::chrono::milliseconds(600), std::chrono::milliseconds(1500)};
+constexpr std::size_t kDrawnCount = std::size(kDrawnSilences);
+constexpr std::chrono::milliseconds kGapTolerance{250};
+constexpr std::chrono::milliseconds kBeforeActing{100};
 
 SocketDial dialTo(const int port)
 {
@@ -47,7 +54,7 @@ SocketDial dialTo(const int port)
     dial.port = port;
     dial.path = kPath;
     dial.tls = false;
-    dial.pingAfterSilence = kSilence;
+    dial.silenceBeforePing = []() { return std::chrono::milliseconds(kSilence); };
     dial.pongTimeout = kPongWait;
     dial.pingPayload = []() { return kPayload; };
     return dial;
@@ -155,6 +162,73 @@ void checkPingsOnlyAfterSilence()
     pinging.stop();
 }
 
+bool near(const std::chrono::steady_clock::duration gap, const std::chrono::milliseconds drawn)
+{
+    const auto off = gap > drawn ? gap - drawn : drawn - gap;
+    std::printf("ping gap %lld ms, drawn %lld ms\n",
+        static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(gap).count()),
+        static_cast<long long>(drawn.count()));
+    return off < kGapTolerance;
+}
+
+// Every quiet spell waits its own drawn time, counted from the last thing either side sent.
+void checkEachSilenceDrawn()
+{
+    Server::Options options;
+    options.port = 0;
+    Server server(options);
+    std::mutex mutex;
+    std::vector<std::chrono::steady_clock::time_point> pings;
+    SocketRoutes routes;
+    routes.silenceLimit = kServerSilence;
+    routes.message = [](const SocketPtr& socket, const std::vector<unsigned char>& message) {
+        socket->send(message);
+    };
+    routes.pinged = [&](const SocketPtr&, const std::string&) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        pings.push_back(std::chrono::steady_clock::now());
+    };
+    server.upgrade(kPath, routes);
+    const int port = server.start();
+    CHECK(port > 0);
+    const auto pingCount = [&]() {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return pings.size();
+    };
+
+    std::atomic<std::size_t> draws{0};
+    SocketDial dial = dialTo(port);
+    dial.silenceBeforePing = [&draws]() { return kDrawnSilences[draws++ % kDrawnCount]; };
+    const auto opened = std::chrono::steady_clock::now();
+    const SocketDialResult dialled = openSocket(dial,
+        [](const SocketPtr&, const std::vector<unsigned char>&) {}, nullptr);
+    CHECK(dialled.socket != nullptr);
+    CHECK(testutil::waitFor([&]() { return pingCount() == kDrawnCount; }, kPatience));
+    std::vector<std::chrono::steady_clock::time_point> heard;
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        heard = pings;
+    }
+    CHECK(near(heard[0] - opened, kDrawnSilences[0]));
+    for (std::size_t i = 1; i < kDrawnCount; ++i) {
+        CHECK(near(heard[i] - heard[i - 1], kDrawnSilences[i]));
+    }
+
+    std::this_thread::sleep_for(kBeforeActing);
+    const auto acted = std::chrono::steady_clock::now();
+    dialled.socket->send({1});
+    CHECK(testutil::waitFor([&]() { return pingCount() == kDrawnCount + 1; }, kPatience));
+    std::chrono::steady_clock::time_point afterActing;
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        afterActing = pings.back();
+    }
+    // The first wait and one after each pong, then one for the message and one for its echo.
+    CHECK(near(afterActing - acted, kDrawnSilences[(kDrawnCount + 2) % kDrawnCount]));
+    dialled.socket->close();
+    server.stop();
+}
+
 void checkDeadLinkEnds()
 {
     asio::io_context io;
@@ -188,6 +262,7 @@ void checkDeadLinkEnds()
 int main()
 {
     checkPingsOnlyAfterSilence();
+    checkEachSilenceDrawn();
     checkDeadLinkEnds();
     std::printf("TestSocketKeepalive ok\n");
     return 0;
