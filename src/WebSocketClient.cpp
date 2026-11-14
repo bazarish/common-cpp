@@ -3,6 +3,7 @@
 
 #include "ChromeTlsStream.hpp"
 #include "TlsEngine.hpp"
+#include "bazarish/HostCache.hpp"
 #include "bazarish/Log.hpp"
 
 #include <utility>
@@ -512,11 +513,19 @@ Connected connect(const SocketDial& dial, const TlsProfile profile)
     out.loop = std::make_unique<asio::io_context>();
 
     boost::system::error_code error;
-    tcp::resolver resolver(*out.loop);
-    const auto found = resolver.resolve(dial.host, std::to_string(dial.port), error);
-    if (error) {
-        out.error = "cannot find " + dial.host + ": " + error.message();
-        return out;
+    std::vector<tcp::endpoint> found;
+    const unsigned short port = static_cast<unsigned short>(dial.port);
+    if (isAddressLiteral(dial.host)) {
+        found.emplace_back(asio::ip::make_address(dial.host), port);
+    } else {
+        const dns::Resolved resolved = dns::hostCache().resolve(dial.host, dial.port);
+        if (!resolved.error.empty()) {
+            out.error = "cannot find " + dial.host + ": " + resolved.error;
+            return out;
+        }
+        for (const asio::ip::address& address : resolved.addresses) {
+            found.emplace_back(address, port);
+        }
     }
 
     if (!dial.tls) {

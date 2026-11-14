@@ -4,6 +4,7 @@
 #include "I2pBackend.hpp"
 
 #include "bazarish/Crypto.hpp"
+#include "bazarish/HostCache.hpp"
 #include "bazarish/I2pAddress.hpp"
 
 #include <openssl/crypto.h>
@@ -299,6 +300,7 @@ std::uint64_t carryReturns()
 
 void networkChanged()
 {
+    dns::hostCache().invalidate();
     const bool wasDown = g_networkDown.exchange(false);
     const bool wasUnreachable = g_gatewayUnreachable.exchange(false);
     ++g_networkChanges;
@@ -315,6 +317,7 @@ std::uint64_t networkChanges()
 
 void networkLost()
 {
+    dns::hostCache().invalidate();
     const bool wasDown = g_networkDown.exchange(true);
     g_lossListeners.call();
     if (!wasDown) {

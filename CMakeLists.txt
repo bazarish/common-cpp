@@ -80,6 +80,9 @@ add_library(bazarish_common STATIC
     src/RawPathChooser.cpp
     src/HttpServer.cpp
     src/WebSocketClient.cpp
+    src/DnsMessage.cpp
+    src/HostCache.cpp
+    src/HostLookup.cpp
     src/Zip.cpp
     src/Hmac.cpp
     src/Portal.cpp
@@ -100,6 +103,12 @@ target_link_libraries(bazarish_common PUBLIC OpenSSL::Crypto OpenSSL::SSL ZLIB::
 target_link_libraries(bazarish_common PRIVATE bazarish_gateway_tls)
 if(WIN32)
     target_link_libraries(bazarish_common PUBLIC ws2_32)
+endif()
+if(ANDROID)
+    # The app's minimum SDK has android_res_nquery; the NDK target level here is lower.
+    set_source_files_properties(src/HostLookup.cpp PROPERTIES
+        COMPILE_DEFINITIONS __ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__)
+    target_link_libraries(bazarish_common PUBLIC android)
 endif()
 target_compile_options(bazarish_common PRIVATE -Wall -Wextra -Werror)
 if(BAZARISH_SANITIZE)
@@ -178,6 +187,8 @@ bazarish_add_test(TestGatewayStreamBook)
 bazarish_add_test(TestRawPathChooser)
 bazarish_add_test(TestWebSocket)
 bazarish_add_test(TestWebSocketClient)
+bazarish_add_test(TestDnsMessage)
+bazarish_add_test(TestHostCache)
 bazarish_add_test(TestLoginChallenge)
 bazarish_add_test(TestConfigFile)
 bazarish_add_test(TestWebAssets)
