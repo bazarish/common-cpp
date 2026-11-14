@@ -48,6 +48,7 @@ struct StoredMessage {
     std::int64_t ts = 0;
     std::int64_t orderKey = 0;
     int status = 0;
+    std::string device;
     std::string author;
     bool contactable = false;
     bool fromHost = false;

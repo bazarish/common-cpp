@@ -20,6 +20,8 @@ namespace {
 
 constexpr const char* kOwn = "own";
 constexpr const char* kPeer = "peer";
+constexpr const char* kPeerDevice = "peerdev234";
+constexpr const char* kOtherOwnDevice = "tabdev2345";
 constexpr std::int64_t kDeliveryLagMs = 3000;
 
 class Notes final : public IngestNotes {
@@ -76,6 +78,18 @@ int main()
         }
         CHECK(acceptKey != 0 && menuKey != 0);
         CHECK(acceptKey < menuKey);
+
+        IncomingMessage theirs = incoming(kTypeText, "theirs", composedAt + 2);
+        theirs.fromDevice = kPeerDevice;
+        CHECK(ingest.takeIn(theirs));
+        IncomingMessage echo = incoming(kTypeText, "echo", composedAt + 3);
+        echo.sentByUs = true;
+        echo.fromDevice = kOtherOwnDevice;
+        CHECK(ingest.takeIn(echo));
+        CHECK(store.messageById(store.idForKey(kPeer, "theirs", false)).device == kPeerDevice);
+        const StoredMessage echoed = store.messageById(store.idForKey(kPeer, "echo", true));
+        CHECK(echoed.outgoing);
+        CHECK(echoed.device == kOtherOwnDevice);
         store.close();
     }
     fs::remove_all(root);

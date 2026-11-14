@@ -268,6 +268,7 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
         kept.outgoing = message.sentByUs;
         kept.e2eId = incomingId;
         kept.type = type;
+        kept.device = message.fromDevice;
         kept.text = notes_.unsupported(message.rawType, message.rawBody);
         const Placement placement = placeReceived(message.sentAt, nowMillis(), orderFloor(message));
         kept.ts = placement.displayTs;
@@ -296,6 +297,7 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
     m.text = type == kTypeBotCallback ? message.callbackData : message.text;
     m.replyTo = type == kTypeBotCallback ? message.refId : message.replyTo;
     m.forwarded = message.forwarded;
+    m.device = message.fromDevice;
     m.attName = message.attachmentName;
     m.attMime = message.attachmentMime;
     m.attSize = static_cast<std::int64_t>(message.attachmentSize);

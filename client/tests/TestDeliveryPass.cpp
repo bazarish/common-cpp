@@ -1437,6 +1437,7 @@ int main()
                 if (item.fromFingerprint == alice->fingerprint() && item.text == "note to self") {
                     sawSaved = true;
                     CHECK(item.sentByUs);
+                    CHECK(item.fromDevice == aliceIdentity.device());
                 }
             }
             CHECK(sawSaved);
@@ -3117,6 +3118,8 @@ int main()
             }));
             tab->sendMessage(ben->fingerprint(), "from the tablet");
             CHECK(hearsText(*ben, "from the tablet").fromDevice == tab->deviceId());
+            CHECK(storedDeviceId(AccountDb(scratch / "bz-devices-tab", std::string{}))
+                == tab->deviceId());
 
             const DeviceCredential tabletKey = deviceOf(scratch / "bz-devices-tab");
             const std::vector<EpochPublic> annBefore = ann->ownEpochs();

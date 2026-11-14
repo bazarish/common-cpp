@@ -22,6 +22,8 @@ namespace {
 constexpr std::size_t kPictureBytes = 2 * 1024 * 1024;
 constexpr const char* kPeer = "peer";
 constexpr const char* kOther = "other";
+constexpr const char* kThisDevice = "abcd2efgh3";
+constexpr const char* kHostDevice = "hostdev234";
 
 StoredMessage line(const std::string& peer, const std::string& type, const std::string& e2eId)
 {
@@ -70,7 +72,16 @@ int main()
         StoredMessage sent = line(kOther, "text", "s1");
         sent.outgoing = true;
         sent.status = static_cast<int>(DeliveryState::eDelivering);
+        sent.device = kThisDevice;
         const std::int64_t sentId = store.append(sent);
+        CHECK(store.messageById(sentId).device == kThisDevice);
+        StoredMessage post = line(kOther, "text", "g1");
+        post.device = kHostDevice;
+        post.author = kPeer;
+        const StoredMessage relayed = store.messageById(store.append(post));
+        CHECK(relayed.device == kHostDevice);
+        CHECK(relayed.author == kPeer);
+        CHECK(!relayed.fromHost);
         const auto statusOf = [&store](const std::int64_t id) { return store.messageById(id).status; };
         CHECK(store.advanceStatus(sentId, static_cast<int>(DeliveryState::eDelivered)) == true);
         CHECK(store.advanceStatus(sentId, static_cast<int>(DeliveryState::eAtRecipientServer)) == false);
@@ -98,7 +109,7 @@ int main()
         {
             TranscriptReader reader;
             CHECK(reader.open(copy, accountkey::keyFor(file, "secret")));
-            CHECK(reader.latestMessages(kOther, 10).size() == 2);
+            CHECK(reader.latestMessages(kOther, 10).size() == 3);
             CHECK(!reader.media(kPictureKeyPrefix + std::string("o1")).empty());
         }
         store.close();

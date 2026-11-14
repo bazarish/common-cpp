@@ -172,7 +172,7 @@ private:
 const std::string kMessageColumns = "id, peer, outgoing, type, e2eId, text, attName,"
                                     " attMime, attSize, attRef, attSrcPath, keyboard,"
                                     " edited, ts, status, orderKey, savedPath, replyTo,"
-                                    " hasPicture, attDurationMs, attWave, forwarded,"
+                                    " hasPicture, attDurationMs, attWave, forwarded, device,"
                                     " (SELECT author FROM group_posts g"
                                     " WHERE g.peer = messages.peer AND g.e2eId = messages.e2eId),"
                                     " (SELECT contactable FROM group_posts g"
@@ -213,9 +213,10 @@ StoredMessage readMessageRow(const Query& query)
     m.attDurationMs = query.number(19);
     m.attWave = query.text(20);
     m.forwarded = query.flag(21);
-    m.author = query.text(22);
-    m.contactable = query.flag(23);
-    m.fromHost = !query.isNull(22) && m.author.empty();
+    m.device = query.text(22);
+    m.author = query.text(23);
+    m.contactable = query.flag(24);
+    m.fromHost = !query.isNull(23) && m.author.empty();
     return m;
 }
 
@@ -335,7 +336,7 @@ bool TranscriptStore::open(const fs::path& file, const std::string& passphrase)
              "attRef TEXT, attSrcPath TEXT, keyboard TEXT, edited INTEGER,"
              " ts INTEGER, status INTEGER, orderKey INTEGER, savedPath TEXT,"
              " replyTo TEXT, hasPicture INTEGER,"
-             " attDurationMs INTEGER, attWave TEXT, forwarded INTEGER)",
+             " attDurationMs INTEGER, attWave TEXT, forwarded INTEGER, device TEXT)",
              "CREATE TABLE IF NOT EXISTS read_state ("
              "peer TEXT PRIMARY KEY, last_read_id INTEGER NOT NULL)",
              "CREATE TABLE IF NOT EXISTS reactions ("
@@ -386,8 +387,8 @@ std::int64_t TranscriptStore::append(const StoredMessage& message)
     query.prepare(
         "INSERT INTO messages (peer, outgoing, type, e2eId, text, attName, attMime,"
         " attSize, attRef, attSrcPath, keyboard, edited, ts, status, orderKey, replyTo,"
-        " attDurationMs, attWave, forwarded)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        " attDurationMs, attWave, forwarded, device)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
     query.bind(message.peer);
     query.bind(message.outgoing ? 1 : 0);
     query.bind(message.type);
@@ -407,6 +408,7 @@ std::int64_t TranscriptStore::append(const StoredMessage& message)
     query.bind(message.attDurationMs);
     query.bind(message.attWave);
     query.bind(message.forwarded ? 1 : 0);
+    query.bind(message.device);
     if (!query.exec()) {
         failed();
         return 0;

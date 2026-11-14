@@ -487,6 +487,15 @@ std::optional<std::int64_t> callAnswerDeadline(
     return std::min(sentAtMs, arrivedAtMs) + kCallAnswerWindowMs;
 }
 
+std::string storedDeviceId(const AccountDb& db)
+{
+    const std::optional<Bytes> certDer = db.get(kDeviceCertRow);
+    if (!certDer.has_value()) {
+        throw std::runtime_error("this account holds no key of this device");
+    }
+    return DeviceCertificate::verify(*certDer).device;
+}
+
 bool isChatTimerChoice(const std::int64_t seconds)
 {
     return std::find(kChatTimerChoices.begin(), kChatTimerChoices.end(), seconds)
