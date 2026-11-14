@@ -37,6 +37,15 @@ constexpr std::size_t kMessageBytes = 4096;
 constexpr int kPatienceSeconds = 60;
 constexpr std::size_t kPumpBytes = 16384;
 constexpr int kPollMs = 100;
+constexpr int kEchoSeconds = 10;
+// RFC 6455 5.2: a client frame's header with its mask, by the payload's length.
+constexpr std::size_t kShortFrameHeader = 2 + 4;
+constexpr std::size_t kMediumFrameHeader = 2 + 2 + 4;
+constexpr std::size_t kShortPayloadMax = 125;
+constexpr std::size_t kMaxPlaintextRecord = 16384;
+constexpr std::size_t kUpgradeRecords = 1;
+constexpr std::size_t kSizedMessageMax = 2 * kMaxPlaintextRecord;
+constexpr std::size_t kSizedFrames[] = {1, 125, 126, 1000, 4096, 4113, 16376, 16377, 20000};
 
 int loopbackSocket(const int port, const bool listening)
 {
@@ -66,6 +75,8 @@ public:
         CHECK(SSL_CTX_use_certificate_chain_file(context_, credential.certificate.c_str()) == 1);
         CHECK(SSL_CTX_use_PrivateKey_file(context_, credential.key.c_str(), SSL_FILETYPE_PEM)
             == 1);
+        SSL_CTX_set_msg_callback(context_, heard);
+        CHECK(SSL_CTX_set_app_data(context_, this) == 1);
         listen_ = loopbackSocket(0, true);
         sockaddr_in address{};
         socklen_t length = sizeof address;
@@ -84,8 +95,20 @@ public:
     }
 
     int port() const { return port_; }
+    std::size_t dataRecordsIn() const { return dataRecordsIn_.load(); }
 
 private:
+    static void heard(const int written, int, const int type, const void* const data,
+        const std::size_t length, SSL* const ssl, void*)
+    {
+        if (written != 0 || type != SSL3_RT_INNER_CONTENT_TYPE || length != 1
+            || *static_cast<const unsigned char*>(data) != SSL3_RT_APPLICATION_DATA) {
+            return;
+        }
+        auto* const self = static_cast<TlsFront*>(SSL_CTX_get_app_data(SSL_get_SSL_CTX(ssl)));
+        ++self->dataRecordsIn_;
+    }
+
     void serve()
     {
         const int in = ::accept(listen_, nullptr, nullptr);
@@ -131,8 +154,57 @@ private:
     int listen_ = -1;
     int port_ = 0;
     std::atomic<bool> running_{true};
+    std::atomic<std::size_t> dataRecordsIn_{0};
     std::thread thread_;
 };
+
+std::size_t recordsOfFrame(const std::size_t payload)
+{
+    const std::size_t header = payload <= kShortPayloadMax ? kShortFrameHeader : kMediumFrameHeader;
+    return (payload + header + kMaxPlaintextRecord - 1) / kMaxPlaintextRecord;
+}
+
+// A frame goes as Chrome sends it: header and payload in one record while they fit in one.
+void framesFillRecords(const tls::Credential& credential, const int port)
+{
+    const TlsFront front(credential, port);
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::size_t echoed = 0;
+
+    SocketDial dial;
+    dial.host = kLoopback;
+    dial.port = front.port();
+    dial.path = kPath;
+    dial.tls = true;
+    dial.subprotocol = kProtocol;
+    dial.maxMessageBytes = kSizedMessageMax;
+    const SocketDialResult dialled = openSocket(dial,
+        [&](const SocketPtr&, const std::vector<unsigned char>&) {
+            {
+                const std::lock_guard<std::mutex> lock(mutex);
+                ++echoed;
+            }
+            changed.notify_all();
+        },
+        nullptr);
+    CHECK(dialled.socket != nullptr);
+    CHECK(front.dataRecordsIn() == kUpgradeRecords);
+
+    std::size_t expected = kUpgradeRecords;
+    for (const std::size_t size : kSizedFrames) {
+        const std::size_t before = echoed;
+        dialled.socket->send(std::vector<unsigned char>(size, 1));
+        std::unique_lock<std::mutex> lock(mutex);
+        CHECK(changed.wait_for(lock, std::chrono::seconds(kEchoSeconds),
+            [&]() { return echoed > before; }));
+        expected += recordsOfFrame(size);
+        std::fprintf(stderr, "frame of %zu: %zu records in, %zu expected\n", size,
+            front.dataRecordsIn(), expected);
+        CHECK(front.dataRecordsIn() == expected);
+    }
+    dialled.socket->close();
+}
 
 }  // namespace
 
@@ -149,13 +221,14 @@ int main()
     Server server(options);
     SocketRoutes routes;
     routes.subprotocol = kProtocol;
-    routes.maxMessageBytes = 2 * kMessageBytes;
+    routes.maxMessageBytes = kSizedMessageMax;
     routes.message = [](const SocketPtr& socket, const std::vector<unsigned char>& message) {
         socket->send(message);
     };
     server.upgrade(kPath, routes);
     const int port = server.start();
     CHECK(port > 0);
+    framesFillRecords(credential, port);
     const TlsFront front(credential, port);
 
     std::mutex mutex;

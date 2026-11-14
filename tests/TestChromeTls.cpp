@@ -315,6 +315,7 @@ public:
     }
 
     int port() const { return port_; }
+    std::size_t dataRecordsIn() const { return dataRecordsIn_.load(); }
 
     std::vector<Hello> hellos() const
     {
@@ -331,10 +332,15 @@ private:
         const std::size_t length, SSL* const ssl, void*)
     {
         const auto* const bytes = static_cast<const std::uint8_t*>(data);
+        auto* const self = static_cast<HelloServer*>(SSL_CTX_get_app_data(SSL_get_SSL_CTX(ssl)));
+        if (written == 0 && type == SSL3_RT_INNER_CONTENT_TYPE && length == 1
+            && bytes[0] == SSL3_RT_APPLICATION_DATA) {
+            ++self->dataRecordsIn_;
+            return;
+        }
         if (written != 0 || type != SSL3_RT_HANDSHAKE || length == 0 || bytes[0] != kClientHello) {
             return;
         }
-        auto* const self = static_cast<HelloServer*>(SSL_CTX_get_app_data(SSL_get_SSL_CTX(ssl)));
         const std::lock_guard<std::mutex> lock(self->mutex_);
         self->hellos_.emplace_back(bytes, bytes + length);
     }
@@ -399,6 +405,7 @@ private:
     int listen_ = -1;
     int port_ = 0;
     std::atomic<bool> running_{true};
+    std::atomic<std::size_t> dataRecordsIn_{0};
     std::thread acceptor_;
     std::vector<std::thread> workers_;
     mutable std::mutex mutex_;
@@ -495,6 +502,16 @@ int main()
         CHECK(hellos[1].order().back() == kPreSharedKey);
         CHECK(ja4(hellos[2]) == kChromeResumedWebSocketJa4);
         CHECK(hellos[2].order().back() == kPreSharedKey);
+    }
+
+    {
+        HelloServer server(credential, "http/1.1");
+        KeptConnection page(dialTo(server.port()));
+        CHECK(page.connected());
+        CHECK(page.get("/", Fetch::eDocument, {}).status == 200);
+        CHECK(server.dataRecordsIn() == 1);
+        CHECK(page.get("/", Fetch::eImage, {}).status == 200);
+        CHECK(server.dataRecordsIn() == 2);
     }
 
     {

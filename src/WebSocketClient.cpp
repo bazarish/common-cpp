@@ -551,6 +551,9 @@ std::string upgrade(
     timeouts.keep_alive_pings = !ownKeepalive;
     stream.set_option(timeouts);
     stream.read_message_max(dial.maxMessageBytes);
+    // Chrome writes a message as one frame in one write; Beast would cut it at its 4 KB buffer.
+    stream.auto_fragment(false);
+    stream.write_buffer_bytes(dial.maxMessageBytes);
     stream.set_option(
         websocket::stream_base::decorator([&dial](websocket::request_type& request) {
             const std::string key(request[bhttp::field::sec_websocket_key]);

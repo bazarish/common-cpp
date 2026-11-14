@@ -13,6 +13,9 @@ enum class TlsProfile { eWebSocket, ePage };
 
 enum class TlsWant { eNothing, eOutput, eOutputAndRetry, eInputAndRetry, eClosed, eFailed };
 
+// A record carries at most 2^14 bytes of plaintext, RFC 8446 5.1.
+inline constexpr std::size_t kMaxPlaintextRecord = 16384;
+
 // No TLS library's type crosses this header: callers and engine may use different libraries.
 class TlsEngine {
 public:

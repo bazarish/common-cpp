@@ -15,11 +15,13 @@
 #include <boost/beast/websocket/teardown.hpp>
 #include <boost/system/error_code.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <memory>
 #include <span>
 #include <utility>
+#include <vector>
 
 namespace bazarish::http {
 
@@ -56,8 +58,7 @@ public:
     template <class ConstBuffers, class Handler>
     auto async_write_some(const ConstBuffers& buffers, Handler&& handler)
     {
-        return start(Write{firstOf<boost::asio::const_buffer>(buffers)},
-            std::forward<Handler>(handler));
+        return start(Write{gathered(buffers)}, std::forward<Handler>(handler));
     }
 
 private:
@@ -108,18 +109,26 @@ private:
     };
 
     struct Write {
-        boost::asio::const_buffer from;
+        std::vector<unsigned char> from;
         TlsWant operator()(TlsEngine& engine, std::size_t& moved) const
         {
-            if (from.size() == 0) {
+            if (from.empty()) {
                 moved = 0;
                 return TlsWant::eNothing;
             }
-            return engine.write(std::span<const unsigned char>(
-                                    static_cast<const unsigned char*>(from.data()), from.size()),
-                moved);
+            return engine.write(from, moved);
         }
     };
+
+    // Chrome hands its TLS socket a frame or a request whole: header and body share one record.
+    template <class Buffers>
+    static std::vector<unsigned char> gathered(const Buffers& buffers)
+    {
+        std::vector<unsigned char> out(
+            std::min(boost::asio::buffer_size(buffers), kMaxPlaintextRecord));
+        out.resize(boost::asio::buffer_copy(boost::asio::buffer(out), buffers));
+        return out;
+    }
 
     template <class Buffer, class Buffers>
     static Buffer firstOf(const Buffers& buffers)

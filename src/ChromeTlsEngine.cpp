@@ -74,8 +74,6 @@ constexpr std::array<std::uint8_t, 184> kTrustAnchorIds{
 };
 // Chrome's kDefaultOpenSSLBufferSize: one full record and its overhead.
 constexpr std::size_t kBioPairBytes = 17 * 1024;
-// A record carries at most 2^14 bytes of plaintext, RFC 8446 5.1.
-constexpr std::size_t kMaxPlaintextRecord = 16384;
 // Chrome keeps two TLS 1.3 tickets per host and spends one per connection.
 constexpr std::size_t kTicketsPerHost = 2;
 
