@@ -143,7 +143,7 @@ std::optional<std::int64_t> callAnswerDeadline(std::int64_t sentAtMs, std::int64
 inline constexpr std::size_t kMessageIdBytes = 8;
 std::string newMessageId();
 
-std::string storedDeviceId(const AccountDb& db);
+std::optional<std::string> storedDeviceId(const AccountDb& db);
 
 struct IncomingMessage {
     std::string contentType;

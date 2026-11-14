@@ -487,11 +487,11 @@ std::optional<std::int64_t> callAnswerDeadline(
     return std::min(sentAtMs, arrivedAtMs) + kCallAnswerWindowMs;
 }
 
-std::string storedDeviceId(const AccountDb& db)
+std::optional<std::string> storedDeviceId(const AccountDb& db)
 {
     const std::optional<Bytes> certDer = db.get(kDeviceCertRow);
     if (!certDer.has_value()) {
-        throw std::runtime_error("this account holds no key of this device");
+        return std::nullopt;
     }
     return DeviceCertificate::verify(*certDer).device;
 }
