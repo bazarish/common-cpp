@@ -46,8 +46,6 @@ constexpr std::size_t kSidecarBytes = sizeof kMagic + 2 * sizeof(std::uint32_t) 
 constexpr std::uint32_t kMaxMemoryKiB = 1024 * 1024;
 constexpr std::uint32_t kMaxPasses = 16;
 
-constexpr const char* kOpenSecret = "bazarish";
-
 constexpr char kBackupMagic[4] = {'B', 'Z', 'E', '1'};
 constexpr std::size_t kBackupHeaderBytes
     = sizeof kBackupMagic + 2 * sizeof(std::uint32_t) + kSaltBytes + kNonceBytes;
@@ -232,8 +230,16 @@ Sidecar freshSidecar(const std::string& passphrase)
     return sidecar;
 }
 
+void requireChoosable(const std::string& passphrase)
+{
+    if (isReservedPassphrase(passphrase)) {
+        throw ReservedPassphrase();
+    }
+}
+
 Bytes create(const fs::path& file, const std::string& passphrase)
 {
+    requireChoosable(passphrase);
     Sidecar sidecar = freshSidecar(passphrase);
     Bytes key(kKeyBytes);
     fill(key);
@@ -298,6 +304,16 @@ void settle(const fs::path& databaseFile)
 
 }  // namespace
 
+ReservedPassphrase::ReservedPassphrase()
+    : std::invalid_argument("this passphrase is reserved for accounts without one")
+{
+}
+
+bool isReservedPassphrase(const std::string& passphrase)
+{
+    return passphrase == kOpenSecret;
+}
+
 fs::path sidecarFor(const fs::path& databaseFile)
 {
     fs::path sidecar = databaseFile;
@@ -336,6 +352,7 @@ void rekey(const fs::path& databaseFile, const std::string& oldPassphrase,
 {
     const std::shared_ptr<std::mutex> forThisFile = pathLock(databaseFile);
     const std::lock_guard<std::mutex> making(*forThisFile);
+    requireChoosable(newPassphrase);
     settle(databaseFile);
     const Bytes oldKey = open(sidecarFor(databaseFile), oldPassphrase);
     Bytes newKey(kKeyBytes);

@@ -252,6 +252,42 @@ void checkInterrupted(const fs::path& dir)
     CHECK(AccountDb(file, "new pass").text("kept") == "yes");
 }
 
+template <typename Error, typename Work>
+bool refusedWith(const Work& work)
+{
+    try {
+        work();
+    } catch (const Error&) {
+        return true;
+    }
+    return false;
+}
+
+void checkReservedPassphrase(const fs::path& dir)
+{
+    CHECK(accountkey::isReservedPassphrase(accountkey::kOpenSecret));
+    CHECK(!accountkey::isReservedPassphrase(""));
+    const fs::path refused = dir / "reserved.db";
+    CHECK(refusedWith<accountkey::ReservedPassphrase>(
+        [&refused]() { static_cast<void>(AccountDb(refused, accountkey::kOpenSecret)); }));
+    CHECK(!fs::exists(accountkey::sidecarFor(refused)));
+
+    const fs::path file = dir / "kept.db";
+    {
+        AccountDb db(file, "pass");
+        db.putText("kept", "yes");
+    }
+    CHECK(refusedWith<accountkey::ReservedPassphrase>(
+        [&file]() { accountkey::rekey(file, "pass", accountkey::kOpenSecret); }));
+    accountkey::forget(file);
+    CHECK(AccountDb(file, "pass").text("kept") == "yes");
+
+    AccountManager manager(dir / "reserved-accounts");
+    CHECK(refusedWith<accountkey::ReservedPassphrase>([&manager]() {
+        static_cast<void>(manager.create("Reserved", AccountKind::eUser, accountkey::kOpenSecret));
+    }));
+}
+
 void checkSessionPassphrase(const fs::path& dir)
 {
     AccountManager manager(dir / "accounts");
@@ -317,6 +353,7 @@ int main()
     checkRefusedWhileOpen(dir);
     checkInterrupted(dir);
     checkSessionPassphrase(dir);
+    checkReservedPassphrase(dir);
     checkEndedEpochErased(dir);
     fs::remove_all(dir);
     return 0;

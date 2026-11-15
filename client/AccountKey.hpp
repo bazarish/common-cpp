@@ -4,11 +4,22 @@
 #include <bazarish/Bytes.hpp>
 
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 
 namespace bazarish::client {
 
 namespace accountkey {
+
+// An account without a passphrase is sealed under this one, so no account may choose it.
+inline constexpr const char* kOpenSecret = "bazarish";
+
+class ReservedPassphrase : public std::invalid_argument {
+public:
+    ReservedPassphrase();
+};
+
+bool isReservedPassphrase(const std::string& passphrase);
 
 std::filesystem::path sidecarFor(const std::filesystem::path& databaseFile);
 
