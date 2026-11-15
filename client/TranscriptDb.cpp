@@ -256,6 +256,12 @@ bool takesWriteAheadLog(const SqliteHandle& db)
     return journal.exec("PRAGMA journal_mode = WAL") && journal.text(0) == "wal";
 }
 
+bool zeroesDeleted(const SqliteHandle& db)
+{
+    Query secure(db);
+    return secure.exec("PRAGMA secure_delete = ON") && secure.text(0) == "1";
+}
+
 std::uintmax_t sizeOrZero(const fs::path& file)
 {
     std::error_code missing;
@@ -324,6 +330,11 @@ bool TranscriptStore::open(const fs::path& file, const std::string& passphrase)
     }
     if (!takesWriteAheadLog(db_)) {
         log::warn("transcript: the database did not take a write-ahead log");
+        close();
+        return false;
+    }
+    if (!zeroesDeleted(db_)) {
+        log::warn("transcript: the database does not overwrite what it deletes");
         close();
         return false;
     }

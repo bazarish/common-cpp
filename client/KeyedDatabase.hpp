@@ -29,6 +29,10 @@ SqliteHandle openKeyed(const std::filesystem::path& file, const Bytes& key);
 void copyKeyedDatabase(
     const std::filesystem::path& from, const std::filesystem::path& to, const Bytes& key);
 
+// Streams every row into a new file under the new key; nothing else may have the source open.
+void reencryptKeyed(const std::filesystem::path& from, const Bytes& fromKey,
+    const std::filesystem::path& to, const Bytes& toKey);
+
 // Whatever goes wrong is thrown with the label in front.
 class Database {
 public:
@@ -38,6 +42,7 @@ public:
     void run(const std::string& sql) const;
     std::int64_t lastInsertId() const;
     int changes() const;
+    void truncateLog() const;
 
 private:
     friend class Statement;

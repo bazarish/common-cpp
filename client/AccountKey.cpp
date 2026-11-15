@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "AccountKey.hpp"
+#include "KeyedDatabase.hpp"
 #include "bazarish/PathText.hpp"
 
 #include <bazarish/Argon2.hpp>
@@ -46,6 +47,13 @@ constexpr std::uint32_t kMaxMemoryKiB = 1024 * 1024;
 constexpr std::uint32_t kMaxPasses = 16;
 
 constexpr const char* kOpenSecret = "bazarish";
+
+constexpr char kBackupMagic[4] = {'B', 'Z', 'E', '1'};
+constexpr std::size_t kBackupHeaderBytes
+    = sizeof kBackupMagic + 2 * sizeof(std::uint32_t) + kSaltBytes + kNonceBytes;
+
+constexpr const char* kPendingSuffix = "-rekey";
+constexpr const char* kJournalSuffix = "-journal";
 
 struct Sidecar {
     std::uint32_t memoryKiB = kMemoryKiB;
@@ -96,12 +104,37 @@ void fill(const ByteBuffer out)
     }
 }
 
+void requireBearableCost(const std::uint32_t memoryKiB, const std::uint32_t passes,
+    const std::string& what)
+{
+    if (memoryKiB > kMaxMemoryKiB || passes > kMaxPasses) {
+        throw std::runtime_error(what + " asks for a derivation cost this build refuses: "
+            + std::to_string(memoryKiB) + " KiB over " + std::to_string(passes) + " passes");
+    }
+}
+
 Bytes wrappingKey(const std::string& passphrase, const Sidecar& sidecar)
 {
     const std::string secret = secretOf(passphrase);
     return argon2id(Bytes(secret.begin(), secret.end()),
         Bytes(sidecar.salt.begin(), sidecar.salt.end()), {sidecar.memoryKiB, sidecar.passes, kLanes},
         kKeyBytes);
+}
+
+void appendWord(Bytes& out, const std::uint32_t value)
+{
+    for (std::size_t i = 0; i < sizeof value; ++i) {
+        out.push_back(static_cast<unsigned char>((value >> (8 * i)) & 0xFF));
+    }
+}
+
+std::uint32_t wordAt(const Bytes& in, const std::size_t at)
+{
+    std::uint32_t value = 0;
+    for (std::size_t i = 0; i < sizeof value; ++i) {
+        value |= static_cast<std::uint32_t>(in.at(at + i)) << (8 * i);
+    }
+    return value;
 }
 
 void seal(const Bytes& wrapping, Sidecar& sidecar, const Bytes& key)
@@ -183,11 +216,7 @@ Sidecar read(const fs::path& file)
     if (!in) {
         throw std::runtime_error("account key: " + utf8OfPath(file) + " could not be read in full");
     }
-    if (sidecar.memoryKiB > kMaxMemoryKiB || sidecar.passes > kMaxPasses) {
-        throw std::runtime_error("account key: " + utf8OfPath(file) + " asks for a derivation cost "
-            + "this build refuses: " + std::to_string(sidecar.memoryKiB) + " KiB over "
-            + std::to_string(sidecar.passes) + " passes");
-    }
+    requireBearableCost(sidecar.memoryKiB, sidecar.passes, "account key: " + utf8OfPath(file));
     return sidecar;
 }
 
@@ -223,6 +252,50 @@ Bytes open(const fs::path& file, const std::string& passphrase)
     return key;
 }
 
+fs::path withSuffix(fs::path file, const char* const suffix)
+{
+    file += suffix;
+    return file;
+}
+
+fs::path pendingDatabase(const fs::path& databaseFile)
+{
+    return withSuffix(databaseFile, kPendingSuffix);
+}
+
+fs::path pendingSidecar(const fs::path& databaseFile)
+{
+    return withSuffix(sidecarFor(databaseFile), kPendingSuffix);
+}
+
+fs::path journalOf(const fs::path& databaseFile)
+{
+    return withSuffix(databaseFile, kJournalSuffix);
+}
+
+fs::path directoryOf(const fs::path& file)
+{
+    return file.has_parent_path() ? file.parent_path() : fs::path(".");
+}
+
+// Renaming the new database is the commit: before it the new files are dropped, after it kept.
+void settle(const fs::path& databaseFile)
+{
+    const fs::path database = pendingDatabase(databaseFile);
+    const fs::path sidecar = pendingSidecar(databaseFile);
+    if (fs::exists(database)) {
+        fs::remove(database);
+        fs::remove(journalOf(database));
+        fs::remove(sidecar);
+        syncDirectory(directoryOf(databaseFile));
+        return;
+    }
+    if (fs::exists(sidecar)) {
+        fs::rename(sidecar, sidecarFor(databaseFile));
+        syncDirectory(directoryOf(databaseFile));
+    }
+}
+
 }  // namespace
 
 fs::path sidecarFor(const fs::path& databaseFile)
@@ -246,6 +319,7 @@ Bytes keyFor(const fs::path& databaseFile, const std::string& passphrase)
             return found->second.key;
         }
     }
+    settle(databaseFile);
     const fs::path sidecar = sidecarFor(databaseFile);
     if (!fs::exists(sidecar) && fs::exists(databaseFile)) {
         throw std::runtime_error("account key: " + sidecarFor(databaseFile).string()
@@ -257,20 +331,83 @@ Bytes keyFor(const fs::path& databaseFile, const std::string& passphrase)
     return key;
 }
 
-void rewrap(const fs::path& databaseFile, const std::string& passphrase)
+void rekey(const fs::path& databaseFile, const std::string& oldPassphrase,
+    const std::string& newPassphrase)
 {
-    Bytes key;
+    const std::shared_ptr<std::mutex> forThisFile = pathLock(databaseFile);
+    const std::lock_guard<std::mutex> making(*forThisFile);
+    settle(databaseFile);
+    const Bytes oldKey = open(sidecarFor(databaseFile), oldPassphrase);
+    Bytes newKey(kKeyBytes);
+    fill(newKey);
+    const fs::path database = pendingDatabase(databaseFile);
+    reencryptKeyed(databaseFile, oldKey, database, newKey);
+    Sidecar sidecar = freshSidecar(newPassphrase);
+    seal(wrappingKey(newPassphrase, sidecar), sidecar, newKey);
+    write(pendingSidecar(databaseFile), sidecar);
     {
         const std::lock_guard<std::mutex> lock(g_cacheMutex);
-        const auto found = g_cache.find(databaseFile);
-        if (found == g_cache.end()) {
-            throw std::runtime_error("account key: the account is not open");
-        }
-        key = found->second.key;
+        g_cache.erase(databaseFile);
     }
-    Sidecar sidecar = freshSidecar(passphrase);
-    seal(wrappingKey(passphrase, sidecar), sidecar, key);
-    write(sidecarFor(databaseFile), sidecar);
+    fs::rename(database, databaseFile);
+    syncDirectory(directoryOf(databaseFile));
+    fs::rename(pendingSidecar(databaseFile), sidecarFor(databaseFile));
+    syncDirectory(directoryOf(databaseFile));
+    const std::lock_guard<std::mutex> lock(g_cacheMutex);
+    g_cache[databaseFile] = Cached{verifierOf(newPassphrase), newKey};
+}
+
+void removeKeyFiles(const fs::path& databaseFile)
+{
+    fs::remove(sidecarFor(databaseFile));
+    fs::remove(pendingSidecar(databaseFile));
+    fs::remove(pendingDatabase(databaseFile));
+    fs::remove(journalOf(pendingDatabase(databaseFile)));
+}
+
+Bytes sealBackup(const Bytes& plain, const std::string& passphrase)
+{
+    if (passphrase.empty()) {
+        throw std::invalid_argument("a backup needs a password");
+    }
+    Bytes salt(kSaltBytes);
+    fill(salt);
+    Bytes nonce(kNonceBytes);
+    fill(nonce);
+    Bytes header(kBackupMagic, kBackupMagic + sizeof kBackupMagic);
+    appendWord(header, kMemoryKiB);
+    appendWord(header, kPasses);
+    header.insert(header.end(), salt.begin(), salt.end());
+    header.insert(header.end(), nonce.begin(), nonce.end());
+    const Bytes key = argon2id(
+        Bytes(passphrase.begin(), passphrase.end()), salt, {kMemoryKiB, kPasses, kLanes}, kKeyBytes);
+    Bytes sealed = header;
+    const Bytes body = aeadSeal(key, nonce, plain, header);
+    sealed.insert(sealed.end(), body.begin(), body.end());
+    return sealed;
+}
+
+Bytes openBackup(const Bytes& sealed, const std::string& passphrase)
+{
+    if (sealed.size() < kBackupHeaderBytes + kTagBytes
+        || !std::equal(kBackupMagic, kBackupMagic + sizeof kBackupMagic, sealed.begin())) {
+        throw std::runtime_error("this is not a Bazarish backup");
+    }
+    const std::uint32_t memoryKiB = wordAt(sealed, sizeof kBackupMagic);
+    const std::uint32_t passes = wordAt(sealed, sizeof kBackupMagic + sizeof memoryKiB);
+    requireBearableCost(memoryKiB, passes, "this backup");
+    const auto saltAt = sealed.begin() + static_cast<std::ptrdiff_t>(sizeof kBackupMagic
+        + sizeof memoryKiB + sizeof passes);
+    const auto nonceAt = saltAt + static_cast<std::ptrdiff_t>(kSaltBytes);
+    const auto bodyAt = nonceAt + static_cast<std::ptrdiff_t>(kNonceBytes);
+    const Bytes key = argon2id(Bytes(passphrase.begin(), passphrase.end()),
+        Bytes(saltAt, nonceAt), {memoryKiB, passes, kLanes}, kKeyBytes);
+    std::optional<Bytes> plain = aeadOpen(
+        key, Bytes(nonceAt, bodyAt), Bytes(bodyAt, sealed.end()), Bytes(sealed.begin(), bodyAt));
+    if (!plain.has_value()) {
+        throw std::runtime_error("the backup does not open: a wrong password, or a damaged file");
+    }
+    return std::move(*plain);
 }
 
 void forget(const fs::path& databaseFile)

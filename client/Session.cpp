@@ -6,6 +6,7 @@
 #include "LoginSigner.hpp"
 
 #include "AccountDb.hpp"
+#include "AccountKey.hpp"
 
 #include "Authorship.hpp"
 #include "DevicePairing.hpp"
@@ -18,7 +19,6 @@
 #include <bazarish/Address.hpp>
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Clock.hpp>
-#include <bazarish/Cms.hpp>
 #include <bazarish/DeliveryEnvelope.hpp>
 #include <bazarish/Descriptor.hpp>
 #include <bazarish/Epochs.hpp>
@@ -771,7 +771,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
         }
     }
 
-    const bool encrypted = meta.value("encrypted", false);
+    const bool encrypted = !passphrase.empty();
 
     const std::optional<Bytes> certDer = db->get(kDeviceCertRow);
     if (!certDer.has_value()) {
@@ -800,6 +800,10 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     std::map<std::string, Bytes> ownSealing = ownSealingFromJson(ownDevices, ownBook);
     const std::shared_ptr<EpochRing> ring = std::make_shared<EpochRing>();
     ring->addAll(parseJson(db->text(kEpochRingRow)));
+    if (ring->eraseEnded(systemUtcSeconds())) {
+        db->putText(kEpochRingRow, ring->toJson().dump());
+        db->dropOverwritten();
+    }
 
     const AccountKind ownKind = accountKindFromName(meta.at("kind").get<std::string>());
     std::map<std::string, Contact> contacts;
@@ -5349,10 +5353,11 @@ void Session::ensureOwnEpochs()
     const std::int64_t utc = epochClock_();
     const EpochNumber current = epochAt(utc);
     const bool erased = ring_->eraseEnded(utc);
+    if (erased) {
+        persistRing();
+        db_->dropOverwritten();
+    }
     if (!createsEpochs()) {
-        if (erased) {
-            persistRing();
-        }
         return;
     }
     std::set<EpochNumber> wanted;
@@ -5380,9 +5385,6 @@ void Session::ensureOwnEpochs()
         made.insert(n);
     }
     if (made.empty()) {
-        if (erased) {
-            persistRing();
-        }
         return;
     }
     persistRing();
@@ -6447,11 +6449,14 @@ void Session::noteAliasesBound()
     }
 }
 
-void Session::changePassphrase(const std::string& passphrase)
+void Session::changePassphrase(const fs::path& accountFile, const std::string& oldPassphrase,
+    const std::string& newPassphrase)
 {
-    db_->rekey(passphrase);
-    encrypted_ = !passphrase.empty();
-    persistMeta();
+    accountkey::rekey(accountFile, oldPassphrase, newPassphrase);
+    AccountDb db(accountFile, newPassphrase);
+    nlohmann::json meta = parseJson(db.text("meta"));
+    meta["encrypted"] = !newPassphrase.empty();
+    db.putText("meta", meta.dump(2));
 }
 
 Session::PairingOffer Session::startPairing(PairingEventFn onEvent, const DeviceRole role)
@@ -6612,7 +6617,7 @@ PairBundleFn Session::pairingBundle(const DeviceRole role, const Bytes& linkKey)
 
 Bytes Session::exportAccountBytes(const std::string& password, const DeviceRole role)
 {
-    return cms::sealWithPassword(accountBundle(role), password);
+    return accountkey::sealBackup(accountBundle(role), password);
 }
 
 nlohmann::json Session::bundleBase() const
@@ -6672,7 +6677,7 @@ void Session::exportAccount(
 
 AccountKind Session::bundleKind(const Bytes& sealed, const std::string& password)
 {
-    return bundleKindOf(cms::unsealWithPassword(sealed, password));
+    return bundleKindOf(accountkey::openBackup(sealed, password));
 }
 
 AccountKind Session::bundleKindOf(const Bytes& plain)
@@ -6684,7 +6689,7 @@ AccountKind Session::bundleKindOf(const Bytes& plain)
 void Session::importAccountBytes(const Bytes& sealed, const fs::path& accountFile,
     const std::string& password, const std::string& atRestPassphrase)
 {
-    importAccountBundle(cms::unsealWithPassword(sealed, password), accountFile, atRestPassphrase);
+    importAccountBundle(accountkey::openBackup(sealed, password), accountFile, atRestPassphrase);
 }
 
 void Session::importAccountBundle(

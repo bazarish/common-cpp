@@ -343,7 +343,7 @@ Bytes sha256(const Bytes& data)
 namespace {
 
 Bytes sealWith(const EVP_CIPHER* const cipher, const Bytes& key, const Bytes& nonce,
-    const Bytes& plaintext)
+    const Bytes& plaintext, const Bytes& associated)
 {
     if (key.size() != kAeadKeyBytes || nonce.size() != kAeadNonceBytes) {
         throw std::invalid_argument("aead seal: wrong key or nonce size");
@@ -356,8 +356,14 @@ Bytes sealWith(const EVP_CIPHER* const cipher, const Bytes& key, const Bytes& no
         || EVP_EncryptInit_ex(ctx.get(), nullptr, nullptr, key.data(), nonce.data()) != 1) {
         throw std::runtime_error("aead seal: init failed");
     }
-    Bytes out(plaintext.size() + kAeadTagBytes);
     int len = 0;
+    if (!associated.empty()
+        && EVP_EncryptUpdate(ctx.get(), nullptr, &len, associated.data(),
+               static_cast<int>(associated.size()))
+            != 1) {
+        throw std::runtime_error("aead seal: associated data refused");
+    }
+    Bytes out(plaintext.size() + kAeadTagBytes);
     if (EVP_EncryptUpdate(ctx.get(), out.data(), &len, plaintext.data(),
             static_cast<int>(plaintext.size()))
         != 1) {
@@ -376,7 +382,7 @@ Bytes sealWith(const EVP_CIPHER* const cipher, const Bytes& key, const Bytes& no
 }
 
 std::optional<Bytes> openWith(const EVP_CIPHER* const cipher, const Bytes& key,
-    const Bytes& nonce, const Bytes& sealed)
+    const Bytes& nonce, const Bytes& sealed, const Bytes& associated)
 {
     if (key.size() != kAeadKeyBytes || nonce.size() != kAeadNonceBytes) {
         throw std::invalid_argument("aead open: wrong key or nonce size");
@@ -393,8 +399,14 @@ std::optional<Bytes> openWith(const EVP_CIPHER* const cipher, const Bytes& key,
         || EVP_DecryptInit_ex(ctx.get(), nullptr, nullptr, key.data(), nonce.data()) != 1) {
         throw std::runtime_error("aead open: init failed");
     }
-    Bytes out(cipherLen);
     int len = 0;
+    if (!associated.empty()
+        && EVP_DecryptUpdate(ctx.get(), nullptr, &len, associated.data(),
+               static_cast<int>(associated.size()))
+            != 1) {
+        throw std::runtime_error("aead open: associated data refused");
+    }
+    Bytes out(cipherLen);
     if (EVP_DecryptUpdate(ctx.get(), out.data(), &len, sealed.data(),
             static_cast<int>(cipherLen))
         != 1) {
@@ -416,22 +428,34 @@ std::optional<Bytes> openWith(const EVP_CIPHER* const cipher, const Bytes& key,
 
 Bytes aeadSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext)
 {
-    return sealWith(EVP_aes_256_gcm(), key, nonce, plaintext);
+    return sealWith(EVP_aes_256_gcm(), key, nonce, plaintext, {});
+}
+
+Bytes aeadSeal(
+    const Bytes& key, const Bytes& nonce, const Bytes& plaintext, const Bytes& associated)
+{
+    return sealWith(EVP_aes_256_gcm(), key, nonce, plaintext, associated);
 }
 
 std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed)
 {
-    return openWith(EVP_aes_256_gcm(), key, nonce, sealed);
+    return openWith(EVP_aes_256_gcm(), key, nonce, sealed, {});
+}
+
+std::optional<Bytes> aeadOpen(
+    const Bytes& key, const Bytes& nonce, const Bytes& sealed, const Bytes& associated)
+{
+    return openWith(EVP_aes_256_gcm(), key, nonce, sealed, associated);
 }
 
 Bytes chachaSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext)
 {
-    return sealWith(EVP_chacha20_poly1305(), key, nonce, plaintext);
+    return sealWith(EVP_chacha20_poly1305(), key, nonce, plaintext, {});
 }
 
 std::optional<Bytes> chachaOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed)
 {
-    return openWith(EVP_chacha20_poly1305(), key, nonce, sealed);
+    return openWith(EVP_chacha20_poly1305(), key, nonce, sealed, {});
 }
 
 Bytes hkdfSha256(const Bytes& secret, const Bytes& salt, const std::string& info,

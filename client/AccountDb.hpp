@@ -26,11 +26,10 @@ public:
     void putDocument(const std::string& name, const nlohmann::json& value);
     void erase(const std::string& name);
     bool has(const std::string& name) const;
-
-    void rekey(const std::string& passphrase);
+    // Old versions of overwritten rows wait in the write-ahead log until it is emptied.
+    void dropOverwritten();
 
 private:
-    std::filesystem::path file_;
     Database db_;
 };
 

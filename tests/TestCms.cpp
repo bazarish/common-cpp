@@ -52,24 +52,6 @@ constexpr int kCostlierThanOurs = 4096;
 int main()
 {
     const std::string password = "open sesame";
-    const Bytes secret = {'b', 'a', 'c', 'k', 'u', 'p'};
-    const Bytes passEnvelope = cms::sealWithPassword(secret, password);
-    CHECK(!passEnvelope.empty());
-    CHECK(cms::unsealWithPassword(passEnvelope, password) == secret);
-    CHECK_THROWS(cms::unsealWithPassword(passEnvelope, "guess"));
-    CHECK_THROWS(cms::sealWithPassword(secret, ""));
-    CHECK(cms::unsealWithPassword(envelopeCosting(kOurCost, password, secret), password) == secret);
-    CHECK_THROWS(cms::unsealWithPassword(
-        envelopeCosting(kCostlierThanOurs, password, secret), password));
-
-    {
-        Bytes bigSecret;
-        for (int i = 0; i < 100000; ++i) {
-            bigSecret.push_back(static_cast<unsigned char>(i));
-        }
-        CHECK(cms::unsealWithPassword(cms::sealWithPassword(bigSecret, password), password)
-            == bigSecret);
-    }
 
     {
         constexpr std::size_t kAesBlock = 16;  // PKCS#7 padding adds 1..16 bytes
@@ -109,7 +91,8 @@ int main()
         CHECK(unsealed(header, password) == bigPlain);
         CHECK_THROWS(unsealed(header, "guess"));
         CHECK_THROWS(unsealed(header, ""));
-        CHECK_THROWS(unsealed(cms::sealWithPassword(bigPlain, password), password));
+        CHECK_THROWS(unsealed(envelopeCosting(kOurCost, password, bigPlain), password));
+        CHECK_THROWS(unsealed(envelopeCosting(kCostlierThanOurs, password, bigPlain), password));
 
         std::filesystem::resize_file(contentPath, contentBytes - kAesBlock);
         CHECK_THROWS(unsealed(header, password));

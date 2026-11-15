@@ -282,7 +282,9 @@ public:
     std::string gatewayRefusal() const;
     std::vector<std::string> facadeAddresses() const;
 
-    void changePassphrase(const std::string& passphrase);
+    // The account must be closed everywhere while its database is re-encrypted.
+    static void changePassphrase(const std::filesystem::path& accountFile,
+        const std::string& oldPassphrase, const std::string& newPassphrase);
 
     struct PairingOffer {
         std::string uri;

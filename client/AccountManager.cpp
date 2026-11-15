@@ -44,7 +44,7 @@ void removePair(const fs::path& file)
 {
     accountkey::forget(file);
     fs::remove(file);
-    fs::remove(accountkey::sidecarFor(file));
+    accountkey::removeKeyFiles(file);
 }
 
 constexpr std::size_t kAccountIdBytes = 8;
@@ -73,7 +73,7 @@ AccountInfo readInfo(const std::string& id, const fs::path& file, const std::str
         info.name.clear();
     }
     info.fingerprint = meta.value("fingerprint", std::string{});
-    info.encrypted = meta.value("encrypted", false);
+    info.encrypted = !passphrase.empty();
     return info;
 }
 

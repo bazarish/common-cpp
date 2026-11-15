@@ -267,6 +267,7 @@ if(BAZARISH_WITH_CLIENT)
     endfunction()
 
     bazarish_client_add_test(TestAccount)
+    bazarish_client_add_test(TestAccountKey)
     bazarish_client_add_test(TestI2pTransportChoice)
     bazarish_client_add_test(TestWarmDestPool)
 if(NOT WIN32)

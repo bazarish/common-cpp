@@ -31,8 +31,7 @@ SqliteHandle opened(const fs::path& file, const std::string& passphrase)
 }  // namespace
 
 AccountDb::AccountDb(const fs::path& file, const std::string& passphrase)
-    : file_(file)
-    , db_(opened(file, passphrase), "account database")
+    : db_(opened(file, passphrase), "account database")
 {
     db_.run("PRAGMA secure_delete = ON");
     db_.run("CREATE TABLE IF NOT EXISTS state (name TEXT PRIMARY KEY, value BLOB)");
@@ -85,14 +84,14 @@ void AccountDb::putDocument(const std::string& name, const nlohmann::json& value
     putText(name, value.dump());
 }
 
+void AccountDb::dropOverwritten()
+{
+    db_.truncateLog();
+}
+
 bool AccountDb::has(const std::string& name) const
 {
     return get(name).has_value();
-}
-
-void AccountDb::rekey(const std::string& passphrase)
-{
-    accountkey::rewrap(file_, passphrase);
 }
 
 }  // namespace bazarish::client

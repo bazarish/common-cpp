@@ -146,6 +146,16 @@ int main()
         CHECK(!aeadOpen(key, nonce, Bytes(kAeadTagBytes - 1, 0)).has_value());
 
         CHECK_THROWS(aeadSeal(Bytes(31, 0), nonce, plain));
+
+        const Bytes header = {'h', 'e', 'a', 'd'};
+        const Bytes bound = aeadSeal(key, nonce, plain, header);
+        CHECK(aeadOpen(key, nonce, bound, header) == plain);
+        CHECK(bound.size() == plain.size() + kAeadTagBytes);
+        Bytes otherHeader = header;
+        otherHeader[0] ^= 0x01;
+        CHECK(!aeadOpen(key, nonce, bound, otherHeader).has_value());
+        CHECK(!aeadOpen(key, nonce, bound).has_value());
+        CHECK(!aeadOpen(key, nonce, sealed, header).has_value());
         CHECK_THROWS(aeadSeal(key, Bytes(11, 0), plain));
     }
 

@@ -4,7 +4,7 @@
 #include "Session.hpp"
 
 #include <bazarish/Bytes.hpp>
-#include <bazarish/Cms.hpp>
+#include "AccountKey.hpp"
 #include <bazarish/KeyedSeal.hpp>
 #include <bazarish/PathText.hpp>
 
@@ -215,7 +215,7 @@ int main()
             noImportLeft();
 
             const std::string headerOnly = R"({"v":1})";
-            const Bytes sealedHeaderOnly = cms::sealWithPassword(
+            const Bytes sealedHeaderOnly = accountkey::sealBackup(
                 Bytes(headerOnly.begin(), headerOnly.end()), "bundle-pw");
             CHECK_THROWS(manager2.import("", sealedHeaderOnly, "bundle-pw"));
             CHECK(manager2.list().size() == 5);

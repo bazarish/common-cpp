@@ -72,6 +72,10 @@ inline constexpr std::size_t kAeadNonceBytes = 12;
 inline constexpr std::size_t kAeadTagBytes = 16;
 Bytes aeadSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext);
 std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed);
+Bytes aeadSeal(
+    const Bytes& key, const Bytes& nonce, const Bytes& plaintext, const Bytes& associated);
+std::optional<Bytes> aeadOpen(
+    const Bytes& key, const Bytes& nonce, const Bytes& sealed, const Bytes& associated);
 Bytes chachaSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext);
 std::optional<Bytes> chachaOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed);
 

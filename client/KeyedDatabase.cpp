@@ -19,6 +19,8 @@ constexpr int kBusyTimeoutMs = 5000;
 constexpr int kAllPages = -1;
 // sqlite3_prepare_v2 reads the statement up to its terminating zero.
 constexpr int kWholeStatement = -1;
+constexpr const char* kSoleJournalMode = "delete";
+constexpr const char* kJournalSuffix = "-journal";
 
 struct BackupFinish {
     void operator()(sqlite3_backup* const backup) const
@@ -89,6 +91,33 @@ void copyKeyedDatabase(const std::filesystem::path& from, const std::filesystem:
     }
 }
 
+void reencryptKeyed(
+    const std::filesystem::path& from, const Bytes& fromKey, const std::filesystem::path& to,
+    const Bytes& toKey)
+{
+    const Database source(openKeyed(from, fromKey), "re-encryption of " + utf8OfPath(from));
+    {
+        // SQLite leaves the log mode alone while another connection holds the file.
+        Statement journal(source, "PRAGMA journal_mode = DELETE");
+        if (!journal.step() || journal.text(0) != kSoleJournalMode) {
+            throw std::runtime_error(
+                "re-encryption: " + utf8OfPath(from) + " is still open elsewhere");
+        }
+    }
+    std::filesystem::path journal = to;
+    journal += kJournalSuffix;
+    std::filesystem::remove(to);
+    std::filesystem::remove(journal);
+    {
+        Statement attach(source, "ATTACH DATABASE ? AS rekeyed KEY ?");
+        attach.bind(1, utf8OfPath(to));
+        attach.bind(2, "x'" + toHex(toKey) + "'");
+        static_cast<void>(attach.step());
+    }
+    source.run("SELECT sqlcipher_export('rekeyed')");
+    source.run("DETACH DATABASE rekeyed");
+}
+
 Database::Database(SqliteHandle db, std::string label)
     : label_(std::move(label))
     , db_(std::move(db))
@@ -111,6 +140,15 @@ void Database::run(const std::string& sql) const
 std::int64_t Database::lastInsertId() const
 {
     return sqlite3_last_insert_rowid(db_.get());
+}
+
+void Database::truncateLog() const
+{
+    if (sqlite3_wal_checkpoint_v2(db_.get(), nullptr, SQLITE_CHECKPOINT_TRUNCATE, nullptr, nullptr)
+        != SQLITE_OK) {
+        throw std::runtime_error(label_ + ": the write-ahead log was not emptied: "
+            + sqlite3_errmsg(db_.get()));
+    }
 }
 
 int Database::changes() const

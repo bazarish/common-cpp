@@ -114,49 +114,9 @@ void requireOurPasswordCost(const Bytes& der)
     }
 }
 
-void unsealWithPasswordBio(BIO* const input, BIO* const output, const std::string& password)
-{
-    const CmsPtr cms(d2i_CMS_bio(input, nullptr));
-    if (cms == nullptr) {
-        throw std::runtime_error("d2i_CMS_bio failed");
-    }
-    if (CMS_decrypt_set1_password(cms.get(),
-            reinterpret_cast<unsigned char*>(const_cast<char*>(password.data())),
-            static_cast<int>(password.size()))
-        != 1) {
-        throw std::runtime_error("CMS_decrypt_set1_password failed");
-    }
-    if (CMS_decrypt(cms.get(), nullptr, nullptr, nullptr, output, CMS_BINARY) != 1) {
-        throw std::runtime_error("CMS_decrypt failed (wrong password?)");
-    }
-}
-
 }  // namespace
 
 namespace bazarish::cms {
-
-Bytes sealWithPassword(const Bytes& plaintext, const std::string& password)
-{
-    if (password.empty()) {
-        throw std::invalid_argument("password must not be empty");
-    }
-    const BioPtr input = makeInputBio(plaintext);
-    const CmsPtr cms(
-        CMS_encrypt(nullptr, input.get(), EVP_aes_256_cbc(), CMS_BINARY | CMS_PARTIAL));
-    if (cms == nullptr) {
-        throw std::runtime_error("CMS_encrypt failed");
-    }
-    addPasswordRecipient(cms.get(), password);
-    if (CMS_final(cms.get(), input.get(), nullptr, CMS_BINARY) != 1) {
-        throw std::runtime_error("CMS_final failed");
-    }
-
-    const BioPtr output = makeMemoryBio();
-    if (i2d_CMS_bio(output.get(), cms.get()) != 1) {
-        throw std::runtime_error("i2d_CMS_bio failed");
-    }
-    return bioToBytes(output.get());
-}
 
 Bytes sealWithPasswordDetached(const PlainReadFn& read, const std::filesystem::path& contentPath,
     const std::string& password)
@@ -200,18 +160,6 @@ Bytes sealWithPasswordDetached(const PlainReadFn& read, const std::filesystem::p
         throw std::runtime_error("i2d_CMS_bio failed");
     }
     return bioToBytes(header.get());
-}
-
-Bytes unsealWithPassword(const Bytes& der, const std::string& password)
-{
-    if (password.empty()) {
-        throw std::invalid_argument("password must not be empty");
-    }
-    requireOurPasswordCost(der);
-    const BioPtr input = makeInputBio(der);
-    const BioPtr output = makeMemoryBio();
-    unsealWithPasswordBio(input.get(), output.get(), password);
-    return bioToBytes(output.get());
 }
 
 void unsealWithPasswordDetached(const Bytes& header, const std::filesystem::path& contentPath,

@@ -14,7 +14,15 @@ std::filesystem::path sidecarFor(const std::filesystem::path& databaseFile);
 
 Bytes keyFor(const std::filesystem::path& databaseFile, const std::string& passphrase);
 
-void rewrap(const std::filesystem::path& databaseFile, const std::string& passphrase);
+// Re-encrypts under a fresh key; nothing else may have the database open.
+void rekey(const std::filesystem::path& databaseFile, const std::string& oldPassphrase,
+    const std::string& newPassphrase);
+
+void removeKeyFiles(const std::filesystem::path& databaseFile);
+
+// Argon2id at the at-rest cost and AES-256-GCM over a header that names the cost.
+Bytes sealBackup(const Bytes& plain, const std::string& passphrase);
+Bytes openBackup(const Bytes& sealed, const std::string& passphrase);
 
 void forget(const std::filesystem::path& databaseFile);
 
