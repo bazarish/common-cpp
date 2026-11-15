@@ -120,6 +120,7 @@ i2p::LeaseSetRefresh leaseSetRefreshFromJson(const nlohmann::json& body);
 Bytes encodeCredit(std::uint32_t stream, std::uint64_t total);
 std::uint64_t decodeCredit(const Frame& frame);
 
+inline constexpr std::size_t kHostLengthBytes = 2;
 Bytes encodeRawSend(std::uint32_t endpoint, const std::string& host, ByteView data);
 std::size_t rawPayloadRoom(const std::string& host);
 struct RawSend {

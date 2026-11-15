@@ -36,7 +36,6 @@ inline constexpr std::size_t kRecordFlagsBytes = 1;
 inline constexpr std::size_t kRecordLengthBytes = 2;
 inline constexpr std::size_t kRecordHeaderBytes = kRecordFlagsBytes + kRecordLengthBytes;
 inline constexpr std::uint8_t kRecordActive = 0x01;
-inline constexpr std::uint8_t kRecordFiller = 0x02;
 inline constexpr double kRecordPadMedian = 1800;
 inline constexpr double kRecordPadSigma = 0.5;
 // Every frame sent while idle, and a mail wait's request, fits under the floor.
@@ -48,17 +47,29 @@ inline constexpr std::size_t kBulkPadMax = 4096;
 inline constexpr std::size_t kMaxPaddedBytes = kRecordHeaderBytes + kMaxFrameBytes + kBulkPadMax;
 inline constexpr std::size_t kMaxRecordBytes = kMaxPaddedBytes + kAeadTagBytes;
 
-// A media socket sends one record per slot; the mean gap, 15 ms, is under one 20 ms voice frame.
-inline constexpr std::chrono::microseconds kMediaGapMin{3000};
-inline constexpr std::chrono::microseconds kMediaGapMax{27000};
-// Above the longest voice datagram: 3 + 5 + 2 + a 64-byte host + 28 + a 150-byte Opus frame.
-inline constexpr std::size_t kMediaPadFloor = 320;
-inline constexpr std::size_t kMediaPadCeiling = 448;
+// A media socket's slots drift through regimes; each regime draws its own gap range,
+// filler share and voice padding.
+inline constexpr std::chrono::milliseconds kMediaRegimeLeast{2000};
+inline constexpr std::chrono::milliseconds kMediaRegimeMost{10000};
+inline constexpr std::chrono::microseconds kMediaGapFloorLeast{2000};
+inline constexpr std::chrono::microseconds kMediaGapFloorMost{10000};
+inline constexpr std::chrono::microseconds kMediaGapWidthLeast{22000};
+// Bounds the wait of a voice frame at one end.
+inline constexpr std::chrono::microseconds kMediaGapCeiling{36000};
+inline constexpr double kMediaFillerShareMost = 0.8;
+inline constexpr std::size_t kMediaFramesPerRecord = 2;
+// Per voice frame, above the longest with its host elided: 2 + 5 + 2 + 28 + a 150-byte Opus frame.
+inline constexpr std::size_t kMediaPadPerFrame = 192;
+inline constexpr std::size_t kMediaPadSpanLeast = 16;
+inline constexpr std::size_t kMediaPadSpanMost = 64;
+inline constexpr double kFillerVoiceLike = 0.5;
+inline constexpr std::size_t kFillerLeast = 96;
+inline constexpr std::size_t kFillerMost = 1200;
 inline constexpr std::size_t kMediaQueueLimit = 8;
-// A filler waits while this many records of the media socket have not left yet.
+// A filler waits while this many of the largest fillers have not left yet.
 inline constexpr std::size_t kMediaBacklogRecords = 2;
 inline constexpr std::size_t kMediaBacklogBytes
-    = kMediaBacklogRecords * (kMediaPadCeiling + kAeadTagBytes);
+    = kMediaBacklogRecords * (kFillerMost + kAeadTagBytes);
 
 class WrongGateway : public std::runtime_error {
 public:
@@ -82,19 +93,28 @@ shape::LogNormal bulkPad();
 
 // A record's plaintext: flags, the frame's length, the frame, zeros to the drawn length.
 Bytes padRecord(const Bytes& frame, std::uint8_t flags, shape::RandomSource& random);
-// Uniform between kMediaPadFloor and kMediaPadCeiling; a longer frame is padded as any other.
-Bytes mediaRecord(const Bytes& frame, std::uint8_t flags, shape::RandomSource& random);
-Bytes fillerRecord(std::uint8_t flags, shape::RandomSource& random);
-
+// A record may carry several frames, each after its length; a record with none is a filler.
 struct RecordBody {
     std::uint8_t flags = 0;
     Bytes frame;
+    std::vector<Bytes> following;
 };
 std::optional<RecordBody> unpadRecord(const Bytes& plaintext);
 bool isFiller(const RecordBody& body);
 
-// Uniform in [kMediaGapMin, kMediaGapMax].
-std::chrono::microseconds drawMediaGap(shape::RandomSource& random);
+struct MediaRegime {
+    std::chrono::microseconds gapLeast{0};
+    std::chrono::microseconds gapMost{0};
+    double fillerShare = 0;
+    std::size_t padSpan = 0;
+};
+
+MediaRegime drawMediaRegime(shape::RandomSource& random);
+std::chrono::microseconds drawMediaGap(const MediaRegime& regime, shape::RandomSource& random);
+// From kMediaPadPerFrame per frame to padSpan above it; frames that do not fit there are padded as any record.
+Bytes mediaRecord(const std::vector<Bytes>& frames, std::uint8_t flags, const MediaRegime& regime,
+    shape::RandomSource& random);
+Bytes fillerRecord(std::uint8_t flags, const MediaRegime& regime, shape::RandomSource& random);
 
 // The slots of a media socket are drawn ahead and never moved by what is queued.
 class MediaPacer {
@@ -106,21 +126,42 @@ public:
         Clock::time_point at;
     };
 
+    struct Slot {
+        std::vector<Queued> frames;
+        bool filler = false;
+    };
+
     MediaPacer(shape::RandomSource& random, Clock::time_point start);
 
     // False when the queue was full and its oldest frame was dropped.
     bool queue(Bytes frame, Clock::time_point at);
     Clock::time_point due() const { return due_; }
-    // The oldest frame, or none for a filler; the next slot is drawn from `now`.
-    std::optional<Queued> take(Clock::time_point now);
+    // Up to kMediaFramesPerRecord of the oldest frames; with none, a filler at the regime's share.
+    Slot take(Clock::time_point now);
+    const MediaRegime& regime() const { return regime_; }
     std::size_t queued() const { return frames_.size(); }
     std::uint64_t dropped() const { return dropped_; }
 
 private:
+    void enter(Clock::time_point now);
+
     shape::RandomSource& random_;
+    MediaRegime regime_;
+    Clock::time_point regimeUntil_;
     Clock::time_point due_;
     std::deque<Queued> frames_;
     std::uint64_t dropped_ = 0;
+};
+
+// A raw-send to the host of the raw-send before it on one socket goes with an empty host.
+class HostElision {
+public:
+    Bytes elide(const Bytes& frame);
+    // Nothing when a frame names no host and none came before it.
+    std::optional<Bytes> restore(const Bytes& frame);
+
+private:
+    std::string last_;
 };
 
 // Uniform in [kIdleKeepaliveMin, kIdleKeepaliveMax].
@@ -194,7 +235,7 @@ public:
 
     const http::SocketPtr& raw() const { return raw_; }
     std::optional<RecordBody> openRecord(const Bytes& record);
-    // Datagrams then leave only in the slots of a MediaPacer, and a slot with none carries a filler.
+    // Datagrams then leave only in the slots of a MediaPacer.
     void carryMedia();
     std::uint64_t mediaDropped() const;
 
@@ -212,6 +253,9 @@ private:
     std::condition_variable paced_;
     std::optional<MediaPacer> pacer_;
     bool stopping_ = false;
+    HostElision sentHosts_;
+    std::mutex opening_;
+    HostElision heardHosts_;
     std::thread pacerThread_;
 };
 

@@ -61,13 +61,26 @@ void mustFitRecord(const Bytes& frame)
     }
 }
 
-Bytes recordOf(const Bytes& frame, const std::uint8_t flags, const std::size_t total)
+std::size_t neededFor(const std::vector<Bytes>& frames)
 {
-    Bytes plaintext(total, 0);
+    std::size_t needed = kRecordFlagsBytes;
+    for (const Bytes& frame : frames) {
+        needed += kRecordLengthBytes + frame.size();
+    }
+    return needed;
+}
+
+Bytes recordOf(const std::vector<Bytes>& frames, const std::uint8_t flags, const std::size_t total)
+{
+    Bytes plaintext(std::max(total, kRecordHeaderBytes), 0);
     plaintext[0] = flags;
-    putBigEndian(ByteBuffer(plaintext).subspan(kRecordFlagsBytes, kRecordLengthBytes),
-        static_cast<std::uint16_t>(frame.size()));
-    std::copy(frame.begin(), frame.end(), plaintext.begin() + kRecordHeaderBytes);
+    std::size_t at = kRecordFlagsBytes;
+    for (const Bytes& frame : frames) {
+        putBigEndian(ByteBuffer(plaintext).subspan(at, kRecordLengthBytes),
+            static_cast<std::uint16_t>(frame.size()));
+        std::copy(frame.begin(), frame.end(), plaintext.begin() + static_cast<std::ptrdiff_t>(at + kRecordLengthBytes));
+        at += kRecordLengthBytes + frame.size();
+    }
     return plaintext;
 }
 
@@ -82,6 +95,62 @@ std::uint64_t drawIndex(const std::uint64_t count, shape::RandomSource& random)
 std::size_t drawBetween(const std::size_t least, const std::size_t most, shape::RandomSource& random)
 {
     return least + static_cast<std::size_t>(drawIndex(most - least + 1, random));
+}
+
+std::chrono::microseconds drawWithin(const std::chrono::microseconds least,
+    const std::chrono::microseconds most, shape::RandomSource& random)
+{
+    return least
+        + std::chrono::microseconds(static_cast<std::chrono::microseconds::rep>(
+            drawIndex(static_cast<std::uint64_t>((most - least).count()) + 1, random)));
+}
+
+std::size_t drawLogUniform(const std::size_t least, const std::size_t most, shape::RandomSource& random)
+{
+    const double ratio = static_cast<double>(most) / static_cast<double>(least);
+    const double drawn
+        = std::round(static_cast<double>(least) * std::exp(shape::uniformOpen(random) * std::log(ratio)));
+    return std::min(static_cast<std::size_t>(drawn), most);
+}
+
+std::size_t paddedTotal(const std::size_t needed, shape::RandomSource& random)
+{
+    return static_cast<double>(needed) <= kRecordPadCeiling
+        ? static_cast<std::size_t>(std::ceil(
+            shape::drawAtLeast(recordPad(), static_cast<double>(needed), random)))
+        : needed + static_cast<std::size_t>(shape::draw(bulkPad(), random));
+}
+
+std::size_t voiceBandFloor(const std::size_t frames)
+{
+    return frames * kMediaPadPerFrame;
+}
+
+std::optional<std::string> hostOf(const Bytes& frame)
+{
+    if (frame.size() < kFrameHeaderBytes + kHostLengthBytes
+        || frame.front() != static_cast<std::uint8_t>(FrameType::eRawSend)) {
+        return std::nullopt;
+    }
+    const std::size_t length
+        = getBigEndian(ByteView(frame).subspan(kFrameHeaderBytes, kHostLengthBytes));
+    const std::size_t at = kFrameHeaderBytes + kHostLengthBytes;
+    if (length > frame.size() - at) {
+        return std::nullopt;
+    }
+    const auto start = frame.begin() + static_cast<std::ptrdiff_t>(at);
+    return std::string(start, start + static_cast<std::ptrdiff_t>(length));
+}
+
+Bytes withHost(const Bytes& frame, const std::string& present, const std::string& wanted)
+{
+    Bytes out(frame.begin(), frame.begin() + static_cast<std::ptrdiff_t>(kFrameHeaderBytes));
+    appendBigEndian(out, wanted.size(), kHostLengthBytes);
+    out.insert(out.end(), wanted.begin(), wanted.end());
+    const auto payload = frame.begin()
+        + static_cast<std::ptrdiff_t>(kFrameHeaderBytes + kHostLengthBytes + present.size());
+    out.insert(out.end(), payload, frame.end());
+    return out;
 }
 
 bool isDatagram(const std::vector<unsigned char>& message)
@@ -157,27 +226,7 @@ std::chrono::milliseconds drawIdleKeepalive(shape::RandomSource& random)
 Bytes padRecord(const Bytes& frame, const std::uint8_t flags, shape::RandomSource& random)
 {
     mustFitRecord(frame);
-    const std::size_t needed = kRecordHeaderBytes + frame.size();
-    const std::size_t total = static_cast<double>(needed) <= kRecordPadCeiling
-        ? static_cast<std::size_t>(std::ceil(shape::drawAtLeast(
-            recordPad(), static_cast<double>(needed), random)))
-        : needed + static_cast<std::size_t>(shape::draw(bulkPad(), random));
-    return recordOf(frame, flags, total);
-}
-
-Bytes mediaRecord(const Bytes& frame, const std::uint8_t flags, shape::RandomSource& random)
-{
-    mustFitRecord(frame);
-    const std::size_t needed = kRecordHeaderBytes + frame.size();
-    if (needed > kMediaPadCeiling) {
-        return padRecord(frame, flags, random);
-    }
-    return recordOf(frame, flags, drawBetween(std::max(needed, kMediaPadFloor), kMediaPadCeiling, random));
-}
-
-Bytes fillerRecord(const std::uint8_t flags, shape::RandomSource& random)
-{
-    return recordOf({}, flags | kRecordFiller, drawBetween(kMediaPadFloor, kMediaPadCeiling, random));
+    return recordOf({frame}, flags, paddedTotal(kRecordHeaderBytes + frame.size(), random));
 }
 
 std::optional<RecordBody> unpadRecord(const Bytes& plaintext)
@@ -185,35 +234,87 @@ std::optional<RecordBody> unpadRecord(const Bytes& plaintext)
     if (plaintext.size() < kRecordHeaderBytes || plaintext.size() > kMaxPaddedBytes) {
         return std::nullopt;
     }
-    const std::size_t length = getBigEndian(
-        ByteView(plaintext).subspan(kRecordFlagsBytes, kRecordLengthBytes));
-    if (length > plaintext.size() - kRecordHeaderBytes) {
-        return std::nullopt;
-    }
     RecordBody body;
     body.flags = plaintext[0];
-    const auto start = plaintext.begin() + kRecordHeaderBytes;
-    body.frame.assign(start, start + static_cast<std::ptrdiff_t>(length));
+    std::size_t at = kRecordFlagsBytes;
+    while (at + kRecordLengthBytes <= plaintext.size()) {
+        const std::size_t length
+            = getBigEndian(ByteView(plaintext).subspan(at, kRecordLengthBytes));
+        if (length == 0) {
+            break;
+        }
+        at += kRecordLengthBytes;
+        if (length > plaintext.size() - at) {
+            return std::nullopt;
+        }
+        const auto start = plaintext.begin() + static_cast<std::ptrdiff_t>(at);
+        Bytes frame(start, start + static_cast<std::ptrdiff_t>(length));
+        if (body.frame.empty()) {
+            body.frame = std::move(frame);
+        } else {
+            body.following.push_back(std::move(frame));
+        }
+        at += length;
+    }
     return body;
 }
 
 bool isFiller(const RecordBody& body)
 {
-    return (body.flags & kRecordFiller) != 0;
+    return body.frame.empty();
 }
 
-std::chrono::microseconds drawMediaGap(shape::RandomSource& random)
+MediaRegime drawMediaRegime(shape::RandomSource& random)
 {
-    const std::chrono::microseconds span = kMediaGapMax - kMediaGapMin;
-    return kMediaGapMin
-        + std::chrono::microseconds(static_cast<std::chrono::microseconds::rep>(
-            drawIndex(static_cast<std::uint64_t>(span.count()) + 1, random)));
+    MediaRegime regime;
+    regime.gapLeast = drawWithin(kMediaGapFloorLeast, kMediaGapFloorMost, random);
+    regime.gapMost = drawWithin(regime.gapLeast + kMediaGapWidthLeast, kMediaGapCeiling, random);
+    regime.fillerShare = shape::uniformOpen(random) * kMediaFillerShareMost;
+    regime.padSpan = drawBetween(kMediaPadSpanLeast, kMediaPadSpanMost, random);
+    return regime;
+}
+
+std::chrono::microseconds drawMediaGap(const MediaRegime& regime, shape::RandomSource& random)
+{
+    return drawWithin(regime.gapLeast, regime.gapMost, random);
+}
+
+Bytes mediaRecord(const std::vector<Bytes>& frames, const std::uint8_t flags,
+    const MediaRegime& regime, shape::RandomSource& random)
+{
+    for (const Bytes& frame : frames) {
+        mustFitRecord(frame);
+    }
+    const std::size_t needed = neededFor(frames);
+    const std::size_t least = voiceBandFloor(frames.size());
+    const std::size_t most = least + regime.padSpan;
+    if (needed > most) {
+        return recordOf(frames, flags, paddedTotal(needed, random));
+    }
+    return recordOf(frames, flags, drawBetween(std::max(needed, least), most, random));
+}
+
+Bytes fillerRecord(const std::uint8_t flags, const MediaRegime& regime, shape::RandomSource& random)
+{
+    if (shape::uniformOpen(random) < kFillerVoiceLike) {
+        const std::size_t least
+            = voiceBandFloor(1 + static_cast<std::size_t>(drawIndex(kMediaFramesPerRecord, random)));
+        return recordOf({}, flags, drawBetween(least, least + regime.padSpan, random));
+    }
+    return recordOf({}, flags, drawLogUniform(kFillerLeast, kFillerMost, random));
 }
 
 MediaPacer::MediaPacer(shape::RandomSource& random, const Clock::time_point start)
     : random_(random)
-    , due_(start + drawMediaGap(random))
 {
+    enter(start);
+    due_ = start + drawMediaGap(regime_, random_);
+}
+
+void MediaPacer::enter(const Clock::time_point now)
+{
+    regime_ = drawMediaRegime(random_);
+    regimeUntil_ = now + drawWithin(kMediaRegimeLeast, kMediaRegimeMost, random_);
 }
 
 bool MediaPacer::queue(Bytes frame, const Clock::time_point at)
@@ -228,15 +329,48 @@ bool MediaPacer::queue(Bytes frame, const Clock::time_point at)
     return kept;
 }
 
-std::optional<MediaPacer::Queued> MediaPacer::take(const Clock::time_point now)
+MediaPacer::Slot MediaPacer::take(const Clock::time_point now)
 {
-    due_ = now + drawMediaGap(random_);
-    if (frames_.empty()) {
+    if (now >= regimeUntil_) {
+        enter(now);
+    }
+    Slot slot;
+    while (slot.frames.size() < kMediaFramesPerRecord && !frames_.empty()) {
+        slot.frames.push_back(std::move(frames_.front()));
+        frames_.pop_front();
+    }
+    slot.filler = slot.frames.empty() && shape::uniformOpen(random_) < regime_.fillerShare;
+    due_ = now + drawMediaGap(regime_, random_);
+    return slot;
+}
+
+Bytes HostElision::elide(const Bytes& frame)
+{
+    const std::optional<std::string> host = hostOf(frame);
+    if (!host.has_value() || host->empty()) {
+        return frame;
+    }
+    if (*host != last_) {
+        last_ = *host;
+        return frame;
+    }
+    return withHost(frame, *host, {});
+}
+
+std::optional<Bytes> HostElision::restore(const Bytes& frame)
+{
+    const std::optional<std::string> host = hostOf(frame);
+    if (!host.has_value()) {
+        return frame;
+    }
+    if (!host->empty()) {
+        last_ = *host;
+        return frame;
+    }
+    if (last_.empty()) {
         return std::nullopt;
     }
-    Queued oldest = std::move(frames_.front());
-    frames_.pop_front();
-    return oldest;
+    return withHost(frame, {}, last_);
 }
 
 std::string pingCarrying(const std::uint8_t flags)
@@ -265,13 +399,13 @@ Hello makeHello(const Cover& cover, const Key& gatewaySealing)
 
 std::optional<Key> openHello(const Cover& cover, const Bytes& message, const Key& gatewaySealing)
 {
-    const std::optional<Bytes> uncovered = cover.open(message);
+    const std::optional<SecretBytes> uncovered = cover.open(message);
     if (!uncovered.has_value()) {
         return std::nullopt;
     }
     try {
         const nlohmann::json body
-            = parseCbor(unpadded(hybrid::unseal(*uncovered, gatewaySealing)));
+            = parseCbor(unpadded(hybrid::unseal(uncovered->bytes(), gatewaySealing).bytes()));
         if (body.value("v", kNoVersion) != kHelloVersion || !body.at("ephemeral").is_binary()) {
             return std::nullopt;
         }
@@ -298,12 +432,12 @@ Bytes makeWelcome(const Cover& cover, const Welcome& welcome, const Key& clientE
 std::optional<Welcome> openWelcome(const Cover& cover, const Bytes& message,
     const Key& ephemeral, const std::string& fingerprint)
 {
-    const std::optional<Bytes> uncovered = cover.open(message);
+    const std::optional<SecretBytes> uncovered = cover.open(message);
     if (!uncovered.has_value()) {
         return std::nullopt;
     }
     const hybrid::VerifiedJson verified
-        = hybrid::verifyJson(unpadded(hybrid::unseal(*uncovered, ephemeral)));
+        = hybrid::verifyJson(unpadded(hybrid::unseal(uncovered->bytes(), ephemeral).bytes()));
     if (verified.identityFingerprint != fingerprint) {
         throw WrongGateway("the gateway's welcome is signed by another key than the link names");
     }
@@ -339,11 +473,12 @@ Bytes Records::seal(const Bytes& plaintext)
 std::optional<Bytes> Records::open(const Bytes& record)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
-    std::optional<Bytes> opened = chachaOpen(receiveKey_, counterNonce(received_), record);
-    if (opened.has_value()) {
-        ++received_;
+    std::optional<SecretBytes> opened = chachaOpen(receiveKey_, counterNonce(received_), record);
+    if (!opened.has_value()) {
+        return std::nullopt;
     }
-    return opened;
+    ++received_;
+    return opened->release();
 }
 
 Bytes makeJoin(const Bytes& ticket, Records& records)
@@ -464,14 +599,22 @@ void ChannelSocket::pace()
             break;
         }
         const bool backlogged = raw_->pending() > kMediaBacklogBytes;
-        const std::optional<MediaPacer::Queued> carried = pacer_->take(MediaPacer::Clock::now());
-        if (!carried.has_value() && backlogged) {
+        MediaPacer::Slot slot = pacer_->take(MediaPacer::Clock::now());
+        const MediaRegime regime = pacer_->regime();
+        if (slot.frames.empty() && (!slot.filler || backlogged)) {
             continue;
         }
         lock.unlock();
         const std::uint8_t flags = hooks_.flags ? hooks_.flags() : 0;
-        sendSealed(carried.has_value() ? mediaRecord(carried->frame, flags, random_)
-                                       : fillerRecord(flags, random_));
+        if (slot.frames.empty()) {
+            sendSealed(fillerRecord(flags, regime, random_));
+        } else {
+            std::vector<Bytes> frames;
+            for (const MediaPacer::Queued& queued : slot.frames) {
+                frames.push_back(sentHosts_.elide(queued.frame));
+            }
+            sendSealed(mediaRecord(frames, flags, regime, random_));
+        }
         lock.lock();
     }
 }
@@ -507,7 +650,24 @@ std::optional<RecordBody> ChannelSocket::openRecord(const Bytes& record)
     if (!opened.has_value()) {
         return std::nullopt;
     }
-    return unpadRecord(*opened);
+    std::optional<RecordBody> body = unpadRecord(*opened);
+    if (!body.has_value() || isFiller(*body)) {
+        return body;
+    }
+    const std::lock_guard<std::mutex> lock(opening_);
+    std::optional<Bytes> first = heardHosts_.restore(body->frame);
+    if (!first.has_value()) {
+        return std::nullopt;
+    }
+    body->frame = std::move(*first);
+    for (Bytes& frame : body->following) {
+        std::optional<Bytes> restored = heardHosts_.restore(frame);
+        if (!restored.has_value()) {
+            return std::nullopt;
+        }
+        frame = std::move(*restored);
+    }
+    return body;
 }
 
 namespace {
@@ -576,6 +736,9 @@ ChannelOpened openChannel(const http::SocketDial& dial, const std::string& finge
             }
             opening->onMessage(
                 channel, std::vector<unsigned char>(opened->frame.begin(), opened->frame.end()));
+            for (const Bytes& frame : opened->following) {
+                opening->onMessage(channel, std::vector<unsigned char>(frame.begin(), frame.end()));
+            }
         },
         [opening](const http::SocketPtr&) {
             std::shared_ptr<ChannelSocket> channel;
@@ -608,11 +771,11 @@ ChannelOpened openChannel(const http::SocketDial& dial, const std::string& finge
     }
     std::optional<Key> sealing;
     try {
-        const std::optional<Bytes> card = cover.open(*first);
+        const std::optional<SecretBytes> card = cover.open(*first);
         if (!card.has_value()) {
             throw WrongGateway("the gateway's card is not sealed for this link");
         }
-        sealing = cardSealingKey(unpadded(*card), fingerprint);
+        sealing = cardSealingKey(unpadded(card->bytes()), fingerprint);
     } catch (const WrongGateway& error) {
         result.wrongGateway = true;
         return fail(error.what());

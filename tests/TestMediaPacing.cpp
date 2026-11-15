@@ -47,16 +47,32 @@ constexpr double kJitteredOldRhythm = 0.15;
 constexpr double kCaptureJitterMs = 2.57;
 
 constexpr Millis kLatencyP99Bound{35};
-constexpr Millis kPairedLatencyP99Bound{50};
+constexpr double kPercentile5 = 0.05;
 constexpr double kPercentile50 = 0.50;
+constexpr double kPercentile95 = 0.95;
 constexpr double kPercentile99 = 0.99;
-constexpr double kMeanGapSlackMs = 0.2;
 
-constexpr double kMostOfOneSize = 0.02;
+// 5 of header, 1 of content type, 16 of tag (RFC 8446).
+constexpr std::size_t kTlsRecordOverhead = 22;
+// A masked frame with a 16-bit length (RFC 6455).
+constexpr std::size_t kWebSocketHeader = 8;
+constexpr std::size_t kWireOverhead = kTlsRecordOverhead + kWebSocketHeader;
+constexpr double kBytesPerKilobyte = 1000;
+constexpr std::chrono::seconds kRateSecond{1};
+constexpr std::chrono::seconds kRateWindow{5};
+// The first iteration's pacer, as a reference that must fail the spread check.
+constexpr std::chrono::microseconds kFixedGapLeast{3000};
+constexpr std::chrono::microseconds kFixedGapMost{27000};
+constexpr std::size_t kFixedSizeLeast = 320;
+constexpr std::size_t kFixedSizeMost = 448;
+constexpr double kMeanRateMost = 16;
+constexpr double kWindowSpreadLeast = 1.2;
+
+constexpr double kMostOfOneSize = 0.03;
 constexpr double kLeastSizeEntropyBits = 6.5;
-// Two samples of this many from one distribution part by more than this once in a million.
-constexpr double kSameSizes = 0.04;
 
+// The first raw-send on a socket names its host and may not fit a voice band.
+constexpr std::size_t kRecordsNamingTheHost = 1;
 constexpr std::size_t kOverflowExtra = 3;
 constexpr std::chrono::milliseconds kRealIdle{300};
 constexpr std::size_t kRealFrames = 50;
@@ -105,6 +121,11 @@ private:
     std::atomic<bool> open_{true};
 };
 
+std::string anyHost()
+{
+    return std::string(kHostChars, 'a') + ".b32.i2p";
+}
+
 Bytes voiceFrame(const std::uint32_t sequence, std::mt19937_64& sizes)
 {
     std::uniform_int_distribution<std::size_t> opus(kOpusLeast, kOpusMost);
@@ -113,7 +134,7 @@ Bytes voiceFrame(const std::uint32_t sequence, std::mt19937_64& sizes)
         payload[i] = static_cast<std::uint8_t>(
             (sequence >> (kBitsPerByte * (kSequenceBytes - 1 - i))) & kByteMask);
     }
-    return encodeRawSend(kAnyRef, std::string(kHostChars, 'a') + ".b32.i2p", payload);
+    return encodeRawSend(kAnyRef, anyHost(), payload);
 }
 
 std::uint32_t sequenceOf(const Bytes& frame)
@@ -195,26 +216,82 @@ double kolmogorovSmirnov(std::vector<std::size_t> one, std::vector<std::size_t> 
     return widest;
 }
 
+struct Emitted {
+    double atMs = 0;
+    std::size_t plaintext = 0;
+};
+
+struct Rates {
+    double mean = 0;
+    double p5 = 0;
+    double p50 = 0;
+    double p95 = 0;
+    double windowSpread = 0;
+};
+
+std::vector<double> perWindow(const std::vector<Emitted>& records, const Millis window)
+{
+    std::vector<double> bytes(static_cast<std::size_t>(records.back().atMs / window.count()), 0);
+    for (const Emitted& record : records) {
+        const auto at = static_cast<std::size_t>(record.atMs / window.count());
+        if (at < bytes.size()) {
+            bytes[at] += static_cast<double>(record.plaintext + kAeadTagBytes + kWireOverhead);
+        }
+    }
+    for (double& total : bytes) {
+        total /= kBytesPerKilobyte * std::chrono::duration<double>(window).count();
+    }
+    return bytes;
+}
+
+Rates ratesOf(const std::vector<Emitted>& records)
+{
+    const std::vector<double> seconds = perWindow(records, kRateSecond);
+    const std::vector<double> windows = perWindow(records, kRateWindow);
+    Rates rates;
+    for (const double rate : seconds) {
+        rates.mean += rate;
+    }
+    rates.mean /= static_cast<double>(seconds.size());
+    rates.p5 = percentile(seconds, kPercentile5);
+    rates.p50 = percentile(seconds, kPercentile50);
+    rates.p95 = percentile(seconds, kPercentile95);
+    rates.windowSpread = percentile(windows, kPercentile95) / percentile(windows, kPercentile5);
+    return rates;
+}
+
+bool inVoiceBand(const std::size_t size, const std::size_t span)
+{
+    for (std::size_t frames = 1; frames <= kMediaFramesPerRecord; ++frames) {
+        if (size >= frames * kMediaPadPerFrame && size <= frames * kMediaPadPerFrame + span) {
+            return true;
+        }
+    }
+    return false;
+}
+
 struct Paced {
-    std::vector<double> slotsMs;
-    std::vector<double> gapsMs;
+    std::vector<Emitted> records;
+    std::vector<double> voiceMs;
     std::vector<double> latencyMs;
-    std::vector<std::size_t> mediaSizes;
+    std::vector<std::size_t> voiceSizes;
     std::vector<std::size_t> fillerSizes;
+    std::size_t fillersLikeVoice = 0;
+    std::size_t pairs = 0;
     bool inOrder = true;
     std::uint64_t dropped = 0;
 };
 
-// Virtual time: every slot is taken exactly when due.
+// Virtual time: every slot is taken exactly when due; records are built as the socket builds them.
 Paced paceThrough(const std::vector<Clock::duration>& arrivals, shape::RandomSource& random)
 {
     std::mt19937_64 sizes(kSeed);
     const Clock::time_point start{};
     MediaPacer pacer(random, start);
+    HostElision hosts;
     Paced paced;
     std::size_t next = 0;
     std::uint32_t expected = 0;
-    Clock::time_point previous = start;
     while (next < arrivals.size() || pacer.queued() > 0) {
         const Clock::time_point due = pacer.due();
         while (next < arrivals.size() && start + arrivals[next] <= due) {
@@ -222,21 +299,48 @@ Paced paceThrough(const std::vector<Clock::duration>& arrivals, shape::RandomSou
                 start + arrivals[next]));
             ++next;
         }
-        const std::optional<MediaPacer::Queued> taken = pacer.take(due);
-        paced.slotsMs.push_back(Millis(due - start).count());
-        paced.gapsMs.push_back(Millis(due - previous).count());
-        previous = due;
-        if (taken.has_value()) {
-            paced.latencyMs.push_back(Millis(due - taken->at).count());
-            paced.inOrder = paced.inOrder && sequenceOf(taken->frame) == expected;
-            ++expected;
-            paced.mediaSizes.push_back(mediaRecord(taken->frame, kRecordActive, random).size());
-        } else {
-            paced.fillerSizes.push_back(fillerRecord(kRecordActive, random).size());
+        const MediaPacer::Slot slot = pacer.take(due);
+        const MediaRegime& regime = pacer.regime();
+        const double atMs = Millis(due - start).count();
+        if (!slot.frames.empty()) {
+            std::vector<Bytes> frames;
+            for (const MediaPacer::Queued& queued : slot.frames) {
+                paced.latencyMs.push_back(Millis(due - queued.at).count());
+                paced.inOrder = paced.inOrder && sequenceOf(queued.frame) == expected;
+                ++expected;
+                frames.push_back(hosts.elide(queued.frame));
+            }
+            paced.pairs += slot.frames.size() > 1 ? 1 : 0;
+            const std::size_t size = mediaRecord(frames, kRecordActive, regime, random).size();
+            paced.records.push_back({atMs, size});
+            paced.voiceMs.push_back(atMs);
+            paced.voiceSizes.push_back(size);
+        } else if (slot.filler) {
+            const std::size_t size = fillerRecord(kRecordActive, regime, random).size();
+            paced.records.push_back({atMs, size});
+            paced.fillerSizes.push_back(size);
+            paced.fillersLikeVoice += inVoiceBand(size, regime.padSpan) ? 1 : 0;
         }
     }
     paced.dropped = pacer.dropped();
     return paced;
+}
+
+std::vector<Emitted> fixedRateReference(shape::RandomSource& random, const double untilMs)
+{
+    std::vector<Emitted> records;
+    Clock::duration at{};
+    while (Millis(at).count() < untilMs) {
+        at += std::chrono::microseconds(static_cast<std::chrono::microseconds::rep>(
+            static_cast<double>(kFixedGapLeast.count())
+            + shape::uniformOpen(random)
+                * static_cast<double>((kFixedGapMost - kFixedGapLeast).count())));
+        records.push_back({Millis(at).count(),
+            kFixedSizeLeast
+                + static_cast<std::size_t>(shape::uniformOpen(random)
+                    * static_cast<double>(kFixedSizeMost - kFixedSizeLeast))});
+    }
+    return records;
 }
 
 std::vector<Clock::duration> periodic()
@@ -258,49 +362,85 @@ std::vector<Clock::duration> paired()
     return arrivals;
 }
 
-std::vector<double> asMillis(const std::vector<Clock::duration>& times)
+std::vector<double> timesOf(const std::vector<Emitted>& records)
 {
-    std::vector<double> millis;
-    for (const Clock::duration at : times) {
-        millis.push_back(Millis(at).count());
+    std::vector<double> times;
+    for (const Emitted& record : records) {
+        times.push_back(record.atMs);
     }
-    return millis;
+    return times;
 }
 
 void checkBounds()
 {
     ScriptedRandom lowest(0);
     ScriptedRandom highest(std::numeric_limits<std::uint64_t>::max());
-    CHECK(drawMediaGap(lowest) == kMediaGapMin);
-    CHECK(drawMediaGap(highest) == kMediaGapMax);
-    CHECK(fillerRecord(0, lowest).size() == kMediaPadFloor);
-    CHECK(fillerRecord(0, highest).size() == kMediaPadCeiling);
-    const Bytes voice = encode(FrameType::eRawRecv, kAnyRef, Bytes(kOpusMost, 0));
-    CHECK(mediaRecord(voice, 0, lowest).size() == kMediaPadFloor);
-    const Bytes wide = encode(FrameType::eRawRecv, kAnyRef, Bytes(kMediaPadFloor, 0));
-    CHECK(mediaRecord(wide, 0, lowest).size() == kRecordHeaderBytes + wide.size());
+    const MediaRegime low = drawMediaRegime(lowest);
+    CHECK(low.gapLeast == kMediaGapFloorLeast);
+    CHECK(low.gapMost == kMediaGapFloorLeast + kMediaGapWidthLeast);
+    CHECK(low.padSpan == kMediaPadSpanLeast);
+    CHECK(low.fillerShare < kMediaFillerShareMost);
+    const MediaRegime high = drawMediaRegime(highest);
+    CHECK(high.gapLeast == kMediaGapFloorMost);
+    CHECK(high.gapMost == kMediaGapCeiling);
+    CHECK(high.padSpan == kMediaPadSpanMost);
+    CHECK(high.fillerShare <= kMediaFillerShareMost);
+    CHECK(drawMediaGap(high, lowest) == high.gapLeast);
+    CHECK(drawMediaGap(high, highest) == high.gapMost);
+
+    const Bytes voice
+        = encode(FrameType::eRawRecv, kAnyRef, Bytes(kSealedVoiceOverhead + kOpusMost, 0));
+    CHECK(mediaRecord({voice}, 0, high, lowest).size() == kMediaPadPerFrame);
+    CHECK(mediaRecord({voice}, 0, high, highest).size() == kMediaPadPerFrame + high.padSpan);
+    CHECK(mediaRecord({voice, voice}, 0, high, lowest).size() == 2 * kMediaPadPerFrame);
+    CHECK(fillerRecord(0, high, lowest).size() == kMediaPadPerFrame);
+    CHECK(fillerRecord(0, high, highest).size() == kFillerMost);
+
     SeededRandom seeded(kSeed);
-    const Bytes huge = encode(FrameType::eRawRecv, kAnyRef, Bytes(kMediaPadCeiling, 0));
-    const Bytes hugeRecord = mediaRecord(huge, 0, seeded);
+    const Bytes huge
+        = encode(FrameType::eRawRecv, kAnyRef, Bytes(kMediaPadPerFrame + kMediaPadSpanMost, 0));
+    const Bytes hugeRecord = mediaRecord({huge}, 0, high, seeded);
     CHECK(hugeRecord.size() >= static_cast<std::size_t>(kRecordPadFloor));
     CHECK(unpadRecord(hugeRecord)->frame == huge);
-    CHECK_THROWS(mediaRecord(Bytes(kMaxFrameBytes + 1, 0), 0, lowest));
+    CHECK_THROWS(mediaRecord({Bytes(kMaxFrameBytes + 1, 0)}, 0, high, lowest));
 }
 
-void checkFillers()
+void checkRecordsAndHosts()
 {
     SeededRandom random(kSeed);
-    const std::optional<RecordBody> filler = unpadRecord(fillerRecord(kRecordActive, random));
+    const MediaRegime regime = drawMediaRegime(random);
+    const std::optional<RecordBody> filler
+        = unpadRecord(fillerRecord(kRecordActive, regime, random));
     CHECK(filler.has_value());
     CHECK(isFiller(*filler));
-    CHECK(filler->frame.empty());
+    CHECK(filler->following.empty());
     CHECK((filler->flags & kRecordActive) != 0);
-    const Bytes voice = encode(FrameType::eRawRecv, kAnyRef, Bytes(kOpusMost, 1));
-    const std::optional<RecordBody> media = unpadRecord(mediaRecord(voice, kRecordActive, random));
-    CHECK(media.has_value());
-    CHECK(!isFiller(*media));
-    CHECK(media->frame == voice);
-    CHECK(!isFiller(*unpadRecord(padRecord(voice, kRecordActive, random))));
+
+    const Bytes one = encode(FrameType::eRawRecv, kAnyRef, Bytes(kOpusMost, 1));
+    const Bytes two = encode(FrameType::eRawRecv, kAnyRef, Bytes(kOpusLeast, 2));
+    const std::optional<RecordBody> pair = unpadRecord(mediaRecord({one, two}, 0, regime, random));
+    CHECK(pair.has_value() && !isFiller(*pair));
+    CHECK(pair->frame == one);
+    CHECK(pair->following == std::vector<Bytes>{two});
+    CHECK(unpadRecord(padRecord(one, 0, random))->following.empty());
+
+    const Bytes payload(kOpusLeast, 3);
+    const Bytes full = encodeRawSend(kAnyRef, anyHost(), payload);
+    const Bytes elsewhere
+        = encodeRawSend(kAnyRef, std::string(kHostChars, 'b') + ".b32.i2p", payload);
+    HostElision sender;
+    CHECK(sender.elide(full) == full);
+    const Bytes elided = sender.elide(full);
+    CHECK(elided.size() + anyHost().size() == full.size());
+    CHECK(sender.elide(elsewhere) == elsewhere);
+    CHECK(sender.elide(one) == one);
+    HostElision receiver;
+    CHECK(!receiver.restore(elided).has_value());
+    HostElision following;
+    CHECK(following.restore(full) == full);
+    CHECK(following.restore(elided) == full);
+    CHECK(following.restore(elsewhere) == elsewhere);
+    CHECK(following.restore(one) == one);
 }
 
 void checkOverflow()
@@ -315,99 +455,105 @@ void checkOverflow()
     }
     CHECK(pacer.dropped() == kOverflowExtra);
     CHECK(pacer.queued() == kMediaQueueLimit);
-    for (std::size_t i = 0; i < kMediaQueueLimit; ++i) {
-        const std::optional<MediaPacer::Queued> taken = pacer.take(pacer.due());
-        CHECK(taken.has_value());
-        CHECK(sequenceOf(taken->frame) == kOverflowExtra + i);
+    std::uint32_t expected = kOverflowExtra;
+    while (pacer.queued() > 0) {
+        const MediaPacer::Slot slot = pacer.take(pacer.due());
+        CHECK(slot.frames.size() == kMediaFramesPerRecord);
+        CHECK(!slot.filler);
+        for (const MediaPacer::Queued& queued : slot.frames) {
+            CHECK(sequenceOf(queued.frame) == expected);
+            ++expected;
+        }
     }
-    CHECK(!pacer.take(pacer.due()).has_value());
+    CHECK(pacer.take(pacer.due()).frames.empty());
 }
 
-void checkRhythmLatencyAndSizes()
+void report(const char* const input, const Paced& paced)
 {
-    SeededRandom random(kSeed);
-    const std::vector<Clock::duration> input = periodic();
-    const Paced paced = paceThrough(input, random);
-    CHECK(paced.inOrder);
-    CHECK(paced.dropped == 0);
-    CHECK(paced.latencyMs.size() == kTenMinutesOfFrames);
+    const Rates rates = ratesOf(paced.records);
+    std::printf("%s: %zu records (%zu carry two frames, %zu fillers); KB/s mean %.2f, per second "
+                "p5 %.2f p50 %.2f p95 %.2f, 5 s windows p95/p5 %.2f\n",
+        input, paced.records.size(), paced.pairs, paced.fillerSizes.size(), rates.mean, rates.p5,
+        rates.p50, rates.p95, rates.windowSpread);
+    std::printf("%s: added latency p50 %.1f ms, p99 %.1f ms, max %.1f ms\n", input,
+        percentile(paced.latencyMs, kPercentile50), percentile(paced.latencyMs, kPercentile99),
+        percentile(paced.latencyMs, 1));
+    for (const double lag : kLagsMs) {
+        std::printf("%s: autocorrelation at %.0f ms, every record %.3f, voice records alone %.3f\n",
+            input, lag, autocorrelation(timesOf(paced.records), lag),
+            autocorrelation(paced.voiceMs, lag));
+    }
+}
 
-    const std::vector<double> old = asMillis(input);
+void checkTenMinutes()
+{
+    const std::vector<Clock::duration> input = periodic();
+    std::vector<double> old;
+    for (const Clock::duration at : input) {
+        old.push_back(Millis(at).count());
+    }
     std::mt19937_64 jitterEngine(kSeed);
     std::normal_distribution<double> jitter(0, kCaptureJitterMs);
     std::vector<double> jittered;
     for (const double at : old) {
         jittered.push_back(std::max(0.0, at + kVoiceFrame.count() + jitter(jitterEngine)));
     }
+
+    SeededRandom random(kSeed);
+    const Paced paced = paceThrough(input, random);
+    SeededRandom pairedRandom(kSeed + 1);
+    const Paced twos = paceThrough(paired(), pairedRandom);
+    report("a frame every 20 ms", paced);
+    report("two frames every 40 ms", twos);
+
+    for (const Paced* const run : {&paced, &twos}) {
+        CHECK(run->inOrder);
+        CHECK(run->dropped == 0);
+        CHECK(run->latencyMs.size() == kTenMinutesOfFrames);
+        CHECK(percentile(run->latencyMs, kPercentile99) <= kLatencyP99Bound.count());
+        CHECK(percentile(run->latencyMs, 1) <= Millis(kMediaGapCeiling).count());
+        const Rates rates = ratesOf(run->records);
+        CHECK(rates.mean < kMeanRateMost);
+        CHECK(rates.windowSpread > kWindowSpreadLeast);
+        for (const double lag : kLagsMs) {
+            CHECK(std::abs(autocorrelation(timesOf(run->records), lag)) < kNoRhythm);
+        }
+    }
     for (const double lag : kLagsMs) {
         const double before = autocorrelation(old, lag);
         const double beforeJittered = autocorrelation(jittered, lag);
-        const double after = autocorrelation(paced.slotsMs, lag);
-        std::printf("autocorrelation at %.0f ms (%.0f ms bins): unpaced %.3f, unpaced with "
-                    "capture jitter %.3f, paced %.3f\n",
-            lag, kBinMs, before, beforeJittered, after);
+        std::printf("unpaced at %.0f ms: %.3f, with the capture's jitter %.3f\n", lag, before,
+            beforeJittered);
         CHECK(before > kOldRhythm);
         CHECK(beforeJittered > kJitteredOldRhythm);
-        CHECK(std::abs(after) < kNoRhythm);
+        CHECK(std::abs(autocorrelation(paced.voiceMs, lag)) < kNoRhythm);
     }
 
-    double gapSum = 0;
-    for (const double gap : paced.gapsMs) {
-        CHECK(gap >= Millis(kMediaGapMin).count());
-        CHECK(gap <= Millis(kMediaGapMax).count());
-        gapSum += gap;
-    }
-    const double meanGap = gapSum / static_cast<double>(paced.gapsMs.size());
-    const double expectedMean = Millis(kMediaGapMin + kMediaGapMax).count() / 2;
-    std::printf("slots: %zu (%zu media, %zu fillers), mean gap %.2f ms\n", paced.slotsMs.size(),
-        paced.mediaSizes.size(), paced.fillerSizes.size(), meanGap);
-    CHECK(std::abs(meanGap - expectedMean) < kMeanGapSlackMs);
-    CHECK(meanGap < Millis(kVoiceFrame).count());
+    SeededRandom fixedRandom(kSeed);
+    const Rates fixed = ratesOf(fixedRateReference(fixedRandom, paced.records.back().atMs));
+    std::printf("fixed-rate reference: KB/s mean %.2f, per second p5 %.2f p50 %.2f p95 %.2f, "
+                "5 s windows p95/p5 %.2f\n",
+        fixed.mean, fixed.p5, fixed.p50, fixed.p95, fixed.windowSpread);
+    CHECK(fixed.windowSpread < kWindowSpreadLeast);
 
-    const double p50 = percentile(paced.latencyMs, kPercentile50);
-    const double p99 = percentile(paced.latencyMs, kPercentile99);
-    const double most = percentile(paced.latencyMs, 1);
-    std::printf("added latency, a frame every 20 ms: p50 %.1f ms, p99 %.1f ms, max %.1f ms\n",
-        p50, p99, most);
-    CHECK(p99 <= kLatencyP99Bound.count());
-
-    SeededRandom pairedRandom(kSeed);
-    const Paced twos = paceThrough(paired(), pairedRandom);
-    CHECK(twos.inOrder);
-    CHECK(twos.dropped == 0);
-    const double pairedP99 = percentile(twos.latencyMs, kPercentile99);
-    std::printf("added latency, two frames every 40 ms: p50 %.1f ms, p99 %.1f ms, max %.1f ms\n",
-        percentile(twos.latencyMs, kPercentile50), pairedP99, percentile(twos.latencyMs, 1));
-    CHECK(pairedP99 <= kPairedLatencyP99Bound.count());
-
-    std::vector<std::size_t> all = paced.mediaSizes;
+    std::vector<std::size_t> all = paced.voiceSizes;
     all.insert(all.end(), paced.fillerSizes.begin(), paced.fillerSizes.end());
-    for (const std::size_t size : all) {
-        CHECK(size >= kMediaPadFloor);
-        CHECK(size <= kMediaPadCeiling);
-    }
     double mostShare = 0;
     const double bits = entropyBits(all, mostShare);
-    const double distance = kolmogorovSmirnov(paced.mediaSizes, paced.fillerSizes);
-    std::printf("record sizes: entropy %.2f bits, most common size %.2f%%, media against "
-                "fillers KS %.4f\n",
-        bits, mostShare * 100, distance);
+    const double likeVoice = static_cast<double>(paced.fillersLikeVoice)
+        / static_cast<double>(paced.fillerSizes.size());
+    std::printf("record sizes: entropy %.2f bits, most common %.2f%%, voice against fillers KS "
+                "%.3f, fillers inside a voice band %.1f%%\n",
+        bits, mostShare * 100, kolmogorovSmirnov(paced.voiceSizes, paced.fillerSizes),
+        likeVoice * 100);
     CHECK(bits > kLeastSizeEntropyBits);
     CHECK(mostShare < kMostOfOneSize);
-    CHECK(distance < kSameSizes);
-}
-
-std::vector<RecordBody> openAll(const std::vector<std::vector<unsigned char>>& wire, Records& far)
-{
-    std::vector<RecordBody> bodies;
-    for (const std::vector<unsigned char>& record : wire) {
-        const std::optional<Bytes> opened = far.open(Bytes(record.begin(), record.end()));
-        CHECK(opened.has_value());
-        const std::optional<RecordBody> body = unpadRecord(*opened);
-        CHECK(body.has_value());
-        bodies.push_back(*body);
+    CHECK(likeVoice >= kFillerVoiceLike);
+    std::size_t outsideFillers = 0;
+    for (const std::size_t size : paced.voiceSizes) {
+        outsideFillers += size < kFillerLeast || size > kFillerMost ? 1 : 0;
     }
-    return bodies;
+    CHECK(outsideFillers <= kRecordsNamingTheHost);
 }
 
 void checkSocket()
@@ -422,7 +568,6 @@ void checkSocket()
             ChannelHooks{[]() { return kRecordActive; }, {}});
         lane.carryMedia();
         std::this_thread::sleep_for(kRealIdle);
-        CHECK(!captured->sent().empty());
         const Bytes control = encodeCredit(kAnyRef, 1);
         lane.send(std::vector<unsigned char>(control.begin(), control.end()));
         for (std::size_t i = 0; i < kRealFrames; ++i) {
@@ -433,36 +578,32 @@ void checkSocket()
         std::this_thread::sleep_for(kRealIdle);
         CHECK(lane.mediaDropped() == 0);
     }
-    Records far(sessionKey, salt, Side::eGateway);
+    ChannelSocket far(std::make_shared<Captured>(),
+        std::make_shared<Records>(sessionKey, salt, Side::eGateway));
     std::vector<Bytes> arrived;
     std::size_t fillers = 0;
-    std::size_t padded = 0;
-    for (const RecordBody& body : openAll(captured->sent(), far)) {
-        CHECK((body.flags & kRecordActive) != 0);
-        if (isFiller(body)) {
+    std::size_t controls = 0;
+    std::size_t bytes = 0;
+    for (const std::vector<unsigned char>& record : captured->sent()) {
+        bytes += record.size();
+        const std::optional<RecordBody> body = far.openRecord(Bytes(record.begin(), record.end()));
+        CHECK(body.has_value());
+        CHECK((body->flags & kRecordActive) != 0);
+        if (isFiller(*body)) {
             ++fillers;
             continue;
         }
-        if (body.frame.front() == static_cast<std::uint8_t>(FrameType::eStreamCredit)) {
-            ++padded;
+        if (body->frame.front() == static_cast<std::uint8_t>(FrameType::eStreamCredit)) {
+            ++controls;
             continue;
         }
-        arrived.push_back(body.frame);
+        arrived.push_back(body->frame);
+        arrived.insert(arrived.end(), body->following.begin(), body->following.end());
     }
-    std::size_t outsideMediaSizes = 0;
-    for (const std::vector<unsigned char>& record : captured->sent()) {
-        const std::size_t plaintext = record.size() - kAeadTagBytes;
-        if (plaintext < kMediaPadFloor || plaintext > kMediaPadCeiling) {
-            CHECK(plaintext >= static_cast<std::size_t>(kRecordPadFloor));
-            ++outsideMediaSizes;
-        }
-    }
-    CHECK(outsideMediaSizes == padded);
-    std::printf("a real media socket: %zu records, %zu of them fillers\n", captured->sent().size(),
-        fillers);
+    std::printf("a real media socket: %zu records, %zu of them fillers, %zu bytes for %zu frames\n",
+        captured->sent().size(), fillers, bytes, sent.size());
     CHECK(arrived == sent);
-    CHECK(padded == 1);
-    CHECK(fillers > 0);
+    CHECK(controls == 1);
 
     const std::shared_ptr<Captured> stuck = std::make_shared<Captured>();
     stuck->backlog(kHugeBacklog);
@@ -475,9 +616,12 @@ void checkSocket()
         lane.send(std::vector<unsigned char>(voice.begin(), voice.end()));
         CHECK(testutil::waitFor([&]() { return stuck->sent().size() == 1; }));
     }
-    Records stuckFar(sessionKey, salt, Side::eGateway);
-    const std::vector<RecordBody> through = openAll(stuck->sent(), stuckFar);
-    CHECK(through.size() == 1 && !isFiller(through.front()));
+    ChannelSocket stuckFar(std::make_shared<Captured>(),
+        std::make_shared<Records>(sessionKey, salt, Side::eGateway));
+    const std::vector<unsigned char> only = stuck->sent().front();
+    const std::optional<RecordBody> through
+        = stuckFar.openRecord(Bytes(only.begin(), only.end()));
+    CHECK(through.has_value() && !isFiller(*through));
 }
 
 }  // namespace
@@ -485,9 +629,9 @@ void checkSocket()
 int main()
 {
     checkBounds();
-    checkFillers();
+    checkRecordsAndHosts();
     checkOverflow();
-    checkRhythmLatencyAndSizes();
+    checkTenMinutes();
     checkSocket();
     std::printf("TestMediaPacing ok\n");
     return 0;

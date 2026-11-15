@@ -11,7 +11,6 @@ namespace {
 
 constexpr std::uint32_t kIdStep = 2;
 constexpr std::size_t kCreditBytes = 8;
-constexpr std::size_t kHostLengthBytes = 2;
 
 bool carriesJson(const FrameType type)
 {
