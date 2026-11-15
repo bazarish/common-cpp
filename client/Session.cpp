@@ -2127,6 +2127,7 @@ void Session::removeContact(const std::string& peerFingerprint)
     if (botMenus_.forget(peerFingerprint)) {
         db_->putText("bot-menus", botMenus_.toJson().dump());
     }
+    db_->dropOverwritten();
 }
 
 I2pDestStatus Session::i2pDestStatus()

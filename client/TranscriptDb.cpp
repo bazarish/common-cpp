@@ -746,12 +746,57 @@ bool TranscriptStore::removeById(const std::int64_t id)
     if (!change.begun()) {
         return failed();
     }
+    if (!removeRow(id).has_value()) {
+        return false;
+    }
+    return (change.commit() || failed()) && dropDeletedFromLog();
+}
+
+std::optional<std::vector<RemovedRow>> TranscriptStore::removeExpired(const std::int64_t nowMs)
+{
+    std::vector<RemovedRow> removed;
+    const std::vector<std::pair<std::string, std::int64_t>> due = expiredBy(nowMs);
+    if (due.empty()) {
+        return removed;
+    }
+    Transaction change(db_);
+    if (!change.begun()) {
+        return failedRow();
+    }
+    for (const auto& [peer, id] : due) {
+        std::optional<std::string> e2eId = removeRow(id);
+        if (!e2eId.has_value()) {
+            return std::nullopt;
+        }
+        removed.push_back({peer, id, std::move(*e2eId)});
+    }
+    if (!(change.commit() || failed()) || !dropDeletedFromLog()) {
+        return std::nullopt;
+    }
+    return removed;
+}
+
+bool TranscriptStore::dropDeletedFromLog()
+{
+    Query checkpoint(db_);
+    if (!checkpoint.exec("PRAGMA wal_checkpoint(TRUNCATE)")) {
+        return failed();
+    }
+    if (checkpoint.number(0) != 0) {
+        lastError_ = "what was deleted is still in the write-ahead log: the database is being read";
+        return false;
+    }
+    return true;
+}
+
+std::optional<std::string> TranscriptStore::removeRow(const std::int64_t id)
+{
     std::string named;
     Query naming(db_);
     naming.prepare("SELECT e2eId FROM messages WHERE id = ?");
     naming.bind(id);
     if (!naming.exec()) {
-        return failed();
+        return failedRow();
     }
     if (naming.next()) {
         named = naming.text(0);
@@ -761,14 +806,14 @@ bool TranscriptStore::removeById(const std::int64_t id)
     sharing.bind(named);
     sharing.bind(id);
     if (!sharing.exec()) {
-        return failed();
+        return failedRow();
     }
     // Another chat holds a message under the same id: what hangs off that id is its, too.
     if (sharing.next()) {
         named.clear();
     }
     if (!named.empty() && !removeMediaOfMessage(named)) {
-        return false;
+        return std::nullopt;
     }
     if (!named.empty()) {
         for (const char* const statement : {"DELETE FROM reactions WHERE target = ?",
@@ -778,7 +823,7 @@ bool TranscriptStore::removeById(const std::int64_t id)
             side.prepare(statement);
             side.bind(named);
             if (!side.exec()) {
-                return failed();
+                return failedRow();
             }
         }
     }
@@ -788,10 +833,10 @@ bool TranscriptStore::removeById(const std::int64_t id)
         query.prepare(statement);
         query.bind(id);
         if (!query.exec()) {
-            return failed();
+            return failedRow();
         }
     }
-    return change.commit() || failed();
+    return named;
 }
 
 bool TranscriptStore::clearPeerRows(const std::string& peer)
@@ -822,7 +867,7 @@ bool TranscriptStore::clearPeer(const std::string& peer)
     if (!clearPeerRows(peer)) {
         return false;
     }
-    return change.commit() || failed();
+    return (change.commit() || failed()) && dropDeletedFromLog();
 }
 
 bool TranscriptStore::forgetPeer(const std::string& peer)
@@ -844,7 +889,7 @@ bool TranscriptStore::forgetPeer(const std::string& peer)
             return failed();
         }
     }
-    return change.commit() || failed();
+    return (change.commit() || failed()) && dropDeletedFromLog();
 }
 
 bool TranscriptStore::setGroupState(const std::string& peer, const GroupState& state)
@@ -1254,6 +1299,13 @@ bool TranscriptStore::failed()
     return false;
 }
 
+std::nullopt_t TranscriptStore::failedRow()
+{
+    static_cast<void>(failed());
+    return std::nullopt;
+}
+
+
 bool TranscriptStore::removeMediaOfPeer(const std::string& peer)
 {
     if (!hasMediaTable()) {
@@ -1379,6 +1431,9 @@ std::int64_t TranscriptStore::pruneToLatest(const std::string& peer, const int k
     if (!change.commit()) {
         throw std::runtime_error("the change could not be committed");
     }
+    if (!dropDeletedFromLog()) {
+        throw std::runtime_error(lastError_);
+    }
     return removed;
 }
 
@@ -1398,6 +1453,9 @@ std::int64_t TranscriptStore::pruneEveryChatToLatest(const int keep)
     }
     if (!change.commit()) {
         throw std::runtime_error("the change could not be committed");
+    }
+    if (!dropDeletedFromLog()) {
+        throw std::runtime_error(lastError_);
     }
     return removed;
 }

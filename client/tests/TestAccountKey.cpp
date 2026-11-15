@@ -56,6 +56,9 @@ constexpr std::size_t kSaltBytes = 16;
 constexpr std::size_t kWalHeaderBytes = 32;
 constexpr std::size_t kFrameHeaderBytes = 24;
 constexpr EpochNumber kMonthsAgo = 6;
+constexpr std::size_t kMessageIdBytes = 8;
+constexpr std::int64_t kMsPerSecond = 1000;
+constexpr std::int64_t kLongAgoMs = 1'000'000'000'000;
 
 std::uint32_t wordAt(const Bytes& bytes, const std::size_t at)
 {
@@ -381,6 +384,59 @@ void checkBundleHoldsActiveKeysOnly(const fs::path& dir)
     CHECK(!filesHold(file, accountkey::keyFor(file, "pw"), needle));
 }
 
+StoredMessage textLine(const std::string& peer, const std::string& text)
+{
+    StoredMessage message;
+    message.peer = peer;
+    message.type = "text";
+    message.e2eId = toHex(randomBytes(kMessageIdBytes));
+    message.text = text;
+    return message;
+}
+
+void checkDeletedMessagesLeaveNoTrace(const fs::path& dir)
+{
+    const fs::path file = dir / "deleted.db";
+    {
+        AccountDb account(file, "pw");
+        account.putText("kept", "yes");
+    }
+    const Bytes key = accountkey::keyFor(file, "pw");
+    TranscriptStore store;
+    CHECK(store.open(file, "pw"));
+    TranscriptStore reader;
+    CHECK(reader.open(file, "pw"));
+    const std::string one = "the first secret line " + toHex(randomBytes(kMessageIdBytes));
+    const std::string two = "the second secret line " + toHex(randomBytes(kMessageIdBytes));
+    const std::string three = "the third secret line " + toHex(randomBytes(kMessageIdBytes));
+    const std::int64_t first = store.append(textLine("alice", one));
+    const std::int64_t second = store.append(textLine("bob", two));
+    CHECK(store.setChatTimer("carol", kSecondsPerHour));
+    StoredMessage timed = textLine("carol", three);
+    timed.outgoing = true;
+    timed.ts = kLongAgoMs;
+    timed.orderKey = kLongAgoMs;
+    const std::int64_t third = store.append(timed);
+    CHECK(first != 0 && second != 0 && third != 0);
+    CHECK(filesHold(file, key, one) && filesHold(file, key, two) && filesHold(file, key, three));
+
+    CHECK(store.removeById(first));
+    CHECK(fs::file_size(suffixed(file, "-wal")) == 0);
+    CHECK(!filesHold(file, key, one));
+    CHECK(filesHold(file, key, two));
+
+    CHECK(store.clearPeer("bob"));
+    CHECK(fs::file_size(suffixed(file, "-wal")) == 0);
+    CHECK(!filesHold(file, key, two));
+
+    const std::optional<std::vector<RemovedRow>> expired = store.removeExpired(kLongAgoMs + 2 * kSecondsPerHour * kMsPerSecond);
+    CHECK(expired.has_value() && expired->size() == 1);
+    CHECK(expired->front().id == third && expired->front().peer == "carol");
+    CHECK(fs::file_size(suffixed(file, "-wal")) == 0);
+    CHECK(!filesHold(file, key, three));
+    CHECK(AccountDb(file, "pw").text("kept") == "yes");
+}
+
 }  // namespace
 
 int main()
@@ -394,6 +450,7 @@ int main()
     checkReservedPassphrase(dir);
     checkEndedEpochErased(dir);
     checkBundleHoldsActiveKeysOnly(dir);
+    checkDeletedMessagesLeaveNoTrace(dir);
     fs::remove_all(dir);
     return 0;
 }

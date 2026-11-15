@@ -163,6 +163,12 @@ protected:
     std::filesystem::path path_;
 };
 
+struct RemovedRow {
+    std::string peer;
+    std::int64_t id = 0;
+    std::string e2eId;
+};
+
 class TranscriptStore : public TranscriptReader {
 public:
     bool open(const std::filesystem::path& file, const std::string& passphrase = {});
@@ -187,6 +193,8 @@ public:
     [[nodiscard]] bool setType(std::int64_t id, const std::string& type);
     // Takes the row's picture, voice note and reactions with it.
     [[nodiscard]] bool removeById(std::int64_t id);
+    // Every row whose timer ran out, in one change; nothing when the store failed.
+    [[nodiscard]] std::optional<std::vector<RemovedRow>> removeExpired(std::int64_t nowMs);
     // Takes every row of the chat and what hangs on them; the chat's settings stay.
     [[nodiscard]] bool clearPeer(const std::string& peer);
     [[nodiscard]] bool forgetPeer(const std::string& peer);
@@ -211,6 +219,11 @@ private:
     bool stampExpiry(std::int64_t id, const std::string& peer, std::int64_t atMs);
     bool stampNewlyRead(const std::string& peer, std::int64_t afterId, std::int64_t uptoId);
     bool clearPeerRows(const std::string& peer);
+    // The e2eId whose media went with the row, empty when none did; nothing when the store failed.
+    std::optional<std::string> removeRow(std::int64_t id);
+    std::nullopt_t failedRow();
+    // Old versions of deleted rows stay in the write-ahead log until it is emptied.
+    bool dropDeletedFromLog();
     bool removeMediaOfMessage(const std::string& e2eId);
     bool removeMediaOfPeer(const std::string& peer);
     bool removeMediaOfTrimmed(const std::string& peer, int keep);
