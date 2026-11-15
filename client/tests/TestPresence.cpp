@@ -20,6 +20,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -31,6 +32,13 @@ using namespace bazarish::client;
 using std::chrono::milliseconds;
 
 namespace {
+
+constexpr unsigned char kRenewFrameType = 2;
+constexpr unsigned char kStateFrameType = 3;
+// On the wire: type, subscription id, nonce, the CBOR {} and the GCM tag.
+constexpr std::size_t kRenewFrameBytes = 38;
+// As a renew, with the 16-byte salt and {online, typing} in place of {}.
+constexpr std::size_t kStateFrameBytes = 70;
 
 constexpr milliseconds kSettle{6000};
 constexpr milliseconds kPoll{20};
@@ -143,6 +151,9 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             ++sentTo_[host];
+            if (!datagram.empty()) {
+                sizesByType_[datagram.front()].insert(datagram.size());
+            }
             const std::pair<std::uint64_t, std::string> route{from.generation, host};
             const auto now = std::chrono::steady_clock::now();
             const auto known = resolved_.find(route);
@@ -265,6 +276,12 @@ public:
         return received;
     }
 
+    std::set<std::size_t> sizesOf(const unsigned char type)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return sizesByType_[type];
+    }
+
     int holdersOf(const std::string& host)
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -283,6 +300,7 @@ private:
     const bool looksUp_;
     std::mutex mutex_;
     std::map<std::string, std::uint64_t> sentTo_;
+    std::map<unsigned char, std::set<std::size_t>> sizesByType_;
     std::map<std::string, std::uint64_t> lookups_;
     std::vector<std::shared_ptr<Box>> live_;
     std::vector<std::shared_ptr<Box>> published_;
@@ -1017,6 +1035,9 @@ int main()
         CHECK(replaying.knockAgain(sol.dest));
         CHECK(replaying.sealedEachUnderItsOwnNonce());
     }
+
+    CHECK(net.sizesOf(kRenewFrameType) == std::set<std::size_t>{kRenewFrameBytes});
+    CHECK(net.sizesOf(kStateFrameType) == std::set<std::size_t>{kStateFrameBytes});
 
     std::fprintf(stderr, "TestPresence passed\n");
     return 0;
