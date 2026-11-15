@@ -100,6 +100,7 @@ struct Mock {
     std::atomic<std::int64_t> utc{0};
     std::map<std::string, Account> accounts;
     std::map<std::string, std::string> ownerOf;
+    std::set<std::string> down;
     bool moderated = false;
     int nextId = 1;
     std::size_t stored = 0;
@@ -108,7 +109,7 @@ struct Mock {
     const Account* servingAt(const std::string& dest) const
     {
         const auto owner = ownerOf.find(dest);
-        if (owner == ownerOf.end()) {
+        if (owner == ownerOf.end() || down.contains(owner->second)) {
             return nullptr;
         }
         const auto account = accounts.find(owner->second);
@@ -280,6 +281,7 @@ struct Options {
     bool deletedWhileAway = false;
     bool moderatedOnReturn = false;
     std::int64_t livedOnDays = 0;
+    bool firstContactsDownAtRestore = false;
 };
 
 struct Verdict {
@@ -552,6 +554,10 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
     const std::int64_t restoreAt = std::max(dayAt(run.absenceDays), m.utc.load());
     m.utc.store(restoreAt);
     m.moderated = run.moderatedOnReturn;
+    if (run.firstContactsDownAtRestore) {
+        const std::lock_guard<std::mutex> lock(m.mu);
+        m.down = {c1->fingerprint(), bot->fingerprint()};
+    }
     const fs::path restoredDir = scratch / (run.tag + "-restored");
     Session::importAccount(backup, restoredDir, "backup-password");
     std::unique_ptr<Session> r = Session::open(restoredDir, std::string{});
@@ -652,6 +658,10 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
             by.empty() ? "no key it holds (waits for one)" : by == lostDevice ? "the lost device's key" : "the restored device's key");
         verdict.sealsToLostDevice[nameOf[contact->fingerprint()]] = by == lostDevice;
         send(*contact, uFp, run.tag + ": " + nameOf[contact->fingerprint()] + " after the restore");
+    }
+    {
+        const std::lock_guard<std::mutex> lock(m.mu);
+        m.down.clear();
     }
     const std::int64_t watchFrom = m.utc.load();
     const std::int64_t nextDayHour
@@ -1073,7 +1083,7 @@ int main()
                 CHECK(v.readBy("restored U to " + sender, kPromptHours));
             }
         });
-    restoreAfter({"stale", kStaleBackupDays, false, false, kLivedOnDays}, m, endpoint, dial, links,
+    restoreAfter({"stale", kStaleBackupDays, false, false, kLivedOnDays, true}, m, endpoint, dial, links,
         scratch, [](const Verdict& v) {
             const std::int64_t lettersDay = kLivedOnDays + kFirstLettersDay;
             const bool lacking = epochAt(v.t0 + lettersDay * kSecondsPerDay) > v.backupLast;
