@@ -2,6 +2,7 @@
 #pragma once
 
 #include "bazarish/Bytes.hpp"
+#include "bazarish/SecretBytes.hpp"
 
 #include <cstddef>
 #include <optional>
@@ -26,7 +27,7 @@ public:
     std::optional<Bytes> open(const Bytes& message) const;
 
 private:
-    Bytes key_;
+    SecretBytes key_;
 };
 
 }  // namespace bazarish

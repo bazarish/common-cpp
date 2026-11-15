@@ -10,6 +10,7 @@
 #include <bazarish/Devices.hpp>
 #include <bazarish/Errors.hpp>
 #include <bazarish/I2p.hpp>
+#include <bazarish/SecretBytes.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -130,9 +131,9 @@ private:
         const ServerCard::Service service;
         Bytes sealingKeyDer;
         std::string sessionId;
-        Bytes sessionSecret;
-        Bytes sessionKey;
-        Bytes tunnelKey;
+        SecretBytes sessionSecret;
+        SecretBytes sessionKey;
+        SecretBytes tunnelKey;
         std::int64_t sessionUntil = 0;
         std::uint64_t sessionSeq = 0;
         std::int64_t blockedUntil = 0;

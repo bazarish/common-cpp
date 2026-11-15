@@ -5067,7 +5067,7 @@ void Session::startCallMedia()
 {
     call_.transport = std::make_unique<I2pCallTransport>(*call_.dgram, call_.peerMediaDest);
     call_.media = std::make_unique<CallMedia>(*call_.transport, audioSourceFactory_(),
-        audioSinkFactory_(), call_.mediaKey,
+        audioSinkFactory_(), call_.mediaKey.bytes(),
         call_.initiator ? CallRole::eCaller : CallRole::eCallee);
     call_.media->setMuted(call_.muted);
     bazarish::log::info("call media: from {} to {}",
@@ -5149,13 +5149,13 @@ void Session::startCall(const std::string& peerFingerprint)
     call_.stage = CallStage::ePreparing;
     auto dgram = openCallMediaSession();
     const std::string callId = toHex(randomBytes(8));
-    const Bytes mediaKey = randomBytes(kAeadKeyBytes);
+    const SecretBytes mediaKey(randomBytes(kAeadKeyBytes));
     const std::int64_t invitedAt = nowMillis();
     sendCallSignal(peerFingerprint, "call.invite",
         {
             {"callId", callId},
                     {"dest", dgram->routingHost()},
-            {"key", toBase64(mediaKey)},
+            {"key", toBase64(mediaKey.bytes())},
             {"sentAt", invitedAt},
         });
     call_.state = CallState::eOutgoing;
@@ -5959,9 +5959,9 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
             message.text = "busy";
             return;
         }
-        Bytes key;
+        SecretBytes key;
         try {
-            key = fromBase64(body.value("key", std::string()));
+            key = SecretBytes(fromBase64(body.value("key", std::string())));
         } catch (const std::exception& error) {
             bazarish::log::warn("call invite dropped, key unreadable: {}", error.what());
             return;
@@ -6540,7 +6540,8 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent, const Device
     PairingOffer offer;
     offer.code = code;
     offer.uri
-        = encodePairLink(PairLink{endpoint->routingHost(), client_->endpoint().reseeds, key});
+        = encodePairLink(
+            PairLink{endpoint->routingHost(), client_->endpoint().reseeds, SecretBytes(key)});
     {
         const std::lock_guard<std::mutex> lock(registry->mutex);
         registry->cancel = cancel;
@@ -6669,7 +6670,8 @@ PairBundleFn Session::pairingBundle(const DeviceRole role, const Bytes& linkKey)
 
 Bytes Session::exportAccountBytes(const std::string& password, const DeviceRole role)
 {
-    return accountkey::sealBackup(accountBundle(role), password);
+    const SecretBytes bundle(accountBundle(role));
+    return accountkey::sealBackup(bundle.bytes(), password);
 }
 
 nlohmann::json Session::bundleBase() const
@@ -6729,7 +6731,8 @@ void Session::exportAccount(
 
 AccountKind Session::bundleKind(const Bytes& sealed, const std::string& password)
 {
-    return bundleKindOf(accountkey::openBackup(sealed, password));
+    const SecretBytes bundle(accountkey::openBackup(sealed, password));
+    return bundleKindOf(bundle.bytes());
 }
 
 AccountKind Session::bundleKindOf(const Bytes& plain)
@@ -6741,7 +6744,8 @@ AccountKind Session::bundleKindOf(const Bytes& plain)
 void Session::importAccountBytes(const Bytes& sealed, const fs::path& accountFile,
     const std::string& password, const std::string& atRestPassphrase)
 {
-    importAccountBundle(accountkey::openBackup(sealed, password), accountFile, atRestPassphrase);
+    const SecretBytes bundle(accountkey::openBackup(sealed, password));
+    importAccountBundle(bundle.bytes(), accountFile, atRestPassphrase);
 }
 
 void Session::importAccountBundle(

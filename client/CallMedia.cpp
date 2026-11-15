@@ -178,7 +178,7 @@ void CallMedia::sealAndSend(
 {
     const std::uint64_t sequence = counter.fetch_add(1, std::memory_order_relaxed);
     const Bytes nonce = makeNonce(sendRole_, track, sequence, heardPeer_.load());
-    const Bytes sealed = aeadSeal(mediaKey_, nonce, payload);
+    const Bytes sealed = aeadSeal(mediaKey_.bytes(), nonce, payload);
 
     Bytes packet;
     packet.reserve(nonce.size() + sealed.size());
@@ -239,7 +239,7 @@ void CallMedia::receiveLoop()
         }
         const std::uint8_t track = nonce[1];
         const Bytes sealed(packet.begin() + kNonceSize, packet.end());
-        const std::optional<Bytes> opened = aeadOpen(mediaKey_, nonce, sealed);
+        const std::optional<Bytes> opened = aeadOpen(mediaKey_.bytes(), nonce, sealed);
         if (!opened.has_value()) {
             continue;
         }

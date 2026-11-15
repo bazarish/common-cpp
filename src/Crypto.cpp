@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "bazarish/Crypto.hpp"
 #include "bazarish/PathText.hpp"
+#include "bazarish/SecretBytes.hpp"
 
 #include "OpenSslHandles.hpp"
 #include "bazarish/JsonRead.hpp"
@@ -406,7 +407,7 @@ std::optional<Bytes> openWith(const EVP_CIPHER* const cipher, const Bytes& key,
             != 1) {
         throw std::runtime_error("aead open: associated data refused");
     }
-    Bytes out(cipherLen);
+    SecretBytes out(cipherLen);
     if (EVP_DecryptUpdate(ctx.get(), out.data(), &len, sealed.data(),
             static_cast<int>(cipherLen))
         != 1) {
@@ -421,7 +422,7 @@ std::optional<Bytes> openWith(const EVP_CIPHER* const cipher, const Bytes& key,
     if (EVP_DecryptFinal_ex(ctx.get(), out.data() + len, &finalLen) != 1) {
         return std::nullopt;
     }
-    return out;
+    return out.release();
 }
 
 }  // namespace
@@ -469,11 +470,11 @@ Bytes hkdfSha256(const Bytes& secret, const Bytes& salt, const std::string& info
     if (ctx == nullptr) {
         throw std::runtime_error("EVP_KDF_CTX_new failed");
     }
-    Bytes secretCopy = secret;
+    SecretBytes secretCopy(secret);
     Bytes saltCopy = salt;
     std::string infoCopy = info;
     char digest[] = "SHA256";
-    Bytes derived(size);
+    SecretBytes derived(size);
     std::vector<OSSL_PARAM> params = {
         OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, digest, 0),
         OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, secretCopy.data(), secretCopy.size()),
@@ -485,12 +486,10 @@ Bytes hkdfSha256(const Bytes& secret, const Bytes& salt, const std::string& info
             OSSL_KDF_PARAM_SALT, saltCopy.data(), saltCopy.size()));
     }
     params.push_back(OSSL_PARAM_construct_end());
-    const int ok = EVP_KDF_derive(ctx.get(), derived.data(), derived.size(), params.data());
-    OPENSSL_cleanse(secretCopy.data(), secretCopy.size());
-    if (ok != 1) {
+    if (EVP_KDF_derive(ctx.get(), derived.data(), derived.size(), params.data()) != 1) {
         throw std::runtime_error("HKDF derive failed");
     }
-    return derived;
+    return derived.release();
 }
 
 Bytes sha256File(const std::filesystem::path& path)

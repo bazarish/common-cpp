@@ -20,23 +20,23 @@ int main()
     const Bytes key = newLinkKey();
     const std::string keyText = "&key=" + linkKeyText(key);
 
-    const std::string bare = encodePairLink(PairLink{b33, {}, key});
+    const std::string bare = encodePairLink(PairLink{b33, {}, SecretBytes(key)});
     CHECK(bare == "https://bazari.sh/#pair?v=1&dest=" + b33 + keyText);
     CHECK(parsePairLink(bare).dest == b33);
-    CHECK(parsePairLink(bare).key == key);
+    CHECK(parsePairLink(bare).key.bytes() == key);
     CHECK(parsePairLink("bazarish://pair?v=1&dest=" + b33 + keyText).dest == b33);
     CHECK_THROWS(parsePairLink("https://bazari.sh/pair?v=1&dest=" + b33 + keyText));
     CHECK_THROWS(parsePairLink("https://bazari.example/#pair?v=1&dest=" + b33 + keyText));
     CHECK_THROWS(parsePairLink("bazarish://#pair?v=1&dest=" + b33 + keyText));
     CHECK(parsePairLink(bare).reseeds.empty());
 
-    const std::string two = encodePairLink(PairLink{b33, {seedA, seedB}, key});
+    const std::string two = encodePairLink(PairLink{b33, {seedA, seedB}, SecretBytes(key)});
     const PairLink back = parsePairLink(two);
     CHECK(back.dest == b33);
     CHECK(back.reseeds.size() == 2);
     CHECK(back.reseeds[0] == seedA);
     CHECK(back.reseeds[1] == seedB);
-    CHECK(back.key == key);
+    CHECK(back.key.bytes() == key);
 
     CHECK_THROWS(parsePairLink("bazarish://pair?v=1&dest=" + b33));
     CHECK_THROWS(parsePairLink("bazarish://pair?v=1&dest=" + b33 + "&key=short"));

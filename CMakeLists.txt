@@ -33,6 +33,7 @@ option(BAZARISH_WITH_CLIENT "Build the client core library" ON)
 add_library(bazarish_common STATIC
     src/Auth.cpp
     src/Bytes.cpp
+    src/SecretBytes.cpp
     src/AccountKind.cpp
     src/Crypto.cpp
     src/Cms.cpp
@@ -139,6 +140,7 @@ endfunction()
 
 bazarish_add_test(TestAuth)
 bazarish_add_test(TestBytes)
+bazarish_add_test(TestSecretBytes)
 bazarish_add_test(TestPrivateFile)
 bazarish_add_test(TestCarryReturn)
 bazarish_add_test(TestCrypto)

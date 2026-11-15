@@ -43,7 +43,7 @@ KeyedSeal::KeyedSeal(const Bytes& secret, const std::string& label)
 Bytes KeyedSeal::seal(const Bytes& plaintext) const
 {
     Bytes message = randomBytes(kAeadNonceBytes);
-    const Bytes sealed = chachaSeal(key_, message, plaintext);
+    const Bytes sealed = chachaSeal(key_.bytes(), message, plaintext);
     message.insert(message.end(), sealed.begin(), sealed.end());
     return message;
 }
@@ -55,7 +55,7 @@ std::optional<Bytes> KeyedSeal::open(const Bytes& message) const
     }
     const Bytes nonce(message.begin(), message.begin() + kAeadNonceBytes);
     const Bytes sealed(message.begin() + kAeadNonceBytes, message.end());
-    return chachaOpen(key_, nonce, sealed);
+    return chachaOpen(key_.bytes(), nonce, sealed);
 }
 
 }  // namespace bazarish

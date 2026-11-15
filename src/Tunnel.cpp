@@ -5,8 +5,11 @@
 #include "bazarish/Padding.hpp"
 
 #include "bazarish/Hybrid.hpp"
+#include "bazarish/SecretBytes.hpp"
 
 #include <nlohmann/json.hpp>
+
+#include <openssl/crypto.h>
 
 #include <algorithm>
 #include <cstring>
@@ -59,10 +62,10 @@ nlohmann::json frameOf(const Bytes& frame)
     return parsed;
 }
 
-Bytes frameKey(const Bytes& tunnelKey, const Direction direction, const std::string& handle)
+SecretBytes frameKey(const Bytes& tunnelKey, const Direction direction, const std::string& handle)
 {
-    return hkdfSha256(tunnelKey, Bytes(handle.begin(), handle.end()),
-        direction == Direction::eRequest ? kRequestKeyInfo : kAnswerKeyInfo, kAeadKeyBytes);
+    return SecretBytes(hkdfSha256(tunnelKey, Bytes(handle.begin(), handle.end()),
+        direction == Direction::eRequest ? kRequestKeyInfo : kAnswerKeyInfo, kAeadKeyBytes));
 }
 
 nlohmann::json headersToJson(const std::map<std::string, std::string>& headers)
@@ -87,8 +90,13 @@ std::map<std::string, std::string> headersFromJson(const nlohmann::json& value)
 
 Bytes deriveTunnelKey(const Bytes& secret, const std::string& sessionId)
 {
-    const std::string material = toHex(secret) + "|" + sessionId + "|bazarish tunnel v1";
-    return sha256(Bytes(material.begin(), material.end()));
+    std::string hex = toHex(secret);
+    const std::string tail = "|" + sessionId + "|bazarish tunnel v1";
+    SecretBytes material(hex.size() + tail.size());
+    std::copy(hex.begin(), hex.end(), material.data());
+    std::copy(tail.begin(), tail.end(), material.data() + hex.size());
+    OPENSSL_cleanse(hex.data(), hex.size());
+    return sha256(material.bytes());
 }
 
 Bytes helloSigned(const Bytes& secret, const std::string& serverFingerprint)
@@ -152,7 +160,7 @@ Bytes carry(const std::string& handle, const Bytes& tunnelKey, const Direction d
         {kTypeField, kCarryType},
         {kHandleField, handle},
         {kNonceField, asBinary(nonce)},
-        {kCipherField, asBinary(aeadSeal(frameKey(tunnelKey, direction, handle), nonce, padToLadder(plaintext)))},
+        {kCipherField, asBinary(aeadSeal(frameKey(tunnelKey, direction, handle).bytes(), nonce, padToLadder(plaintext)))},
     };
     return toCbor(frame);
 }
@@ -184,7 +192,7 @@ Bytes open(const Bytes& frame, const Bytes& tunnelKey, const Direction direction
     if (parsed.at(kHandleField).get<std::string>() != handle) {
         throw std::runtime_error("tunnel frame names another handle");
     }
-    const std::optional<Bytes> opened = aeadOpen(frameKey(tunnelKey, direction, handle),
+    const std::optional<Bytes> opened = aeadOpen(frameKey(tunnelKey, direction, handle).bytes(),
         fromBinary(parsed.at(kNonceField)), fromBinary(parsed.at(kCipherField)));
     if (!opened.has_value()) {
         throw std::runtime_error("tunnel frame did not open");

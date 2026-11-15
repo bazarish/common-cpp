@@ -17,7 +17,7 @@ std::string encodePairLink(const PairLink& link)
     for (const std::string& reseed : link.reseeds) {
         query += "&reseed=" + reseed;
     }
-    query += "&key=" + linkKeyText(link.key);
+    query += "&key=" + linkKeyText(link.key.bytes());
     return webLink(std::string(kPairKind) + query);
 }
 
@@ -46,7 +46,7 @@ PairLink parsePairLink(const std::string& uri)
             link.dest = value;
             haveDest = true;
         } else if (key == "key") {
-            link.key = linkKeyFromText(value);
+            link.key = SecretBytes(linkKeyFromText(value));
             haveKey = true;
         } else if (key == "reseed") {
             if (!value.empty()) {

@@ -24,6 +24,7 @@
 #include <bazarish/Epochs.hpp>
 #include <bazarish/I2p.hpp>
 #include <bazarish/Limits.hpp>
+#include <bazarish/SecretBytes.hpp>
 
 #include <atomic>
 #include <array>
@@ -1058,7 +1059,7 @@ private:
         std::string callId;
         std::string peerFingerprint;
         std::string peerMediaDest;
-        Bytes mediaKey;
+        SecretBytes mediaKey;
         bool initiator = false;
         bool muted = false;
         std::int64_t startedAtMs = 0;

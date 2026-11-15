@@ -1,22 +1,25 @@
 // Bazarish project (c) 2026
 #include "bazarish/Hybrid.hpp"
 #include "bazarish/JsonRead.hpp"
+#include "bazarish/SecretBytes.hpp"
 
 #include "OpenSslHandles.hpp"
 
-#include <openssl/crypto.h>
 #include <openssl/evp.h>
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace {
 
 using bazarish::Bytes;
 using bazarish::Key;
+using bazarish::SecretBytes;
 
 constexpr const char* kSignContext = "bazarish-composite-sig-v1";
 constexpr const char* kSealContext = "bazarish-composite-seal-v1";
@@ -29,13 +32,6 @@ using bazarish::ossl::PkeyCtxPtr;
 void append(Bytes& target, const Bytes& tail)
 {
     target.insert(target.end(), tail.begin(), tail.end());
-}
-
-void cleanse(Bytes& secret)
-{
-    if (!secret.empty()) {
-        OPENSSL_cleanse(secret.data(), secret.size());
-    }
 }
 
 Bytes contextBytes(const char* const context)
@@ -132,7 +128,7 @@ PkeyPtr publicKeyFromRaw(const Bytes& raw)
     return key;
 }
 
-Bytes agree(EVP_PKEY* const ours, EVP_PKEY* const theirs)
+SecretBytes agree(EVP_PKEY* const ours, EVP_PKEY* const theirs)
 {
     const PkeyCtxPtr ctx(EVP_PKEY_CTX_new(ours, nullptr));
     if (ctx == nullptr || EVP_PKEY_derive_init(ctx.get()) != 1
@@ -143,7 +139,7 @@ Bytes agree(EVP_PKEY* const ours, EVP_PKEY* const theirs)
     if (EVP_PKEY_derive(ctx.get(), nullptr, &size) != 1) {
         throw std::runtime_error("X25519 derive sizing failed");
     }
-    Bytes secret(size);
+    SecretBytes secret(size);
     if (EVP_PKEY_derive(ctx.get(), secret.data(), &size) != 1) {
         throw std::runtime_error("X25519 derive failed");
     }
@@ -156,7 +152,7 @@ Bytes agree(EVP_PKEY* const ours, EVP_PKEY* const theirs)
 
 struct Encapsulation {
     Bytes ciphertext;
-    Bytes sharedSecret;
+    SecretBytes sharedSecret;
 };
 
 Encapsulation encapsulate(EVP_PKEY* const recipientKem)
@@ -170,7 +166,7 @@ Encapsulation encapsulate(EVP_PKEY* const recipientKem)
     if (EVP_PKEY_encapsulate(ctx.get(), nullptr, &ciphertextSize, nullptr, &secretSize) != 1) {
         throw std::runtime_error("ML-KEM encapsulate sizing failed");
     }
-    Encapsulation result{Bytes(ciphertextSize), Bytes(secretSize)};
+    Encapsulation result{Bytes(ciphertextSize), SecretBytes(secretSize)};
     if (EVP_PKEY_encapsulate(ctx.get(), result.ciphertext.data(), &ciphertextSize,
             result.sharedSecret.data(), &secretSize)
         != 1) {
@@ -181,7 +177,7 @@ Encapsulation encapsulate(EVP_PKEY* const recipientKem)
     return result;
 }
 
-Bytes decapsulate(EVP_PKEY* const recipientKem, const Bytes& ciphertext)
+SecretBytes decapsulate(EVP_PKEY* const recipientKem, const Bytes& ciphertext)
 {
     const PkeyCtxPtr ctx(EVP_PKEY_CTX_new(recipientKem, nullptr));
     if (ctx == nullptr || EVP_PKEY_decapsulate_init(ctx.get(), nullptr) != 1) {
@@ -192,7 +188,7 @@ Bytes decapsulate(EVP_PKEY* const recipientKem, const Bytes& ciphertext)
         != 1) {
         throw std::runtime_error("ML-KEM decapsulate sizing failed");
     }
-    Bytes secret(secretSize);
+    SecretBytes secret(secretSize);
     if (EVP_PKEY_decapsulate(
             ctx.get(), secret.data(), &secretSize, ciphertext.data(), ciphertext.size())
         != 1) {
@@ -202,13 +198,15 @@ Bytes decapsulate(EVP_PKEY* const recipientKem, const Bytes& ciphertext)
     return secret;
 }
 
-Bytes deriveSealKey(const Bytes& pqSecret, const Bytes& classicalSecret, const Bytes& transcript)
+SecretBytes deriveSealKey(
+    const SecretBytes& pqSecret, const SecretBytes& classicalSecret, const Bytes& transcript)
 {
-    Bytes material = pqSecret;
-    append(material, classicalSecret);
-    Bytes key = bazarish::hkdfSha256(material, transcript, kSealContext, bazarish::kAeadKeyBytes);
-    cleanse(material);
-    return key;
+    SecretBytes material(pqSecret.size() + classicalSecret.size());
+    std::copy(pqSecret.bytes().begin(), pqSecret.bytes().end(), material.data());
+    std::copy(classicalSecret.bytes().begin(), classicalSecret.bytes().end(),
+        material.data() + pqSecret.size());
+    return SecretBytes(
+        bazarish::hkdfSha256(material.bytes(), transcript, kSealContext, bazarish::kAeadKeyBytes));
 }
 
 }  // namespace
@@ -302,17 +300,17 @@ Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey, const Bytes& k
     Encapsulation encapsulated = encapsulate(recipientPublicKey.kem().raw());
     const PkeyPtr ephemeral = generateEphemeral();
     const Bytes ephemeralPublic = rawPublicKey(ephemeral.get());
-    Bytes classicalSecret = agree(ephemeral.get(), recipientPublicKey.raw());
+    SecretBytes classicalSecret = agree(ephemeral.get(), recipientPublicKey.raw());
     const Bytes transcript = sealTranscript(
         encapsulated.ciphertext, ephemeralPublic, recipientPublicKey.publicDer(), kid);
 
-    Bytes key = deriveSealKey(encapsulated.sharedSecret, classicalSecret, transcript);
-    cleanse(encapsulated.sharedSecret);
-    cleanse(classicalSecret);
+    SecretBytes key = deriveSealKey(encapsulated.sharedSecret, classicalSecret, transcript);
+    encapsulated.sharedSecret.clear();
+    classicalSecret.clear();
 
     const Bytes nonce = randomBytes(kAeadNonceBytes);
-    const Bytes ciphertext = aeadSeal(key, nonce, plaintext);
-    cleanse(key);
+    const Bytes ciphertext = aeadSeal(key.bytes(), nonce, plaintext);
+    key.clear();
 
     const nlohmann::json frame = {
         {"v", kFrameVersion},
@@ -350,21 +348,21 @@ Bytes unseal(const Bytes& frame, const Key& recipientPrivateKey)
     const Bytes ciphertext = bytesOf(parsed.at("ct").get_binary());
 
     const PkeyPtr ephemeral = publicKeyFromRaw(ephemeralPublic);
-    Bytes pqSecret = decapsulate(recipientPrivateKey.kem().raw(), kemCiphertext);
-    Bytes classicalSecret = agree(recipientPrivateKey.raw(), ephemeral.get());
+    SecretBytes pqSecret = decapsulate(recipientPrivateKey.kem().raw(), kemCiphertext);
+    SecretBytes classicalSecret = agree(recipientPrivateKey.raw(), ephemeral.get());
     const Bytes transcript = sealTranscript(
         kemCiphertext, ephemeralPublic, recipientPrivateKey.publicDer(), kid);
 
-    Bytes key = deriveSealKey(pqSecret, classicalSecret, transcript);
-    cleanse(pqSecret);
-    cleanse(classicalSecret);
+    SecretBytes key = deriveSealKey(pqSecret, classicalSecret, transcript);
+    pqSecret.clear();
+    classicalSecret.clear();
 
-    const std::optional<Bytes> opened = aeadOpen(key, nonce, ciphertext);
-    cleanse(key);
+    std::optional<Bytes> opened = aeadOpen(key.bytes(), nonce, ciphertext);
+    key.clear();
     if (!opened) {
         throw std::runtime_error("sealed payload does not authenticate");
     }
-    return *opened;
+    return std::move(*opened);
 }
 
 }  // namespace bazarish::hybrid

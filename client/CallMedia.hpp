@@ -6,6 +6,7 @@
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/I2p.hpp>
+#include <bazarish/SecretBytes.hpp>
 
 #include <atomic>
 #include <functional>
@@ -77,7 +78,7 @@ private:
     CallTransport& transport_;
     std::unique_ptr<AudioSource> audioSource_;
     std::unique_ptr<AudioSink> audioSink_;
-    Bytes mediaKey_;
+    SecretBytes mediaKey_;
     std::uint8_t sendRole_;
     std::uint8_t recvRole_;
 

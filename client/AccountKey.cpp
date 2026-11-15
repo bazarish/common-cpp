@@ -6,6 +6,7 @@
 #include <bazarish/Argon2.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/PrivateFile.hpp>
+#include <bazarish/SecretBytes.hpp>
 
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
@@ -354,13 +355,13 @@ void rekey(const fs::path& databaseFile, const std::string& oldPassphrase,
     const std::lock_guard<std::mutex> making(*forThisFile);
     requireChoosable(newPassphrase);
     settle(databaseFile);
-    const Bytes oldKey = open(sidecarFor(databaseFile), oldPassphrase);
-    Bytes newKey(kKeyBytes);
-    fill(newKey);
+    const SecretBytes oldKey(open(sidecarFor(databaseFile), oldPassphrase));
+    SecretBytes newKey(kKeyBytes);
+    fill(ByteBuffer(newKey.data(), newKey.size()));
     const fs::path database = pendingDatabase(databaseFile);
-    reencryptKeyed(databaseFile, oldKey, database, newKey);
+    reencryptKeyed(databaseFile, oldKey.bytes(), database, newKey.bytes());
     Sidecar sidecar = freshSidecar(newPassphrase);
-    seal(wrappingKey(newPassphrase, sidecar), sidecar, newKey);
+    seal(SecretBytes(wrappingKey(newPassphrase, sidecar)).bytes(), sidecar, newKey.bytes());
     write(pendingSidecar(databaseFile), sidecar);
     {
         const std::lock_guard<std::mutex> lock(g_cacheMutex);
@@ -371,7 +372,7 @@ void rekey(const fs::path& databaseFile, const std::string& oldPassphrase,
     fs::rename(pendingSidecar(databaseFile), sidecarFor(databaseFile));
     syncDirectory(directoryOf(databaseFile));
     const std::lock_guard<std::mutex> lock(g_cacheMutex);
-    g_cache[databaseFile] = Cached{verifierOf(newPassphrase), newKey};
+    g_cache[databaseFile] = Cached{verifierOf(newPassphrase), newKey.bytes()};
 }
 
 void removeKeyFiles(const fs::path& databaseFile)
@@ -396,10 +397,10 @@ Bytes sealBackup(const Bytes& plain, const std::string& passphrase)
     appendWord(header, kPasses);
     header.insert(header.end(), salt.begin(), salt.end());
     header.insert(header.end(), nonce.begin(), nonce.end());
-    const Bytes key = argon2id(
-        Bytes(passphrase.begin(), passphrase.end()), salt, {kMemoryKiB, kPasses, kLanes}, kKeyBytes);
+    const SecretBytes key(argon2id(
+        Bytes(passphrase.begin(), passphrase.end()), salt, {kMemoryKiB, kPasses, kLanes}, kKeyBytes));
     Bytes sealed = header;
-    const Bytes body = aeadSeal(key, nonce, plain, header);
+    const Bytes body = aeadSeal(key.bytes(), nonce, plain, header);
     sealed.insert(sealed.end(), body.begin(), body.end());
     return sealed;
 }
@@ -417,10 +418,10 @@ Bytes openBackup(const Bytes& sealed, const std::string& passphrase)
         + sizeof memoryKiB + sizeof passes);
     const auto nonceAt = saltAt + static_cast<std::ptrdiff_t>(kSaltBytes);
     const auto bodyAt = nonceAt + static_cast<std::ptrdiff_t>(kNonceBytes);
-    const Bytes key = argon2id(Bytes(passphrase.begin(), passphrase.end()),
-        Bytes(saltAt, nonceAt), {memoryKiB, passes, kLanes}, kKeyBytes);
+    const SecretBytes key(argon2id(Bytes(passphrase.begin(), passphrase.end()),
+        Bytes(saltAt, nonceAt), {memoryKiB, passes, kLanes}, kKeyBytes));
     std::optional<Bytes> plain = aeadOpen(
-        key, Bytes(nonceAt, bodyAt), Bytes(bodyAt, sealed.end()), Bytes(sealed.begin(), bodyAt));
+        key.bytes(), Bytes(nonceAt, bodyAt), Bytes(bodyAt, sealed.end()), Bytes(sealed.begin(), bodyAt));
     if (!plain.has_value()) {
         throw std::runtime_error("the backup does not open: a wrong password, or a damaged file");
     }
