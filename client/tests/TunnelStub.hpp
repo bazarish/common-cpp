@@ -26,6 +26,7 @@ public:
     Tunnel(bazarish::http::Server& server, const Identity& serverIdentity, const Key& sealing,
         const ServerCard::Service service)
         : sealing_(Key::fromPrivatePem(sealing.privatePem()))
+        , fingerprint_(serverIdentity.fingerprint())
     {
         const bool node = service == ServerCard::Service::eServiceNode;
         const Bytes card = ServerCard::issue(serverIdentity, service,
@@ -80,7 +81,8 @@ private:
             const bazarish::tunnel::Hello hello = bazarish::tunnel::openHello(frame, sealing_);
             const auth::DeviceCaller caller = auth::verifyDeviceRequest(hello.signature,
                 static_cast<std::int64_t>(std::time(nullptr)), bazarish::tunnel::kHelloMethod,
-                bazarish::tunnel::kHelloPath, hello.secret, replays_);
+                bazarish::tunnel::kHelloPath, bazarish::tunnel::helloSigned(hello.secret, fingerprint_),
+                replays_);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 secrets_.push_back({hello.secret, caller.user, caller.device, 0});
@@ -192,6 +194,7 @@ private:
     };
 
     Key sealing_;
+    std::string fingerprint_;
     auth::ReplayCache replays_;
     mutable std::mutex mutex_;
     std::vector<Opened> secrets_;

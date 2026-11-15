@@ -238,7 +238,8 @@ bool ApiClient::ensureSessionLocked(Tunnel& tunnel)
         const Key replyKey = Key::generateSealing();
         hello.replyKeyDer = replyKey.publicDer();
         hello.signature = auth::signDeviceRequest(credential_, now, bazarish::tunnel::kHelloMethod,
-            bazarish::tunnel::kHelloPath, hello.secret);
+            bazarish::tunnel::kHelloPath,
+            bazarish::tunnel::helloSigned(hello.secret, endpoint_.serverFingerprint));
         const Bytes frame
             = bazarish::tunnel::sealHello(hello, Key::fromPublicDer(tunnel.sealingKeyDer));
         const ApiResponse response = transmitLocked("POST", tunnelPathOf(tunnel.service), frame,

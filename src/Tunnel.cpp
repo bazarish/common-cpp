@@ -91,6 +91,14 @@ Bytes deriveTunnelKey(const Bytes& secret, const std::string& sessionId)
     return sha256(Bytes(material.begin(), material.end()));
 }
 
+Bytes helloSigned(const Bytes& secret, const std::string& serverFingerprint)
+{
+    if (serverFingerprint.empty()) {
+        throw std::invalid_argument("a hello names the server it is for");
+    }
+    return toCbor({{"secret", asBinary(secret)}, {"server", serverFingerprint}});
+}
+
 Bytes sealHello(const Hello& hello, const Key& serverSealingPublic)
 {
     nlohmann::json inner = {

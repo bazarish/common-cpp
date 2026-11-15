@@ -37,8 +37,9 @@ int main()
         hello.secret = randomBytes(32);
         const Key replyKey = Key::generateSealing();
         hello.replyKeyDer = replyKey.publicDer();
+        const std::string server = Identity::generate().fingerprint();
         hello.signature = auth::signRequest(user, kNow, tunnel::kHelloMethod, tunnel::kHelloPath,
-            hello.secret);
+            tunnel::helloSigned(hello.secret, server));
 
         const Bytes frame = sealHello(hello, Key::fromPublicDer(serverSealing.publicDer()));
         CHECK(tunnel::isHello(frame));
@@ -46,8 +47,11 @@ int main()
         CHECK(opened.secret == hello.secret);
         CHECK(opened.replyKeyDer == hello.replyKeyDer);
         CHECK(auth::verifyRequest(opened.signature, kNow, tunnel::kHelloMethod,
-                  tunnel::kHelloPath, opened.secret)
+                  tunnel::kHelloPath, tunnel::helloSigned(opened.secret, server))
             == user.fingerprint());
+        CHECK_THROWS(auth::verifyRequest(opened.signature, kNow, tunnel::kHelloMethod,
+            tunnel::kHelloPath, tunnel::helloSigned(opened.secret, Identity::generate().fingerprint())));
+        CHECK_THROWS(tunnel::helloSigned(opened.secret, ""));
 
         const Key stranger = Key::generateSealing();
         CHECK_THROWS(tunnel::openHello(frame, stranger));

@@ -49,6 +49,9 @@ struct Welcome {
 
 Bytes deriveTunnelKey(const Bytes& secret, const std::string& sessionId);
 
+// What a hello's signature covers: the secret and the fingerprint of the server it is for.
+Bytes helloSigned(const Bytes& secret, const std::string& serverFingerprint);
+
 Bytes sealHello(const Hello& hello, const Key& serverSealingPublic);
 Hello openHello(const Bytes& frame, const Key& serverSealingPrivate);
 
