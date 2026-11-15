@@ -74,6 +74,8 @@ struct Contact {
     Bytes cardKey;
     std::string sendPass;
     bool issuedToThem = false;
+    // UTC seconds of the last letter from them or of our routing reaching them.
+    std::int64_t exchangedAt = 0;
     std::string displayName;
     DeviceBook devices;
     Bytes avatar;
@@ -346,6 +348,10 @@ public:
     std::vector<OwnDevice> ownDevices() const;
     // A new revocation list, card and key for the current epoch; only the devices left get the key.
     void revokeDevice(const std::string& deviceId);
+    // After a restore from a backup: the account's other active devices, until the user answers.
+    std::vector<OwnDevice> devicesToReview() const;
+    // Revokes the chosen ones, none for keeping them all, and the question is settled.
+    void reviewDevices(const std::vector<std::string>& revoke);
     // Active devices oldest first, then the revoked ones; empty for an account not in the book.
     std::vector<ContactDevice> contactDevices(const std::string& peerFingerprint) const;
     AccountKind kind() const { return kind_; }
@@ -822,6 +828,9 @@ private:
     void adoptAddressKeys(const SecretBytes& sealingPem, const SecretBytes& signingPem);
     Bytes servingSealingDer() const;
     void registerEveryPass();
+    nlohmann::json routingLetter() const;
+    void signRoutingCarrier();
+    void noteExchange(const std::string& peerFingerprint);
     void makeCardEpochs();
     ContactCard cardToPublish();
     nlohmann::json bootstrapBlock(const std::string& pass) const;
@@ -926,6 +935,8 @@ private:
     void dropUnmadeEpochs(Contact& contact) const;
     void takeContactEpochs(const std::string& peerFingerprint, const std::vector<EpochPublic>& offered);
     bool refreshContactEpochs(const std::string& peerFingerprint);
+    std::optional<ContactInfo> fetchContactCard(const std::string& peerFingerprint);
+    bool unknownDeviceOf(const std::string& peerFingerprint, const nlohmann::json& body) const;
     void syncAvatarToSelf();
     void syncContactNameToSelf(const std::string& peerFingerprint, const std::string& name);
     void storeOwnAvatar(const Bytes& data, const std::string& mime);
@@ -1176,6 +1187,7 @@ private:
     std::vector<std::string> contactsAskedBy_;
     std::string myDest_;
     std::string myServingKeyB64_;
+    nlohmann::json routingCarrier_;
     std::int64_t delegationDays_ = kDefaultDelegationDays;
     FetchTransport fetchTransportOverride_;
     std::string name_;
@@ -1192,6 +1204,7 @@ private:
     bool sendReceipts_ = true;
     bool showPresence_ = true;
     bool announceOwed_ = false;
+    bool reviewDevices_ = false;
     std::unique_ptr<Presence> presence_;
     std::vector<std::string> presenceOrder_;
     UtcClock presenceClock_ = systemUtcSeconds;

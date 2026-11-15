@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "AccountDb.hpp"
+#include "Authorship.hpp"
 #include "GatewayAddress.hpp"
 #include "I2pKeys.hpp"
 #include "I2pRouter.hpp"
@@ -18,6 +19,7 @@
 #include <bazarish/Hybrid.hpp>
 #include <bazarish/I2pAddress.hpp>
 #include <bazarish/KeyedSeal.hpp>
+#include <bazarish/Padding.hpp>
 #include <bazarish/Limits.hpp>
 #include <bazarish/Pass.hpp>
 #include <bazarish/Resolve.hpp>
@@ -64,6 +66,7 @@ constexpr std::int64_t kPastRandomPause = kSecondsPerHour + 1;
 constexpr std::int64_t kRenewLeadSeconds = kMaxDelegationDays * kSecondsPerDay;
 constexpr std::int64_t kWatchHours = 72;
 constexpr std::int64_t kPromptHours = 3;
+constexpr std::int64_t kRestoreHourOfDay = 12;
 constexpr int kQuietPasses = 3;
 constexpr std::chrono::milliseconds kPassGap{20};
 constexpr std::chrono::seconds kTestStaleBound{1};
@@ -282,6 +285,7 @@ struct Options {
     bool moderatedOnReturn = false;
     std::int64_t livedOnDays = 0;
     bool firstContactsDownAtRestore = false;
+    bool reachesEveryContact = true;
 };
 
 struct Verdict {
@@ -551,7 +555,10 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
     }();
     std::printf("%s: U's server holds %zu item(s) for U at the restore\n", run.tag.c_str(), heldForU);
 
-    const std::int64_t restoreAt = std::max(dayAt(run.absenceDays), m.utc.load());
+    std::int64_t restoreAt = dayAt(run.absenceDays) / kSecondsPerDay * kSecondsPerDay + kRestoreHourOfDay * kSecondsPerHour;
+    while (restoreAt < m.utc.load()) {
+        restoreAt += kSecondsPerDay;
+    }
     m.utc.store(restoreAt);
     m.moderated = run.moderatedOnReturn;
     if (run.firstContactsDownAtRestore) {
@@ -560,6 +567,7 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
     }
     const fs::path restoredDir = scratch / (run.tag + "-restored");
     Session::importAccount(backup, restoredDir, "backup-password");
+    CHECK(nlohmann::json::parse(AccountDb(restoredDir, std::string{}).text("meta")).at("reviewDevices").get<bool>());
     std::unique_ptr<Session> r = Session::open(restoredDir, std::string{});
     wire(*r);
     CHECK(r->fingerprint() == uFp);
@@ -742,7 +750,51 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
                 ? "active"
                 : "absent or revoked");
     }
-    r->revokeDevice(lostDevice);
+    {
+        const auto injected = [&](const nlohmann::json& inner, const EpochPublic& epoch) {
+            const std::lock_guard<std::mutex> lock(m.mu);
+            m.accounts.at(uFp).mailbox.push_back({"x" + std::to_string(m.nextId++), "content",
+                sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({inner}))), epoch), {},
+                m.utc.load(), {}});
+        };
+        const Identity c1Root = Identity::fromPrivatePem(AccountDb(dirOf.at(c1->fingerprint()), std::string{}).text("root.pem"));
+        const DeviceKeys stray = DeviceKeys::generate();
+        const DeviceCredential strayKey(Identity::fromPrivatePem(stray.signingPem()),
+            DeviceCertificate::issue(c1Root, DevicePublic::of(stray), DeviceRole::ePrimary, nowSeconds()));
+        nlohmann::json letter = {{"v", 1}, {"type", "text"}, {"id", newMessageId()}, {"from", c1->fingerprint()},
+            {"sentAt", nowMillis()}, {"text", run.tag + ": from a device C1's card does not name"}};
+        signAuthorship(letter, strayKey, false);
+        injected(letter, r->ownEpochs().front());
+        nlohmann::json elsewhere = letter;
+        elsewhere["id"] = newMessageId();
+        injected(elsewhere, EpochPublic{r->ownEpochs().front().n, kFirstEpochGeneration, "zzzzzzzzzz",
+                                Key::generateSealing().publicDer()});
+        const auto notesFrom = [&](const std::string& fp) {
+            return std::count_if(heard[uFp].begin(), heard[uFp].end(), [&fp](const IncomingMessage& item) {
+                return item.contentType == kTypeUnreadable && item.fromFingerprint == fp;
+            });
+        };
+        const auto notesBefore = notesFrom(c1->fingerprint());
+        const auto strayBefore = notesFrom(std::string());
+        quiet();
+        std::printf("%s: a letter of an unknown device of C1 left %ld note(s) in C1's chat, a letter sealed to "
+                    "a key U never held left %ld anywhere\n",
+            run.tag.c_str(), static_cast<long>(notesFrom(c1->fingerprint()) - notesBefore),
+            static_cast<long>(notesFrom(std::string()) - strayBefore));
+        CHECK(notesFrom(c1->fingerprint()) == notesBefore + 1);
+        CHECK(notesFrom(std::string()) == strayBefore);
+        CHECK(!heardText(uFp, run.tag + ": from a device C1's card does not name"));
+    }
+    {
+        const std::vector<OwnDevice> asked = r->devicesToReview();
+        CHECK(asked.size() == 1);
+        CHECK(asked.front().id == lostDevice && asked.front().role == DeviceRole::ePrimary);
+        CHECK(asked.front().issuedAt > 0);
+        CHECK_THROWS(r->reviewDevices({r->deviceId()}));
+    }
+    r->reviewDevices({lostDevice});
+    CHECK(r->devicesToReview().empty());
+    CHECK(!nlohmann::json::parse(AccountDb(restoredDir, std::string{}).text("meta")).at("reviewDevices").get<bool>());
     at(m.utc.load() + kSecondsPerHour);
     at(m.utc.load() + kSecondsPerHour);
     {
@@ -756,6 +808,7 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
             [&](const ContactDevice& d) { return d.id == lostDevice && d.revoked; });
         std::printf("%s: after the revocation %s lists the lost device as %s\n", run.tag.c_str(),
             nameOf[contact->fingerprint()].c_str(), revokedThere ? "revoked" : "active");
+        CHECK(revokedThere || (!run.reachesEveryContact && contact == c3.get()));
         send(*contact, uFp, run.tag + ": " + nameOf[contact->fingerprint()] + " after the revocation");
     }
     for (std::int64_t hour = 0; hour < kPromptHours; ++hour) {
@@ -765,7 +818,7 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
         const std::string text = run.tag + ": " + nameOf[contact->fingerprint()] + " after the revocation";
         const bool read = heardText(uFp, text);
         std::printf("  %s %s\n", text.c_str(), read ? "read" : "not read");
-        CHECK(read || contact == c3.get());
+        CHECK(read || (!run.reachesEveryContact && contact == c3.get()));
     }
 }
 
@@ -1072,8 +1125,7 @@ int main()
             CHECK(v.readBy("restored U to C1", kPromptHours));
             CHECK(v.readBy("restored U to B", kPromptHours));
             CHECK(v.readBy("restored U to C2", v.nextDayHour + kPromptHours));
-            CHECK(!v.read("restored U to C3").has_value());
-            CHECK(v.waiting("restored U to C3"));
+            CHECK(v.readBy("restored U to C3", v.nextDayHour + kPromptHours));
         });
     restoreAfter({"short", kShortAbsenceDays, false, false, 0}, m, endpoint, dial, links, scratch,
         [](const Verdict& v) {
@@ -1083,7 +1135,7 @@ int main()
                 CHECK(v.readBy("restored U to " + sender, kPromptHours));
             }
         });
-    restoreAfter({"stale", kStaleBackupDays, false, false, kLivedOnDays, true}, m, endpoint, dial, links,
+    restoreAfter({"stale", kStaleBackupDays, false, false, kLivedOnDays, true, false}, m, endpoint, dial, links,
         scratch, [](const Verdict& v) {
             const std::int64_t lettersDay = kLivedOnDays + kFirstLettersDay;
             const bool lacking = epochAt(v.t0 + lettersDay * kSecondsPerDay) > v.backupLast;
@@ -1096,8 +1148,8 @@ int main()
             }
             CHECK(v.readBy("restored U to C2", kPromptHours));
             for (const std::string sender : {"C1", "B"}) {
-                CHECK(!v.readBy("restored U to " + sender, kPromptHours));
-                CHECK(v.readBy("restored U to " + sender, v.nextDayHour + kPromptHours));
+                const std::optional<std::int64_t> read = v.read("restored U to " + sender);
+                CHECK(read.has_value() && *read + 1 >= v.nextDayHour && *read <= v.nextDayHour + kPromptHours);
             }
             CHECK(v.waiting("restored U to C3"));
             for (const auto& [sender, toLost] : v.sealsToLostDevice) {

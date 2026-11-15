@@ -850,6 +850,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
             contact.devices = DeviceBook::fromJson(entry.at("devices"));
             contact.sendPass = entry.at("sendPass").get<std::string>();
             contact.issuedToThem = entry.at("issuedToThem").get<bool>();
+            contact.exchangedAt = entry.at("exchangedAt").get<std::int64_t>();
             contact.displayName = entry.at("displayName").get<std::string>();
             contact.avatarMime = entry.at("avatarMime").get<std::string>();
             contact.avatarSentToPeer = entry.at("avatarSentToPeer").get<bool>();
@@ -908,6 +909,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     session->sendReceipts_ = meta.value("sendReceipts", true);
     session->showPresence_ = meta.value("showPresence", true);
     session->announceOwed_ = meta.value("announceOwed", false);
+    session->reviewDevices_ = meta.value("reviewDevices", false);
     session->contactsAskedBy_
         = meta.value("contactsAskedBy", std::vector<std::string>());
     session->cardB64_ = meta.value("card", std::string{});
@@ -982,6 +984,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
         }
     }
 
+    session->signRoutingCarrier();
     session->eraseEndedEpochKeys();
     return session;
 }
@@ -1343,6 +1346,7 @@ void Session::persistMeta() const
         {"showPresence", showPresence_},
         {"contactsAskedBy", contactsAskedBy_},
         {"announceOwed", announceOwed_},
+        {"reviewDevices", reviewDevices_},
         {"aliasNames", aliasNamesToJson()},
         {"aliasCheckAfter", aliasCheckAfter_},
         {"aliasStatusAt", aliasStatusAt_},
@@ -1382,6 +1386,7 @@ nlohmann::json Session::contactsToJson() const
             {"devices", contact.devices.toJson()},
             {"sendPass", contact.sendPass},
             {"issuedToThem", contact.issuedToThem},
+            {"exchangedAt", contact.exchangedAt},
             {"displayName", contact.displayName},
             {"avatarMime", contact.avatarMime},
             {"avatarSentToPeer", contact.avatarSentToPeer},
@@ -1537,6 +1542,7 @@ bool Session::storeCard(const PublishResult& result)
     myDest_ = result.dest;
     myServingKeyB64_ = servingKey;
     persistMeta();
+    signRoutingCarrier();
     return moved;
 }
 
@@ -2497,6 +2503,16 @@ Letter Session::letterFor(const std::uint64_t seq, const OutboxEntry& entry) con
     letter.peerName = contact.displayName.empty()
         ? entry.peer.substr(0, std::min(entry.peer.size(), kShortFingerprintChars))
         : contact.displayName;
+    letter.exchangedAt = contact.exchangedAt;
+    if (!routingCarrier_.is_null() && entry.deliveryClass == kContentDeliveryClass) {
+        std::vector<nlohmann::json> items = decodedBody(entry.plain);
+        const JsonWipe itemsWiped(items);
+        items.push_back(routingCarrier_);
+        Bytes carrying = encodedBatch(items);
+        if (carrying.size() + kHybridSealOverheadBytes <= kMaxMessagePayloadBytes) {
+            letter.plainWithRouting = std::move(carrying);
+        }
+    }
     return letter;
 }
 
@@ -2868,6 +2884,9 @@ void Session::applySettled(const std::uint64_t seq, const DeliveryOutcome& outco
         maybeSendAvatarToContact(entry.peer);
         offerPresenceSchedule(entry.peer);
         sendDevicesTo(entry.peer);
+    }
+    if (outcome.carriedRouting || entry.terms.tellsRouting || entry.establishes) {
+        noteExchange(entry.peer);
     }
     if (entry.terms.tellsRouting) {
         dropFromRoutingFanout(entry.peer);
@@ -3474,10 +3493,38 @@ void Session::sendDelete(const std::string& peerFingerprint, const std::string& 
     sendContent(peerFingerprint, std::move(inner), watch);
 }
 
+nlohmann::json Session::routingLetter() const
+{
+    return envelope("contact.routing", newMessageId(),
+        {{"routing", {{"dest", myDest_}, {"servingKey", myServingKeyB64_}}}});
+}
+
+void Session::signRoutingCarrier()
+{
+    routingCarrier_ = nullptr;
+    if (!isPrimary() || !hasOwnRouting()) {
+        return;
+    }
+    nlohmann::json carrier = routingLetter();
+    signAuthorship(carrier, client_->credential(), false);
+    routingCarrier_ = std::move(carrier);
+}
+
+void Session::noteExchange(const std::string& peerFingerprint)
+{
+    const auto contact = contacts_.find(peerFingerprint);
+    if (contact == contacts_.end()) {
+        return;
+    }
+    const std::int64_t now = epochClock_();
+    contact->second.exchangedAt = now;
+    persistContacts();
+    tellCourier([&peerFingerprint, now](OutboundCourier& courier) { courier.exchanged(peerFingerprint, now); });
+}
+
 void Session::tellRoutingTo(const std::string& peerFingerprint)
 {
-    nlohmann::json inner = envelope("contact.routing", newMessageId(),
-        {{"routing", {{"dest", myDest_}, {"servingKey", myServingKeyB64_}}}});
+    nlohmann::json inner = routingLetter();
     LetterTerms terms;
     terms.tellsRouting = true;
     try {
@@ -4311,6 +4358,7 @@ std::vector<IncomingMessage> Session::takeIn(
     std::set<std::string> reaskedPeers;
     std::set<std::string> heardFrom;
     std::set<std::string> movedPeers;
+    std::set<std::string> resolvedPeers;
     const log::Slow timedItems(
         "taking in " + std::to_string(items.size()) + " mailbox item(s)", kSlowStretch);
     for (MailboxItem& item : items) {
@@ -4333,22 +4381,44 @@ std::vector<IncomingMessage> Session::takeIn(
                 continue;
             }
             std::vector<IncomingMessage> surfaced;
+            std::set<std::string> unreadFrom;
             for (nlohmann::json& body : bodies) {
+                std::string verifiedFrom;
                 try {
 
                     std::string authorDevice;
                     bool byPrimary = false;
                     {
                         const std::string claimed = body.value("from", std::string());
-                        Author author;
-                        try {
-                            author = authorOf(body, bookFor(claimed));
-                        } catch (const std::exception& error) {
+                        std::optional<Author> signer;
+                        std::string refusal;
+                        const auto attempt = [&]() {
+                            try {
+                                signer = authorOf(body, bookFor(claimed));
+                            } catch (const std::exception& error) {
+                                refusal = error.what();
+                            }
+                        };
+                        attempt();
+                        if (!signer.has_value() && unknownDeviceOf(claimed, body)
+                            && resolvedPeers.insert(claimed).second) {
+                            const std::optional<ContactInfo> info = fetchContactCard(claimed);
+                            if (info.has_value()) {
+                                takeContactBook(contacts_.at(claimed), info->card.devices);
+                                persistContacts();
+                                attempt();
+                            }
+                        }
+                        if (!signer.has_value()) {
                             bazarish::log::warn("sync: dropping an item that does not name its "
-                                                "author: {}", error.what());
-                            noteWire(false, "unsigned item", "dropped", error.what());
+                                                "author: {}", refusal);
+                            noteWire(false, "unsigned item", "dropped", refusal);
+                            if (unknownDeviceOf(claimed, body)) {
+                                unreadFrom.insert(claimed);
+                            }
                             continue;
                         }
+                        const Author author = *signer;
                         if (author.account != claimed) {
                             bazarish::log::warn("sync: dropping an item signed by {} claiming to be {}",
                                 bazarish::log::redact(author.account), bazarish::log::redact(claimed));
@@ -4357,6 +4427,7 @@ std::vector<IncomingMessage> Session::takeIn(
                         }
                         authorDevice = author.device;
                         byPrimary = author.role == DeviceRole::ePrimary;
+                        verifiedFrom = claimed;
                     }
 
                     if (body.at("v").get<int>() > kMessageFormatVersion) {
@@ -4889,7 +4960,17 @@ std::vector<IncomingMessage> Session::takeIn(
                 } catch (const std::exception& error) {
                     bazarish::log::warn("sync: dropping an unreadable message: {}", error.what());
                     noteWire(false, "unreadable message", "dropped", error.what());
+                    if (contacts_.contains(verifiedFrom) && !isBlocked(verifiedFrom)) {
+                        unreadFrom.insert(verifiedFrom);
+                    }
                 }
+            }
+            for (const std::string& peer : unreadFrom) {
+                IncomingMessage note;
+                note.contentType = kTypeUnreadable;
+                note.fromFingerprint = peer;
+                note.e2eId = entry.id;
+                surfaced.push_back(std::move(note));
             }
             if (surfaced.empty()) {
                 releaseItem(entry.id);
@@ -4937,6 +5018,7 @@ std::vector<IncomingMessage> Session::takeIn(
     }
 
     for (const std::string& peer : heardFrom) {
+        noteExchange(peer);
         const auto contact = contacts_.find(peer);
         if (contact != contacts_.end() && !contact->second.dest.empty()) {
             tellCourier(
@@ -6037,18 +6119,28 @@ void Session::revokeDevice(const std::string& device)
     }
 }
 
-bool Session::refreshContactEpochs(const std::string& peerFingerprint)
+bool Session::unknownDeviceOf(const std::string& peerFingerprint, const nlohmann::json& body) const
+{
+    if (peerFingerprint == fingerprint() || !contacts_.contains(peerFingerprint) || isBlocked(peerFingerprint)
+        || !carriedCert(body).empty()) {
+        return false;
+    }
+    std::string device;
+    try {
+        device = authorDevice(body);
+    } catch (const std::exception&) {
+        return false;
+    }
+    const DeviceBook& book = bookFor(peerFingerprint);
+    return !book.active(device).has_value() && !book.revoked(device);
+}
+
+std::optional<ContactInfo> Session::fetchContactCard(const std::string& peerFingerprint)
 {
     const auto found = contacts_.find(peerFingerprint);
     if (found == contacts_.end() || found->second.dest.empty() || found->second.cardKey.empty()) {
-        return false;
+        return std::nullopt;
     }
-    const PresenceDay today = presenceDayOf(epochClock_());
-    const auto asked = epochsAskedDay_.find(peerFingerprint);
-    if (asked != epochsAskedDay_.end() && asked->second == today) {
-        return false;
-    }
-    epochsAskedDay_[peerFingerprint] = today;
     Descriptor descriptor;
     descriptor.fingerprint = peerFingerprint;
     descriptor.dest = found->second.dest;
@@ -6061,17 +6153,66 @@ bool Session::refreshContactEpochs(const std::string& peerFingerprint)
               return federationFetchOverI2p(readySharedI2pRouter(), toDest, op, sealed, privacy, label);
           });
     try {
-        const ContactInfo info = client_->fetchCard(descriptor, transport);
-        bazarish::log::info("fetched the card of {} for its keys", bazarish::log::redact(peerFingerprint));
-        takeContactBook(found->second, info.card.devices);
-        persistContacts();
-        takeContactEpochs(peerFingerprint, info.card.epochs);
-        return true;
+        ContactInfo info = client_->fetchCard(descriptor, transport);
+        bazarish::log::info("fetched the card of {}", bazarish::log::redact(peerFingerprint));
+        return info;
     } catch (const std::exception& error) {
-        bazarish::log::warn("the card of {} did not come for its keys: {}",
-            bazarish::log::redact(peerFingerprint), error.what());
+        bazarish::log::warn("the card of {} did not come: {}", bazarish::log::redact(peerFingerprint),
+            error.what());
+        return std::nullopt;
+    }
+}
+
+std::vector<OwnDevice> Session::devicesToReview() const
+{
+    std::vector<OwnDevice> others;
+    if (!reviewDevices_) {
+        return others;
+    }
+    for (const OwnDevice& device : ownDevices()) {
+        if (!device.current && !device.revoked) {
+            others.push_back(device);
+        }
+    }
+    return others;
+}
+
+void Session::reviewDevices(const std::vector<std::string>& revoke)
+{
+    requirePrimary("revoke a device");
+    const std::vector<OwnDevice> offered = devicesToReview();
+    for (const std::string& device : revoke) {
+        if (std::none_of(offered.begin(), offered.end(),
+                [&device](const OwnDevice& other) { return other.id == device; })) {
+            throw std::invalid_argument("device " + device + " is not one this restore asks about");
+        }
+    }
+    for (const std::string& device : revoke) {
+        revokeDevice(device);
+    }
+    reviewDevices_ = false;
+    persistMeta();
+}
+
+bool Session::refreshContactEpochs(const std::string& peerFingerprint)
+{
+    if (!contacts_.contains(peerFingerprint)) {
         return false;
     }
+    const PresenceDay today = presenceDayOf(epochClock_());
+    const auto asked = epochsAskedDay_.find(peerFingerprint);
+    if (asked != epochsAskedDay_.end() && asked->second == today) {
+        return false;
+    }
+    epochsAskedDay_[peerFingerprint] = today;
+    const std::optional<ContactInfo> info = fetchContactCard(peerFingerprint);
+    if (!info.has_value()) {
+        return false;
+    }
+    takeContactBook(contacts_.at(peerFingerprint), info->card.devices);
+    persistContacts();
+    takeContactEpochs(peerFingerprint, info->card.epochs);
+    return true;
 }
 
 void Session::presenceWatch(std::vector<std::string> peerFingerprints)
@@ -7005,6 +7146,13 @@ void Session::importAccountBytes(const Bytes& sealed, const fs::path& accountFil
 {
     const SecretBytes bundle = accountkey::openBackup(sealed, password);
     importAccountBundle(bundle.bytes(), accountFile, atRestPassphrase);
+    AccountDb db(accountFile, atRestPassphrase);
+    if (db.text(kRootRow).empty()) {
+        return;
+    }
+    nlohmann::json meta = parseJson(db.text("meta"));
+    meta["reviewDevices"] = true;
+    db.putText("meta", meta.dump(2));
 }
 
 void Session::importAccountBundle(

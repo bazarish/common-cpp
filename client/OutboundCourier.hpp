@@ -6,6 +6,8 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Epochs.hpp>
 #include <bazarish/I2p.hpp>
+#include <bazarish/Clock.hpp>
+#include <bazarish/Limits.hpp>
 
 #include <chrono>
 #include <condition_variable>
@@ -55,6 +57,8 @@ inline constexpr char kOwnMailboxRoute[] = "";
 
 inline constexpr std::size_t kDeliveryWorkers = 4;
 
+inline constexpr std::int64_t kExchangeGapSeconds = kMailRetentionDays * kSecondsPerDay;
+
 struct CourierTimings {
     std::chrono::seconds dial{kDeliveryDialSeconds};
     std::chrono::seconds reply{kReplyGraceSeconds};
@@ -67,6 +71,7 @@ struct DeliveryOutcome {
     bool stored = false;
     std::string errorCode;
     std::string errorMessage;
+    bool carriedRouting = false;
 };
 
 struct DeliveryWatch {
@@ -85,6 +90,9 @@ struct Letter {
     Bytes pass;
     Bytes servingSealingDer;
     Bytes plain;
+    Bytes plainWithRouting;
+    // UTC seconds of the last exchange with the recipient.
+    std::int64_t exchangedAt = 0;
     std::vector<EpochPublic> sealTo;
     // Set on a letter to one of the account's own devices: sealed to that device's key instead.
     std::string toDevice;
@@ -131,6 +139,7 @@ public:
         const std::string& mailbox, const std::string& toDest, const Bytes& servingSealingDer);
     // A letter that found no current epoch of its recipient waits for this.
     void rekey(const std::string& mailbox, const std::vector<EpochPublic>& epochs);
+    void exchanged(const std::string& mailbox, std::int64_t utcSeconds);
     void withdraw(const std::string& mailbox);
     // False when the letter has left and may arrive; a withdrawn one tells its watches nothing.
     bool withdrawLetter(std::uint64_t seq);

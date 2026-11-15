@@ -30,6 +30,7 @@ public:
     std::string chatTimer(std::int64_t, bool, const std::string&) const override { return "timer"; }
     std::string contactAccepted(const std::string&) const override { return "accepted"; }
     std::string unsupported(const std::string&, const Bytes&) const override { return "unsupported"; }
+    std::string unreadable() const override { return "unreadable"; }
 };
 
 std::int64_t millisNow()
@@ -78,6 +79,15 @@ int main()
         }
         CHECK(acceptKey != 0 && menuKey != 0);
         CHECK(acceptKey < menuKey);
+
+        CHECK(ingest.takeIn(incoming(kTypeUnreadable, "sealed-elsewhere", 0)));
+        bool noted = false;
+        for (const StoredMessage& row : store.latestMessages(kPeer, 10)) {
+            if (row.e2eId == "sealed-elsewhere") {
+                noted = row.type == kTypeSystem && row.text == "unreadable" && !row.outgoing;
+            }
+        }
+        CHECK(noted);
 
         IncomingMessage theirs = incoming(kTypeText, "theirs", composedAt + 2);
         theirs.fromDevice = kPeerDevice;

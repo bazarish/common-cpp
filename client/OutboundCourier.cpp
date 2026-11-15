@@ -236,6 +236,16 @@ void OutboundCourier::rekey(const std::string& mailbox, const std::vector<EpochP
     cv_.notify_all();
 }
 
+void OutboundCourier::exchanged(const std::string& mailbox, const std::int64_t utcSeconds)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [seq, held] : letters_) {
+        if (held.letter.mailbox == mailbox && held.letter.route != kOwnMailboxRoute) {
+            held.letter.exchangedAt = std::max(held.letter.exchangedAt, utcSeconds);
+        }
+    }
+}
+
 void OutboundCourier::withdraw(const std::string& mailbox)
 {
     {
@@ -595,12 +605,15 @@ OutboundCourier::Answer OutboundCourier::attempt(const Letter& plainLetter, Outc
             return Answer::eAnswered;
         }
     } else {
-        const std::optional<EpochPublic> epoch = epochFor(plainLetter.sealTo, timings_.utcNow());
+        const std::int64_t now = timings_.utcNow();
+        const std::optional<EpochPublic> epoch = epochFor(plainLetter.sealTo, now);
         if (!epoch.has_value()) {
             return Answer::eKeyless;
         }
+        outcome.carriedRouting
+            = !letter.plainWithRouting.empty() && now - letter.exchangedAt > kExchangeGapSeconds;
         try {
-            letter.payload = sealToEpoch(letter.plain, *epoch);
+            letter.payload = sealToEpoch(outcome.carriedRouting ? letter.plainWithRouting : letter.plain, *epoch);
         } catch (const std::exception& error) {
             outcome.errorMessage
                 = std::string("the recipient's epoch key does not seal: ") + error.what();

@@ -262,6 +262,14 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
         const std::int64_t request = store_.oldestOfType(peer, kTypeContactRequest, true);
         return request == 0 || markOutgoingRead(peer, request);
     }
+    if (type == kTypeUnreadable) {
+        const std::int64_t id = appendNote(message, notes_.unreadable(), false);
+        if (id == 0) {
+            return false;
+        }
+        listener_.rowAdded(peer, id, false);
+        return true;
+    }
     if (type == kTypeUnsupported) {
         StoredMessage kept;
         kept.peer = peer;

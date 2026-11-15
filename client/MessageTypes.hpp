@@ -22,6 +22,7 @@ inline constexpr char kTypePresenceSchedule[] = "presence.schedule";
 inline constexpr char kTypeAccountEpochs[] = "account.epochs";
 inline constexpr char kTypeAccountDevices[] = "account.devices";
 inline constexpr char kTypeUnsupported[] = "unsupported";
+inline constexpr char kTypeUnreadable[] = "unreadable";
 inline constexpr char kTypeGroupState[] = "group.state";
 inline constexpr char kTypeGroupReactions[] = "group.reactions";
 inline constexpr char kTypeCallPrefix[] = "call.";

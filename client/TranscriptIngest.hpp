@@ -19,6 +19,7 @@ public:
     virtual std::string chatTimer(std::int64_t seconds, bool ours, const std::string& peer) const = 0;
     virtual std::string contactAccepted(const std::string& peer) const = 0;
     virtual std::string unsupported(const std::string& rawType, const Bytes& rawBody) const = 0;
+    virtual std::string unreadable() const = 0;
 };
 
 class IngestListener {
