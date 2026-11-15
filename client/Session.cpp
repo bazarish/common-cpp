@@ -2659,6 +2659,41 @@ bool Session::watchDelivery(
     return true;
 }
 
+bool Session::withdrawUndelivered(const std::string& peerFingerprint, const std::string& messageId)
+{
+    settleDeliveries();
+    std::vector<std::uint64_t> carrying;
+    for (const auto& [seq, entry] : outbox_) {
+        if (!entry.own && entry.peer == peerFingerprint
+            && std::find(entry.ids.begin(), entry.ids.end(), messageId) != entry.ids.end()) {
+            carrying.push_back(seq);
+        }
+    }
+    if (carrying.empty()) {
+        return false;
+    }
+    bool unreachable = true;
+    for (const std::uint64_t seq : carrying) {
+        // A letter packed with other messages still has to go.
+        if (outbox_.at(seq).ids.size() != 1) {
+            unreachable = false;
+            continue;
+        }
+        bool withdrawn = true;
+        tellCourier([seq, &withdrawn](OutboundCourier& courier) {
+            withdrawn = courier.withdrawLetter(seq);
+        });
+        if (!withdrawn) {
+            unreachable = false;
+            continue;
+        }
+        heldWatches_.erase(seq);
+        eraseOutboxEntry(seq);
+    }
+    db_->dropOverwritten();
+    return unreachable;
+}
+
 void Session::withdrawSelfDeliveriesTo(const std::string& device)
 {
     settleDeliveries();
@@ -3331,6 +3366,9 @@ void Session::sendDelete(const std::string& peerFingerprint, const std::string& 
     const DeliveryWatch& watch)
 {
     unsend(refMessageId);
+    if (withdrawUndelivered(peerFingerprint, refMessageId)) {
+        return;
+    }
     nlohmann::json inner = envelope("delete", newMessageId(), {
         {"ref", refMessageId},
     });

@@ -12,9 +12,9 @@
 #include <bazarish/Epochs.hpp>
 #include <bazarish/PrivateFile.hpp>
 
+#include "PageScan.hpp"
 #include "TestUtil.hpp"
 
-#include <openssl/evp.h>
 #include <sqlcipher/sqlite3.h>
 
 #include <chrono>
@@ -26,6 +26,7 @@
 
 using namespace bazarish;
 using namespace bazarish::client;
+using testutil::filesHold;
 
 namespace {
 
@@ -48,13 +49,6 @@ constexpr std::uint32_t kEndlessPasses = 1U << 30;
 constexpr std::uint32_t kSmallestMemoryKiB = 8;
 constexpr std::chrono::seconds kRefusalTime{1};
 
-// SQLCipher 4 defaults: 4096-byte pages, each ending in a 16-byte IV and a 64-byte HMAC.
-constexpr std::size_t kPageBytes = 4096;
-constexpr std::size_t kReserveBytes = 80;
-constexpr std::size_t kSaltBytes = 16;
-// SQLite's WAL format: a 32-byte file header, then a 24-byte header before each page.
-constexpr std::size_t kWalHeaderBytes = 32;
-constexpr std::size_t kFrameHeaderBytes = 24;
 constexpr EpochNumber kMonthsAgo = 6;
 constexpr std::size_t kMessageIdBytes = 8;
 constexpr std::int64_t kMsPerSecond = 1000;
@@ -80,58 +74,6 @@ fs::path suffixed(fs::path file, const std::string& suffix)
 {
     file += suffix;
     return file;
-}
-
-Bytes decryptedPage(const Bytes& key, const unsigned char* const page, const bool first)
-{
-    const std::size_t from = first ? kSaltBytes : 0;
-    const std::size_t size = kPageBytes - kReserveBytes - from;
-    const std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> ctx(
-        EVP_CIPHER_CTX_new(), &EVP_CIPHER_CTX_free);
-    Bytes plain(size);
-    int written = 0;
-    CHECK(ctx != nullptr);
-    CHECK(EVP_DecryptInit_ex(
-              ctx.get(), EVP_aes_256_cbc(), nullptr, key.data(), page + kPageBytes - kReserveBytes)
-        == 1);
-    CHECK(EVP_CIPHER_CTX_set_padding(ctx.get(), 0) == 1);
-    CHECK(EVP_DecryptUpdate(ctx.get(), plain.data(), &written, page + from, static_cast<int>(size))
-        == 1);
-    return plain;
-}
-
-bool pageHolds(const Bytes& key, const unsigned char* const page, const bool first,
-    const std::string& needle)
-{
-    const Bytes plain = decryptedPage(key, page, first);
-    return std::string(plain.begin(), plain.end()).find(needle) != std::string::npos;
-}
-
-// Reads every page the files hold, live or freed, current or superseded.
-bool filesHold(const fs::path& database, const SecretBytes& secret, const std::string& needle)
-{
-    const Bytes& key = secret.bytes();
-    const Bytes pages = readFileBytes(database);
-    for (std::size_t at = 0; at + kPageBytes <= pages.size(); at += kPageBytes) {
-        if (pageHolds(key, pages.data() + at, at == 0, needle)) {
-            return true;
-        }
-    }
-    const fs::path wal = suffixed(database, "-wal");
-    if (!fs::exists(wal)) {
-        return false;
-    }
-    const Bytes log = readFileBytes(wal);
-    for (std::size_t at = kWalHeaderBytes; at + kFrameHeaderBytes + kPageBytes <= log.size();
-         at += kFrameHeaderBytes + kPageBytes) {
-        const std::uint32_t pageNumber = (static_cast<std::uint32_t>(log[at]) << 24)
-            | (static_cast<std::uint32_t>(log[at + 1]) << 16)
-            | (static_cast<std::uint32_t>(log[at + 2]) << 8) | log[at + 3];
-        if (pageHolds(key, log.data() + at + kFrameHeaderBytes, pageNumber == 1, needle)) {
-            return true;
-        }
-    }
-    return false;
 }
 
 void checkBackup()
@@ -420,6 +362,15 @@ void checkDeletedMessagesLeaveNoTrace(const fs::path& dir)
     const std::int64_t third = store.append(timed);
     CHECK(first != 0 && second != 0 && third != 0);
     CHECK(filesHold(file, key, one) && filesHold(file, key, two) && filesHold(file, key, three));
+
+    const std::string edited = "the edited line " + toHex(randomBytes(kMessageIdBytes));
+    const std::int64_t fourth = store.append(textLine("dave", edited));
+    CHECK(fourth != 0);
+    CHECK(filesHold(file, key, edited));
+    CHECK(store.editContent(fourth, "what it says now", {}));
+    CHECK(fs::file_size(suffixed(file, "-wal")) == 0);
+    CHECK(!filesHold(file, key, edited));
+    CHECK(filesHold(file, key, "what it says now"));
 
     CHECK(store.removeById(first));
     CHECK(fs::file_size(suffixed(file, "-wal")) == 0);

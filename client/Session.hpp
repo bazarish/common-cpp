@@ -693,6 +693,8 @@ public:
     void setFileSource(std::shared_ptr<const FileSource> files);
 
     void forgetSentFilesFor(const std::string& peerFingerprint);
+    // True when no copy of the message can reach the peer any more.
+    bool withdrawUndelivered(const std::string& peerFingerprint, const std::string& messageId);
     void unsend(const std::string& e2eId);
 
     void releaseI2pLinks();

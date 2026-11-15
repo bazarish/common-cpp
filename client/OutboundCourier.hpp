@@ -132,6 +132,8 @@ public:
     // A letter that found no current epoch of its recipient waits for this.
     void rekey(const std::string& mailbox, const std::vector<EpochPublic>& epochs);
     void withdraw(const std::string& mailbox);
+    // False when the letter has left and may arrive; a withdrawn one tells its watches nothing.
+    bool withdrawLetter(std::uint64_t seq);
     // What is still on its way is not reported: the outbox keeps it.
     void stop();
 

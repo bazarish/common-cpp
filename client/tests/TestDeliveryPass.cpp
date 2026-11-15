@@ -7,6 +7,7 @@
 #include "OutboundCourier.hpp"
 #include "MailWaitGate.hpp"
 #include "AccountDb.hpp"
+#include "AccountKey.hpp"
 #include "Authorship.hpp"
 #include "PresenceSeed.hpp"
 #include "Session.hpp"
@@ -14,6 +15,7 @@
 
 #include "FakeGateway.hpp"
 #include "DeviceTestKit.hpp"
+#include "PageScan.hpp"
 #include "TunnelStub.hpp"
 
 #include <bazarish/AliasMaintenance.hpp>
@@ -2100,6 +2102,40 @@ int main()
             }));
             std::printf("TestDeliveryPass: a message and a receipt to an unreachable recipient"
                         " outlived closing the account and went once it was back\n");
+
+            std::atomic<int> dialsToSam{0};
+            OutboundCourier::Links samGone = courierFor();
+            samGone.openStream = [&](const std::string& toDest,
+                                     std::chrono::seconds) -> std::shared_ptr<DeliveryStream> {
+                if (toDest == samDest) {
+                    ++dialsToSam;
+                    return nullptr;
+                }
+                return std::make_shared<MockServerStream>(m, ackSigning);
+            };
+            rita->setOutboundLinks(samGone);
+            const std::string goneId = "withdrawn-before-it-left";
+            const std::string goneText = "never to arrive " + toHex(randomBytes(8));
+            rita->sendMessage(sam->fingerprint(), goneText, goneId);
+            CHECK(testutil::waitFor([&]() { return dialsToSam.load() > 0; }));
+            CHECK(!testutil::waitFor([&]() { return dialsToSam.load() > 1; },
+                std::chrono::milliseconds(300)));
+            CHECK(testutil::filesHold(ritaDir, accountkey::keyFor(ritaDir, std::string{}), goneText));
+            rita->sendDelete(sam->fingerprint(), goneId);
+            CHECK(!rita->watchDelivery(sam->fingerprint(), goneId, DeliveryWatch{}));
+            CHECK(!testutil::filesHold(ritaDir, accountkey::keyFor(ritaDir, std::string{}), goneText));
+            rita->setOutboundLinks(courierFor());
+            rita->flushPendingEchoes();
+            CHECK(!testutil::waitFor([&]() {
+                for (const IncomingMessage& item : sam->sync()) {
+                    if (item.text == goneText || item.refId == goneId) {
+                        return true;
+                    }
+                }
+                return false;
+            }, std::chrono::milliseconds(3000)));
+            std::printf("TestDeliveryPass: a message deleted before it left was withdrawn, and"
+                        " neither it nor a delete reached the recipient\n");
         }
 
         {

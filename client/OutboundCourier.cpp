@@ -258,6 +258,28 @@ void OutboundCourier::withdraw(const std::string& mailbox)
     cv_.notify_all();
 }
 
+bool OutboundCourier::withdrawLetter(const std::uint64_t seq)
+{
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        const auto held = letters_.find(seq);
+        if (held == letters_.end()) {
+            const auto settled = settledOutcomes_.find(seq);
+            return settled == settledOutcomes_.end() || !settled->second.stored;
+        }
+        if (held->second.inFlight) {
+            held->second.withdrawn = true;
+            return false;
+        }
+        held->second.watches.clear();
+        Outcome withdrawn;
+        withdrawn.errorMessage = kWithdrawnMessage;
+        withdrawn_.push_back(settleLocked(held, withdrawn));
+    }
+    cv_.notify_all();
+    return true;
+}
+
 void OutboundCourier::carryReturned()
 {
     const std::lock_guard<std::mutex> lock(mutex_);

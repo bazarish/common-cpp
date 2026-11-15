@@ -728,7 +728,7 @@ bool TranscriptStore::editContent(
     query.bind(text);
     query.bind(keyboard);
     query.bind(id);
-    return query.exec() || failed();
+    return (query.exec() || failed()) && dropDeletedFromLog();
 }
 
 bool TranscriptStore::setType(const std::int64_t id, const std::string& type)

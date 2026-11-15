@@ -188,6 +188,7 @@ public:
     [[nodiscard]] bool setHasPicture(std::int64_t id, bool has);
     // Kept with the message it belongs to, so a retry finds it however the first try ended.
     [[nodiscard]] bool keepMedia(const std::string& key, const Bytes& bytes);
+    // The text it replaces goes as a deleted row does.
     [[nodiscard]] bool editContent(
         std::int64_t id, const std::string& text, const std::string& keyboard);
     [[nodiscard]] bool setType(std::int64_t id, const std::string& type);
