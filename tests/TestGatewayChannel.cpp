@@ -98,7 +98,7 @@ std::vector<Bytes> frameClasses()
         datagrams().front(), datagrams().back()};
 }
 
-void checkRecordPadding(const Bytes& sessionKey, const Bytes& salt)
+void checkRecordPadding(const SecretBytes& sessionKey, const Bytes& salt)
 {
     Records clientSide(sessionKey, salt, Side::eClient);
     Records gatewaySide(sessionKey, salt, Side::eGateway);
@@ -243,7 +243,7 @@ int main()
     CHECK(!openHello(cover, hello.message, Key::generateSealing()));
 
     Welcome welcome;
-    welcome.sessionKey = randomBytes(kSessionKeyBytes);
+    welcome.sessionKey = SecretBytes(randomBytes(kSessionKeyBytes));
     welcome.salt = randomBytes(kTicketBytes);
     for (std::size_t i = 0; i < kTicketsHeld; ++i) {
         welcome.tickets.push_back(randomBytes(kTicketBytes));

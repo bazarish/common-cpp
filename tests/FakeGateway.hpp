@@ -130,7 +130,7 @@ private:
                 return;
             }
             gateway::Welcome welcome;
-            welcome.sessionKey = randomBytes(gateway::kSessionKeyBytes);
+            welcome.sessionKey = SecretBytes(randomBytes(gateway::kSessionKeyBytes));
             welcome.salt = randomBytes(gateway::kTicketBytes);
             const Bytes answer = gateway::makeWelcome(cover_, welcome, *client, identity_);
             raw->send(std::vector<unsigned char>(answer.begin(), answer.end()));

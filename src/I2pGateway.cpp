@@ -240,7 +240,7 @@ public:
     mutable std::mutex mutex;
     gateway::Ids ids_;
     http::SocketPtr control;
-    Bytes sessionKey;
+    SecretBytes sessionKey;
     std::deque<Bytes> tickets;
     std::map<std::uint32_t, std::shared_ptr<Pending>> awaited;
     std::map<std::uint32_t, std::weak_ptr<GatewayEndpoint>> endpoints;

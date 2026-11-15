@@ -558,7 +558,7 @@ void checkTenMinutes()
 
 void checkSocket()
 {
-    const Bytes sessionKey = randomBytes(kSessionKeyBytes);
+    const SecretBytes sessionKey(randomBytes(kSessionKeyBytes));
     const Bytes salt = randomBytes(kTicketBytes);
     std::mt19937_64 sizes(kSeed);
     const std::shared_ptr<Captured> captured = std::make_shared<Captured>();

@@ -5,6 +5,7 @@
 #include "bazarish/Crypto.hpp"
 #include "bazarish/GatewayProtocol.hpp"
 #include "bazarish/KeyedSeal.hpp"
+#include "bazarish/SecretBytes.hpp"
 #include "bazarish/TrafficShape.hpp"
 #include "bazarish/WebSocket.hpp"
 #include "bazarish/WebSocketClient.hpp"
@@ -172,7 +173,7 @@ std::string pingCarrying(std::uint8_t flags);
 std::optional<std::uint8_t> flagsOfPing(const std::string& payload);
 
 struct Welcome {
-    Bytes sessionKey;
+    SecretBytes sessionKey;
     Bytes salt;
     std::vector<Bytes> tickets;
 };
@@ -195,15 +196,15 @@ enum class Side { eClient, eGateway };
 // A key and a counter per direction; the counter is the nonce.
 class Records {
 public:
-    Records(const Bytes& sessionKey, const Bytes& salt, Side side);
+    Records(const SecretBytes& sessionKey, const Bytes& salt, Side side);
 
     Bytes seal(const Bytes& plaintext);
     std::optional<Bytes> open(const Bytes& record);
 
 private:
     std::mutex mutex_;
-    Bytes sendKey_;
-    Bytes receiveKey_;
+    SecretBytes sendKey_;
+    SecretBytes receiveKey_;
     std::uint64_t sent_ = 0;
     std::uint64_t received_ = 0;
 };
@@ -260,7 +261,7 @@ private:
 };
 
 struct ChannelJoin {
-    Bytes sessionKey;
+    SecretBytes sessionKey;
     Bytes ticket;
 };
 

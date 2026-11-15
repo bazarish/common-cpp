@@ -423,7 +423,7 @@ Bytes makeWelcome(const Cover& cover, const Welcome& welcome, const Key& clientE
     for (const Bytes& ticket : welcome.tickets) {
         tickets.push_back(toBase64(ticket));
     }
-    const nlohmann::json body = {{"key", toBase64(welcome.sessionKey)},
+    const nlohmann::json body = {{"key", toBase64(welcome.sessionKey.bytes())},
         {"salt", toBase64(welcome.salt)}, {"tickets", tickets},
         {"client", clientEphemeral.fingerprint()}};
     return cover.seal(hybrid::seal(padded(hybrid::signJson(body, gateway)), clientEphemeral, {}));
@@ -445,7 +445,7 @@ std::optional<Welcome> openWelcome(const Cover& cover, const Bytes& message,
         throw std::runtime_error("the gateway's welcome was made for another hello");
     }
     Welcome welcome;
-    welcome.sessionKey = fromBase64(verified.body.at("key").get<std::string>());
+    welcome.sessionKey = SecretBytes(fromBase64(verified.body.at("key").get<std::string>()));
     welcome.salt = fromBase64(verified.body.at("salt").get<std::string>());
     for (const nlohmann::json& ticket : verified.body.at("tickets")) {
         welcome.tickets.push_back(fromBase64(ticket.get<std::string>()));
@@ -456,24 +456,24 @@ std::optional<Welcome> openWelcome(const Cover& cover, const Bytes& message,
     return welcome;
 }
 
-Records::Records(const Bytes& sessionKey, const Bytes& salt, const Side side)
+Records::Records(const SecretBytes& sessionKey, const Bytes& salt, const Side side)
+    : sendKey_(hkdfSha256(sessionKey.bytes(), salt,
+        side == Side::eClient ? kClientSendInfo : kGatewaySendInfo, kAeadKeyBytes))
+    , receiveKey_(hkdfSha256(sessionKey.bytes(), salt,
+          side == Side::eClient ? kGatewaySendInfo : kClientSendInfo, kAeadKeyBytes))
 {
-    const Bytes clientSends = hkdfSha256(sessionKey, salt, kClientSendInfo, kAeadKeyBytes);
-    const Bytes gatewaySends = hkdfSha256(sessionKey, salt, kGatewaySendInfo, kAeadKeyBytes);
-    sendKey_ = side == Side::eClient ? clientSends : gatewaySends;
-    receiveKey_ = side == Side::eClient ? gatewaySends : clientSends;
 }
 
 Bytes Records::seal(const Bytes& plaintext)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
-    return chachaSeal(sendKey_, counterNonce(sent_++), plaintext);
+    return chachaSeal(sendKey_.bytes(), counterNonce(sent_++), plaintext);
 }
 
 std::optional<Bytes> Records::open(const Bytes& record)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
-    std::optional<SecretBytes> opened = chachaOpen(receiveKey_, counterNonce(received_), record);
+    std::optional<SecretBytes> opened = chachaOpen(receiveKey_.bytes(), counterNonce(received_), record);
     if (!opened.has_value()) {
         return std::nullopt;
     }
