@@ -162,6 +162,13 @@ bool isB33I2pHost(const std::string& host)
     return isB32I2pHost(host) && host.size() == kB33LabelChars + kB32SuffixLen;
 }
 
+void validateB33I2pHost(const std::string& host)
+{
+    if (!isB33I2pHost(host)) {
+        throw std::invalid_argument("not a b33 i2p address (an encrypted lease set's .b32.i2p): " + host);
+    }
+}
+
 void validateB32I2pHost(const std::string& host)
 {
     if (!isB32I2pHost(host)) {

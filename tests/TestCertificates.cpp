@@ -13,6 +13,8 @@ namespace {
 
 constexpr std::int64_t kNow = 1780000000;
 constexpr std::int64_t kThreeDays = 3 * 24 * 3600;
+constexpr std::size_t kB33Label = 56;
+constexpr std::size_t kB32Label = 52;
 
 }  // namespace
 
@@ -38,7 +40,7 @@ int main()
         {kEpoch + 1, kFirstEpochGeneration, phone.id(), nextSealing.publicDer()}};
 
     const Key servingSealing = Key::generateSealing();
-    const std::string dest = "exampledestination.b32.i2p";
+    const std::string dest = std::string(kB33Label, 'a') + ".b32.i2p";
     const auto cardOf = [&](const AccountKind kind) {
         ContactCard card;
         card.kind = kind;
@@ -200,10 +202,10 @@ int main()
 
     {
         ContactCard older = full;
-        older.dest = "old.b32.i2p";
+        older.dest = std::string(kB33Label, 'o') + ".b32.i2p";
         ContactCard newer = full;
         newer.issuedAt = kNow + 1;
-        newer.dest = "new.b32.i2p";
+        newer.dest = std::string(kB33Label, 'n') + ".b32.i2p";
         CHECK(ContactCard::verify(older.issue(signer)).issuedAt
             < ContactCard::verify(newer.issue(signer)).issuedAt);
     }

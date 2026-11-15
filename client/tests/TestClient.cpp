@@ -83,12 +83,12 @@ int main()
     const Identity serverIdentity = Identity::generate();
     const std::string serverFp = serverIdentity.fingerprint();
     const Key servingSealing = Key::generateSealing();
-    const std::string aliceDest = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
-    const std::string bobDest = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+    const std::string aliceDest = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
+    const std::string bobDest = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
 
     const Identity resolverRoot = Identity::generate();
     const Identity resolverDelegated = Identity::generate();
-    const std::string resolverDest = "flkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+    const std::string resolverDest = "flkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
     const std::int64_t resolverWeek = 7 * 24 * 3600;
     const Bytes resolverDelegationDer
         = DelegationCertificate::issue(resolverRoot, resolverDelegated, now, now + resolverWeek);

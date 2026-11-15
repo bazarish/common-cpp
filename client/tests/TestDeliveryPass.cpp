@@ -117,7 +117,7 @@ void respondJson(http::Response& response, const nlohmann::json& body)
 }
 
 constexpr const char* kTestResolverDest
-    = "flkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+    = "flkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
 
 struct Mock {
     std::mutex mu;
@@ -623,8 +623,8 @@ int main()
         alice->exportAccount(earlyBundle, "bundle-password");
         {
             std::lock_guard<std::mutex> lock(m.mu);
-            m.destFor[alice->fingerprint()] = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
-            m.destFor[bob->fingerprint()] = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+            m.destFor[alice->fingerprint()] = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
+            m.destFor[bob->fingerprint()] = "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
         }
 
         alice->setSwitchedOff(true);
@@ -1600,7 +1600,7 @@ int main()
                     {"forDevice", "not-a-device-of-hers"},
                     {"contacts", nlohmann::json::array({nlohmann::json{
                                      {"fingerprint", plantedPeer},
-                                     {"dest", "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p"},
+                                     {"dest", "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p"},
                                      {"displayName", "planted"}}})}});
 
             bool sawForged = false;
@@ -1631,7 +1631,7 @@ int main()
             {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.destFor[carol->fingerprint()]
-                    = "flkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+                    = "flkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
             }
             carol->registerAccount();
             carol->setFetchTransport(directDial);
@@ -1660,7 +1660,7 @@ int main()
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.destFor[fiona->fingerprint()]
-                    = "ilkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+                    = "ilkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
             }
             fiona->registerAccount();
             fiona->setFetchTransport(directDial);
@@ -1714,7 +1714,7 @@ int main()
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.destFor[dana->fingerprint()]
-                    = "glkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+                    = "glkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
             }
             dana->registerAccount();
             dana->setFetchTransport(directDial);
@@ -1786,7 +1786,7 @@ int main()
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.destFor[erin->fingerprint()]
-                    = "hlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+                    = "hlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
             }
             erin->registerAccount();
             erin->setFetchTransport(directDial);
@@ -2002,9 +2002,9 @@ int main()
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.destFor[rita->fingerprint()]
-                    = "rlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+                    = "rlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
                 m.destFor[sam->fingerprint()]
-                    = "slkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+                    = "slkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
             }
             for (Session* const each : {rita.get(), sam.get()}) {
                 each->registerAccount();
@@ -2160,7 +2160,7 @@ int main()
                 {
                     const std::lock_guard<std::mutex> lock(m.mu);
                     m.destFor[finn->fingerprint()]
-                        = "hlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+                        = "hlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
                 }
                 finn->registerAccount();
                 finn->setFetchTransport(directDial);
@@ -2374,7 +2374,7 @@ int main()
             const nlohmann::json bootstrap = {{"kind", "user"},
                 {"epochs",
                     epochsJson({{epochAt(nowSeconds()), kFirstEpochGeneration, sneak.device(), Key::generateSealing().publicDer()}})},
-                {"dest", std::string(52, 'q') + ".b32.i2p"},
+                {"dest", std::string(56, 'q') + ".b32.i2p"},
                 {"servingKey", toBase64(Key::generateSealing().publicDer())},
                 {"pass", toBase64(randomBytes(kSneakPassBytes))}};
             nlohmann::json request = {{"v", 1}, {"type", "contact.request"}, {"id", "sneak-request"},
@@ -2454,7 +2454,7 @@ int main()
             {
                 const std::lock_guard<std::mutex> lock(m.mu);
                 m.destFor[gail->fingerprint()]
-                    = "klkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+                    = "klkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
             }
             gail->registerAccount();
             gail->setFetchTransport(directDial);
@@ -2515,7 +2515,7 @@ int main()
             const DeviceCredential gailIdentity = deviceOf(gDir);
             FileOffer elsewhere;
             elsewhere.fileId = announced.e2eId;
-            elsewhere.host = std::string(52, 'w') + ".b32.i2p";
+            elsewhere.host = std::string(56, 'w') + ".b32.i2p";
             elsewhere.header = Bytes{1};
             elsewhere.key = "key";
             elsewhere.sha256 = announced.attachmentRef;
@@ -2631,12 +2631,12 @@ int main()
             const fs::path earlyPam = scratch / "bz-presence-early.bundle";
             std::unique_ptr<Session> pam
                 = accountAt("bz-presence-pam", AccountKind::eUser,
-                    "plkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+                    "plkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p");
             fs::remove(earlyPam);
             pam->exportAccount(earlyPam, "bundle-password");
             std::unique_ptr<Session> quin
                 = accountAt("bz-presence-quin", AccountKind::eUser,
-                    "qlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+                    "qlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p");
             const PresenceDay today = presenceDayOf(utc.load());
             befriend(*pam, *quin);
             const PresenceSchedule pamDays = presenceScheduleFrom(pam->presenceSeed(), today);
@@ -2719,7 +2719,7 @@ int main()
 
             {
                 std::unique_ptr<Session> robot = accountAt("bz-presence-bot", AccountKind::eBot,
-                    "rlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+                    "rlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p");
                 befriend(*pam, *robot);
                 CHECK(testutil::waitFor([&]() {
                     robot->sync();
@@ -2819,9 +2819,9 @@ int main()
             const auto pastPause = [&utc]() { utc.store(utc.load() + kSecondsPerHour + 1); };
 
             std::unique_ptr<Session> gina = accountAt(
-                "bz-epochs-gina", "rlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+                "bz-epochs-gina", "rlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p");
             std::unique_ptr<Session> hal = accountAt(
-                "bz-epochs-hal", "slkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+                "bz-epochs-hal", "slkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p");
             const EpochNumber start = epochAt(utc.load());
             CHECK(gina->ownEpochs().size() == kCardEpochs);
             CHECK(gina->ownEpochs().front().n == start);
@@ -3022,9 +3022,9 @@ int main()
             };
 
             const std::unique_ptr<Session> ann = accountNamed(
-                "bz-devices-ann", "tlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+                "bz-devices-ann", "tlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p");
             const std::unique_ptr<Session> ben = accountNamed(
-                "bz-devices-ben", "ulkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p");
+                "bz-devices-ben", "ulkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p");
             CHECK(ann->isPrimary());
             CHECK(ann->ownDevices().size() == 1);
             CHECK(ann->ownDevices().front().current);

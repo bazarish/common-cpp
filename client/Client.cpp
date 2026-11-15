@@ -137,7 +137,7 @@ void Client::releaseI2pLink()
 PublishResult Client::publishCard(const ContactCard& content, const Bytes& cardKey,
     const DestinationInfo& serving, const std::int64_t notBefore)
 {
-    validateB32I2pHost(serving.dest);
+    validateB33I2pHost(serving.dest);
     ContactCard signedCard = content;
     signedCard.issuedAt = std::max(nowSeconds(), notBefore + 1);
     signedCard.dest = serving.dest;
@@ -224,7 +224,7 @@ ContactInfo Client::fetchCard(const Descriptor& descriptor, const FetchTransport
     if (info.card.fingerprint() != descriptor.fingerprint) {
         throw std::runtime_error("fetched card is for a different fingerprint");
     }
-    validateB32I2pHost(info.card.dest);
+    validateB33I2pHost(info.card.dest);
     return info;
 }
 
@@ -281,7 +281,7 @@ DestinationInfo Client::myDestination()
     info.dest = body.at("dest").get<std::string>();
     info.state = body.value("state", std::string());
     if (!info.dest.empty()) {
-        validateB32I2pHost(info.dest);
+        validateB33I2pHost(info.dest);
     }
     return info;
 }

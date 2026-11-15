@@ -5,6 +5,7 @@
 
 #include <bazarish/Cms.hpp>
 #include <bazarish/Crypto.hpp>
+#include <bazarish/I2pAddress.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/PathText.hpp>
 
@@ -101,6 +102,7 @@ FileOffer fileOfferFromJson(const nlohmann::json& json)
     FileOffer offer;
     offer.fileId = json.at("fileId").get<std::string>();
     offer.host = json.at("host").get<std::string>();
+    validateB33I2pHost(offer.host);
     offer.header = fromBase64(json.at("header").get<std::string>());
     offer.key = json.at("key").get<std::string>();
     offer.sha256 = json.at("sha256").get<std::string>();

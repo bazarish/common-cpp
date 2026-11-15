@@ -38,7 +38,7 @@ int main()
     const Identity serverIdentity = Identity::generate();
     const std::string serverFp = serverIdentity.fingerprint();
     const Key servingKey = Key::generateSealing();
-    const std::string userDest = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p";
+    const std::string userDest = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p";
     const Identity user = Identity::generate();
 
     const Descriptor descriptor{user.fingerprint(), userDest, newLinkKey()};

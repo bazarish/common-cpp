@@ -2,6 +2,7 @@
 #include "bazarish/Certificates.hpp"
 
 #include "bazarish/Hybrid.hpp"
+#include "bazarish/I2pAddress.hpp"
 
 #include "SignedDocument.hpp"
 
@@ -136,6 +137,7 @@ ContactCard ContactCard::verify(const Bytes& der)
     card.issuedAt = verified.body.at(kIssuedAtField).get<std::int64_t>();
     card.kind = accountKindFromName(verified.body.at(kKindField).get<std::string>());
     card.dest = verified.body.at(kDestField).get<std::string>();
+    validateB33I2pHost(card.dest);
     card.devices = cardDevices(certsFromJson(verified.body.at(kDevicesField)),
         fromBase64(verified.body.at(kRevocationField).get<std::string>()));
     card.signer = signingDevice(verified.signerClassicalDer, verified.signerPqDer, card.devices);

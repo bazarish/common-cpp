@@ -311,7 +311,7 @@ void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap, const std
     contact.epochs = mergedEpochs(contact.epochs, epochsFromJson(bootstrap.at("epochs")), utc);
     if (bootstrap.contains("dest")) {
         contact.dest = bootstrap.at("dest").get<std::string>();
-        validateB32I2pHost(contact.dest);
+        validateB33I2pHost(contact.dest);
     }
     if (bootstrap.contains("servingKey")) {
         contact.servingSealingB64 = bootstrap.at("servingKey").get<std::string>();
@@ -2922,7 +2922,7 @@ void Session::recordRequestedContact(const std::string& peerFingerprint,
             + std::to_string(kMaxContactGreetingBytes) + " bytes");
     }
     const Key peerServingKey = info.card.servingSealingKey();
-    validateB32I2pHost(info.card.dest);
+    validateB33I2pHost(info.card.dest);
     const std::vector<EpochPublic> epochs = mergedEpochs({}, info.card.epochs, epochClock_());
     if (!epochFor(epochs, epochClock_()).has_value()) {
         throw std::runtime_error("their card names no key for this month: ask them to open Bazarish");
@@ -4144,7 +4144,7 @@ std::vector<IncomingMessage> Session::takeIn(
                         const std::string servingKey = routing.value("servingKey", std::string());
                         if (!dest.empty() && !servingKey.empty()
                             && (peer.dest != dest || peer.servingSealingB64 != servingKey)) {
-                            validateB32I2pHost(dest);
+                            validateB33I2pHost(dest);
                             bazarish::log::info("contact {} answers at a new destination now",
                                 bazarish::log::redact(message.fromFingerprint));
                             peer.dest = dest;
@@ -5926,6 +5926,10 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
         if (key.size() != kAeadKeyBytes) {
             return;
         }
+        if (!isB33I2pHost(body.value("dest", std::string()))) {
+            bazarish::log::warn("call invite dropped: its media address is not a b33");
+            return;
+        }
         call_.state = CallState::eIncoming;
         call_.callId = message.callId;
         call_.peerFingerprint = from;
@@ -5963,6 +5967,10 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
     if (type == "call.accept") {
         if (call_.state == CallState::eOutgoing && call_.callId == message.callId
             && from == call_.peerFingerprint) {
+            if (!isB33I2pHost(body.value("dest", std::string()))) {
+                bazarish::log::warn("call accept dropped: its media address is not a b33");
+                return;
+            }
             call_.peerMediaDest = body.value("dest", std::string());
             call_.state = CallState::eActive;
             call_.stage = CallStage::eOpening;

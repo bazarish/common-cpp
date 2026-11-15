@@ -24,6 +24,9 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// I2P naming: a b33 label is 56 base32 characters, a plain b32 one 52.
+constexpr std::size_t kB33LabelChars = 56;
+constexpr std::size_t kB32LabelChars = 52;
 constexpr int kOverflowRounds = 4;
 
 void writeFile(const fs::path& path, const Bytes& bytes)
@@ -73,7 +76,7 @@ int main()
 
     FileOffer offer;
     offer.fileId = "msg-1";
-    offer.host = "example.b32.i2p";
+    offer.host = std::string(kB33LabelChars, 'e') + ".b32.i2p";
     offer.header = prepared.header;
     offer.key = prepared.key;
     offer.sha256 = prepared.sha256;
@@ -86,6 +89,11 @@ int main()
     CHECK(roundTripped.key == offer.key);
     CHECK(roundTripped.sha256 == offer.sha256);
     CHECK(roundTripped.size == offer.size);
+    {
+        FileOffer plainB32 = offer;
+        plainB32.host = std::string(kB32LabelChars, 'e') + ".b32.i2p";
+        CHECK_THROWS(fileOfferFromJson(fileOfferToJson(plainB32)));
+    }
 
     {
         const fs::path dest = root / "received.bin";
