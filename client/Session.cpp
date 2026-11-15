@@ -2694,6 +2694,65 @@ bool Session::withdrawUndelivered(const std::string& peerFingerprint, const std:
     return unreachable;
 }
 
+bool Session::rewriteUndelivered(const std::string& peerFingerprint, const std::string& messageId,
+    const std::string& text, const InlineKeyboard& keyboard, const DeliveryWatch& watch)
+{
+    settleDeliveries();
+    std::optional<std::uint64_t> carrying;
+    for (const auto& [seq, entry] : outbox_) {
+        if (!entry.own && entry.peer == peerFingerprint
+            && std::find(entry.ids.begin(), entry.ids.end(), messageId) != entry.ids.end()) {
+            if (carrying.has_value()) {
+                return false;
+            }
+            carrying = seq;
+        }
+    }
+    if (!carrying.has_value() || outbox_.at(*carrying).ids.size() != 1) {
+        return false;
+    }
+    std::vector<nlohmann::json> items = decodedBody(outbox_.at(*carrying).plain);
+    const JsonWipe itemsWiped(items);
+    nlohmann::json& inner = items.front();
+    if (inner.value("type", std::string()) != kTypeText
+        || inner.value("id", std::string()) != messageId) {
+        return false;
+    }
+    const std::uint64_t seq = *carrying;
+    bool withdrawn = true;
+    tellCourier([seq, &withdrawn](OutboundCourier& courier) {
+        withdrawn = courier.withdrawLetter(seq);
+    });
+    if (!withdrawn) {
+        return false;
+    }
+    OutboxEntry entry = std::move(outbox_.at(seq));
+    heldWatches_.erase(seq);
+    eraseOutboxEntry(seq);
+    const auto rewrite = [&text, &keyboard](nlohmann::json& message) {
+        message["text"] = text;
+        if (!keyboard.empty() || message.contains("keyboard")) {
+            message["keyboard"] = keyboardToJson(keyboard);
+        }
+    };
+    rewrite(inner);
+    inner.erase(kAuthorshipField);
+    signAuthorship(inner, client_->credential(), false);
+    for (nlohmann::json& echoed : entry.echoes) {
+        if (echoed.value("id", std::string()) == messageId) {
+            rewrite(echoed);
+        }
+    }
+    OPENSSL_cleanse(entry.plain.data(), entry.plain.size());
+    entry.plain = encodedBatch(items);
+    if (entry.plain.size() + kHybridSealOverheadBytes > kMaxMessagePayloadBytes) {
+        throw std::runtime_error("the edited message is too large to send - send it as a file");
+    }
+    deliver(std::move(entry), watch);
+    db_->dropOverwritten();
+    return true;
+}
+
 void Session::withdrawSelfDeliveriesTo(const std::string& device)
 {
     settleDeliveries();
@@ -3354,6 +3413,9 @@ void Session::sendEdit(const std::string& peerFingerprint, const std::string& re
     const std::string& text, const InlineKeyboard& keyboard,
     const DeliveryWatch& watch)
 {
+    if (rewriteUndelivered(peerFingerprint, refMessageId, text, keyboard, watch)) {
+        return;
+    }
     nlohmann::json inner = envelope("edit", newMessageId(), {
         {"ref", refMessageId},
         {"text", text},

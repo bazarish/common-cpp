@@ -695,6 +695,9 @@ public:
     void forgetSentFilesFor(const std::string& peerFingerprint);
     // True when no copy of the message can reach the peer any more.
     bool withdrawUndelivered(const std::string& peerFingerprint, const std::string& messageId);
+    // A text not yet on its way goes anew with the edited words, under the same id.
+    bool rewriteUndelivered(const std::string& peerFingerprint, const std::string& messageId,
+        const std::string& text, const InlineKeyboard& keyboard, const DeliveryWatch& watch);
     void unsend(const std::string& e2eId);
 
     void releaseI2pLinks();

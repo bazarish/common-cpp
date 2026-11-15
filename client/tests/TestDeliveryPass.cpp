@@ -2136,6 +2136,52 @@ int main()
             }, std::chrono::milliseconds(3000)));
             std::printf("TestDeliveryPass: a message deleted before it left was withdrawn, and"
                         " neither it nor a delete reached the recipient\n");
+
+            dialsToSam = 0;
+            rita->setOutboundLinks(samGone);
+            const std::string editedId = "edited-before-it-left";
+            const std::string firstWords = "words to be taken back " + toHex(randomBytes(8));
+            const std::string lastWords = "the words that stand " + toHex(randomBytes(8));
+            rita->sendMessage(sam->fingerprint(), firstWords, editedId);
+            CHECK(testutil::waitFor([&]() { return dialsToSam.load() > 0; }));
+            CHECK(!testutil::waitFor([&]() { return dialsToSam.load() > 1; },
+                std::chrono::milliseconds(300)));
+            CHECK(testutil::filesHold(ritaDir, accountkey::keyFor(ritaDir, std::string{}), firstWords));
+            rita->sendEdit(sam->fingerprint(), editedId, lastWords);
+            CHECK(rita->watchDelivery(sam->fingerprint(), editedId, DeliveryWatch{}));
+            CHECK(!testutil::filesHold(ritaDir, accountkey::keyFor(ritaDir, std::string{}), firstWords));
+            rita->setOutboundLinks(courierFor());
+            rita->flushPendingEchoes();
+            std::vector<IncomingMessage> arrived;
+            CHECK(testutil::waitFor([&]() {
+                for (IncomingMessage& item : sam->sync()) {
+                    arrived.push_back(std::move(item));
+                }
+                for (const IncomingMessage& item : arrived) {
+                    if (item.e2eId == editedId) {
+                        return true;
+                    }
+                }
+                return false;
+            }));
+            CHECK(!testutil::waitFor([&]() {
+                for (IncomingMessage& item : sam->sync()) {
+                    arrived.push_back(std::move(item));
+                }
+                return false;
+            }, std::chrono::milliseconds(2000)));
+            int copies = 0;
+            for (const IncomingMessage& item : arrived) {
+                CHECK(item.text != firstWords);
+                CHECK(item.refId != editedId);
+                if (item.e2eId == editedId) {
+                    CHECK(item.text == lastWords);
+                    ++copies;
+                }
+            }
+            CHECK(copies == 1);
+            std::printf("TestDeliveryPass: a message edited before it left went once, with the"
+                        " edited words only\n");
         }
 
         {
