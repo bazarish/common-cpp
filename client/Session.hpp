@@ -287,6 +287,9 @@ public:
     static void changePassphrase(const std::filesystem::path& accountFile,
         const std::string& oldPassphrase, const std::string& newPassphrase);
 
+    // The keys of epochs no longer served leave the database, its log and the outbox.
+    void eraseEndedEpochKeys();
+
     struct PairingOffer {
         std::string uri;
         std::string code;
@@ -858,7 +861,7 @@ private:
     void takeContactDevices(const std::string& peerFingerprint, const nlohmann::json& body);
     void takeContactBook(Contact& contact, const DeviceBook& offered);
     void withdrawSelfDeliveriesTo(const std::string& device);
-    nlohmann::json bundleBase() const;
+    nlohmann::json bundleBase();
 
     void submitSignedToSelf(nlohmann::json inner, const std::string& kind,
         std::vector<std::string> ids = {}, const DeliveryWatch& watch = {},
@@ -901,7 +904,8 @@ private:
     void takePresenceSchedule(const std::string& peerFingerprint, const nlohmann::json& body);
     EpochNumber currentEpoch() const;
     std::vector<EpochPublic> cardEpochs() const;
-    void persistRing() const;
+    void persistRing();
+    void forgetEndedKeys();
     bool createsEpochs() const;
     void ensureOwnEpochs();
     void republishCardIfStale();

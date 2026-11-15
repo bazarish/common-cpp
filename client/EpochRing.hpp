@@ -4,6 +4,7 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Crypto.hpp>
 #include <bazarish/Epochs.hpp>
+#include <bazarish/SecretBytes.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -18,6 +19,9 @@
 namespace bazarish::client {
 
 // The account's epoch sealing keys; shared with the threads that open what was sealed to them.
+// Overwrites the private keys a list of epoch keys carries.
+void wipeKeys(nlohmann::json& list);
+
 class EpochRing {
 public:
     EpochRing() = default;
@@ -27,11 +31,14 @@ public:
     // [{n, g, by, pem}]: `by` is the device that made the key.
     nlohmann::json toJson() const;
     nlohmann::json toJson(const std::set<EpochNumber>& numbers) const;
+    // The list as text; the copies of the keys made on the way are wiped.
+    SecretBytes toText() const;
 
     // False when the ring held that key already.
     bool add(EpochNumber n, EpochGeneration g, const std::string& by, Key key);
     // False when the ring held every key of the list already.
     bool addAll(const nlohmann::json& list);
+    bool addAll(const SecretBytes& text);
 
     std::vector<EpochPublic> inUse(EpochNumber first) const;
     bool holds(EpochNumber n) const;

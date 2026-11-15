@@ -39,6 +39,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <openssl/crypto.h>
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -87,6 +89,14 @@ bool isAvatarPicture(const Bytes& data, const std::string& mime)
 }  // namespace
 
 namespace {
+
+SecretBytes wipedText(const nlohmann::json& document)
+{
+    std::string text = document.dump();
+    SecretBytes out(Bytes(text.begin(), text.end()));
+    OPENSSL_cleanse(text.data(), text.size());
+    return out;
+}
 
 bool sharePresence(const AccountKind own, const AccountKind peer)
 {
@@ -648,7 +658,7 @@ std::unique_ptr<Session> Session::create(const fs::path& accountFile, const Acco
     for (EpochNumber n = current; n < current + static_cast<EpochNumber>(kCardEpochs); ++n) {
         ring->add(n, kFirstRevocationNumber, device.id(), Key::generateSealing());
     }
-    db->putText(kEpochRingRow, ring->toJson().dump());
+    db->put(kEpochRingRow, ring->toText().bytes());
 
     std::optional<PresenceSeed> presenceSeed;
     if (kind == AccountKind::eUser) {
@@ -807,11 +817,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     }
     std::map<std::string, Bytes> ownSealing = ownSealingFromJson(ownDevices, ownBook);
     const std::shared_ptr<EpochRing> ring = std::make_shared<EpochRing>();
-    ring->addAll(parseJson(db->text(kEpochRingRow)));
-    if (ring->eraseEnded(systemUtcSeconds())) {
-        db->putText(kEpochRingRow, ring->toJson().dump());
-        db->dropOverwritten();
-    }
+    ring->addAll(SecretBytes(db->get(kEpochRingRow).value()));
 
     const AccountKind ownKind = accountKindFromName(meta.at("kind").get<std::string>());
     std::map<std::string, Contact> contacts;
@@ -966,6 +972,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
         }
     }
 
+    session->eraseEndedEpochKeys();
     return session;
 }
 
@@ -1181,9 +1188,43 @@ std::vector<EpochPublic> Session::cardEpochs() const
     return epochs;
 }
 
-void Session::persistRing() const
+void Session::persistRing()
 {
-    db_->putText(kEpochRingRow, ring_->toJson().dump());
+    const bool erased = ring_->eraseEnded(epochClock_());
+    db_->put(kEpochRingRow, ring_->toText().bytes());
+    if (erased) {
+        forgetEndedKeys();
+    }
+}
+
+void Session::eraseEndedEpochKeys()
+{
+    if (ring_->eraseEnded(epochClock_())) {
+        db_->put(kEpochRingRow, ring_->toText().bytes());
+        forgetEndedKeys();
+    }
+}
+
+void Session::forgetEndedKeys()
+{
+    settleDeliveries();
+    std::vector<std::uint64_t> withdrawn;
+    std::vector<std::string> devices;
+    for (const auto& [seq, entry] : outbox_) {
+        if (entry.own && entry.kind == kTypeDeviceEpochs) {
+            withdrawn.push_back(seq);
+            devices.push_back(entry.toDevice);
+        }
+    }
+    for (const std::uint64_t seq : withdrawn) {
+        tellCourier([seq](OutboundCourier& courier) { courier.forget(seq); });
+        heldWatches_.erase(seq);
+        eraseOutboxEntry(seq);
+    }
+    db_->dropOverwritten();
+    if (!devices.empty()) {
+        sendRingToDevices({}, devices);
+    }
 }
 
 const PresenceSeed& Session::presenceSeed() const
@@ -5403,11 +5444,7 @@ void Session::ensureOwnEpochs()
 {
     const std::int64_t utc = epochClock_();
     const EpochNumber current = epochAt(utc);
-    const bool erased = ring_->eraseEnded(utc);
-    if (erased) {
-        persistRing();
-        db_->dropOverwritten();
-    }
+    eraseEndedEpochKeys();
     if (!createsEpochs()) {
         return;
     }
@@ -5494,6 +5531,7 @@ void Session::sendEpochsTo(const std::string& peerFingerprint)
 
 void Session::keepEpochs()
 {
+    eraseEndedEpochKeys();
     if (switchedOff_) {
         return;
     }
@@ -5594,7 +5632,9 @@ void Session::takeOwnEpochs(const std::string& fromDevice, const nlohmann::json&
             made.push_back(key);
         }
     }
-    if (!ring_->addAll(made)) {
+    const bool added = ring_->addAll(made);
+    wipeKeys(made);
+    if (!added) {
         return;
     }
     persistRing();
@@ -5608,10 +5648,11 @@ void Session::sendRingToDevices(
     const std::set<EpochNumber>& numbers, std::vector<std::string> devices)
 {
     std::erase_if(devices, [this](const std::string& device) { return !ownSealing_.contains(device); });
-    const nlohmann::json keys = numbers.empty() ? ring_->toJson() : ring_->toJson(numbers);
+    nlohmann::json keys = numbers.empty() ? ring_->toJson() : ring_->toJson(numbers);
     submitSignedToDevices(devices,
         envelope(kTypeDeviceEpochs, toHex(randomBytes(kDeliveryIdBytes)), {{"epochs", keys}}),
         kTypeDeviceEpochs);
+    wipeKeys(keys);
 }
 
 void Session::dropUnmadeEpochs(Contact& contact) const
@@ -6666,8 +6707,9 @@ PairBundleFn Session::pairingBundle(const DeviceRole role, const Bytes& linkKey)
         bundle[kBundleDeviceField] = {{kBundleDeviceCertField,
             toBase64(DeviceCertificate::issue(
                 Identity::fromPrivatePem(rootPem), device, role, systemUtcSeconds()))}};
-        const std::string text = bundle.dump();
-        return sealPairBundle(linkKey, Bytes(text.begin(), text.end()));
+        const SecretBytes text = wipedText(bundle);
+        wipeKeys(bundle["epochs"]);
+        return sealPairBundle(linkKey, text.bytes());
     };
 }
 
@@ -6677,8 +6719,9 @@ Bytes Session::exportAccountBytes(const std::string& password, const DeviceRole 
     return accountkey::sealBackup(bundle.bytes(), password);
 }
 
-nlohmann::json Session::bundleBase() const
+nlohmann::json Session::bundleBase()
 {
+    eraseEndedEpochKeys();
     const nlohmann::json meta = parseJson(db_->text("meta"));
     nlohmann::json avatars = nlohmann::json::object();
     for (const auto& [contactFp, contact] : contacts_) {
@@ -6721,8 +6764,9 @@ Bytes Session::accountBundle(const DeviceRole role)
             {kBundleDeviceSealingField, device.sealingPem()},
         };
     }
-    const std::string text = bundle.dump();
-    return Bytes(text.begin(), text.end());
+    SecretBytes text = wipedText(bundle);
+    wipeKeys(bundle["epochs"]);
+    return text.release();
 }
 
 void Session::exportAccount(
@@ -6754,7 +6798,7 @@ void Session::importAccountBytes(const Bytes& sealed, const fs::path& accountFil
 void Session::importAccountBundle(
     const Bytes& plain, const fs::path& accountFile, const std::string& atRestPassphrase)
 {
-    const nlohmann::json bundle = readBundle(plain);
+    nlohmann::json bundle = readBundle(plain);
     const AccountKind kind = accountKindFromName(bundle.at("meta").at("kind").get<std::string>());
     std::optional<Identity> root;
     if (bundle.contains(kBundleRootField)) {
@@ -6803,7 +6847,9 @@ void Session::importAccountBundle(
     db.putText(kOwnDevicesRow, ownDevicesJson(book, sealing).dump());
     EpochRing ring;
     ring.addAll(bundle.at("epochs"));
-    db.putText(kEpochRingRow, ring.toJson().dump());
+    wipeKeys(bundle.at("epochs"));
+    static_cast<void>(ring.eraseEnded(systemUtcSeconds()));
+    db.put(kEpochRingRow, ring.toText().bytes());
     if (kind == AccountKind::eUser) {
         db.put(kPresenceSeedRow,
             PresenceSeed(fromBase64(bundle.at("presenceSeed").get<std::string>())).bytes());

@@ -306,6 +306,15 @@ void checkSessionPassphrase(const fs::path& dir)
     }
 }
 
+std::string secondPemLine(const std::string& pem)
+{
+    std::istringstream lines(pem);
+    std::string line;
+    std::getline(lines, line);
+    std::getline(lines, line);
+    return line;
+}
+
 void checkEndedEpochErased(const fs::path& dir)
 {
     AccountManager manager(dir / "erasure");
@@ -318,10 +327,7 @@ void checkEndedEpochErased(const fs::path& dir)
     const EpochNumber ended = epochAt(now) - kMonthsAgo;
     CHECK(now >= epochEnd(ended) + kEpochKeptAfterEndSeconds);
     const Key endedKey = Key::generateSealing();
-    std::istringstream pemLines(endedKey.privatePem());
-    std::string needle;
-    std::getline(pemLines, needle);
-    std::getline(pemLines, needle);
+    const std::string needle = secondPemLine(endedKey.privatePem());
     {
         AccountDb db(file, "pw");
         const nlohmann::json held = db.document("epochs");
@@ -343,6 +349,38 @@ void checkEndedEpochErased(const fs::path& dir)
     CHECK(!filesHold(file, key, needle));
 }
 
+void checkBundleHoldsActiveKeysOnly(const fs::path& dir)
+{
+    AccountManager manager(dir / "bundle");
+    const AccountInfo made = manager.create("Bundled", AccountKind::eUser, "pw");
+    const fs::path file = manager.fileFor(made.id);
+    const std::int64_t now = systemUtcSeconds();
+    const EpochNumber current = epochAt(now);
+    std::string needle;
+    for (const nlohmann::json& held : AccountDb(file, "pw").document("epochs")) {
+        if (held.at("n").get<EpochNumber>() == current) {
+            needle = secondPemLine(held.at("pem").get<std::string>());
+        }
+    }
+    CHECK(!needle.empty());
+
+    const std::unique_ptr<Session> session = manager.open(made.id, "pw");
+    const std::int64_t later = epochEnd(current) + kEpochKeptAfterEndSeconds;
+    session->setEpochClock([later]() { return later; });
+    const Bytes sealed = session->exportAccountBytes("bundle-pw");
+    const SecretBytes opened = accountkey::openBackup(sealed, "bundle-pw");
+    const Bytes& plain = opened.bytes();
+    const nlohmann::json bundle = nlohmann::json::parse(plain.begin(), plain.end());
+    for (const nlohmann::json& carried : bundle.at("epochs")) {
+        CHECK(later < epochEnd(carried.at("n").get<EpochNumber>()) + kEpochKeptAfterEndSeconds);
+    }
+    CHECK(std::string(plain.begin(), plain.end()).find(needle) == std::string::npos);
+    EpochRing kept;
+    kept.addAll(AccountDb(file, "pw").document("epochs"));
+    CHECK(!kept.holds(current));
+    CHECK(!filesHold(file, accountkey::keyFor(file, "pw"), needle));
+}
+
 }  // namespace
 
 int main()
@@ -355,6 +393,7 @@ int main()
     checkSessionPassphrase(dir);
     checkReservedPassphrase(dir);
     checkEndedEpochErased(dir);
+    checkBundleHoldsActiveKeysOnly(dir);
     fs::remove_all(dir);
     return 0;
 }
