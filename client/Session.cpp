@@ -898,6 +898,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     session->acceptCalls_ = meta.value("acceptCalls", true);
     session->sendReceipts_ = meta.value("sendReceipts", true);
     session->showPresence_ = meta.value("showPresence", true);
+    session->announceOwed_ = meta.value("announceOwed", false);
     session->contactsAskedBy_
         = meta.value("contactsAskedBy", std::vector<std::string>());
     session->cardB64_ = meta.value("card", std::string{});
@@ -1235,8 +1236,30 @@ const PresenceSeed& Session::presenceSeed() const
     return *presenceSeed_;
 }
 
-ContactCard Session::cardContent() const
+void Session::makeCardEpochs()
 {
+    if (!createsEpochs() || cardEpochs().size() == kCardEpochs) {
+        return;
+    }
+    const EpochNumber current = currentEpoch();
+    std::set<EpochNumber> made;
+    for (EpochNumber n = current; n < current + static_cast<EpochNumber>(kCardEpochs); ++n) {
+        if (!ring_->holds(n)) {
+            ring_->add(n, ownBook_.revocationNumber(), deviceId(), Key::generateSealing());
+            epochsMakeAt_.erase(n);
+            made.insert(n);
+        }
+    }
+    persistRing();
+    bazarish::log::info("made the keys of epochs {} to {} at once: no card is published without them",
+        *made.begin(), *made.rbegin());
+    epochsCheckedDay_.reset();
+    sendRingToDevices(made, siblingDevices());
+}
+
+ContactCard Session::cardToPublish()
+{
+    makeCardEpochs();
     ContactCard card;
     card.kind = kind_;
     card.epochs = cardEpochs();
@@ -1310,6 +1333,7 @@ void Session::persistMeta() const
         {"sendReceipts", sendReceipts_},
         {"showPresence", showPresence_},
         {"contactsAskedBy", contactsAskedBy_},
+        {"announceOwed", announceOwed_},
         {"aliasNames", aliasNamesToJson()},
         {"aliasCheckAfter", aliasCheckAfter_},
         {"aliasStatusAt", aliasStatusAt_},
@@ -1380,15 +1404,16 @@ void Session::registerAccount()
     const DestinationInfo serving = servedOrOwnDestination();
     PublishResult result;
     try {
-        result = client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt());
+        result = client_->publishCard(cardToPublish(), cardKey_, serving, currentCardIssuedAt());
     } catch (const ApiError& error) {
         if (error.code != ErrorCode::eAccountUnknown) {
             throw;
         }
         reportConnectProgress(fingerprint(), ConnectMilestone::eRegistering);
         client_->registerHere();
-        result = client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt());
+        result = client_->publishCard(cardToPublish(), cardKey_, serving, currentCardIssuedAt());
     }
+    announceOwed_ = announceOwed_ || newHere;
     const bool movedOnCard = storeCard(result);
     approval_ = {result.approvalPending, result.registrationMessage};
     if (approval_.pending) {
@@ -1398,8 +1423,10 @@ void Session::registerAccount()
     reportConnectProgress(fingerprint(), ConnectMilestone::eRegisteringDevice);
     client_->registerThisDevice(install_);
     registerEveryPass();
-    if (newHere) {
+    if (announceOwed_) {
         announceThisDevice();
+        announceOwed_ = false;
+        persistMeta();
     }
 
     reportConnectProgress(fingerprint(), ConnectMilestone::eCheckingAddress);
@@ -1446,13 +1473,13 @@ void Session::registerSelfHosted(const std::string& servedDest)
     serving.servingSealingKeyDer = servingSealingDer();
     PublishResult result;
     try {
-        result = client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt());
+        result = client_->publishCard(cardToPublish(), cardKey_, serving, currentCardIssuedAt());
     } catch (const ApiError& error) {
         if (error.code != ErrorCode::eAccountUnknown) {
             throw;
         }
         client_->registerHere();
-        result = client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt());
+        result = client_->publishCard(cardToPublish(), cardKey_, serving, currentCardIssuedAt());
     }
     storeCard(result);
     client_->registerThisDevice(install_);
@@ -1480,7 +1507,7 @@ bool Session::delegateRouting()
         = client_->sendI2pTransient(i2pTransient_, expires, addressKeys());
     serving.servingSealingKeyDer = servingSealingDer();
     reportConnectProgress(fingerprint(), ConnectMilestone::ePublishingCard);
-    const bool moved = storeCard(client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt()));
+    const bool moved = storeCard(client_->publishCard(cardToPublish(), cardKey_, serving, currentCardIssuedAt()));
     reportConnectProgress(fingerprint(), ConnectMilestone::eSyncingDevices);
     try {
         syncI2pMasterToSelf();
@@ -3527,7 +3554,7 @@ void Session::replaceOwnAddress()
     DestinationInfo serving
         = client_->sendI2pTransient(i2pTransient_, expires, addressKeys());
     serving.servingSealingKeyDer = servingSealingDer();
-    const bool moved = storeCard(client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt()));
+    const bool moved = storeCard(client_->publishCard(cardToPublish(), cardKey_, serving, currentCardIssuedAt()));
     try {
         syncI2pMasterToSelf();
     } catch (const std::exception& error) {
@@ -4229,6 +4256,7 @@ std::vector<IncomingMessage> Session::takeIn(
     std::set<std::string> establishedPeers;
     std::set<std::string> reaskedPeers;
     std::set<std::string> heardFrom;
+    std::set<std::string> movedPeers;
     const log::Slow timedItems(
         "taking in " + std::to_string(items.size()) + " mailbox item(s)", kSlowStretch);
     for (MailboxItem& item : items) {
@@ -4347,6 +4375,7 @@ std::vector<IncomingMessage> Session::takeIn(
                                 courier.readdress(
                                     message.fromFingerprint, dest, fromBase64(servingKey));
                             });
+                            movedPeers.insert(message.fromFingerprint);
                         }
                     }
 
@@ -4828,6 +4857,15 @@ std::vector<IncomingMessage> Session::takeIn(
         maybeSendAvatarToContact(peer);
         offerPresenceSchedule(peer);
         sendDevicesTo(peer);
+    }
+
+    for (const std::string& peer : movedPeers) {
+        const auto contact = contacts_.find(peer);
+        if (contact != contacts_.end() && !epochFor(contact->second.epochs, epochClock_()).has_value()
+            && queuedLetter(peer, [](const OutboxEntry&) { return true; })) {
+            epochsAskedDay_.erase(peer);
+            refreshContactEpochs(peer);
+        }
     }
 
     for (const std::string& peer : heardFrom) {
@@ -6293,7 +6331,7 @@ bool Session::refreshOwnCard()
         throw std::runtime_error("not registered: nothing to refresh");
     }
     return storeCard(
-        client_->publishCard(cardContent(), cardKey_, servedOrOwnDestination(), currentCardIssuedAt()));
+        client_->publishCard(cardToPublish(), cardKey_, servedOrOwnDestination(), currentCardIssuedAt()));
 }
 
 DestinationInfo Session::servedOrOwnDestination()

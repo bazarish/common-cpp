@@ -307,6 +307,7 @@ endif()
     bazarish_client_add_test(TestEpochRing)
     bazarish_client_add_test(TestSocksProxy)
     bazarish_client_add_test(TestDeliveryPass)
+    bazarish_client_add_test(TestLongRestore)
     bazarish_client_add_test(TestWireLog)
 endif()
 

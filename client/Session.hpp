@@ -822,7 +822,8 @@ private:
     void adoptAddressKeys(const std::string& sealingPem, const std::string& signingPem);
     Bytes servingSealingDer() const;
     void registerEveryPass();
-    ContactCard cardContent() const;
+    void makeCardEpochs();
+    ContactCard cardToPublish();
     nlohmann::json bootstrapBlock(const std::string& pass) const;
     std::int64_t currentCardIssuedAt() const;
     DestinationInfo servedOrOwnDestination();
@@ -1190,6 +1191,7 @@ private:
     bool acceptCalls_ = true;
     bool sendReceipts_ = true;
     bool showPresence_ = true;
+    bool announceOwed_ = false;
     std::unique_ptr<Presence> presence_;
     std::vector<std::string> presenceOrder_;
     UtcClock presenceClock_ = systemUtcSeconds;
