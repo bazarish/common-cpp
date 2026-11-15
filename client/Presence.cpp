@@ -41,6 +41,9 @@ constexpr std::size_t kHeaderBytes = kTypeBytes + kPresenceSubscriptionIdBytes;
 constexpr std::size_t kSequenceBytes = 8;
 constexpr std::size_t kBitsPerByte = 8;
 constexpr std::size_t kSubscriptionKeyBytes = kAeadKeyBytes;
+constexpr std::size_t kStateSaltBytes = 16;
+constexpr std::size_t kMaxHoldersPerWatch = 4;
+constexpr char kStateKeyInfo[] = "bazarish presence state v1";
 constexpr char kWatchTag[] = "presence.watch";
 constexpr char kWatchDomain[] = "bazarish presence watch v1";
 constexpr char kWatchSignatureField[] = "sig";
@@ -100,10 +103,16 @@ Bytes watchSigningInput(const nlohmann::json& unsignedWatch)
     return input;
 }
 
-Bytes sealedFrame(const std::uint8_t type, const Bytes& id, const Bytes& key,
+Bytes stateKeyFor(const Bytes& subscriptionKey, const Bytes& salt)
+{
+    return hkdfSha256(subscriptionKey, salt, kStateKeyInfo, kAeadKeyBytes);
+}
+
+Bytes sealedFrame(const std::uint8_t type, const Bytes& id, const Bytes& salt, const Bytes& key,
     const std::uint8_t direction, const std::uint64_t sequence, const nlohmann::json& payload)
 {
     Bytes frame = headerFor(type, id);
+    frame.insert(frame.end(), salt.begin(), salt.end());
     const Bytes nonce = nonceFor(direction, sequence);
     const Bytes sealed = aeadSeal(key, nonce, nlohmann::json::to_cbor(payload));
     frame.insert(frame.end(), nonce.begin(), nonce.end());
@@ -111,19 +120,20 @@ Bytes sealedFrame(const std::uint8_t type, const Bytes& id, const Bytes& key,
     return frame;
 }
 
-std::optional<nlohmann::json> openedFrame(const Bytes& frame, const Bytes& key,
-    const std::uint8_t direction, std::uint64_t& lastSequence)
+std::optional<nlohmann::json> openedFrame(const Bytes& frame, const std::size_t nonceAt,
+    const Bytes& key, const std::uint8_t direction, std::uint64_t& lastSequence)
 {
-    if (frame.size() < kHeaderBytes + kAeadNonceBytes + kAeadTagBytes) {
+    if (frame.size() < nonceAt + kAeadNonceBytes + kAeadTagBytes) {
         return std::nullopt;
     }
-    const Bytes nonce(frame.begin() + kHeaderBytes, frame.begin() + kHeaderBytes + kAeadNonceBytes);
+    const auto nonceBegin = frame.begin() + static_cast<std::ptrdiff_t>(nonceAt);
+    const Bytes nonce(nonceBegin, nonceBegin + kAeadNonceBytes);
     const std::uint64_t sequence = sequenceOf(nonce);
     if (nonce[0] != direction || sequence <= lastSequence) {
         return std::nullopt;
     }
     const std::optional<Bytes> plain
-        = aeadOpen(key, nonce, Bytes(frame.begin() + kHeaderBytes + kAeadNonceBytes, frame.end()));
+        = aeadOpen(key, nonce, Bytes(nonceBegin + kAeadNonceBytes, frame.end()));
     if (!plain) {
         return std::nullopt;
     }
@@ -233,7 +243,7 @@ struct Outgoing {
     Bytes id;
     Bytes key;
     std::uint64_t sent = 0;
-    std::uint64_t heard = 0;
+    std::vector<std::pair<Bytes, std::uint64_t>> heardBySalt;
     bool answered = false;
     bool sentBefore = false;
     Clock::time_point lastSent{};
@@ -248,6 +258,8 @@ struct Incoming {
     std::string reply;
     Bytes id;
     Bytes key;
+    Bytes salt;
+    Bytes stateKey;
     std::uint64_t sent = 0;
     std::uint64_t heard = 0;
     Clock::time_point expires{};
@@ -524,7 +536,7 @@ struct Presence::Impl {
         outgoing.id = randomBytes(kPresenceSubscriptionIdBytes);
         outgoing.key = randomBytes(kSubscriptionKeyBytes);
         outgoing.sent = 0;
-        outgoing.heard = 0;
+        outgoing.heardBySalt.clear();
         outgoing.answered = false;
     }
 
@@ -562,7 +574,7 @@ struct Presence::Impl {
     void sendRenew(WatcherLane& lane, Outgoing& outgoing, const Clock::time_point now)
     {
         send(*lane.runner, outgoing.host,
-            sealedFrame(kRenewType, outgoing.id, outgoing.key, kToHolder, ++outgoing.sent,
+            sealedFrame(kRenewType, outgoing.id, Bytes{}, outgoing.key, kToHolder, ++outgoing.sent,
                 nlohmann::json::object()));
         outgoing.lastSent = now;
     }
@@ -582,7 +594,7 @@ struct Presence::Impl {
         const PresenceState state = last ? PresenceState{} : stateFor(sub, now);
         const nlohmann::json payload = {{"online", state.online}, {"typing", state.typing}};
         send(*lane.runner, sub.reply,
-            sealedFrame(kStateType, sub.id, sub.key, kFromHolder, ++sub.sent, payload));
+            sealedFrame(kStateType, sub.id, sub.salt, sub.stateKey, kFromHolder, ++sub.sent, payload));
         sub.told = state;
     }
 
@@ -637,6 +649,8 @@ struct Presence::Impl {
         if (sub.key.size() != kSubscriptionKeyBytes) {
             return;
         }
+        sub.salt = randomBytes(kStateSaltBytes);
+        sub.stateKey = stateKeyFor(sub.key, sub.salt);
         sub.expires = now + timings.subscriptionLife;
         Incoming& stored = lane.incoming[subscriptionOf(subscriptionId)] = std::move(sub);
         tell(lane, stored, now, false);
@@ -656,7 +670,7 @@ struct Presence::Impl {
             return;
         }
         Incoming& sub = found->second;
-        if (!openedFrame(frame, sub.key, kToHolder, sub.heard)) {
+        if (!openedFrame(frame, kHeaderBytes, sub.key, kToHolder, sub.heard)) {
             return;
         }
         sub.expires = now + timings.subscriptionLife;
@@ -672,10 +686,26 @@ struct Presence::Impl {
             return;
         }
         Outgoing& outgoing = found->second;
-        const std::optional<nlohmann::json> payload
-            = openedFrame(frame, outgoing.key, kFromHolder, outgoing.heard);
+        if (frame.size() < kHeaderBytes + kStateSaltBytes) {
+            return;
+        }
+        const Bytes salt(frame.begin() + kHeaderBytes, frame.begin() + kHeaderBytes + kStateSaltBytes);
+        const auto holder = std::find_if(outgoing.heardBySalt.begin(), outgoing.heardBySalt.end(),
+            [&salt](const auto& heard) { return heard.first == salt; });
+        const bool known = holder != outgoing.heardBySalt.end();
+        if (!known && outgoing.heardBySalt.size() == kMaxHoldersPerWatch) {
+            return;
+        }
+        std::uint64_t heard = known ? holder->second : 0;
+        const std::optional<nlohmann::json> payload = openedFrame(
+            frame, kHeaderBytes + kStateSaltBytes, stateKeyFor(outgoing.key, salt), kFromHolder, heard);
         if (!payload) {
             return;
+        }
+        if (known) {
+            holder->second = heard;
+        } else {
+            outgoing.heardBySalt.emplace_back(salt, heard);
         }
         outgoing.lastHeard = now;
         outgoing.carriedUntil = Clock::time_point{};

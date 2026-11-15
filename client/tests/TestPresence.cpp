@@ -64,6 +64,9 @@ constexpr std::int64_t kScheduledDays = 2;
 constexpr std::int64_t kBeforeOverlap = kPresenceHalfOverlapSeconds + kSecondsPerMinute;
 constexpr std::int64_t kInOverlap = kPresenceHalfOverlapSeconds - kSecondsPerMinute;
 constexpr std::size_t kFrameHeaderBytes = 1 + kPresenceSubscriptionIdBytes;
+// Presence.md: a state frame carries the holder's salt, and its key is HKDF of the subscription key.
+constexpr std::size_t kStateSaltBytes = 16;
+constexpr char kStateKeyInfo[] = "bazarish presence state v1";
 
 std::atomic<std::int64_t> g_utc{kNoon};
 
@@ -389,24 +392,45 @@ public:
         watch.reply = link_.host();
         watch.sentAt = g_utc.load();
         key_ = watch.key;
-        link_.send(toHost,
-            presenceWatchFrame(watch, from.identity.classical(), *epochFor(to.ring->inUse(0), watch.sentAt)));
+        lastWatch_ = presenceWatchFrame(watch, from.identity.classical(), *epochFor(to.ring->inUse(0), watch.sentAt));
+        link_.send(toHost, lastWatch_);
         return next(kKnockWait).has_value();
+    }
+
+    bool knockAgain(const std::string& toHost)
+    {
+        link_.send(toHost, lastWatch_);
+        return next(kKnockWait).has_value();
+    }
+
+    bool sealedEachUnderItsOwnNonce() const
+    {
+        for (std::size_t first = 0; first < sealings_.size(); ++first) {
+            for (std::size_t second = first + 1; second < sealings_.size(); ++second) {
+                if (sealings_[first] == sealings_[second]) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     std::optional<nlohmann::json> next(const milliseconds within)
     {
         const std::optional<Bytes> frame = link_.receive(within);
-        if (!frame || frame->size() < kFrameHeaderBytes + kAeadNonceBytes) {
+        if (!frame || frame->size() < kFrameHeaderBytes + kStateSaltBytes + kAeadNonceBytes) {
             return std::nullopt;
         }
-        const auto nonceAt = frame->begin() + static_cast<std::ptrdiff_t>(kFrameHeaderBytes);
+        const auto saltAt = frame->begin() + static_cast<std::ptrdiff_t>(kFrameHeaderBytes);
+        const auto nonceAt = saltAt + static_cast<std::ptrdiff_t>(kStateSaltBytes);
         const auto sealedAt = nonceAt + static_cast<std::ptrdiff_t>(kAeadNonceBytes);
-        const std::optional<Bytes> plain
-            = aeadOpen(key_, Bytes(nonceAt, sealedAt), Bytes(sealedAt, frame->end()));
+        const Bytes stateKey = hkdfSha256(key_, Bytes(saltAt, nonceAt), kStateKeyInfo, kAeadKeyBytes);
+        const Bytes nonce(nonceAt, sealedAt);
+        const std::optional<Bytes> plain = aeadOpen(stateKey, nonce, Bytes(sealedAt, frame->end()));
         if (!plain) {
             return std::nullopt;
         }
+        sealings_.emplace_back(stateKey, nonce);
         return nlohmann::json::from_cbor(*plain);
     }
 
@@ -433,6 +457,8 @@ private:
 
     FakeLink link_;
     Bytes key_;
+    Bytes lastWatch_;
+    std::vector<std::pair<Bytes, Bytes>> sealings_;
 };
 
 class Observer {
@@ -976,6 +1002,20 @@ int main()
             std::chrono::duration_cast<milliseconds>(
                 found + kSamLeaseSetLife - kSamMargin - std::chrono::steady_clock::now())));
         CHECK(otoSees.waitFor(nia.fp(), kOnline, kSettle));
+    }
+
+    {
+        const Person ria;
+        const Person sol;
+        Observer solSees;
+        Presence sol1(sol.account(), netFor(net), solSees.sink(), fastTimings());
+        sol1.setContacts({ria.contact()});
+        sol1.setFocused(true);
+        CHECK(testutil::waitFor([&]() { return net.published(sol.dest); }));
+        Door replaying(net, ria.presence);
+        CHECK(replaying.knock(ria, sol, sol.dest));
+        CHECK(replaying.knockAgain(sol.dest));
+        CHECK(replaying.sealedEachUnderItsOwnNonce());
     }
 
     std::fprintf(stderr, "TestPresence passed\n");
