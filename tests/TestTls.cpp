@@ -68,6 +68,9 @@ int main()
 
         CHECK(ask(port, pinned(made.pin)).status == 200);
         CHECK(ask(port, pinned(caller.pin)).status == 0);
+        http::ClientOptions unchecked = pinned({});
+        unchecked.verifyPeer = false;
+        CHECK(ask(port, unchecked).status == 0);
 
         http::ClientOptions plain;
         plain.connectTimeout = std::chrono::seconds(5);

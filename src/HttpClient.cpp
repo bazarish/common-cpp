@@ -239,7 +239,7 @@ asio::awaitable<ClientResponse> exchange(asio::any_io_executor executor, const s
                 stream.set_verify_mode(ssl::verify_peer);
                 stream.set_verify_callback(ssl::host_name_verification(host));
             } else {
-                stream.set_verify_mode(ssl::verify_none);
+                throw std::invalid_argument("TLS to " + host + " with neither a pin nor a CA check");
             }
             if (SSL_set_tlsext_host_name(stream.native_handle(), host.c_str()) != 1) {
                 throw std::runtime_error("could not set the TLS server name for " + host);
