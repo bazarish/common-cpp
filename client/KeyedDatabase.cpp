@@ -138,7 +138,7 @@ void Database::run(const std::string& sql) const
     const int status = sqlite3_exec(db_.get(), sql.c_str(), nullptr, nullptr, &message);
     const std::unique_ptr<char, decltype(&sqlite3_free)> held(message, &sqlite3_free);
     if (status != SQLITE_OK) {
-        throw std::runtime_error(label_ + ": " + (held == nullptr ? "unknown" : held.get()));
+        throw StorageError(label_ + ": " + (held == nullptr ? "unknown" : held.get()));
     }
 }
 
@@ -151,7 +151,7 @@ void Database::truncateLog() const
 {
     if (sqlite3_wal_checkpoint_v2(db_.get(), nullptr, SQLITE_CHECKPOINT_TRUNCATE, nullptr, nullptr)
         != SQLITE_OK) {
-        throw std::runtime_error(label_ + ": the write-ahead log was not emptied: "
+        throw StorageError(label_ + ": the write-ahead log was not emptied: "
             + sqlite3_errmsg(db_.get()));
     }
 }
@@ -169,7 +169,7 @@ Statement::Statement(const Database& database, const std::string& sql)
         = sqlite3_prepare_v2(database.db_.get(), sql.c_str(), kWholeStatement, &prepared, nullptr);
     statement_.reset(prepared);
     if (status != SQLITE_OK) {
-        throw std::runtime_error(
+        throw StorageError(
             label_ + ": cannot prepare a statement: " + sqlite3_errmsg(database.db_.get()));
     }
 }
@@ -179,14 +179,14 @@ void Statement::bind(const int index, const std::string& text)
     if (sqlite3_bind_text(statement_.get(), index, text.data(), static_cast<int>(text.size()),
             SQLITE_TRANSIENT)
         != SQLITE_OK) {
-        throw std::runtime_error(label_ + ": cannot bind a value");
+        throw StorageError(label_ + ": cannot bind a value");
     }
 }
 
 void Statement::bind(const int index, const std::int64_t value)
 {
     if (sqlite3_bind_int64(statement_.get(), index, value) != SQLITE_OK) {
-        throw std::runtime_error(label_ + ": cannot bind a value");
+        throw StorageError(label_ + ": cannot bind a value");
     }
 }
 
@@ -197,7 +197,7 @@ void Statement::bind(const int index, const Bytes& blob)
         ? sqlite3_bind_zeroblob(statement_.get(), index, 0)
         : sqlite3_bind_blob64(statement_.get(), index, blob.data(), blob.size(), SQLITE_TRANSIENT);
     if (status != SQLITE_OK) {
-        throw std::runtime_error(label_ + ": cannot bind a value");
+        throw StorageError(label_ + ": cannot bind a value");
     }
 }
 
@@ -208,7 +208,7 @@ bool Statement::step()
         return true;
     }
     if (outcome != SQLITE_DONE) {
-        throw std::runtime_error(label_ + ": a statement did not complete");
+        throw StorageError(label_ + ": a statement did not complete");
     }
     return false;
 }

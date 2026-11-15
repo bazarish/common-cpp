@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 struct sqlite3;
@@ -34,7 +35,12 @@ void copyKeyedDatabase(
 void reencryptKeyed(const std::filesystem::path& from, const SecretBytes& fromKey,
     const std::filesystem::path& to, const SecretBytes& toKey);
 
-// Whatever goes wrong is thrown with the label in front.
+class StorageError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+// Whatever goes wrong is thrown as a StorageError with the label in front.
 class Database {
 public:
     Database(SqliteHandle db, std::string label);

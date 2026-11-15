@@ -8,6 +8,7 @@
 #include "MailWaitGate.hpp"
 #include "AccountDb.hpp"
 #include "AccountKey.hpp"
+#include "KeyedDatabase.hpp"
 #include "Authorship.hpp"
 #include "PresenceSeed.hpp"
 #include "Session.hpp"
@@ -111,6 +112,9 @@ constexpr std::size_t kSneakPassBytes = 32;
 constexpr int kQuietPasses = 3;
 constexpr std::size_t kShortReaderBytes = 31;
 constexpr std::array<std::uint8_t, 3> kJpegOpening{0xFF, 0xD8, 0xFF};
+constexpr const char* kPoisonItemId = "poison";
+constexpr std::size_t kPoisonItemBytes = 64;
+constexpr int kFailingPasses = 2;
 
 void respondJson(http::Response& response, const nlohmann::json& body)
 {
@@ -1231,6 +1235,66 @@ int main()
                 bob->sync();
                 return bob->contactAvatar(alice->fingerprint()).empty();
             }));
+        }
+
+        {
+            const auto idsFor = [&m](const std::string& owner) {
+                std::set<std::string> ids;
+                const std::lock_guard<std::mutex> lock(m.mu);
+                for (const Mock::Item& item : m.mailbox[owner]) {
+                    ids.insert(item.id);
+                }
+                return ids;
+            };
+            const auto holdsAny = [&idsFor](const std::string& owner, const std::set<std::string>& wanted) {
+                const std::set<std::string> held = idsFor(owner);
+                return std::any_of(wanted.begin(), wanted.end(),
+                    [&held](const std::string& id) { return held.contains(id); });
+            };
+
+            {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[bob->fingerprint()].push_back(
+                    {kPoisonItemId, "content", Bytes(kPoisonItemBytes, 'x')});
+            }
+            bob->sync();
+            CHECK(!holdsAny(bob->fingerprint(), {kPoisonItemId}));
+
+            const auto avatarWritesFail = [&bDir](const bool failing) {
+                const Database raw(
+                    openKeyed(bDir, accountkey::keyFor(bDir, std::string{})), "test copy");
+                raw.run(failing ? "CREATE TRIGGER avatar_write_fails BEFORE INSERT ON state "
+                                  "WHEN NEW.name LIKE 'avatar-%' "
+                                  "BEGIN SELECT RAISE(ABORT, 'disk full'); END"
+                                : "DROP TRIGGER avatar_write_fails");
+            };
+            const std::set<std::string> before = idsFor(bob->fingerprint());
+            const Bytes face = {0xFF, 0xD8, 0xFF, 0xE0, 'd', 'i', 's', 'k'};
+            avatarWritesFail(true);
+            alice->setAvatar(face, "image/jpeg");
+            CHECK(testutil::waitFor([&]() { return idsFor(bob->fingerprint()).size() > before.size(); }));
+            std::set<std::string> arrived;
+            for (const std::string& id : idsFor(bob->fingerprint())) {
+                if (!before.contains(id)) {
+                    arrived.insert(id);
+                }
+            }
+            for (int pass = 0; pass < kFailingPasses; ++pass) {
+                bool refused = false;
+                try {
+                    bob->sync();
+                } catch (const StorageError&) {
+                    refused = true;
+                }
+                CHECK(refused);
+                CHECK(holdsAny(bob->fingerprint(), arrived));
+            }
+            avatarWritesFail(false);
+            CHECK(testutil::waitFor([&]() {
+                bob->sync();
+                return !holdsAny(bob->fingerprint(), arrived);
+            }));
+            CHECK(AccountDb(bDir, std::string{}).get("avatar-" + alice->fingerprint()) == face);
         }
 
         {

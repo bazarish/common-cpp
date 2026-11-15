@@ -7,6 +7,7 @@
 
 #include "AccountDb.hpp"
 #include "AccountKey.hpp"
+#include "KeyedDatabase.hpp"
 
 #include "Authorship.hpp"
 #include "DevicePairing.hpp"
@@ -46,6 +47,7 @@
 #include <cstdint>
 #include <chrono>
 #include <ctime>
+#include <exception>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -53,6 +55,7 @@
 #include <set>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 
 namespace bazarish::client {
 
@@ -4209,6 +4212,38 @@ std::string newMessageId()
     return toHex(randomBytes(kMessageIdBytes));
 }
 
+namespace {
+
+// What the caller never received is read again: its items must not stay marked as awaiting an ack.
+class SurfacedUnlessReturned {
+public:
+    SurfacedUnlessReturned(
+        std::set<std::string>& awaitingAck, const std::vector<IncomingMessage>& surfaced)
+        : awaitingAck_(awaitingAck)
+        , surfaced_(surfaced)
+        , unwinding_(std::uncaught_exceptions())
+    {
+    }
+    SurfacedUnlessReturned(const SurfacedUnlessReturned&) = delete;
+    SurfacedUnlessReturned& operator=(const SurfacedUnlessReturned&) = delete;
+    ~SurfacedUnlessReturned()
+    {
+        if (std::uncaught_exceptions() <= unwinding_) {
+            return;
+        }
+        for (const IncomingMessage& message : surfaced_) {
+            awaitingAck_.erase(message.pendingId);
+        }
+    }
+
+private:
+    std::set<std::string>& awaitingAck_;
+    const std::vector<IncomingMessage>& surfaced_;
+    const int unwinding_;
+};
+
+}  // namespace
+
 std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size_t maxItems)
 {
     flushPendingEchoes();
@@ -4234,6 +4269,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
         return takeIn({}, autoAckSurfaced);
     }
     std::vector<IncomingMessage> result;
+    const SurfacedUnlessReturned unreturned(awaitingAck_, result);
     for (std::size_t begin = 0; begin < taking.size();) {
         const std::size_t end = fetchBatchEnd(taking, begin);
         std::vector<MailboxItem> fetched;
@@ -4249,9 +4285,19 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
                 error.what());
             break;
         }
-        std::vector<IncomingMessage> taken = takeIn(std::move(fetched), autoAckSurfaced);
+        std::vector<IncomingMessage> taken = takeIn(std::move(fetched), false);
         std::move(taken.begin(), taken.end(), std::back_inserter(result));
         begin = end;
+    }
+    if (autoAckSurfaced) {
+        for (IncomingMessage& message : result) {
+            releaseItem(std::exchange(message.pendingId, {}));
+        }
+        try {
+            flushOwedAcks();
+        } catch (const std::exception& error) {
+            bazarish::log::warn("sync: acks stay owed until the next pass: {}", error.what());
+        }
     }
     return result;
 }
@@ -4260,6 +4306,7 @@ std::vector<IncomingMessage> Session::takeIn(
     std::vector<MailboxItem> items, const bool autoAckSurfaced)
 {
     std::vector<IncomingMessage> result;
+    const SurfacedUnlessReturned unreturned(awaitingAck_, result);
     std::set<std::string> establishedPeers;
     std::set<std::string> reaskedPeers;
     std::set<std::string> heardFrom;
@@ -4607,6 +4654,8 @@ std::vector<IncomingMessage> Session::takeIn(
                                     && status.issuedAt >= aliasStatusAt_) {
                                     adoptAliasStatus(status);
                                 }
+                            } catch (const StorageError&) {
+                                throw;
                             } catch (const std::exception& error) {
                                 log::info("a device's name answer was not accepted: {}", error.what());
                             }
@@ -4635,6 +4684,8 @@ std::vector<IncomingMessage> Session::takeIn(
                                                   "server does not serve it");
                                     }
                                 }
+                            } catch (const StorageError&) {
+                                throw;
                             } catch (const std::exception& error) {
                                 bazarish::log::warn("master key from another device rejected: {}",
                                     error.what());
@@ -4649,6 +4700,8 @@ std::vector<IncomingMessage> Session::takeIn(
                             storeContactAvatar(
                                 message.fromFingerprint, data, av.value("mime", std::string()));
                             message.avatarData = std::string(data.begin(), data.end());
+                        } catch (const StorageError&) {
+                            throw;
                         } catch (const std::exception& error) {
                             bazarish::log::warn("contact avatar ignored: {}", error.what());
                         }
@@ -4661,6 +4714,8 @@ std::vector<IncomingMessage> Session::takeIn(
                                 const Bytes data(raw.begin(), raw.end());
                                 storeOwnAvatar(data, av.value("mime", std::string()));
                                 message.avatarData = std::string(data.begin(), data.end());
+                            } catch (const StorageError&) {
+                                throw;
                             } catch (const std::exception& error) {
                                 bazarish::log::warn("own avatar from another device ignored: {}",
                                     error.what());
@@ -4829,12 +4884,14 @@ std::vector<IncomingMessage> Session::takeIn(
                         {},
                         "id " + entry.id.substr(0, std::min(entry.id.size(), kShortFingerprintChars)));
                     surfaced.push_back(std::move(message));
+                } catch (const StorageError&) {
+                    throw;
                 } catch (const std::exception& error) {
                     bazarish::log::warn("sync: dropping an unreadable message: {}", error.what());
                     noteWire(false, "unreadable message", "dropped", error.what());
                 }
             }
-            if (surfaced.empty() || autoAckSurfaced) {
+            if (surfaced.empty()) {
                 releaseItem(entry.id);
             } else {
                 // The envelope is acknowledged with its last message, once all before it are kept.
@@ -4842,6 +4899,8 @@ std::vector<IncomingMessage> Session::takeIn(
                 awaitingAck_.insert(entry.id);
             }
             std::move(surfaced.begin(), surfaced.end(), std::back_inserter(result));
+        } catch (const StorageError&) {
+            throw;
         } catch (const std::exception& error) {
             bazarish::log::warn(
                 "sync: dropping unreadable pending item: {}", error.what());
@@ -4854,6 +4913,8 @@ std::vector<IncomingMessage> Session::takeIn(
     for (const std::string& peer : reaskedPeers) {
         try {
             acceptContactRequest(peer);
+        } catch (const StorageError&) {
+            throw;
         } catch (const std::exception& error) {
             bazarish::log::warn("could not agree again to {}: {}",
                 bazarish::log::redact(peer), error.what());
@@ -4893,6 +4954,11 @@ std::vector<IncomingMessage> Session::takeIn(
             askDevicesForContacts();
         } catch (const std::exception& error) {
             bazarish::log::warn("sync: could not ask for the address book: {}", error.what());
+        }
+    }
+    if (autoAckSurfaced) {
+        for (IncomingMessage& message : result) {
+            releaseItem(std::exchange(message.pendingId, {}));
         }
     }
     try {
