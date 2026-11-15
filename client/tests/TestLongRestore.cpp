@@ -67,6 +67,7 @@ constexpr std::int64_t kRenewLeadSeconds = kMaxDelegationDays * kSecondsPerDay;
 constexpr std::int64_t kWatchHours = 72;
 constexpr std::int64_t kPromptHours = 3;
 constexpr std::int64_t kRestoreHourOfDay = 12;
+constexpr std::int64_t kSecondUserAskHour = 1;
 constexpr int kQuietPasses = 3;
 constexpr std::chrono::milliseconds kPassGap{20};
 constexpr std::chrono::seconds kTestStaleBound{1};
@@ -678,6 +679,9 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
     std::map<std::string, std::int64_t> keysAt;
     for (std::int64_t hour = 0; hour <= kWatchHours; ++hour) {
         watchHour.store(hour);
+        if (run.firstContactsDownAtRestore && hour == kSecondUserAskHour) {
+            send(*r, c1->fingerprint(), run.tag + ": restored U to C1 again");
+        }
         at(watchFrom + hour * kSecondsPerHour);
         for (const auto& [fp, items] : heard) {
             for (const IncomingMessage& item : items) {
@@ -1147,10 +1151,10 @@ int main()
                 CHECK(v.read(what).has_value() != lacking);
             }
             CHECK(v.readBy("restored U to C2", kPromptHours));
-            for (const std::string sender : {"C1", "B"}) {
-                const std::optional<std::int64_t> read = v.read("restored U to " + sender);
-                CHECK(read.has_value() && *read + 1 >= v.nextDayHour && *read <= v.nextDayHour + kPromptHours);
-            }
+            CHECK(v.readBy("restored U to C1 again", kPromptHours));
+            CHECK(v.readBy("restored U to C1", kPromptHours));
+            const std::optional<std::int64_t> toBot = v.read("restored U to B");
+            CHECK(toBot.has_value() && *toBot + 1 >= v.nextDayHour && *toBot <= v.nextDayHour + kPromptHours);
             CHECK(v.waiting("restored U to C3"));
             for (const auto& [sender, toLost] : v.sealsToLostDevice) {
                 CHECK(v.stored(sender + " after the restore"));

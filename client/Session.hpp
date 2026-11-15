@@ -239,6 +239,7 @@ struct LetterTerms {
     PresenceDay scheduleThrough = 0;
     EpochNumber epochsThrough = 0;
     std::string avatarDigest;
+    bool byUser = false;
 };
 
 // What a secondary device may not do: the work of the account's root.
@@ -934,7 +935,9 @@ private:
     void sendRingToDevices(const std::set<EpochNumber>& numbers, std::vector<std::string> devices);
     void dropUnmadeEpochs(Contact& contact) const;
     void takeContactEpochs(const std::string& peerFingerprint, const std::vector<EpochPublic>& offered);
-    bool refreshContactEpochs(const std::string& peerFingerprint);
+    // What asks for a contact's card: maintenance waits a day after any try, the others only after one that came.
+    enum class CardAsk { eMaintenance, eUser, eEvent };
+    bool refreshContactEpochs(const std::string& peerFingerprint, CardAsk ask);
     std::optional<ContactInfo> fetchContactCard(const std::string& peerFingerprint);
     bool unknownDeviceOf(const std::string& peerFingerprint, const nlohmann::json& body) const;
     void syncAvatarToSelf();
@@ -1160,7 +1163,11 @@ private:
     // UTC second each missing epoch of ours is made at, unless another device's key comes first.
     std::map<EpochNumber, std::int64_t> epochsMakeAt_;
     std::optional<PresenceDay> epochsCheckedDay_;
-    std::map<std::string, PresenceDay> epochsAskedDay_;
+    struct CardTries {
+        std::optional<PresenceDay> came;
+        std::optional<PresenceDay> tried;
+    };
+    std::map<std::string, CardTries> cardTries_;
     std::string deliveryIdSeed_;
     std::deque<std::string> endedCalls_;
     std::set<std::string> awaitingAck_;

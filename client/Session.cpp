@@ -444,6 +444,12 @@ constexpr std::size_t kMessageCeiling = kMaxSealedBodyBytes;
 constexpr const char* kEnvelopeIdSeparator = ",";
 
 // Messages.md: a sealed body is always a CBOR array of messages, oldest first.
+LetterTerms userAct(LetterTerms terms = {})
+{
+    terms.byUser = true;
+    return terms;
+}
+
 Bytes encodedBatch(const std::vector<nlohmann::json>& items)
 {
     return padToLadder(nlohmann::json::to_cbor(nlohmann::json(items)), kMessageCeiling);
@@ -3256,7 +3262,7 @@ void Session::sendMessage(const std::string& peerFingerprint, const std::string&
         {"text", text},
     });
     addReplyAndForward(inner, replyTo, forwarded);
-    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
+    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }
 
 void Session::sendFile(const std::string& peerFingerprint, const std::string& location,
@@ -3307,7 +3313,7 @@ void Session::sendPicture(const std::string& peerFingerprint, const Bytes& bytes
 
     nlohmann::json inner = envelope(kTypeImage, id, {{"image", imageBody(name, mime, bytes)}});
     addReplyAndForward(inner, replyTo, forwarded);
-    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
+    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }
 
 void Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
@@ -3326,7 +3332,7 @@ void Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
 
     nlohmann::json inner = envelope(kTypeAudio, id, {{"audio", audioBody(durationMs, opus)}});
     addReplyAndForward(inner, replyTo, forwarded);
-    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
+    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }
 
 void Session::setGroupBlockSource(GroupBlockSource source)
@@ -3388,7 +3394,7 @@ void Session::sendFileBytes(const std::string& peerFingerprint, const std::strin
             }},
     });
     addReplyAndForward(inner, replyTo, forwarded);
-    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
+    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }
 
 void Session::announceTransfer(const std::string& type, const std::string& peerFingerprint,
@@ -3419,7 +3425,7 @@ void Session::announceTransfer(const std::string& type, const std::string& peerF
             }},
     });
     addReplyAndForward(inner, replyTo, forwarded);
-    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
+    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }
 
 void Session::sendInteractive(const std::string& peerFingerprint, const std::string& text,
@@ -3430,7 +3436,7 @@ void Session::sendInteractive(const std::string& peerFingerprint, const std::str
         {"text", text},
         {"keyboard", keyboardToJson(keyboard)},
     });
-    sendContent(peerFingerprint, std::move(inner), watch);
+    sendContent(peerFingerprint, std::move(inner), watch, false, userAct());
 }
 
 void Session::sendCommand(const std::string& peerFingerprint, const std::string& command,
@@ -3441,7 +3447,7 @@ void Session::sendCommand(const std::string& peerFingerprint, const std::string&
         {"command", command},
         {"args", args},
     });
-    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
+    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }
 
 void Session::sendCallback(const std::string& peerFingerprint, const std::string& data,
@@ -3451,7 +3457,7 @@ void Session::sendCallback(const std::string& peerFingerprint, const std::string
         {"data", data},
         {"ref", refMessageId},
     });
-    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true);
+    sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }
 
 void Session::sendMenu(
@@ -3477,7 +3483,7 @@ void Session::sendEdit(const std::string& peerFingerprint, const std::string& re
         {"text", text},
         {"keyboard", keyboardToJson(keyboard)},
     });
-    sendContent(peerFingerprint, std::move(inner), watch);
+    sendContent(peerFingerprint, std::move(inner), watch, false, userAct());
 }
 
 void Session::sendDelete(const std::string& peerFingerprint, const std::string& refMessageId,
@@ -3490,7 +3496,7 @@ void Session::sendDelete(const std::string& peerFingerprint, const std::string& 
     nlohmann::json inner = envelope("delete", newMessageId(), {
         {"ref", refMessageId},
     });
-    sendContent(peerFingerprint, std::move(inner), watch);
+    sendContent(peerFingerprint, std::move(inner), watch, false, userAct());
 }
 
 nlohmann::json Session::routingLetter() const
@@ -3660,13 +3666,13 @@ void Session::sendReaction(const std::string& peerFingerprint, const std::string
         {"ref", refMessageId},
         {"text", emoji},
     });
-    sendContent(peerFingerprint, std::move(inner));
+    sendContent(peerFingerprint, std::move(inner), {}, false, userAct());
 }
 
 void Session::sendChatClear(const std::string& peerFingerprint)
 {
     nlohmann::json inner = envelope("chat.clear", newMessageId());
-    sendContent(peerFingerprint, std::move(inner));
+    sendContent(peerFingerprint, std::move(inner), {}, false, userAct());
 }
 
 void Session::sendChatTimer(const std::string& peerFingerprint, const std::int64_t seconds)
@@ -3676,7 +3682,7 @@ void Session::sendChatTimer(const std::string& peerFingerprint, const std::int64
     }
     nlohmann::json inner
         = envelope(kTypeChatTimer, newMessageId(), {{"seconds", seconds}});
-    sendContent(peerFingerprint, std::move(inner));
+    sendContent(peerFingerprint, std::move(inner), {}, false, userAct());
 }
 
 void Session::setFileSource(std::shared_ptr<const FileSource> files)
@@ -3820,7 +3826,7 @@ void Session::requestFile(const std::string& peerFingerprint, const std::string&
         peerFingerprint);
     LetterTerms terms;
     terms.notAfterMs = answerByMs;
-    sendContent(peerFingerprint, std::move(inner), {}, false, terms);
+    sendContent(peerFingerprint, std::move(inner), {}, false, userAct(terms));
 }
 
 void Session::expireFileRequests(const std::int64_t nowMs)
@@ -4223,7 +4229,7 @@ void Session::sendContents(const std::string& peerFingerprint, std::vector<nlohm
             + toHex(entry.pass).substr(0, kPassPrefixChars));
     deliver(std::move(entry), watch);
     if (!epochFor(contact.epochs, epochClock_()).has_value()) {
-        refreshContactEpochs(peerFingerprint);
+        refreshContactEpochs(peerFingerprint, terms.byUser ? CardAsk::eUser : CardAsk::eMaintenance);
     }
 }
 
@@ -5008,12 +5014,14 @@ std::vector<IncomingMessage> Session::takeIn(
         sendDevicesTo(peer);
     }
 
-    for (const std::string& peer : movedPeers) {
+    for (const std::string& peer : heardFrom) {
         const auto contact = contacts_.find(peer);
         if (contact != contacts_.end() && !epochFor(contact->second.epochs, epochClock_()).has_value()
             && queuedLetter(peer, [](const OutboxEntry&) { return true; })) {
-            epochsAskedDay_.erase(peer);
-            refreshContactEpochs(peer);
+            if (movedPeers.contains(peer)) {
+                cardTries_.erase(peer);
+            }
+            refreshContactEpochs(peer, CardAsk::eEvent);
         }
     }
 
@@ -5848,7 +5856,7 @@ void Session::keepEpochs()
             }
         }
         for (const std::string& peerFingerprint : keyless) {
-            refreshContactEpochs(peerFingerprint);
+            refreshContactEpochs(peerFingerprint, CardAsk::eMaintenance);
         }
         republishCardIfStale();
     }
@@ -6194,21 +6202,22 @@ void Session::reviewDevices(const std::vector<std::string>& revoke)
     persistMeta();
 }
 
-bool Session::refreshContactEpochs(const std::string& peerFingerprint)
+bool Session::refreshContactEpochs(const std::string& peerFingerprint, const CardAsk ask)
 {
     if (!contacts_.contains(peerFingerprint)) {
         return false;
     }
     const PresenceDay today = presenceDayOf(epochClock_());
-    const auto asked = epochsAskedDay_.find(peerFingerprint);
-    if (asked != epochsAskedDay_.end() && asked->second == today) {
+    CardTries& tries = cardTries_[peerFingerprint];
+    if (tries.came == today || (ask == CardAsk::eMaintenance && tries.tried == today)) {
         return false;
     }
-    epochsAskedDay_[peerFingerprint] = today;
+    tries.tried = today;
     const std::optional<ContactInfo> info = fetchContactCard(peerFingerprint);
     if (!info.has_value()) {
         return false;
     }
+    cardTries_[peerFingerprint].came = today;
     takeContactBook(contacts_.at(peerFingerprint), info->card.devices);
     persistContacts();
     takeContactEpochs(peerFingerprint, info->card.epochs);
