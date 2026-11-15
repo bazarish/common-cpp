@@ -38,6 +38,7 @@ public:
     static Key fromRawX25519Private(const Bytes& rawPrivate);
 
     static Key fromPrivatePem(const std::string& pem, const std::string& passphrase = {});
+    static Key fromPrivatePem(const SecretBytes& pem);
     static Key fromPublicDer(const Bytes& spkiDer);
 
     std::string privatePem(const std::string& passphrase = {}) const;
@@ -58,6 +59,7 @@ private:
     friend class Identity;
 
     explicit Key(KeyPtr key, bool hasPrivate);
+    static Key fromPemBuffer(const void* pem, std::size_t size, const std::string& passphrase);
     Key(KeyPtr classical, KeyPtr kem, bool hasPrivate);
 
     KeyPtr key_;

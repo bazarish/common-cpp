@@ -819,7 +819,7 @@ private:
     bool delegateRouting();
     void redelegate();
     void ensureAddressKeys();
-    void adoptAddressKeys(const std::string& sealingPem, const std::string& signingPem);
+    void adoptAddressKeys(const SecretBytes& sealingPem, const SecretBytes& signingPem);
     Bytes servingSealingDer() const;
     void registerEveryPass();
     void makeCardEpochs();
@@ -895,7 +895,7 @@ private:
     bool reconcileI2pAddress();
     void askDevicesForI2pMaster(const std::string& servedHost);
     void replaceI2pMaster(
-        const Bytes& privateKeysDat, const std::string& sealingPem, const std::string& signingPem);
+        const Bytes& privateKeysDat, const SecretBytes& sealingPem, const SecretBytes& signingPem);
 
     void syncDelegationTermToSelf();
 

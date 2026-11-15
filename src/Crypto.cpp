@@ -127,7 +127,17 @@ Key Key::fromRawX25519Private(const Bytes& rawPrivate)
 
 Key Key::fromPrivatePem(const std::string& pem, const std::string& passphrase)
 {
-    const BioPtr bio(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
+    return fromPemBuffer(pem.data(), pem.size(), passphrase);
+}
+
+Key Key::fromPrivatePem(const SecretBytes& pem)
+{
+    return fromPemBuffer(pem.bytes().data(), pem.size(), {});
+}
+
+Key Key::fromPemBuffer(const void* const pem, const std::size_t size, const std::string& passphrase)
+{
+    const BioPtr bio(BIO_new_mem_buf(pem, static_cast<int>(size)));
     if (bio == nullptr) {
         throw std::runtime_error("BIO_new_mem_buf failed");
     }

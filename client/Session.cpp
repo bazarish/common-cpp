@@ -90,6 +90,12 @@ bool isAvatarPicture(const Bytes& data, const std::string& mime)
 
 namespace {
 
+SecretBytes secretText(const nlohmann::json& value)
+{
+    const std::string& text = value.get_ref<const std::string&>();
+    return SecretBytes(Bytes(text.begin(), text.end()));
+}
+
 SecretBytes wipedText(const nlohmann::json& document)
 {
     std::string text = document.dump();
@@ -1552,7 +1558,7 @@ void Session::ensureAddressKeys()
     }
 }
 
-void Session::adoptAddressKeys(const std::string& sealingPem, const std::string& signingPem)
+void Session::adoptAddressKeys(const SecretBytes& sealingPem, const SecretBytes& signingPem)
 {
     Key sealing = Key::fromPrivatePem(sealingPem);
     Key signing = Key::fromPrivatePem(signingPem);
@@ -1561,8 +1567,8 @@ void Session::adoptAddressKeys(const std::string& sealingPem, const std::string&
     }
     addressSealing_ = std::move(sealing);
     addressSigning_ = std::move(signing);
-    db_->putText(kAddressSealingRow, addressSealing_->privatePem());
-    db_->putText(kAddressSigningRow, addressSigning_->privatePem());
+    db_->put(kAddressSealingRow, addressSealing_->privatePemSecret().bytes());
+    db_->put(kAddressSigningRow, addressSigning_->privatePemSecret().bytes());
 }
 
 Bytes Session::servingSealingDer() const
@@ -1660,7 +1666,7 @@ std::string Session::loadI2pDestination(const Bytes& privateKeysDat)
 }
 
 void Session::replaceI2pMaster(
-    const Bytes& privateKeysDat, const std::string& sealingPem, const std::string& signingPem)
+    const Bytes& privateKeysDat, const SecretBytes& sealingPem, const SecretBytes& signingPem)
 {
     const I2pMasterKey master = loadI2pMaster(privateKeysDat);
     adoptAddressKeys(sealingPem, signingPem);
@@ -1707,8 +1713,8 @@ bool Session::adoptI2pMasterFromOwnMailbox(const std::string& wantedHost)
                 if (!wantedHost.empty() && i2pRoutingHost(master) != wantedHost) {
                     continue;
                 }
-                replaceI2pMaster(master, body.at("addressSealing").get<std::string>(),
-                    body.at("addressSigning").get<std::string>());
+                replaceI2pMaster(master, secretText(body.at("addressSealing")),
+                    secretText(body.at("addressSigning")));
                 log::info("adopted this account's address from another of its devices");
                 return true;
             }
@@ -1787,12 +1793,12 @@ void Session::syncI2pMasterToSelf()
         return;
     }
     const AddressKeys keys = addressKeys();
-    const nlohmann::json inner = envelope("device.i2p-master", toHex(randomBytes(16)), {
+    SecretJson inner(envelope("device.i2p-master", toHex(randomBytes(16)), {
         {"i2pMaster", toBase64(i2pMaster_)},
         {"addressSealing", std::string(keys.sealingPem.bytes().begin(), keys.sealingPem.bytes().end())},
         {"addressSigning", std::string(keys.signingPem.bytes().begin(), keys.signingPem.bytes().end())},
-    });
-    submitSignedToSelf(inner, "device.i2p-master");
+    }));
+    submitSignedToSelf(std::move(inner.value), "device.i2p-master");
 }
 
 void Session::storeOwnAvatar(const Bytes& data, const std::string& mime)
@@ -2282,7 +2288,8 @@ void Session::submitSignedToDevices(const std::vector<std::string>& devices, nlo
         return;
     }
     signAuthorship(inner, client_->credential(), withCert);
-    const Bytes plain = encodedBody(inner);
+    const SecretJson wiped(std::move(inner));
+    const SecretBytes plain(encodedBody(wiped.value));
     const std::vector<DeliveryWatch> watches = splitWatch(watch, devices.size());
     for (std::size_t i = 0; i < devices.size(); ++i) {
         OutboxEntry entry;
@@ -2291,7 +2298,7 @@ void Session::submitSignedToDevices(const std::vector<std::string>& devices, nlo
         entry.toDevice = devices[i];
         entry.deliveryClass = kDeviceDeliveryClass;
         entry.deliveryId = toHex(randomBytes(kDeliveryIdBytes));
-        entry.plain = plain;
+        entry.plain = plain.bytes();
         entry.kind = kind;
         entry.ids = ids;
         entry.terms.notAfterMs = notAfterMs;
@@ -4610,10 +4617,10 @@ std::vector<IncomingMessage> Session::takeIn(
                             try {
                                 const Bytes master
                                     = fromBase64(body.at("i2pMaster").get<std::string>());
-                                const std::string sealingPem
-                                    = body.at("addressSealing").get<std::string>();
-                                const std::string signingPem
-                                    = body.at("addressSigning").get<std::string>();
+                                const SecretBytes sealingPem
+                                    = secretText(body.at("addressSealing"));
+                                const SecretBytes signingPem
+                                    = secretText(body.at("addressSigning"));
                                 if (i2pMaster_.empty()) {
                                     replaceI2pMaster(master, sealingPem, signingPem);
                                 } else if (master == i2pMaster_) {
