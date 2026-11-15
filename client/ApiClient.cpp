@@ -3,6 +3,7 @@
 
 #include "I2pRouter.hpp"
 
+#include <bazarish/Address.hpp>
 #include <bazarish/Auth.hpp>
 #include <bazarish/Certificates.hpp>
 #include <bazarish/Clock.hpp>
@@ -209,10 +210,11 @@ void ApiClient::ensureSealingKeyLocked(Tunnel& tunnel)
     if (!tunnel.sealingKeyDer.empty()) {
         return;
     }
+    requireFingerprint(endpoint_.serverFingerprint);
     const ApiResponse response
         = transmitLocked("GET", cardPathOf(tunnel.service), {}, {}, kDefaultReadTimeoutSeconds);
     const ServerCard card = ServerCard::verify(response.body, tunnel.service);
-    if (!endpoint_.serverFingerprint.empty() && card.server != endpoint_.serverFingerprint) {
+    if (card.server != endpoint_.serverFingerprint) {
         throw std::runtime_error("the server card names another server than the one we joined");
     }
     tunnel.sealingKeyDer = card.sealingPublicKeyDer;

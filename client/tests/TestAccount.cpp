@@ -82,7 +82,7 @@ int main()
         CHECK(!sa->isConnected());
 
         ServerEndpoint endpoint;
-        endpoint.serverFingerprint = "serverfp";
+        endpoint.serverFingerprint = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq";
         endpoint.facades = {Facade{"127.0.0.1", 18000}};
         sa->connectServer(endpoint);
         CHECK(sa->isConnected());
@@ -105,7 +105,7 @@ int main()
 
         const std::unique_ptr<Session> reopened = manager.open(a.id, "secret");
         CHECK(reopened->isConnected());
-        CHECK(reopened->endpoint().serverFingerprint == "serverfp");
+        CHECK(reopened->endpoint().serverFingerprint == "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq");
         CHECK(!reopened->sendReceipts());
         CHECK(!reopened->acceptCalls());
 
@@ -118,7 +118,7 @@ int main()
         {
             const std::unique_ptr<Session> unusable = manager.open(a.id, "secret");
             CHECK(!unusable->isConnected());
-            CHECK(unusable->endpoint().serverFingerprint == "serverfp");
+            CHECK(unusable->endpoint().serverFingerprint == "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq");
             CHECK(!unusable->sendReceipts());
             unusable->connectServer(endpoint);
             CHECK(unusable->isConnected());

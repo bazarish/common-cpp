@@ -715,6 +715,9 @@ std::unique_ptr<Session> Session::create(const fs::path& accountFile, const Acco
 
 void Session::connectServer(const ServerEndpoint& endpoint)
 {
+    if (!endpoint.facades.empty()) {
+        requireFingerprint(endpoint.serverFingerprint);
+    }
     if (endpoint != client_->endpoint()) {
         client_ = std::make_unique<Client>(
             client_->credential().copy(), endpoint, i2pDirFor(accountPath_));

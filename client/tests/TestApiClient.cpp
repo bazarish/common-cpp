@@ -176,6 +176,16 @@ int main()
     }
 
     {
+        ServerEndpoint unnamed = endpoint;
+        unnamed.serverFingerprint.clear();
+        ApiClient blank(alice, unnamed);
+        CHECK_THROWS(blank.get("/v1/messaging/storage-usage"));
+        unnamed.serverFingerprint = "not a fingerprint";
+        ApiClient garbled(alice, unnamed);
+        CHECK_THROWS(garbled.get("/v1/messaging/storage-usage"));
+    }
+
+    {
         ServerEndpoint impostor = endpoint;
         impostor.serverFingerprint = Identity::generate().fingerprint();
         ApiClient api(alice, impostor);
