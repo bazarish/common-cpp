@@ -108,8 +108,9 @@ bool pageHolds(const Bytes& key, const unsigned char* const page, const bool fir
 }
 
 // Reads every page the files hold, live or freed, current or superseded.
-bool filesHold(const fs::path& database, const Bytes& key, const std::string& needle)
+bool filesHold(const fs::path& database, const SecretBytes& secret, const std::string& needle)
 {
+    const Bytes& key = secret.bytes();
     const Bytes pages = readFileBytes(database);
     for (std::size_t at = 0; at + kPageBytes <= pages.size(); at += kPageBytes) {
         if (pageHolds(key, pages.data() + at, at == 0, needle)) {
@@ -179,7 +180,7 @@ void checkLargeRekey(const fs::path& dir)
         TranscriptStore store;
         CHECK(store.open(file, "old pass"));
     }
-    const Bytes oldKey = accountkey::keyFor(file, "old pass");
+    const SecretBytes oldKey = accountkey::keyFor(file, "old pass");
     const Bytes lastRow = *AccountDb(file, "old pass").get("row-" + std::to_string(kLargeRows - 1));
     const std::int64_t databaseBytes = static_cast<std::int64_t>(fs::file_size(file));
     CHECK(databaseBytes > static_cast<std::int64_t>(kRowBytes * kLargeRows));
@@ -340,7 +341,7 @@ void checkEndedEpochErased(const fs::path& dir)
             Key::fromPrivatePem(endedKey.privatePem())));
         db.putText("epochs", ring.toJson().dump());
     }
-    const Bytes key = accountkey::keyFor(file, "pw");
+    const SecretBytes key = accountkey::keyFor(file, "pw");
     CHECK(filesHold(file, key, needle));
 
     const std::unique_ptr<Session> session = manager.open(made.id, "pw");
@@ -401,7 +402,7 @@ void checkDeletedMessagesLeaveNoTrace(const fs::path& dir)
         AccountDb account(file, "pw");
         account.putText("kept", "yes");
     }
-    const Bytes key = accountkey::keyFor(file, "pw");
+    const SecretBytes key = accountkey::keyFor(file, "pw");
     TranscriptStore store;
     CHECK(store.open(file, "pw"));
     TranscriptStore reader;

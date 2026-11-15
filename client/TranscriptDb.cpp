@@ -306,7 +306,7 @@ void TranscriptReader::close()
     path_.clear();
 }
 
-bool TranscriptReader::open(const fs::path& file, const Bytes& key)
+bool TranscriptReader::open(const fs::path& file, const SecretBytes& key)
 {
     db_ = openKeyed(file, key);
     if (db_ == nullptr) {
@@ -318,7 +318,7 @@ bool TranscriptReader::open(const fs::path& file, const Bytes& key)
 
 bool TranscriptStore::open(const fs::path& file, const std::string& passphrase)
 {
-    Bytes key;
+    SecretBytes key;
     try {
         key = accountkey::keyFor(file, passphrase);
     } catch (const std::exception& error) {

@@ -3,6 +3,7 @@
 
 #include <bazarish/PathText.hpp>
 
+#include <openssl/crypto.h>
 #include <sqlcipher/sqlite3.h>
 
 #include <stdexcept>
@@ -41,7 +42,7 @@ void SqliteFinalize::operator()(sqlite3_stmt* const statement) const
     static_cast<void>(sqlite3_finalize(statement));
 }
 
-SqliteHandle openKeyed(const std::filesystem::path& file, const Bytes& key)
+SqliteHandle openKeyed(const std::filesystem::path& file, const SecretBytes& key)
 {
     sqlite3* opened = nullptr;
     // SQLite takes a UTF-8 file name, and hands back a handle to close even when it fails.
@@ -52,8 +53,10 @@ SqliteHandle openKeyed(const std::filesystem::path& file, const Bytes& key)
     }
     static_cast<void>(
         sqlite3_exec(db.get(), "PRAGMA cipher_log_level = NONE", nullptr, nullptr, nullptr));
-    const std::string pragma = "PRAGMA key = \"x'" + toHex(key) + "'\"";
-    if (sqlite3_exec(db.get(), pragma.c_str(), nullptr, nullptr, nullptr) != SQLITE_OK) {
+    std::string pragma = "PRAGMA key = \"x'" + toHex(key.bytes()) + "'\"";
+    const int keyed = sqlite3_exec(db.get(), pragma.c_str(), nullptr, nullptr, nullptr);
+    OPENSSL_cleanse(pragma.data(), pragma.size());
+    if (keyed != SQLITE_OK) {
         return nullptr;
     }
     if (sqlite3_busy_timeout(db.get(), kBusyTimeoutMs) != SQLITE_OK) {
@@ -67,7 +70,7 @@ SqliteHandle openKeyed(const std::filesystem::path& file, const Bytes& key)
 }
 
 void copyKeyedDatabase(const std::filesystem::path& from, const std::filesystem::path& to,
-    const Bytes& key)
+    const SecretBytes& key)
 {
     const SqliteHandle source = openKeyed(from, key);
     if (source == nullptr) {
@@ -92,8 +95,8 @@ void copyKeyedDatabase(const std::filesystem::path& from, const std::filesystem:
 }
 
 void reencryptKeyed(
-    const std::filesystem::path& from, const Bytes& fromKey, const std::filesystem::path& to,
-    const Bytes& toKey)
+    const std::filesystem::path& from, const SecretBytes& fromKey,
+    const std::filesystem::path& to, const SecretBytes& toKey)
 {
     const Database source(openKeyed(from, fromKey), "re-encryption of " + utf8OfPath(from));
     {
@@ -111,7 +114,9 @@ void reencryptKeyed(
     {
         Statement attach(source, "ATTACH DATABASE ? AS rekeyed KEY ?");
         attach.bind(1, utf8OfPath(to));
-        attach.bind(2, "x'" + toHex(toKey) + "'");
+        std::string keySpec = "x'" + toHex(toKey.bytes()) + "'";
+        attach.bind(2, keySpec);
+        OPENSSL_cleanse(keySpec.data(), keySpec.size());
         static_cast<void>(attach.step());
     }
     source.run("SELECT sqlcipher_export('rekeyed')");

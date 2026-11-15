@@ -113,7 +113,7 @@ public:
 
     void close();
     bool isOpen() const { return db_ != nullptr; }
-    bool open(const std::filesystem::path& file, const Bytes& key);
+    bool open(const std::filesystem::path& file, const SecretBytes& key);
 
     Bytes media(const std::string& key) const;
     std::int64_t idForKey(const std::string& peer, const std::string& e2eId, bool outgoing) const;

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/SecretBytes.hpp>
 
 #include <cstdint>
 #include <filesystem>
@@ -23,15 +24,15 @@ using SqliteHandle = std::unique_ptr<sqlite3, SqliteClose>;
 using StatementHandle = std::unique_ptr<sqlite3_stmt, SqliteFinalize>;
 
 // Null when the file cannot be opened or the key does not read it.
-SqliteHandle openKeyed(const std::filesystem::path& file, const Bytes& key);
+SqliteHandle openKeyed(const std::filesystem::path& file, const SecretBytes& key);
 
 // Safe while other connections keep writing to the source.
 void copyKeyedDatabase(
-    const std::filesystem::path& from, const std::filesystem::path& to, const Bytes& key);
+    const std::filesystem::path& from, const std::filesystem::path& to, const SecretBytes& key);
 
 // Streams every row into a new file under the new key; nothing else may have the source open.
-void reencryptKeyed(const std::filesystem::path& from, const Bytes& fromKey,
-    const std::filesystem::path& to, const Bytes& toKey);
+void reencryptKeyed(const std::filesystem::path& from, const SecretBytes& fromKey,
+    const std::filesystem::path& to, const SecretBytes& toKey);
 
 // Whatever goes wrong is thrown with the label in front.
 class Database {

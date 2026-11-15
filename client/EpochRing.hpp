@@ -19,9 +19,6 @@
 namespace bazarish::client {
 
 // The account's epoch sealing keys; shared with the threads that open what was sealed to them.
-// Overwrites the private keys a list of epoch keys carries.
-void wipeKeys(nlohmann::json& list);
-
 class EpochRing {
 public:
     EpochRing() = default;

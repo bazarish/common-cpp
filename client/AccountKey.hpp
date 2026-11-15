@@ -24,7 +24,7 @@ bool isReservedPassphrase(const std::string& passphrase);
 
 std::filesystem::path sidecarFor(const std::filesystem::path& databaseFile);
 
-Bytes keyFor(const std::filesystem::path& databaseFile, const std::string& passphrase);
+SecretBytes keyFor(const std::filesystem::path& databaseFile, const std::string& passphrase);
 
 // Re-encrypts under a fresh key; nothing else may have the database open.
 void rekey(const std::filesystem::path& databaseFile, const std::string& oldPassphrase,

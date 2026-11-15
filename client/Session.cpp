@@ -5634,7 +5634,7 @@ void Session::takeOwnEpochs(const std::string& fromDevice, const nlohmann::json&
         }
     }
     const bool added = ring_->addAll(made);
-    wipeKeys(made);
+    wipeJson(made);
     if (!added) {
         return;
     }
@@ -5653,7 +5653,7 @@ void Session::sendRingToDevices(
     submitSignedToDevices(devices,
         envelope(kTypeDeviceEpochs, toHex(randomBytes(kDeliveryIdBytes)), {{"epochs", keys}}),
         kTypeDeviceEpochs);
-    wipeKeys(keys);
+    wipeJson(keys);
 }
 
 void Session::dropUnmadeEpochs(Contact& contact) const
@@ -6709,7 +6709,7 @@ PairBundleFn Session::pairingBundle(const DeviceRole role, const Bytes& linkKey)
             toBase64(DeviceCertificate::issue(
                 Identity::fromPrivatePem(rootPem), device, role, systemUtcSeconds()))}};
         const SecretBytes text = wipedText(bundle);
-        wipeKeys(bundle["epochs"]);
+        wipeJson(bundle);
         return sealPairBundle(linkKey, text.bytes());
     };
 }
@@ -6766,7 +6766,7 @@ Bytes Session::accountBundle(const DeviceRole role)
         };
     }
     SecretBytes text = wipedText(bundle);
-    wipeKeys(bundle["epochs"]);
+    wipeJson(bundle);
     return text.release();
 }
 
@@ -6799,7 +6799,8 @@ void Session::importAccountBytes(const Bytes& sealed, const fs::path& accountFil
 void Session::importAccountBundle(
     const Bytes& plain, const fs::path& accountFile, const std::string& atRestPassphrase)
 {
-    nlohmann::json bundle = readBundle(plain);
+    const SecretJson held(readBundle(plain));
+    const nlohmann::json& bundle = held.value;
     const AccountKind kind = accountKindFromName(bundle.at("meta").at("kind").get<std::string>());
     std::optional<Identity> root;
     if (bundle.contains(kBundleRootField)) {
@@ -6848,7 +6849,6 @@ void Session::importAccountBundle(
     db.putText(kOwnDevicesRow, ownDevicesJson(book, sealing).dump());
     EpochRing ring;
     ring.addAll(bundle.at("epochs"));
-    wipeKeys(bundle.at("epochs"));
     static_cast<void>(ring.eraseEnded(systemUtcSeconds()));
     db.put(kEpochRingRow, ring.toText().bytes());
     if (kind == AccountKind::eUser) {

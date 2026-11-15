@@ -19,55 +19,21 @@ constexpr char kByField[] = "by";
 constexpr char kPemField[] = "pem";
 constexpr std::size_t kEntryFields = 4;
 
-void wipeText(std::string& text)
-{
-    OPENSSL_cleanse(text.data(), text.size());
-    text.clear();
-}
-
-class KeysWiped {
-public:
-    explicit KeysWiped(nlohmann::json& list)
-        : list_(list)
-    {
-    }
-    KeysWiped(const KeysWiped&) = delete;
-    KeysWiped& operator=(const KeysWiped&) = delete;
-    ~KeysWiped() { wipeKeys(list_); }
-
-private:
-    nlohmann::json& list_;
-};
-
 }  // namespace
-
-void wipeKeys(nlohmann::json& list)
-{
-    if (!list.is_array()) {
-        return;
-    }
-    for (nlohmann::json& entry : list) {
-        if (entry.is_object() && entry.contains(kPemField) && entry.at(kPemField).is_string()) {
-            wipeText(entry.at(kPemField).get_ref<std::string&>());
-        }
-    }
-}
 
 SecretBytes EpochRing::toText() const
 {
-    nlohmann::json list = toJson();
-    const KeysWiped wiped(list);
-    std::string text = list.dump();
+    const SecretJson list(toJson());
+    std::string text = list.value.dump();
     SecretBytes out(Bytes(text.begin(), text.end()));
-    wipeText(text);
+    OPENSSL_cleanse(text.data(), text.size());
     return out;
 }
 
 bool EpochRing::addAll(const SecretBytes& text)
 {
-    nlohmann::json list = parseJson(text.bytes());
-    const KeysWiped wiped(list);
-    return addAll(list);
+    const SecretJson list(parseJson(text.bytes()));
+    return addAll(list.value);
 }
 
 nlohmann::json EpochRing::toJson() const

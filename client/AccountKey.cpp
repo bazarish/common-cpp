@@ -322,7 +322,7 @@ fs::path sidecarFor(const fs::path& databaseFile)
     return sidecar;
 }
 
-Bytes keyFor(const fs::path& databaseFile, const std::string& passphrase)
+SecretBytes keyFor(const fs::path& databaseFile, const std::string& passphrase)
 {
     const Bytes verifier = verifierOf(passphrase);
     const std::shared_ptr<std::mutex> forThisFile = pathLock(databaseFile);
@@ -333,7 +333,7 @@ Bytes keyFor(const fs::path& databaseFile, const std::string& passphrase)
         if (found != g_cache.end() && found->second.verifier.size() == verifier.size()
             && CRYPTO_memcmp(found->second.verifier.data(), verifier.data(), verifier.size())
                 == 0) {
-            return found->second.key.bytes();
+            return found->second.key;
         }
     }
     settle(databaseFile);
@@ -345,7 +345,7 @@ Bytes keyFor(const fs::path& databaseFile, const std::string& passphrase)
     SecretBytes key = fs::exists(sidecar) ? open(sidecar, passphrase) : create(sidecar, passphrase);
     const std::lock_guard<std::mutex> lock(g_cacheMutex);
     g_cache[databaseFile] = Cached{verifier, key};
-    return key.bytes();
+    return key;
 }
 
 void rekey(const fs::path& databaseFile, const std::string& oldPassphrase,
@@ -359,7 +359,7 @@ void rekey(const fs::path& databaseFile, const std::string& oldPassphrase,
     SecretBytes newKey(kKeyBytes);
     fill(ByteBuffer(newKey.data(), newKey.size()));
     const fs::path database = pendingDatabase(databaseFile);
-    reencryptKeyed(databaseFile, oldKey.bytes(), database, newKey.bytes());
+    reencryptKeyed(databaseFile, oldKey, database, newKey);
     Sidecar sidecar = freshSidecar(newPassphrase);
     seal(SecretBytes(wrappingKey(newPassphrase, sidecar)).bytes(), sidecar, newKey.bytes());
     write(pendingSidecar(databaseFile), sidecar);
