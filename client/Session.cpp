@@ -1451,7 +1451,7 @@ void Session::adoptAddressKeys(const std::string& sealingPem, const std::string&
 {
     Key sealing = Key::fromPrivatePem(sealingPem);
     Key signing = Key::fromPrivatePem(signingPem);
-    if (!sealing.hasKem() || !signing.isA(kClassicalSigningAlgorithm)) {
+    if (!hybrid::isSealingKey(sealing) || !signing.isA(kClassicalSigningAlgorithm)) {
         throw std::runtime_error("another device sent address keys of the wrong kind");
     }
     addressSealing_ = std::move(sealing);

@@ -70,7 +70,7 @@ void requireSigningPair(const Bytes& classicalDer, const Bytes& pqDer)
 void requireSealingKey(const Bytes& sealingDer)
 {
     const Key key = Key::fromPublicDer(sealingDer);
-    if (!key.hasKem() || !key.isA(kClassicalSealingAlgorithm)) {
+    if (!hybrid::isSealingKey(key)) {
         throw std::runtime_error("a device seals with X25519 and ML-KEM-768");
     }
 }

@@ -142,6 +142,9 @@ ContactCard ContactCard::verify(const Bytes& der)
     card.epochs = epochsFromJson(verified.body.at(kEpochsField));
     requireCardEpochs(card.epochs, card.devices);
     card.servingSealingKeyDer = fromBase64(verified.body.at(kServingKeyField).get<std::string>());
+    if (!hybrid::isSealingKey(Key::fromPublicDer(card.servingSealingKeyDer))) {
+        throw std::runtime_error("a contact card names a serving key that is not X25519 and ML-KEM-768");
+    }
     return card;
 }
 
@@ -203,6 +206,9 @@ ServerCard ServerCard::verify(const Bytes& der, const Service service)
     card.sealingPublicKeyDer = fromBase64(verified.body.at("sealingKey").get<std::string>());
     card.issuedAt = verified.body.at("issuedAt").get<std::int64_t>();
     requireSigner(verified, card.server);
+    if (!hybrid::isSealingKey(Key::fromPublicDer(card.sealingPublicKeyDer))) {
+        throw std::runtime_error("a server card names a sealing key that is not X25519 and ML-KEM-768");
+    }
     return card;
 }
 

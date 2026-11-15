@@ -48,7 +48,7 @@ bool EpochRing::add(const EpochNumber n, const EpochGeneration g, const std::str
     if (by.empty()) {
         throw std::runtime_error("an epoch key names the device that made it");
     }
-    if (!key.hasPrivate() || !key.hasKem() || !key.isA(kClassicalSealingAlgorithm)) {
+    if (!key.hasPrivate() || !hybrid::isSealingKey(key)) {
         throw std::runtime_error("an epoch key is a private hybrid sealing key");
     }
     Bytes publicDer = key.publicDer();

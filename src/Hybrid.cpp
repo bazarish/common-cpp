@@ -285,16 +285,18 @@ VerifiedJson verifyJson(const Bytes& frame)
     };
 }
 
+bool isSealingKey(const Key& key)
+{
+    return key.hasKem() && key.isA(kClassicalSealingAlgorithm) && key.kem().isA(kPqKemAlgorithm);
+}
+
 Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey, const Bytes& kid)
 {
     if (kid.size() > kMaxSealKidBytes) {
         throw std::logic_error("a key id is at most " + std::to_string(kMaxSealKidBytes) + " bytes");
     }
-    if (!recipientPublicKey.hasKem()) {
-        throw std::logic_error("sealing requires a hybrid (ML-KEM) recipient key");
-    }
-    if (!recipientPublicKey.isA(kClassicalSealingAlgorithm)) {
-        throw std::logic_error("sealing requires an X25519 classical half");
+    if (!isSealingKey(recipientPublicKey)) {
+        throw std::logic_error("sealing requires an X25519 and ML-KEM-768 recipient key");
     }
 
     Encapsulation encapsulated = encapsulate(recipientPublicKey.kem().raw());
@@ -335,11 +337,8 @@ Bytes unseal(const Bytes& frame, const Key& recipientPrivateKey)
     if (!recipientPrivateKey.hasPrivate()) {
         throw std::logic_error("unsealing requires a private key");
     }
-    if (!recipientPrivateKey.hasKem()) {
-        throw std::logic_error("unsealing requires a hybrid (ML-KEM) key");
-    }
-    if (!recipientPrivateKey.isA(kClassicalSealingAlgorithm)) {
-        throw std::logic_error("unsealing requires an X25519 classical half");
+    if (!isSealingKey(recipientPrivateKey)) {
+        throw std::logic_error("unsealing requires an X25519 and ML-KEM-768 key");
     }
 
     const nlohmann::json parsed = parseFrame(frame);

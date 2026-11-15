@@ -6,6 +6,9 @@
 
 #include "bazarish/Limits.hpp"
 
+#include <openssl/evp.h>
+#include <openssl/x509.h>
+
 #include <cstddef>
 #include <exception>
 #include <stdexcept>
@@ -31,10 +34,35 @@ Bytes bytesOf(const nlohmann::json& value)
     return Bytes(binary.begin(), binary.end());
 }
 
+// A pair with an X25519 half and an ML-KEM-512 half: a KEM, but not the one the project takes.
+Key weakerPair()
+{
+    EVP_PKEY* const kem = EVP_PKEY_Q_keygen(nullptr, nullptr, "ML-KEM-512");
+    CHECK(kem != nullptr);
+    unsigned char* der = nullptr;
+    const int length = i2d_PUBKEY(kem, &der);
+    CHECK(length > 0);
+    const Bytes kemDer(der, der + length);
+    OPENSSL_free(der);
+    EVP_PKEY_free(kem);
+    const nlohmann::json pair = {
+        {"t", "bzsk1"},
+        {"c", nlohmann::json::binary(Key::generateX25519().publicDer())},
+        {"q", nlohmann::json::binary(kemDer)},
+    };
+    return Key::fromPublicDer(nlohmann::json::to_cbor(pair));
+}
+
 }  // namespace
 
 int main()
 {
+    {
+        const Key weaker = weakerPair();
+        CHECK(weaker.hasKem());
+        CHECK_THROWS(hybrid::seal(Bytes{'x'}, weaker, {}));
+    }
+
     {
         constexpr std::size_t kLargeBodyFrom = 64 * 1024;
         const Key recipient = Key::generateSealing();

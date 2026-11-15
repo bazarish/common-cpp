@@ -28,6 +28,9 @@ struct VerifiedJson {
 // Throws unless both signatures verify.
 VerifiedJson verifyJson(const Bytes& frame);
 
+// X25519 paired with ML-KEM-768: the one sealing key this project takes in.
+bool isSealingKey(const Key& key);
+
 // One AEAD layer keyed from both shared secrets; `kid` names the recipient key and is bound in.
 Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey, const Bytes& kid);
 Bytes sealedKid(const Bytes& frame);

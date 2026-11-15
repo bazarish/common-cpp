@@ -47,7 +47,7 @@ void requireCreator(const std::string& by)
 void requireSealingKey(const Bytes& keyDer)
 {
     const Key key = Key::fromPublicDer(keyDer);
-    if (!key.hasKem() || !key.isA(kClassicalSealingAlgorithm)) {
+    if (!hybrid::isSealingKey(key)) {
         throw std::runtime_error("an epoch carries a key that does not seal");
     }
 }
