@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "Authorship.hpp"
 
+#include "MessageTypes.hpp"
+
 #include <optional>
 #include <stdexcept>
 
@@ -12,6 +14,14 @@ constexpr char kDeviceField[] = "d";
 constexpr char kClassicalField[] = "c";
 constexpr char kPqField[] = "p";
 constexpr char kCertField[] = "cert";
+constexpr char kTypeField[] = "type";
+
+// Messages.md: the three letters that are the first a reader hears of a device.
+bool introducesDevice(const nlohmann::json& content)
+{
+    const std::string type = content.value(kTypeField, std::string());
+    return type == kTypeContactRequest || type == kTypeAccountDevices || type == kTypeDeviceDevices;
+}
 
 Bytes encodedContent(const nlohmann::json& content)
 {
@@ -76,6 +86,9 @@ Author authorOf(const nlohmann::json& content, const DeviceBook& known)
     const Bytes carried = carriedCert(content);
     std::optional<DeviceCertificate> cert;
     if (!carried.empty()) {
+        if (!introducesDevice(content)) {
+            throw std::runtime_error("only a letter that introduces a device carries its certificate");
+        }
         cert = DeviceCertificate::verify(carried);
         if (!known.empty() && cert->root != known.root()) {
             throw std::runtime_error("the carried certificate is of another account");
