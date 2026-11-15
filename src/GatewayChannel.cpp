@@ -71,6 +71,19 @@ Bytes recordOf(const Bytes& frame, const std::uint8_t flags, const std::size_t t
     return plaintext;
 }
 
+// uniformOpen rounds to 1 at its very top, which would land one step past `most`.
+std::uint64_t drawIndex(const std::uint64_t count, shape::RandomSource& random)
+{
+    const auto index = static_cast<std::uint64_t>(
+        std::floor(shape::uniformOpen(random) * static_cast<double>(count)));
+    return std::min(index, count - 1);
+}
+
+std::size_t drawBetween(const std::size_t least, const std::size_t most, shape::RandomSource& random)
+{
+    return least + static_cast<std::size_t>(drawIndex(most - least + 1, random));
+}
+
 bool isDatagram(const std::vector<unsigned char>& message)
 {
     if (message.empty()) {
@@ -152,10 +165,19 @@ Bytes padRecord(const Bytes& frame, const std::uint8_t flags, shape::RandomSourc
     return recordOf(frame, flags, total);
 }
 
-Bytes bareRecord(const Bytes& frame, const std::uint8_t flags)
+Bytes mediaRecord(const Bytes& frame, const std::uint8_t flags, shape::RandomSource& random)
 {
     mustFitRecord(frame);
-    return recordOf(frame, flags, kRecordHeaderBytes + frame.size());
+    const std::size_t needed = kRecordHeaderBytes + frame.size();
+    if (needed > kMediaPadCeiling) {
+        return padRecord(frame, flags, random);
+    }
+    return recordOf(frame, flags, drawBetween(std::max(needed, kMediaPadFloor), kMediaPadCeiling, random));
+}
+
+Bytes fillerRecord(const std::uint8_t flags, shape::RandomSource& random)
+{
+    return recordOf({}, flags | kRecordFiller, drawBetween(kMediaPadFloor, kMediaPadCeiling, random));
 }
 
 std::optional<RecordBody> unpadRecord(const Bytes& plaintext)
@@ -173,6 +195,48 @@ std::optional<RecordBody> unpadRecord(const Bytes& plaintext)
     const auto start = plaintext.begin() + kRecordHeaderBytes;
     body.frame.assign(start, start + static_cast<std::ptrdiff_t>(length));
     return body;
+}
+
+bool isFiller(const RecordBody& body)
+{
+    return (body.flags & kRecordFiller) != 0;
+}
+
+std::chrono::microseconds drawMediaGap(shape::RandomSource& random)
+{
+    const std::chrono::microseconds span = kMediaGapMax - kMediaGapMin;
+    return kMediaGapMin
+        + std::chrono::microseconds(static_cast<std::chrono::microseconds::rep>(
+            drawIndex(static_cast<std::uint64_t>(span.count()) + 1, random)));
+}
+
+MediaPacer::MediaPacer(shape::RandomSource& random, const Clock::time_point start)
+    : random_(random)
+    , due_(start + drawMediaGap(random))
+{
+}
+
+bool MediaPacer::queue(Bytes frame, const Clock::time_point at)
+{
+    bool kept = true;
+    if (frames_.size() >= kMediaQueueLimit) {
+        frames_.pop_front();
+        ++dropped_;
+        kept = false;
+    }
+    frames_.push_back(Queued{std::move(frame), at});
+    return kept;
+}
+
+std::optional<MediaPacer::Queued> MediaPacer::take(const Clock::time_point now)
+{
+    due_ = now + drawMediaGap(random_);
+    if (frames_.empty()) {
+        return std::nullopt;
+    }
+    Queued oldest = std::move(frames_.front());
+    frames_.pop_front();
+    return oldest;
 }
 
 std::string pingCarrying(const std::uint8_t flags)
@@ -329,21 +393,96 @@ ChannelSocket::ChannelSocket(
 {
 }
 
+ChannelSocket::~ChannelSocket()
+{
+    stopPacing();
+    if (pacerThread_.joinable()) {
+        pacerThread_.join();
+    }
+}
+
+void ChannelSocket::carryMedia()
+{
+    const std::lock_guard<std::mutex> lock(pacing_);
+    if (pacer_.has_value() || stopping_) {
+        return;
+    }
+    pacer_.emplace(random_, MediaPacer::Clock::now());
+    pacerThread_ = std::thread([this]() { pace(); });
+}
+
+std::uint64_t ChannelSocket::mediaDropped() const
+{
+    const std::lock_guard<std::mutex> lock(pacing_);
+    return pacer_.has_value() ? pacer_->dropped() : 0;
+}
+
+void ChannelSocket::sendSealed(const Bytes& plaintext)
+{
+    // The nonce is the record's place in the stream, so sealing and queueing are one step.
+    const std::lock_guard<std::mutex> lock(sending_);
+    const Bytes record = records_->seal(plaintext);
+    raw_->send(std::vector<unsigned char>(record.begin(), record.end()));
+}
+
 void ChannelSocket::send(std::vector<unsigned char> message)
 {
-    const std::uint8_t flags = hooks_.flags ? hooks_.flags() : 0;
-    const bool bare = media_.load() && isDatagram(message);
     const Bytes frame(message.begin(), message.end());
-    {
-        // The nonce is the record's place in the stream, so sealing and queueing are one step.
-        const std::lock_guard<std::mutex> lock(sending_);
-        const Bytes record = records_->seal(
-            bare ? bareRecord(frame, flags) : padRecord(frame, flags, random_));
-        raw_->send(std::vector<unsigned char>(record.begin(), record.end()));
+    mustFitRecord(frame);
+    if (isDatagram(message)) {
+        std::unique_lock<std::mutex> lock(pacing_);
+        if (pacer_.has_value()) {
+            const bool kept = pacer_->queue(frame, MediaPacer::Clock::now());
+            const std::uint64_t dropped = pacer_->dropped();
+            lock.unlock();
+            if (!kept) {
+                log::warn("gateway: media queue full; the oldest datagram dropped ({} so far)",
+                    dropped);
+            }
+            if (hooks_.sent) {
+                hooks_.sent();
+            }
+            return;
+        }
     }
+    const std::uint8_t flags = hooks_.flags ? hooks_.flags() : 0;
+    sendSealed(padRecord(frame, flags, random_));
     if (hooks_.sent) {
         hooks_.sent();
     }
+}
+
+void ChannelSocket::pace()
+{
+    std::unique_lock<std::mutex> lock(pacing_);
+    while (!stopping_) {
+        const MediaPacer::Clock::time_point due = pacer_->due();
+        if (paced_.wait_until(lock, due, [this]() { return stopping_; })) {
+            break;
+        }
+        if (!raw_->open()) {
+            break;
+        }
+        const bool backlogged = raw_->pending() > kMediaBacklogBytes;
+        const std::optional<MediaPacer::Queued> carried = pacer_->take(MediaPacer::Clock::now());
+        if (!carried.has_value() && backlogged) {
+            continue;
+        }
+        lock.unlock();
+        const std::uint8_t flags = hooks_.flags ? hooks_.flags() : 0;
+        sendSealed(carried.has_value() ? mediaRecord(carried->frame, flags, random_)
+                                       : fillerRecord(flags, random_));
+        lock.lock();
+    }
+}
+
+void ChannelSocket::stopPacing()
+{
+    {
+        const std::lock_guard<std::mutex> lock(pacing_);
+        stopping_ = true;
+    }
+    paced_.notify_all();
 }
 
 std::size_t ChannelSocket::pending() const
@@ -353,6 +492,7 @@ std::size_t ChannelSocket::pending() const
 
 void ChannelSocket::close()
 {
+    stopPacing();
     raw_->close();
 }
 
@@ -429,6 +569,9 @@ ChannelOpened openChannel(const http::SocketDial& dial, const std::string& finge
             if (!opened.has_value()) {
                 log::warn("gateway: a record that does not open; the socket is closed");
                 raw->close();
+                return;
+            }
+            if (isFiller(*opened)) {
                 return;
             }
             opening->onMessage(

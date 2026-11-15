@@ -9,16 +9,18 @@
 #include "bazarish/WebSocket.hpp"
 #include "bazarish/WebSocketClient.hpp"
 
-#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace bazarish::gateway {
@@ -34,6 +36,7 @@ inline constexpr std::size_t kRecordFlagsBytes = 1;
 inline constexpr std::size_t kRecordLengthBytes = 2;
 inline constexpr std::size_t kRecordHeaderBytes = kRecordFlagsBytes + kRecordLengthBytes;
 inline constexpr std::uint8_t kRecordActive = 0x01;
+inline constexpr std::uint8_t kRecordFiller = 0x02;
 inline constexpr double kRecordPadMedian = 1800;
 inline constexpr double kRecordPadSigma = 0.5;
 // Every frame sent while idle, and a mail wait's request, fits under the floor.
@@ -44,6 +47,18 @@ inline constexpr double kBulkPadSigma = 1.0;
 inline constexpr std::size_t kBulkPadMax = 4096;
 inline constexpr std::size_t kMaxPaddedBytes = kRecordHeaderBytes + kMaxFrameBytes + kBulkPadMax;
 inline constexpr std::size_t kMaxRecordBytes = kMaxPaddedBytes + kAeadTagBytes;
+
+// A media socket sends one record per slot; the mean gap, 15 ms, is under one 20 ms voice frame.
+inline constexpr std::chrono::microseconds kMediaGapMin{3000};
+inline constexpr std::chrono::microseconds kMediaGapMax{27000};
+// Above the longest voice datagram: 3 + 5 + 2 + a 64-byte host + 28 + a 150-byte Opus frame.
+inline constexpr std::size_t kMediaPadFloor = 320;
+inline constexpr std::size_t kMediaPadCeiling = 448;
+inline constexpr std::size_t kMediaQueueLimit = 8;
+// A filler waits while this many records of the media socket have not left yet.
+inline constexpr std::size_t kMediaBacklogRecords = 2;
+inline constexpr std::size_t kMediaBacklogBytes
+    = kMediaBacklogRecords * (kMediaPadCeiling + kAeadTagBytes);
 
 class WrongGateway : public std::runtime_error {
 public:
@@ -67,13 +82,46 @@ shape::LogNormal bulkPad();
 
 // A record's plaintext: flags, the frame's length, the frame, zeros to the drawn length.
 Bytes padRecord(const Bytes& frame, std::uint8_t flags, shape::RandomSource& random);
-Bytes bareRecord(const Bytes& frame, std::uint8_t flags);
+// Uniform between kMediaPadFloor and kMediaPadCeiling; a longer frame is padded as any other.
+Bytes mediaRecord(const Bytes& frame, std::uint8_t flags, shape::RandomSource& random);
+Bytes fillerRecord(std::uint8_t flags, shape::RandomSource& random);
 
 struct RecordBody {
     std::uint8_t flags = 0;
     Bytes frame;
 };
 std::optional<RecordBody> unpadRecord(const Bytes& plaintext);
+bool isFiller(const RecordBody& body);
+
+// Uniform in [kMediaGapMin, kMediaGapMax].
+std::chrono::microseconds drawMediaGap(shape::RandomSource& random);
+
+// The slots of a media socket are drawn ahead and never moved by what is queued.
+class MediaPacer {
+public:
+    using Clock = std::chrono::steady_clock;
+
+    struct Queued {
+        Bytes frame;
+        Clock::time_point at;
+    };
+
+    MediaPacer(shape::RandomSource& random, Clock::time_point start);
+
+    // False when the queue was full and its oldest frame was dropped.
+    bool queue(Bytes frame, Clock::time_point at);
+    Clock::time_point due() const { return due_; }
+    // The oldest frame, or none for a filler; the next slot is drawn from `now`.
+    std::optional<Queued> take(Clock::time_point now);
+    std::size_t queued() const { return frames_.size(); }
+    std::uint64_t dropped() const { return dropped_; }
+
+private:
+    shape::RandomSource& random_;
+    Clock::time_point due_;
+    std::deque<Queued> frames_;
+    std::uint64_t dropped_ = 0;
+};
 
 // Uniform in [kIdleKeepaliveMin, kIdleKeepaliveMax].
 std::chrono::milliseconds drawIdleKeepalive(shape::RandomSource& random);
@@ -135,6 +183,9 @@ struct ChannelHooks {
 class ChannelSocket : public http::Socket {
 public:
     ChannelSocket(http::SocketPtr raw, std::shared_ptr<Records> records, ChannelHooks hooks = {});
+    ~ChannelSocket() override;
+    ChannelSocket(const ChannelSocket&) = delete;
+    ChannelSocket& operator=(const ChannelSocket&) = delete;
 
     void send(std::vector<unsigned char> message) override;
     std::size_t pending() const override;
@@ -143,15 +194,25 @@ public:
 
     const http::SocketPtr& raw() const { return raw_; }
     std::optional<RecordBody> openRecord(const Bytes& record);
-    void carryMedia() { media_.store(true); }
+    // Datagrams then leave only in the slots of a MediaPacer, and a slot with none carries a filler.
+    void carryMedia();
+    std::uint64_t mediaDropped() const;
 
 private:
+    void sendSealed(const Bytes& plaintext);
+    void pace();
+    void stopPacing();
+
     http::SocketPtr raw_;
     std::shared_ptr<Records> records_;
     ChannelHooks hooks_;
     shape::SystemRandom random_;
     std::mutex sending_;
-    std::atomic<bool> media_{false};
+    mutable std::mutex pacing_;
+    std::condition_variable paced_;
+    std::optional<MediaPacer> pacer_;
+    bool stopping_ = false;
+    std::thread pacerThread_;
 };
 
 struct ChannelJoin {

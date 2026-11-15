@@ -145,6 +145,9 @@ private:
             raw->close();
             return;
         }
+        if (gateway::isFiller(*opened)) {
+            return;
+        }
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             received_.push_back(opened->frame);

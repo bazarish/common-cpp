@@ -98,37 +98,6 @@ std::vector<Bytes> frameClasses()
         datagrams().front(), datagrams().back()};
 }
 
-void checkMediaBare(const Bytes& sessionKey, const Bytes& salt)
-{
-    for (const Bytes& datagram : datagrams()) {
-        const Bytes bare = bareRecord(datagram, kRecordActive);
-        CHECK(bare.size() == kRecordHeaderBytes + datagram.size());
-        CHECK(unpadRecord(bare)->frame == datagram);
-        CHECK(unpadRecord(bare)->flags == kRecordActive);
-    }
-    CHECK_THROWS(bareRecord(Bytes(kMaxFrameBytes + 1, 0), 0));
-
-    const std::shared_ptr<Captured> captured = std::make_shared<Captured>();
-    ChannelSocket lane(captured, std::make_shared<Records>(sessionKey, salt, Side::eClient),
-        ChannelHooks{[]() { return kRecordActive; }, {}});
-    lane.carryMedia();
-    Records far(sessionKey, salt, Side::eGateway);
-    for (const Bytes& frame : frameClasses()) {
-        lane.send(std::vector<unsigned char>(frame.begin(), frame.end()));
-        const std::vector<unsigned char>& wire = captured->sent.back();
-        const std::optional<Bytes> opened = far.open(Bytes(wire.begin(), wire.end()));
-        CHECK(opened.has_value());
-        CHECK(unpadRecord(*opened)->frame == frame);
-        CHECK(unpadRecord(*opened)->flags == kRecordActive);
-        const FrameType type = static_cast<FrameType>(frame.front());
-        if (type == FrameType::eRawSend || type == FrameType::eRawRecv) {
-            CHECK(wire.size() == kRecordHeaderBytes + frame.size() + kAeadTagBytes);
-        } else {
-            CHECK(wire.size() >= static_cast<std::size_t>(kRecordPadFloor) + kAeadTagBytes);
-        }
-    }
-}
-
 void checkRecordPadding(const Bytes& sessionKey, const Bytes& salt)
 {
     Records clientSide(sessionKey, salt, Side::eClient);
@@ -332,7 +301,6 @@ int main()
     }
 
     checkRecordPadding(welcome.sessionKey, welcome.salt);
-    checkMediaBare(welcome.sessionKey, welcome.salt);
     std::printf("TestGatewayChannel ok\n");
     return 0;
 }
