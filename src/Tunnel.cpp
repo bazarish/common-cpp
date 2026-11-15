@@ -26,6 +26,9 @@ const char* const kCipherField = "c";
 const char* const kHelloType = "h";
 const char* const kCarryType = "c";
 
+const char* const kRequestKeyInfo = "bazarish tunnel request v1";
+const char* const kAnswerKeyInfo = "bazarish tunnel answer v1";
+
 Bytes toCbor(const nlohmann::json& value)
 {
     return nlohmann::json::to_cbor(value);
@@ -54,6 +57,12 @@ nlohmann::json frameOf(const Bytes& frame)
         throw std::runtime_error("tunnel frame is of another version");
     }
     return parsed;
+}
+
+Bytes frameKey(const Bytes& tunnelKey, const Direction direction, const std::string& handle)
+{
+    return hkdfSha256(tunnelKey, Bytes(handle.begin(), handle.end()),
+        direction == Direction::eRequest ? kRequestKeyInfo : kAnswerKeyInfo, kAeadKeyBytes);
 }
 
 nlohmann::json headersToJson(const std::map<std::string, std::string>& headers)
@@ -126,7 +135,8 @@ Welcome openWelcome(const Bytes& sealed, const Key& replyKeyPrivate)
     return welcome;
 }
 
-Bytes carry(const std::string& handle, const Bytes& tunnelKey, const Bytes& plaintext)
+Bytes carry(const std::string& handle, const Bytes& tunnelKey, const Direction direction,
+    const Bytes& plaintext)
 {
     const Bytes nonce = randomBytes(kAeadNonceBytes);
     const nlohmann::json frame = {
@@ -134,7 +144,7 @@ Bytes carry(const std::string& handle, const Bytes& tunnelKey, const Bytes& plai
         {kTypeField, kCarryType},
         {kHandleField, handle},
         {kNonceField, asBinary(nonce)},
-        {kCipherField, asBinary(aeadSeal(tunnelKey, nonce, padToLadder(plaintext)))},
+        {kCipherField, asBinary(aeadSeal(frameKey(tunnelKey, direction, handle), nonce, padToLadder(plaintext)))},
     };
     return toCbor(frame);
 }
@@ -157,14 +167,17 @@ bool isHello(const Bytes& frame)
     }
 }
 
-Bytes open(const Bytes& frame, const Bytes& tunnelKey)
+Bytes open(const Bytes& frame, const Bytes& tunnelKey, const Direction direction, const std::string& handle)
 {
     const nlohmann::json parsed = frameOf(frame);
     if (parsed.value(kTypeField, std::string()) != kCarryType) {
         throw std::runtime_error("tunnel frame carries nothing");
     }
-    const std::optional<Bytes> opened = aeadOpen(
-        tunnelKey, fromBinary(parsed.at(kNonceField)), fromBinary(parsed.at(kCipherField)));
+    if (parsed.at(kHandleField).get<std::string>() != handle) {
+        throw std::runtime_error("tunnel frame names another handle");
+    }
+    const std::optional<Bytes> opened = aeadOpen(frameKey(tunnelKey, direction, handle),
+        fromBinary(parsed.at(kNonceField)), fromBinary(parsed.at(kCipherField)));
     if (!opened.has_value()) {
         throw std::runtime_error("tunnel frame did not open");
     }

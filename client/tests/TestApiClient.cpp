@@ -58,7 +58,9 @@ int main()
     std::string sawQuery;
     std::string sawDevice;
     std::string sawBody;
+    int usageAnswers = 0;
     server.get("/v1/messaging/storage-usage", [&](const http::Request& request) {
+        ++usageAnswers;
         sawMethod = request.method;
         sawPath = request.path;
         sawQuery = request.query("wait");
@@ -137,6 +139,13 @@ int main()
         CHECK(nodeStub.opened() == 1);
         CHECK(stub.opened() == 3);
         CHECK(!api.serverBehindFacadeDown());
+
+        const int answeredBefore = usageAnswers;
+        CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+        stub.answerNextWithTheLastAnswer();
+        CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+        CHECK(usageAnswers == answeredBefore + 2);
+        CHECK(stub.opened() == 4);
     }
 
     {

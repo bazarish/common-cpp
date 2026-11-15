@@ -55,10 +55,14 @@ Hello openHello(const Bytes& frame, const Key& serverSealingPrivate);
 Bytes sealWelcome(const Welcome& welcome, const Key& replyKeyPublic);
 Welcome openWelcome(const Bytes& sealed, const Key& replyKeyPrivate);
 
-Bytes carry(const std::string& handle, const Bytes& tunnelKey, const Bytes& plaintext);
+enum class Direction { eRequest, eAnswer };
+
+// Sealed under a key of its own for the direction and the handle, so an answer opens only for its request.
+Bytes carry(const std::string& handle, const Bytes& tunnelKey, Direction direction,
+    const Bytes& plaintext);
 std::string handleOf(const Bytes& frame);
 bool isHello(const Bytes& frame);
-Bytes open(const Bytes& frame, const Bytes& tunnelKey);
+Bytes open(const Bytes& frame, const Bytes& tunnelKey, Direction direction, const std::string& handle);
 
 Bytes encodeRequest(const Request& request);
 Request decodeRequest(const Bytes& plaintext);

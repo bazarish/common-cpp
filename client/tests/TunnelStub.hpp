@@ -63,6 +63,8 @@ public:
 
     void refuseNextOpaquely() { refuseOpaquely_ = true; }
 
+    void answerNextWithTheLastAnswer() { replayAnswer_ = true; }
+
 private:
     void serve(bazarish::http::Server& server, const bazarish::http::Request& request,
         bazarish::http::Responder respond)
@@ -126,6 +128,12 @@ private:
             sealed(randomBytes(kOpaqueRefusalBytes));
             return;
         }
+        if (replayAnswer_) {
+            replayAnswer_ = false;
+            const std::lock_guard<std::mutex> lock(mutex_);
+            sealed(lastAnswer_);
+            return;
+        }
         if (refuseNext_) {
             refuseNext_ = false;
             bazarish::tunnel::Response inner;
@@ -134,13 +142,14 @@ private:
             const std::string body
                 = R"({"error":{"code":"SESSION_INVALID","message":"gone"}})";
             inner.body = Bytes(body.begin(), body.end());
-            sealed(bazarish::tunnel::carry(
-                handle, key, bazarish::tunnel::encodeResponse(inner)));
+            sealed(bazarish::tunnel::carry(handle, key, bazarish::tunnel::Direction::eAnswer,
+                bazarish::tunnel::encodeResponse(inner)));
             return;
         }
 
         const bazarish::tunnel::Request carried
-            = bazarish::tunnel::decodeRequest(bazarish::tunnel::open(frame, key));
+            = bazarish::tunnel::decodeRequest(bazarish::tunnel::open(
+                frame, key, bazarish::tunnel::Direction::eRequest, handle));
         bazarish::http::Request inner;
         inner.method = carried.method;
         inner.path = carried.path;
@@ -155,12 +164,19 @@ private:
         }
         inner.headers[kCallerHeader] = caller;
         inner.headers[kCallerDeviceHeader] = device;
-        server.dispatch(inner, [sealed, handle, key](bazarish::http::Response answer) {
+        server.dispatch(inner, [this, sealed, handle, key](bazarish::http::Response answer) {
             bazarish::tunnel::Response out;
             out.status = answer.status;
             out.contentType = answer.contentType;
             out.body = Bytes(answer.body.begin(), answer.body.end());
-            sealed(bazarish::tunnel::carry(handle, key, bazarish::tunnel::encodeResponse(out)));
+            const Bytes frame
+                = bazarish::tunnel::carry(handle, key, bazarish::tunnel::Direction::eAnswer,
+                    bazarish::tunnel::encodeResponse(out));
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                lastAnswer_ = frame;
+            }
+            sealed(frame);
         });
     }
 
@@ -182,6 +198,8 @@ private:
     int opened_ = 0;
     std::atomic<bool> refuseNext_{false};
     std::atomic<bool> refuseOpaquely_{false};
+    std::atomic<bool> replayAnswer_{false};
+    Bytes lastAnswer_;
 };
 
 }  // namespace bazarish::teststub

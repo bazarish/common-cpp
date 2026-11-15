@@ -11,6 +11,7 @@ using namespace bazarish;
 namespace {
 
 constexpr std::int64_t kNow = 1780000000;
+constexpr bazarish::tunnel::Direction kAsked = bazarish::tunnel::Direction::eRequest;
 
 tunnel::Request sampleRequest()
 {
@@ -50,7 +51,7 @@ int main()
 
         const Key stranger = Key::generateSealing();
         CHECK_THROWS(tunnel::openHello(frame, stranger));
-        CHECK_THROWS(tunnel::open(frame, randomBytes(kAeadKeyBytes)));
+        CHECK_THROWS(tunnel::open(frame, randomBytes(kAeadKeyBytes), tunnel::Direction::eRequest, "h"));
         CHECK_THROWS(tunnel::handleOf(frame));
 
         const Bytes welcome
@@ -70,24 +71,26 @@ int main()
 
         const Bytes payload = tunnel::encodeRequest(sampleRequest());
         const std::string handle = auth::sessionHandle(secret, 1);
-        const Bytes frame = tunnel::carry(handle, key, payload);
+        const Bytes frame = tunnel::carry(handle, key, kAsked, payload);
         CHECK(!tunnel::isHello(frame));
         CHECK(tunnel::handleOf(frame) == handle);
-        CHECK(tunnel::open(frame, key) == payload);
+        CHECK(tunnel::open(frame, key, kAsked, handle) == payload);
 
-        CHECK_THROWS(tunnel::open(frame, randomBytes(kAeadKeyBytes)));
+        CHECK_THROWS(tunnel::open(frame, randomBytes(kAeadKeyBytes), kAsked, handle));
+        CHECK_THROWS(tunnel::open(frame, key, tunnel::Direction::eAnswer, handle));
+        CHECK_THROWS(tunnel::open(frame, key, kAsked, auth::sessionHandle(secret, 2)));
         {
             Bytes tampered = frame;
             tampered[tampered.size() - 1] ^= 0x01;
-            CHECK_THROWS(tunnel::open(tampered, key));
+            CHECK_THROWS(tunnel::open(tampered, key, kAsked, handle));
         }
         {
             const Bytes truncated(frame.begin(), frame.end() - 8);
-            CHECK_THROWS(tunnel::open(truncated, key));
+            CHECK_THROWS(tunnel::open(truncated, key, kAsked, handle));
         }
-        CHECK(tunnel::carry(handle, key, payload) != frame);
+        CHECK(tunnel::carry(handle, key, kAsked, payload) != frame);
 
-        const tunnel::Request back = tunnel::decodeRequest(tunnel::open(frame, key));
+        const tunnel::Request back = tunnel::decodeRequest(tunnel::open(frame, key, kAsked, handle));
         const tunnel::Request sent = sampleRequest();
         CHECK(back.method == sent.method);
         CHECK(back.path == sent.path);
@@ -112,21 +115,21 @@ int main()
         for (const std::size_t bodyLength : {std::size_t{0}, std::size_t{1}, std::size_t{50}}) {
             tunnel::Request request = sampleRequest();
             request.body = Bytes(bodyLength, 'x');
-            sizes.insert(tunnel::carry(handle, key, tunnel::encodeRequest(request)).size());
+            sizes.insert(tunnel::carry(handle, key, kAsked, tunnel::encodeRequest(request)).size());
         }
         CHECK(sizes.size() == 1);
 
         tunnel::Request large = sampleRequest();
         large.body = Bytes(40000, 'x');
-        const std::size_t first = tunnel::carry(handle, key, tunnel::encodeRequest(large)).size();
+        const std::size_t first = tunnel::carry(handle, key, kAsked, tunnel::encodeRequest(large)).size();
         large.body = Bytes(40100, 'x');
-        CHECK(tunnel::carry(handle, key, tunnel::encodeRequest(large)).size() == first);
+        CHECK(tunnel::carry(handle, key, kAsked, tunnel::encodeRequest(large)).size() == first);
     }
 
     {
         CHECK(!tunnel::isHello(Bytes{'n', 'o', 't', ' ', 'c', 'b', 'o', 'r'}));
         CHECK_THROWS(tunnel::handleOf(Bytes{'n', 'o', 't'}));
-        CHECK_THROWS(tunnel::open(Bytes{}, randomBytes(kAeadKeyBytes)));
+        CHECK_THROWS(tunnel::open(Bytes{}, randomBytes(kAeadKeyBytes), kAsked, "h"));
     }
 
     return 0;

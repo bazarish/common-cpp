@@ -548,14 +548,16 @@ ApiResponse ApiClient::tunnelledLocked(Tunnel& tunnel, const std::string& method
     inner.body = body;
     inner.contentType = contentType;
     const std::uint64_t seq = ++tunnel.sessionSeq;
-    const Bytes frame = bazarish::tunnel::carry(auth::sessionHandle(tunnel.sessionSecret, seq),
-        tunnel.tunnelKey, bazarish::tunnel::encodeRequest(inner));
+    const std::string handle = auth::sessionHandle(tunnel.sessionSecret, seq);
+    const Bytes frame = bazarish::tunnel::carry(handle, tunnel.tunnelKey,
+        bazarish::tunnel::Direction::eRequest, bazarish::tunnel::encodeRequest(inner));
     const ApiResponse carried = transmitLocked("POST", tunnelPathOf(tunnel.service), frame,
         "application/octet-stream", readTimeoutSeconds);
     bazarish::tunnel::Response answered;
     try {
         answered = bazarish::tunnel::decodeResponse(
-            bazarish::tunnel::open(carried.body, tunnel.tunnelKey));
+            bazarish::tunnel::open(carried.body, tunnel.tunnelKey,
+                bazarish::tunnel::Direction::eAnswer, handle));
     } catch (const std::exception&) {
         linkFailure_.store(LinkFailure::eServerRefused);
         throw ApiError(ErrorCode::eSessionInvalid, carried.status,
