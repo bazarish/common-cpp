@@ -159,9 +159,17 @@ int main()
         CHECK_THROWS(full.issue(user));
         CHECK_THROWS(ContactCard::verify(hybrid::signJson(bodyOf(AccountKind::eUser), impostor)));
         CHECK_THROWS(ContactCard::verify(hybrid::signJson(bodyOf(AccountKind::eUser), user)));
-        const ContactCard bySecondary = ContactCard::verify(full.issue(tablet.signing()));
-        CHECK(bySecondary.signer == tablet.id());
-        CHECK(bySecondary.fingerprint() == user.fingerprint());
+        CHECK_THROWS(full.issue(tablet.signing()));
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(bodyOf(AccountKind::eUser), tablet.signing())));
+        nlohmann::json laterList = bodyOf(AccountKind::eUser);
+        laterList["epochs"][1]["g"] = kFirstRevocationNumber + 1;
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(laterList, signer)));
+        nlohmann::json plainB32 = bodyOf(AccountKind::eUser);
+        plainB32["dest"] = std::string(kB32Label, 'a') + ".b32.i2p";
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(plainB32, signer)));
+        nlohmann::json weakServing = bodyOf(AccountKind::eUser);
+        weakServing["servingKey"] = toBase64(Key::generateX25519().publicDer());
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(weakServing, signer)));
 
         ContactCard secondaryKeys = full;
         secondaryKeys.epochs.back().by = tablet.id();

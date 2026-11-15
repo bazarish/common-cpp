@@ -201,6 +201,27 @@ std::vector<EpochPublic> mergedEpochs(const std::vector<EpochPublic>& held,
     return merged;
 }
 
+std::vector<EpochPublic> admittedEpochs(
+    const std::vector<EpochPublic>& offered, const DeviceBook& devices, const std::int64_t utcSeconds)
+{
+    const EpochNumber horizon = epochAt(utcSeconds) + kEpochPushHorizon;
+    std::vector<EpochPublic> admitted;
+    for (const EpochPublic& epoch : offered) {
+        if (epoch.n > horizon) {
+            continue;
+        }
+        if (devices.complete()) {
+            const std::optional<DeviceCertificate> maker = devices.active(epoch.by);
+            if (!maker.has_value() || maker->role != DeviceRole::ePrimary
+                || epoch.g > devices.revocationNumber()) {
+                continue;
+            }
+        }
+        admitted.push_back(epoch);
+    }
+    return admitted;
+}
+
 Bytes sealToEpoch(const Bytes& plaintext, const EpochPublic& epoch)
 {
     return hybrid::seal(plaintext, Key::fromPublicDer(epoch.keyDer), epoch.kid());

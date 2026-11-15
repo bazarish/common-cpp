@@ -19,6 +19,7 @@ void signAuthorship(nlohmann::json& content, const DeviceCredential& device, boo
 struct Author {
     std::string account;
     std::string device;
+    DeviceRole role = DeviceRole::eSecondary;
 };
 
 std::string authorDevice(const nlohmann::json& content);

@@ -305,10 +305,15 @@ nlohmann::json readBundle(const Bytes& plain)
     return bundle;
 }
 
-void applyBootstrap(Contact& contact, const nlohmann::json& bootstrap, const std::int64_t utc)
+void applyBootstrap(
+    Contact& contact, const nlohmann::json& bootstrap, const bool byPrimary, const std::int64_t utc)
 {
     contact.kind = accountKindFromName(bootstrap.at("kind").get<std::string>());
-    contact.epochs = mergedEpochs(contact.epochs, epochsFromJson(bootstrap.at("epochs")), utc);
+    const std::vector<EpochPublic> offeredEpochs = epochsFromJson(bootstrap.at("epochs"));
+    if (byPrimary) {
+        contact.epochs
+            = mergedEpochs(contact.epochs, admittedEpochs(offeredEpochs, contact.devices, utc), utc);
+    }
     if (bootstrap.contains("dest")) {
         contact.dest = bootstrap.at("dest").get<std::string>();
         validateB33I2pHost(contact.dest);
@@ -1322,6 +1327,10 @@ void Session::persistContacts() const
 void Session::registerAccount()
 {
     requireSwitchedOn();
+    if (!isPrimary()) {
+        joinAsSecondary();
+        return;
+    }
     const bool newHere = cardB64_.empty()
         || !ContactCard::verify(fromBase64(cardB64_)).devices.active(deviceId()).has_value();
     const DestinationInfo serving = servedOrOwnDestination();
@@ -1361,6 +1370,30 @@ void Session::registerAccount()
     }
 }
 
+void Session::joinAsSecondary()
+{
+    if (cardB64_.empty()) {
+        throw DeviceRoleRefusal("only a primary device can register the account");
+    }
+    const bool newHere = !ContactCard::verify(fromBase64(cardB64_)).devices.active(deviceId()).has_value();
+    const I2pDestStatus status = client_->i2pStatus();
+    approval_ = {status.approval == kApprovalPending, status.registrationMessage};
+    if (approval_.pending) {
+        bazarish::log::info("account awaiting operator approval: no mailbox until then");
+        return;
+    }
+    reportConnectProgress(fingerprint(), ConnectMilestone::eRegisteringDevice);
+    client_->registerThisDevice(install_);
+    registerEveryPass();
+    if (newHere) {
+        announceThisDevice();
+    }
+    reportConnectProgress(fingerprint(), ConnectMilestone::eCheckingAddress);
+    if (!reconcileI2pAddress()) {
+        bazarish::log::warn("this server serves an address this device has no keys for");
+    }
+}
+
 void Session::registerSelfHosted(const std::string& servedDest)
 {
     DestinationInfo serving;
@@ -1390,6 +1423,7 @@ void Session::publishRouting()
 
 bool Session::delegateRouting()
 {
+    requirePrimary("delegate the address");
     if (!hasI2pDestination()) {
         throw std::runtime_error("no user-owned I2P destination to publish");
     }
@@ -1568,6 +1602,7 @@ void Session::replaceI2pMaster(
 
 void Session::disableI2pDest()
 {
+    requirePrimary("take the address offline");
     client_->sendI2pTransient(std::string(), 0, {});
     i2pTransient_.clear();
     db_->erase("i2p-transient");
@@ -2072,12 +2107,15 @@ void Session::setDelegationDays(const std::int64_t days, const bool announce)
             + std::to_string(kMinDelegationDays) + " and " + std::to_string(kMaxDelegationDays)
             + " days");
     }
+    if (announce) {
+        requirePrimary("renew the delegation of the address");
+    }
     if (days == delegationDays_) {
         return;
     }
     delegationDays_ = days;
     persistMeta();
-    if (hasI2pDestination() && !myDest_.empty()) {
+    if (isPrimary() && hasI2pDestination() && !myDest_.empty()) {
         redelegate();
     }
     if (announce) {
@@ -2095,7 +2133,7 @@ void Session::syncDelegationTermToSelf()
 
 bool Session::refreshI2pTransientIfDue(const std::int64_t now, const std::int64_t leadSeconds)
 {
-    if (!hasI2pDestination()) {
+    if (!isPrimary() || !hasI2pDestination()) {
         return false;
     }
     const I2pDestStatus status = i2pDestStatus();
@@ -2111,6 +2149,7 @@ bool Session::refreshI2pTransientIfDue(const std::int64_t now, const std::int64_
 
 void Session::redelegate()
 {
+    requirePrimary("renew the delegation of the address");
     // The card names the keys a delegation carries: without keys yet, both are published anew.
     if (!addressSealing_.has_value() || !addressSigning_.has_value()) {
         publishRouting();
@@ -4068,6 +4107,7 @@ std::vector<IncomingMessage> Session::takeIn(
                 try {
 
                     std::string authorDevice;
+                    bool byPrimary = false;
                     {
                         const std::string claimed = body.value("from", std::string());
                         Author author;
@@ -4086,6 +4126,7 @@ std::vector<IncomingMessage> Session::takeIn(
                             continue;
                         }
                         authorDevice = author.device;
+                        byPrimary = author.role == DeviceRole::ePrimary;
                     }
 
                     if (body.at("v").get<int>() > kMessageFormatVersion) {
@@ -4136,7 +4177,11 @@ std::vector<IncomingMessage> Session::takeIn(
                         continue;
                     }
 
-                    if (body.contains("routing")
+                    if (body.contains("routing") && !byPrimary) {
+                        bazarish::log::warn("sync: routing from {} not sent by a primary device of theirs was dropped",
+                            bazarish::log::redact(message.fromFingerprint));
+                        noteWire(false, "routing from a secondary device", "dropped", {});
+                    } else if (body.contains("routing")
                         && newerState("routing:" + message.fromFingerprint, message.sentAt)) {
                         const nlohmann::json& routing = body.at("routing");
                         Contact& peer = contacts_[message.fromFingerprint];
@@ -4163,7 +4208,7 @@ std::vector<IncomingMessage> Session::takeIn(
                             if (!introducedCert.empty()) {
                                 peer.devices.take({introducedCert}, std::nullopt);
                             }
-                            applyBootstrap(peer, body.at("bootstrap"), epochClock_());
+                            applyBootstrap(peer, body.at("bootstrap"), byPrimary, epochClock_());
                             tellCourier([&](OutboundCourier& courier) {
                                 courier.rekey(message.fromFingerprint, peer.epochs);
                             });
@@ -5395,7 +5440,7 @@ void Session::ensureOwnEpochs()
 
 void Session::republishCardIfStale()
 {
-    if (cardB64_.empty() || !hasOwnRouting() || approval_.pending) {
+    if (!isPrimary() || cardB64_.empty() || !hasOwnRouting() || approval_.pending) {
         return;
     }
     const std::vector<EpochPublic> epochs = cardEpochs();
@@ -5514,7 +5559,8 @@ void Session::takeContactEpochs(
         return;
     }
     Contact probe = found->second;
-    probe.epochs = mergedEpochs(found->second.epochs, offered, epochClock_());
+    probe.epochs = mergedEpochs(found->second.epochs,
+        admittedEpochs(offered, found->second.devices, epochClock_()), epochClock_());
     dropUnmadeEpochs(probe);
     if (probe.epochs == found->second.epochs) {
         return;
@@ -5564,13 +5610,7 @@ void Session::sendRingToDevices(
 
 void Session::dropUnmadeEpochs(Contact& contact) const
 {
-    if (!contact.devices.complete()) {
-        return;
-    }
-    std::erase_if(contact.epochs, [&contact](const EpochPublic& epoch) {
-        const std::optional<DeviceCertificate> maker = contact.devices.active(epoch.by);
-        return !maker.has_value() || maker->role != DeviceRole::ePrimary;
-    });
+    contact.epochs = admittedEpochs(contact.epochs, contact.devices, epochClock_());
 }
 
 nlohmann::json Session::ownDevicesLetter() const
@@ -6100,6 +6140,7 @@ bool Session::hasOwnRouting() const
 
 bool Session::refreshOwnCard()
 {
+    requirePrimary("publish the card");
     if (cardB64_.empty()) {
         throw std::runtime_error("not registered: nothing to refresh");
     }

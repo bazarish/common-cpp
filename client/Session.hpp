@@ -845,6 +845,7 @@ private:
 
     const DeviceBook& bookFor(const std::string& peerFingerprint) const;
     void requirePrimary(const std::string& what) const;
+    void joinAsSecondary();
     Bytes openItem(const Bytes& sealed) const;
     std::vector<std::string> siblingDevices() const;
     void persistOwnDevices() const;

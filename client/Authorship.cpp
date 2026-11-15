@@ -97,7 +97,7 @@ Author authorOf(const nlohmann::json& content, const DeviceBook& known)
     signedPart.erase(kAuthorshipField);
     cert->requireSigned(
         encodedContent(signedPart), fromBytes(block.at(kClassicalField)), fromBytes(block.at(kPqField)));
-    return Author{cert->root, cert->device};
+    return Author{cert->root, cert->device, cert->role};
 }
 
 }  // namespace bazarish::client

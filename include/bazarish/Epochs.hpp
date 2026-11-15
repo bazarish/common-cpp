@@ -29,6 +29,8 @@ inline constexpr std::int64_t kEpochSeconds = kEpochDays * kSecondsPerDay;
 inline constexpr std::int64_t kEpochOriginSeconds = 1767225600;
 inline constexpr std::int64_t kEpochKeptAfterEndSeconds = kMailRetentionDays * kSecondsPerDay;
 inline constexpr std::size_t kCardEpochs = 2;
+// Identity.md: a key is pushed when what was last sent leaves less than one epoch ahead.
+inline constexpr EpochNumber kEpochPushHorizon = 2;
 
 inline constexpr std::uint8_t kEpochKidTag = 0x01;
 inline constexpr std::size_t kEpochKidNumberBytes = 4;
@@ -68,6 +70,10 @@ std::vector<EpochPublic> chosenEpochs(const std::vector<EpochPublic>& epochs);
 // The keys of both lists for epochs that have not ended; an offered key replaces a held one.
 std::vector<EpochPublic> mergedEpochs(const std::vector<EpochPublic>& held,
     const std::vector<EpochPublic>& offered, std::int64_t utcSeconds);
+
+// Within the push horizon and, once `devices` holds the list, made by an active primary under it.
+std::vector<EpochPublic> admittedEpochs(
+    const std::vector<EpochPublic>& offered, const DeviceBook& devices, std::int64_t utcSeconds);
 
 Bytes sealToEpoch(const Bytes& plaintext, const EpochPublic& epoch);
 

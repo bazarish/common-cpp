@@ -411,6 +411,19 @@ int main()
             respondJson(response, {{"ok", true}, {"requiresApproval", false}});
         }));
 
+    server.get("/v1/account/i2p-status",
+        stub([&](const http::Request& request, http::Response& response) {
+            const std::string caller = requireCaller(request);
+            std::lock_guard<std::mutex> lock(m.mu);
+            if (m.signedUp.count(caller) == 0) {
+                response.status = 404;
+                respondJson(response,
+                    {{"error", {{"code", "ACCOUNT_UNKNOWN"}, {"message", "no account"}}}});
+                return;
+            }
+            respondJson(response, {{"approval", "approved"}, {"registrationMessage", ""}});
+        }));
+
     server.post("/v1/account/i2p-dest",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
@@ -3049,7 +3062,19 @@ int main()
             CHECK(tab->role() == DeviceRole::eSecondary);
             CHECK(tab->deviceId() != ann->deviceId());
             CHECK(!AccountDb(scratch / "bz-devices-tab", std::string{}).has("root.pem"));
+            const std::string cardBeforeTablet = [&]() {
+                std::lock_guard<std::mutex> lock(m.mu);
+                return m.certFor[ann->fingerprint()];
+            }();
             tab->registerAccount();
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                CHECK(m.certFor[ann->fingerprint()] == cardBeforeTablet);
+            }
+            CHECK(refusedForRole([&]() { tab->disableI2pDest(); }));
+            CHECK(refusedForRole([&]() { tab->setDelegationDays(kMaxDelegationDays, true); }));
+            CHECK(refusedForRole([&]() { (void)tab->refreshOwnCard(); }));
+            CHECK(!tab->refreshI2pTransientIfDue(0, kMaxDelegationDays * kSecondsPerDay));
 
             fs::remove(scratch / "bz-devices-twin");
             Session::importAccountBytes(tabletBundle, scratch / "bz-devices-twin", "pw");

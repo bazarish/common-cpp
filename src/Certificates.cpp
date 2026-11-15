@@ -58,6 +58,9 @@ void requireCardEpochs(
         if (!maker.has_value() || maker->role != bazarish::DeviceRole::ePrimary) {
             throw std::runtime_error("a contact card carries an epoch key no primary device made");
         }
+        if (epoch.g > devices.revocationNumber()) {
+            throw std::runtime_error("a contact card carries an epoch key of a list it does not hold");
+        }
     }
 }
 
@@ -92,6 +95,9 @@ std::string signingDevice(const bazarish::Bytes& classicalDer, const bazarish::B
     if (!signer.has_value() || signer->signingClassicalDer != classicalDer
         || signer->signingPqDer != pqDer) {
         throw std::runtime_error("a contact card signed by none of its account's devices");
+    }
+    if (signer->role != bazarish::DeviceRole::ePrimary) {
+        throw std::runtime_error("a contact card carries epoch keys, so only a primary device signs it");
     }
     return id;
 }
