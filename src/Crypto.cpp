@@ -209,6 +209,31 @@ std::string Key::privatePem(const std::string& passphrase) const
     return std::string(data.begin(), data.end()) + (kem_ ? kem_->privatePem(passphrase) : "");
 }
 
+SecretBytes Key::privatePemSecret() const
+{
+    if (!hasPrivate_) {
+        throw std::logic_error("key has no private part");
+    }
+    const BioPtr bio(BIO_new(BIO_s_secmem()));
+    if (bio == nullptr) {
+        throw std::runtime_error("BIO_new failed");
+    }
+    if (PEM_write_bio_PrivateKey(bio.get(), key_.get(), nullptr, nullptr, 0, nullptr, nullptr) != 1) {
+        throw std::runtime_error("PEM_write_bio_PrivateKey failed");
+    }
+    char* data = nullptr;
+    const long size = BIO_get_mem_data(bio.get(), &data);
+    if (size < 0 || data == nullptr) {
+        throw std::runtime_error("BIO_get_mem_data failed");
+    }
+    SecretBytes pem(static_cast<std::size_t>(size));
+    std::copy(data, data + size, pem.data());
+    if (kem_) {
+        pem.append(kem_->privatePemSecret().bytes());
+    }
+    return pem;
+}
+
 Bytes Key::publicDer() const
 {
     const BioPtr bio = makeMemoryBio();

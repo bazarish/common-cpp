@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "ApiClient.hpp"
+#include "Client.hpp"
 
 #include "DeviceTestKit.hpp"
 #include "TunnelStub.hpp"
@@ -23,6 +24,7 @@
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 
 using namespace bazarish;
 using namespace bazarish::client;
@@ -37,6 +39,12 @@ http::Server::Options localOptions()
 }
 
 }  // namespace
+
+static_assert(std::is_same_v<decltype(AddressKeys::sealingPem), SecretBytes>);
+static_assert(std::is_same_v<decltype(AddressKeys::signingPem), SecretBytes>);
+static_assert(std::is_same_v<decltype(tunnel::Request::body), SecretBytes>);
+static_assert(std::is_same_v<decltype(&ApiClient::postSecret),
+    ApiResponse (ApiClient::*)(const std::string&, const SecretBytes&)>);
 
 int main()
 {

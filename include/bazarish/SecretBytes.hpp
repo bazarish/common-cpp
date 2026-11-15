@@ -28,6 +28,8 @@ public:
     // Overwrites the content with zeros and keeps its size.
     void wipe();
     void clear();
+    // Grows into a fresh buffer, so the old one is wiped rather than left behind by a reallocation.
+    void append(ByteView more);
     // Hands the bytes on unwiped, for a value whose owner takes over keeping it.
     Bytes release();
 
@@ -36,6 +38,9 @@ public:
 private:
     Bytes bytes_;
 };
+
+// Standard base64 with padding, as toBase64 writes it.
+SecretBytes secretBase64(ByteView data);
 
 // The lowercase hex of `secret` followed by `tail`, built without an unwiped copy of either.
 SecretBytes secretHexLine(const SecretBytes& secret, const std::string& tail);

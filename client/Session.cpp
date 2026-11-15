@@ -1477,7 +1477,7 @@ bool Session::delegateRouting()
     const std::int64_t expires = renewI2pTransient(delegationDays_);
     reportConnectProgress(fingerprint(), ConnectMilestone::eDelegating);
     DestinationInfo serving
-        = client_->sendI2pTransient(i2pTransientBase64(), expires, addressKeys());
+        = client_->sendI2pTransient(i2pTransient_, expires, addressKeys());
     serving.servingSealingKeyDer = servingSealingDer();
     reportConnectProgress(fingerprint(), ConnectMilestone::ePublishingCard);
     const bool moved = storeCard(client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt()));
@@ -1507,7 +1507,7 @@ bool Session::storeCard(const PublishResult& result)
 AddressKeys Session::addressKeys()
 {
     ensureAddressKeys();
-    return {addressSealing_->privatePem(), addressSigning_->privatePem()};
+    return {addressSealing_->privatePemSecret(), addressSigning_->privatePemSecret()};
 }
 
 void Session::issueAddressKeys()
@@ -1647,7 +1647,7 @@ void Session::replaceI2pMaster(
 void Session::disableI2pDest()
 {
     requirePrimary("take the address offline");
-    client_->sendI2pTransient(std::string(), 0, {});
+    client_->sendI2pTransient(Bytes{}, 0, {});
     i2pTransient_.clear();
     db_->erase("i2p-transient");
 }
@@ -1762,8 +1762,8 @@ void Session::syncI2pMasterToSelf()
     const AddressKeys keys = addressKeys();
     const nlohmann::json inner = envelope("device.i2p-master", toHex(randomBytes(16)), {
         {"i2pMaster", toBase64(i2pMaster_)},
-        {"addressSealing", keys.sealingPem},
-        {"addressSigning", keys.signingPem},
+        {"addressSealing", std::string(keys.sealingPem.bytes().begin(), keys.sealingPem.bytes().end())},
+        {"addressSigning", std::string(keys.signingPem.bytes().begin(), keys.signingPem.bytes().end())},
     });
     submitSignedToSelf(inner, "device.i2p-master");
 }
@@ -2203,7 +2203,7 @@ void Session::redelegate()
         return;
     }
     const std::int64_t expiresUnix = renewI2pTransient(static_cast<int>(delegationDays_));
-    client_->sendI2pTransient(i2pTransientBase64(), expiresUnix, addressKeys());
+    client_->sendI2pTransient(i2pTransient_, expiresUnix, addressKeys());
 }
 
 void Session::noteWire(
@@ -3525,7 +3525,7 @@ void Session::replaceOwnAddress()
     issueAddressKeys();
     const std::int64_t expires = renewI2pTransient(static_cast<int>(delegationDays_));
     DestinationInfo serving
-        = client_->sendI2pTransient(i2pTransientBase64(), expires, addressKeys());
+        = client_->sendI2pTransient(i2pTransient_, expires, addressKeys());
     serving.servingSealingKeyDer = servingSealingDer();
     const bool moved = storeCard(client_->publishCard(cardContent(), cardKey_, serving, currentCardIssuedAt()));
     try {

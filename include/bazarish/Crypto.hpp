@@ -41,6 +41,8 @@ public:
     static Key fromPublicDer(const Bytes& spkiDer);
 
     std::string privatePem(const std::string& passphrase = {}) const;
+    // The unencrypted PEM in a buffer that is wiped, written through OpenSSL's secure-memory BIO.
+    SecretBytes privatePemSecret() const;
     Bytes publicDer() const;
     std::string fingerprint() const;
     bool hasPrivate() const;

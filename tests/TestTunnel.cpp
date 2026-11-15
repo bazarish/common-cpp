@@ -20,7 +20,7 @@ tunnel::Request sampleRequest()
     request.path = "/v1/messaging/ack";
     request.query = "wait=30";
     request.headers = {{"X-Bazarish-Client", "dev-a"}, {"X-Bazarish-Seq", "7"}};
-    request.body = Bytes{'{', '}'};
+    request.body = SecretBytes(Bytes{'{', '}'});
     request.contentType = "application/json";
     return request;
 }
@@ -120,15 +120,15 @@ int main()
         std::set<std::size_t> sizes;
         for (const std::size_t bodyLength : {std::size_t{0}, std::size_t{1}, std::size_t{50}}) {
             tunnel::Request request = sampleRequest();
-            request.body = Bytes(bodyLength, 'x');
+            request.body = SecretBytes(Bytes(bodyLength, 'x'));
             sizes.insert(tunnel::carry(handle, key, kAsked, tunnel::encodeRequest(request)).size());
         }
         CHECK(sizes.size() == 1);
 
         tunnel::Request large = sampleRequest();
-        large.body = Bytes(40000, 'x');
+        large.body = SecretBytes(Bytes(40000, 'x'));
         const std::size_t first = tunnel::carry(handle, key, kAsked, tunnel::encodeRequest(large)).size();
-        large.body = Bytes(40100, 'x');
+        large.body = SecretBytes(Bytes(40100, 'x'));
         CHECK(tunnel::carry(handle, key, kAsked, tunnel::encodeRequest(large)).size() == first);
     }
 

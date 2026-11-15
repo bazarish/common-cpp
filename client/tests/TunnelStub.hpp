@@ -156,7 +156,7 @@ private:
         inner.method = carried.method;
         inner.path = carried.path;
         inner.target = carried.query.empty() ? carried.path : carried.path + "?" + carried.query;
-        inner.body = std::string(carried.body.begin(), carried.body.end());
+        inner.body = std::string(carried.body.bytes().begin(), carried.body.bytes().end());
         for (const auto& [name, value] : carried.headers) {
             std::string lowered = name;
             for (char& c : lowered) {

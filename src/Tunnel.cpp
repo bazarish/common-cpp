@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <utility>
 
 namespace bazarish::tunnel {
 
@@ -26,6 +27,10 @@ const char* const kCipherField = "c";
 
 const char* const kHelloType = "h";
 const char* const kCarryType = "c";
+
+// RFC 8949: an item's head is at most 9 bytes; the slack covers the map and its six keys.
+constexpr std::size_t kCborHeadBytes = 9;
+constexpr std::size_t kCborSlackBytes = 128;
 
 const char* const kRequestKeyInfo = "bazarish tunnel request v1";
 const char* const kAnswerKeyInfo = "bazarish tunnel answer v1";
@@ -198,15 +203,27 @@ SecretBytes open(
 
 SecretBytes encodeRequest(const Request& request)
 {
-    const SecretJson inner(nlohmann::json{
+    SecretJson inner(nlohmann::json{
         {"m", request.method},
         {"p", request.path},
         {"q", request.query},
         {"h", headersToJson(request.headers)},
-        {"b", asBinary(request.body)},
         {"c", request.contentType},
     });
-    return SecretBytes(toCbor(inner.value));
+    inner.value["b"] = nlohmann::json::binary(Bytes(request.body.bytes()));
+    std::size_t bound = kCborSlackBytes + request.body.size() + request.method.size()
+        + request.path.size() + request.query.size() + request.contentType.size();
+    for (const auto& [name, value] : request.headers) {
+        bound += name.size() + value.size() + 2 * kCborHeadBytes;
+    }
+    Bytes encoded;
+    encoded.reserve(bound);
+    const unsigned char* const reserved = encoded.data();
+    nlohmann::json::to_cbor(inner.value, encoded);
+    if (encoded.data() != reserved) {
+        throw std::logic_error("a tunnel request outgrew its buffer and left a copy behind");
+    }
+    return SecretBytes(std::move(encoded));
 }
 
 Request decodeRequest(const SecretBytes& plaintext)
@@ -217,7 +234,7 @@ Request decodeRequest(const SecretBytes& plaintext)
     request.path = inner.value.at("p").get<std::string>();
     request.query = inner.value.value("q", std::string());
     request.headers = headersFromJson(inner.value.at("h"));
-    request.body = fromBinary(inner.value.at("b"));
+    request.body = SecretBytes(fromBinary(inner.value.at("b")));
     request.contentType = inner.value.value("c", std::string());
     return request;
 }

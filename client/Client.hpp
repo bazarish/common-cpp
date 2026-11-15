@@ -30,8 +30,8 @@ struct DestinationInfo {
 };
 
 struct AddressKeys {
-    std::string sealingPem;
-    std::string signingPem;
+    SecretBytes sealingPem;
+    SecretBytes signingPem;
 };
 
 struct I2pDestStatus {
@@ -122,7 +122,7 @@ public:
     void registerHere();
     // An empty transient takes the address offline; one that is not comes with the address's keys.
     DestinationInfo sendI2pTransient(
-        const std::string& transientB64, std::int64_t expiresUnix, const AddressKeys& keys);
+        const Bytes& transient, std::int64_t expiresUnix, const AddressKeys& keys);
     I2pDestStatus i2pStatus();
     StorageUsage storageUsage();
     ContactInfo fetchCard(const Descriptor& descriptor, const FetchTransport& transport);

@@ -75,6 +75,17 @@ int main()
         CHECK(line.bytes() == Bytes(expected.begin(), expected.end()));
     }
 
+    {
+        for (std::size_t length = 0; length <= kSecretBytes; ++length) {
+            const Bytes data = randomBytes(length);
+            const std::string expected = toBase64(data);
+            CHECK(secretBase64(data).bytes() == Bytes(expected.begin(), expected.end()));
+        }
+        SecretBytes grown(Bytes{'a'});
+        grown.append(Bytes{'b', 'c'});
+        CHECK(grown.bytes() == (Bytes{'a', 'b', 'c'}));
+    }
+
     std::printf("TestSecretBytes OK\n");
     return 0;
 }

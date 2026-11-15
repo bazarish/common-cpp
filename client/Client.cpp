@@ -31,6 +31,89 @@ namespace {
 
 namespace {
 
+// RFC 8259: a control character is written as \u00XX.
+constexpr unsigned char kFirstPrintable = 0x20;
+constexpr std::string_view kControlEscape = "\\u00";
+constexpr char kHexDigits[] = "0123456789abcdef";
+constexpr unsigned kNibbleBits = 4;
+constexpr unsigned char kNibbleMask = 0x0f;
+
+constexpr std::size_t kQuoteBytes = 2;
+constexpr std::size_t kEscapedPairBytes = 2;
+constexpr std::size_t kHexPerByte = 2;
+
+std::size_t quotedLength(const ByteView value)
+{
+    std::size_t length = kQuoteBytes;
+    for (const unsigned char c : value) {
+        if (c == '"' || c == '\\') {
+            length += kEscapedPairBytes;
+        } else if (c < kFirstPrintable) {
+            length += kControlEscape.size() + kHexPerByte;
+        } else {
+            ++length;
+        }
+    }
+    return length;
+}
+
+unsigned char* writeQuoted(const ByteView value, unsigned char* at)
+{
+    *at++ = '"';
+    for (const unsigned char c : value) {
+        if (c == '"' || c == '\\') {
+            *at++ = '\\';
+            *at++ = c;
+        } else if (c < kFirstPrintable) {
+            at = std::copy(kControlEscape.begin(), kControlEscape.end(), at);
+            *at++ = static_cast<unsigned char>(kHexDigits[c >> kNibbleBits]);
+            *at++ = static_cast<unsigned char>(kHexDigits[c & kNibbleMask]);
+        } else {
+            *at++ = c;
+        }
+    }
+    *at++ = '"';
+    return at;
+}
+
+constexpr std::string_view kTransientField = "{\"transient\":";
+constexpr std::string_view kExpiresField = ",\"expiresUnix\":";
+constexpr std::string_view kSealingKeyField = ",\"sealingKey\":";
+constexpr std::string_view kSigningKeyField = ",\"signingKey\":";
+constexpr std::string_view kObjectEnd = "}";
+
+unsigned char* writeText(const std::string_view text, unsigned char* at)
+{
+    return std::copy(text.begin(), text.end(), at);
+}
+
+// The delegation carries the address's private keys, so its body is written straight into a wiped buffer.
+SecretBytes delegationBody(const Bytes& transient, const std::int64_t expiresUnix, const AddressKeys& keys)
+{
+    const SecretBytes transientB64 = secretBase64(transient);
+    const std::string expires = std::to_string(expiresUnix);
+    const bool withKeys = !transient.empty();
+    std::size_t total = kTransientField.size() + quotedLength(transientB64.bytes()) + kExpiresField.size()
+        + expires.size() + kObjectEnd.size();
+    if (withKeys) {
+        total += kSealingKeyField.size() + quotedLength(keys.sealingPem.bytes()) + kSigningKeyField.size()
+            + quotedLength(keys.signingPem.bytes());
+    }
+    SecretBytes body(total);
+    unsigned char* at = writeText(kTransientField, body.data());
+    at = writeQuoted(transientB64.bytes(), at);
+    at = writeText(kExpiresField, at);
+    at = writeText(expires, at);
+    if (withKeys) {
+        at = writeText(kSealingKeyField, at);
+        at = writeQuoted(keys.sealingPem.bytes(), at);
+        at = writeText(kSigningKeyField, at);
+        at = writeQuoted(keys.signingPem.bytes(), at);
+    }
+    writeText(kObjectEnd, at);
+    return body;
+}
+
 constexpr unsigned kMaxPuzzleThreads = 4;
 unsigned puzzleThreads()
 {
@@ -166,14 +249,10 @@ void Client::registerHere()
 }
 
 DestinationInfo Client::sendI2pTransient(
-    const std::string& transientB64, const std::int64_t expiresUnix, const AddressKeys& keys)
+    const Bytes& transient, const std::int64_t expiresUnix, const AddressKeys& keys)
 {
-    nlohmann::json request = {{"transient", transientB64}, {"expiresUnix", expiresUnix}};
-    if (!transientB64.empty()) {
-        request["sealingKey"] = keys.sealingPem;
-        request["signingKey"] = keys.signingPem;
-    }
-    const nlohmann::json body = api_.postJson("/v1/account/i2p-dest", request).json();
+    const nlohmann::json body
+        = api_.postSecret("/v1/account/i2p-dest", delegationBody(transient, expiresUnix, keys)).json();
     DestinationInfo info;
     info.dest = body.value("dest", std::string());
     return info;

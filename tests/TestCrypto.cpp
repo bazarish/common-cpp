@@ -46,6 +46,12 @@ int main()
 
     CHECK_THROWS(sign(publicOnly, message));
     CHECK_THROWS(publicOnly.privatePem());
+    CHECK_THROWS(publicOnly.privatePemSecret());
+    {
+        const Key sealing = Key::generateSealing();
+        const std::string pem = sealing.privatePem();
+        CHECK(sealing.privatePemSecret().bytes() == Bytes(pem.begin(), pem.end()));
+    }
 
     const Key reader = Key::generateX25519();
     const Key rebuilt = Key::fromRawX25519Private(reader.rawPrivate());

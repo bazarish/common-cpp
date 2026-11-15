@@ -81,6 +81,8 @@ public:
     ApiResponse postJson(const std::string& path, const nlohmann::json& body,
         int readTimeoutSeconds = kDefaultReadTimeoutSeconds, const std::string& note = {});
     ApiResponse del(const std::string& path, const nlohmann::json& body = nlohmann::json());
+    // A JSON body the caller wrote into a wiped buffer, carried into the tunnel without a copy.
+    ApiResponse postSecret(const std::string& path, const SecretBytes& jsonBody);
 
     void setWireLog(std::shared_ptr<WireLog> log);
 
@@ -103,7 +105,7 @@ private:
         const std::string& status, std::size_t bytes, std::int64_t elapsedMillis);
 
     ApiResponse send(const std::string& method, const std::string& path,
-        const std::string& query, const Bytes& body, const std::string& contentType,
+        const std::string& query, const SecretBytes& body, const std::string& contentType,
         int readTimeoutSeconds = kDefaultReadTimeoutSeconds, const std::string& note = {});
     ApiResponse transmitLocked(const std::string& method, const std::string& path,
         const Bytes& body, const std::string& contentType, int readTimeoutSeconds);
@@ -146,7 +148,7 @@ private:
     void standOffLocked(Tunnel& tunnel, std::int64_t seconds);
     void ensureSealingKeyLocked(Tunnel& tunnel);
     ApiResponse tunnelledLocked(Tunnel& tunnel, const std::string& method,
-        const std::string& path, const std::string& query, const Bytes& body,
+        const std::string& path, const std::string& query, const SecretBytes& body,
         const std::string& contentType, const std::map<std::string, std::string>& headers,
         int readTimeoutSeconds);
 

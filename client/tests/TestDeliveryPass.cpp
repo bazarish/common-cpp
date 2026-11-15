@@ -1163,14 +1163,18 @@ int main()
             alice->registerAccount();
             {
                 std::lock_guard<std::mutex> lock(m.mu);
-                CHECK(m.sealingFor.at(alice->fingerprint()) == keysBefore.sealingPem);
+                CHECK(SecretBytes(Bytes(m.sealingFor.at(alice->fingerprint()).begin(),
+                          m.sealingFor.at(alice->fingerprint()).end()))
+                    == keysBefore.sealingPem);
                 CHECK(m.registered.at(alice->fingerprint()).size() == 1);
                 const ContactCard moved
                     = ContactCard::verify(fromBase64(m.certFor.at(alice->fingerprint())));
                 CHECK(moved.dest == cardBeforeMove.dest);
                 CHECK(moved.servingSealingKeyDer == cardBeforeMove.servingSealingKeyDer);
                 CHECK(moved.servingSealingKeyDer
-                    == Key::fromPrivatePem(keysBefore.sealingPem).publicDer());
+                    == Key::fromPrivatePem(std::string(keysBefore.sealingPem.bytes().begin(),
+                                               keysBefore.sealingPem.bytes().end()))
+                           .publicDer());
             }
             CHECK(alice->routingFanout().contacts.empty());
             bob->sendMessage(alice->fingerprint(), "on the new server");

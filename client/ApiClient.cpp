@@ -502,17 +502,22 @@ ApiResponse ApiClient::postJson(const std::string& path, const nlohmann::json& b
     const int readTimeoutSeconds, const std::string& note)
 {
     const std::string text = body.dump();
-    return send("POST", path, {}, Bytes(text.begin(), text.end()), "application/json",
+    return send("POST", path, {}, SecretBytes(Bytes(text.begin(), text.end())), "application/json",
         readTimeoutSeconds, note);
+}
+
+ApiResponse ApiClient::postSecret(const std::string& path, const SecretBytes& jsonBody)
+{
+    return send("POST", path, {}, jsonBody, "application/json");
 }
 
 ApiResponse ApiClient::del(const std::string& path, const nlohmann::json& body)
 {
-    Bytes encoded;
+    SecretBytes encoded;
     std::string contentType;
     if (!body.is_null()) {
         const std::string text = body.dump();
-        encoded.assign(text.begin(), text.end());
+        encoded = SecretBytes(Bytes(text.begin(), text.end()));
         contentType = "application/json";
     }
     return send("DELETE", path, {}, encoded, contentType);
@@ -539,7 +544,7 @@ void ApiClient::noteWire(const std::string& method, const std::string& path,
 }
 
 ApiResponse ApiClient::tunnelledLocked(Tunnel& tunnel, const std::string& method,
-    const std::string& path, const std::string& query, const Bytes& body,
+    const std::string& path, const std::string& query, const SecretBytes& body,
     const std::string& contentType, const std::map<std::string, std::string>& headers,
     const int readTimeoutSeconds)
 {
@@ -573,7 +578,7 @@ ApiResponse ApiClient::tunnelledLocked(Tunnel& tunnel, const std::string& method
 }
 
 ApiResponse ApiClient::send(const std::string& method, const std::string& path,
-    const std::string& query, const Bytes& body, const std::string& contentType,
+    const std::string& query, const SecretBytes& body, const std::string& contentType,
     const int readTimeoutSeconds, const std::string& note)
 {
     if (bazarish::i2p::networkDown()) {
@@ -594,7 +599,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
         const std::uint64_t seq = tunnel.sessionSeq + 1;
         const auth::Headers mac = auth::macRequest(auth::sessionHandle(tunnel.sessionSecret, seq),
             tunnel.sessionKey, seq, nowSeconds(), method, query.empty() ? path : path + "?" + query,
-            body);
+            body.bytes());
         return std::map<std::string, std::string>(mac.begin(), mac.end());
     };
     const bool quietOnSuccess = path == kEventsPath;

@@ -28,7 +28,7 @@ struct Request {
     std::string path;
     std::string query;
     std::map<std::string, std::string> headers;
-    Bytes body;
+    SecretBytes body;
     std::string contentType;
 };
 
