@@ -127,11 +127,11 @@ int main()
         FetchOutcome outcome;
         if (op == "card") {
             CHECK(toDest == bobDest);
-            const std::optional<Bytes> opened = KeyedSeal(bobCardKey, kCardRequestLabel).open(sealed);
+            const std::optional<SecretBytes> opened = KeyedSeal(bobCardKey, kCardRequestLabel).open(sealed);
             if (!opened.has_value()) {
                 return outcome;
             }
-            const CardFetchQuery query = cardFetchQueryFromJson(nlohmann::json::parse(*opened));
+            const CardFetchQuery query = cardFetchQueryFromJson(nlohmann::json::parse(opened->bytes()));
             CHECK(query.fingerprint == bob.fingerprint());
             outcome.ok = true;
             ContactCard card;
@@ -379,7 +379,7 @@ int main()
         const Bytes pass = Bytes(kDeliveryPassSize, 0x33);
         const Bytes sealed = sealDeliveryEnvelope(
             DeliveryEnvelope{"content", bob.fingerprint(), "msg-1", pass}, recipientSealing);
-        const Bytes plain = hybrid::unseal(sealed, servingSealing);
+        const Bytes plain = hybrid::unseal(sealed, servingSealing).bytes();
         const nlohmann::json inner = nlohmann::json::parse(plain.begin(), plain.end());
         CHECK(inner.at("class") == "content");
         CHECK(inner.at("mailbox") == bob.fingerprint());

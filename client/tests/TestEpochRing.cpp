@@ -84,7 +84,7 @@ int main()
 
     const Bytes plain{'h', 'i'};
     for (const EpochPublic& epoch : both) {
-        CHECK(ring.open(sealToEpoch(plain, epoch)) == plain);
+        CHECK(ring.open(sealToEpoch(plain, epoch)).bytes() == plain);
     }
     {
         const Bytes sealed = sealToEpoch(plain, both.front());
@@ -101,7 +101,7 @@ int main()
     CHECK(copy.addAll(ring.toJson()));
     CHECK(!copy.addAll(ring.toJson()));
     CHECK(copy.inUse(kEpoch) == ring.inUse(kEpoch));
-    CHECK(copy.open(sealToEpoch(plain, both.front())) == plain);
+    CHECK(copy.open(sealToEpoch(plain, both.front())).bytes() == plain);
     CHECK(copy.toJson({kEpoch + 1}).size() == 1);
     {
         nlohmann::json extra = ring.toJson();
@@ -139,12 +139,12 @@ int main()
 
     const Bytes oldMail = sealToEpoch(plain, both.back());
     CHECK(!ring.eraseEnded(epochEnd(kEpoch) + kEpochKeptAfterEndSeconds - 1));
-    CHECK(ring.open(oldMail) == plain);
+    CHECK(ring.open(oldMail).bytes() == plain);
     CHECK(ring.eraseEnded(epochEnd(kEpoch) + kEpochKeptAfterEndSeconds));
     CHECK(!ring.holds(kEpoch));
     CHECK(ring.holds(kEpoch + 1));
     CHECK_THROWS(ring.open(oldMail));
-    CHECK(ring.open(sealToEpoch(plain, ring.inUse(kEpoch + 1).front())) == plain);
+    CHECK(ring.open(sealToEpoch(plain, ring.inUse(kEpoch + 1).front())).bytes() == plain);
 
     return 0;
 }

@@ -81,7 +81,7 @@ private:
             const bazarish::tunnel::Hello hello = bazarish::tunnel::openHello(frame, sealing_);
             const auth::DeviceCaller caller = auth::verifyDeviceRequest(hello.signature,
                 static_cast<std::int64_t>(std::time(nullptr)), bazarish::tunnel::kHelloMethod,
-                bazarish::tunnel::kHelloPath, bazarish::tunnel::helloSigned(hello.secret, fingerprint_),
+                bazarish::tunnel::kHelloPath, bazarish::tunnel::helloSigned(hello.secret, fingerprint_).bytes(),
                 replays_);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
@@ -95,7 +95,7 @@ private:
         }
 
         const std::string handle = bazarish::tunnel::handleOf(frame);
-        Bytes key;
+        SecretBytes key;
         std::string caller;
         std::string device;
         {
@@ -106,7 +106,7 @@ private:
                     if (auth::sessionHandle(open.secret, seq) == handle) {
                         open.lastSeq = seq;
                         key = bazarish::tunnel::deriveTunnelKey(
-                            open.secret, toHex(sha256(open.secret)).substr(0, 32));
+                            open.secret, toHex(sha256(open.secret.bytes())).substr(0, 32));
                         caller = open.user;
                         device = open.device;
                         break;
@@ -187,7 +187,7 @@ private:
     static constexpr std::size_t kOpaqueRefusalBytes = 64;
 
     struct Opened {
-        Bytes secret;
+        SecretBytes secret;
         std::string user;
         std::string device;
         std::uint64_t lastSeq = 0;

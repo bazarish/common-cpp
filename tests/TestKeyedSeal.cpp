@@ -23,7 +23,7 @@ int main()
     const Bytes plaintext = {'c', 'a', 'r', 'd'};
     const KeyedSeal asking(key, "request");
     const Bytes sealed = asking.seal(plaintext);
-    CHECK(asking.open(sealed) == plaintext);
+    CHECK(asking.open(sealed)->bytes() == plaintext);
     CHECK(asking.seal(plaintext) != sealed);
     CHECK(!KeyedSeal(key, "reply").open(sealed).has_value());
     CHECK(!KeyedSeal(newLinkKey(), "request").open(sealed).has_value());

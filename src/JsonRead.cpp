@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "bazarish/JsonRead.hpp"
 
+#include <openssl/crypto.h>
+
 #include <iterator>
 #include <string>
 #include <string_view>
@@ -151,6 +153,43 @@ nlohmann::json parseCborOrDiscarded(const Bytes& bytes)
         return nlohmann::json(nlohmann::json::value_t::discarded);
     }
     return nlohmann::json::from_cbor(bytes, true, false);
+}
+
+void wipeJson(nlohmann::json& value)
+{
+    if (value.is_string()) {
+        std::string& text = value.get_ref<std::string&>();
+        OPENSSL_cleanse(text.data(), text.size());
+    } else if (value.is_binary()) {
+        nlohmann::json::binary_t& bytes = value.get_binary();
+        OPENSSL_cleanse(bytes.data(), bytes.size());
+    } else if (value.is_object() || value.is_array()) {
+        for (nlohmann::json& item : value) {
+            wipeJson(item);
+        }
+    }
+}
+
+SecretJson::SecretJson(nlohmann::json held)
+    : value(std::move(held))
+{
+}
+
+SecretJson::~SecretJson()
+{
+    wipeJson(value);
+}
+
+JsonWipe::JsonWipe(std::vector<nlohmann::json>& held)
+    : held_(held)
+{
+}
+
+JsonWipe::~JsonWipe()
+{
+    for (nlohmann::json& document : held_) {
+        wipeJson(document);
+    }
 }
 
 }  // namespace bazarish

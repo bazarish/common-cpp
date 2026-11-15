@@ -228,14 +228,14 @@ GatewayCheck checkGateway(const GatewayAddress& address)
         check.error = "the gateway sent no card";
         return check;
     }
-    const std::optional<Bytes> uncovered = gateway::Cover(address.fingerprint).open(*card);
+    const std::optional<SecretBytes> uncovered = gateway::Cover(address.fingerprint).open(*card);
     if (!uncovered.has_value()) {
         check.wrongGateway = true;
         check.error = "the gateway's card is not sealed for this link";
         return check;
     }
     try {
-        (void)gateway::cardSealingKey(gateway::unpadded(*uncovered), address.fingerprint);
+        (void)gateway::cardSealingKey(gateway::unpadded(uncovered->bytes()), address.fingerprint);
     } catch (const gateway::WrongGateway& error) {
         check.wrongGateway = true;
         check.error = error.what();

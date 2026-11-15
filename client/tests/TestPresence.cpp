@@ -386,12 +386,12 @@ public:
     {
         PresenceWatch watch;
         watch.id = randomBytes(kPresenceSubscriptionIdBytes);
-        watch.key = randomBytes(kAeadKeyBytes);
+        watch.key = SecretBytes(randomBytes(kAeadKeyBytes));
         watch.from = from.fp();
         watch.device = deviceIdOf(from.identity.classical().publicDer(), from.identity.pq().publicDer());
         watch.reply = link_.host();
         watch.sentAt = g_utc.load();
-        key_ = watch.key;
+        key_ = watch.key.bytes();
         lastWatch_ = presenceWatchFrame(watch, from.identity.classical(), *epochFor(to.ring->inUse(0), watch.sentAt));
         link_.send(toHost, lastWatch_);
         return next(kKnockWait).has_value();
@@ -426,12 +426,12 @@ public:
         const auto sealedAt = nonceAt + static_cast<std::ptrdiff_t>(kAeadNonceBytes);
         const Bytes stateKey = hkdfSha256(key_, Bytes(saltAt, nonceAt), kStateKeyInfo, kAeadKeyBytes);
         const Bytes nonce(nonceAt, sealedAt);
-        const std::optional<Bytes> plain = aeadOpen(stateKey, nonce, Bytes(sealedAt, frame->end()));
+        const std::optional<SecretBytes> plain = aeadOpen(stateKey, nonce, Bytes(sealedAt, frame->end()));
         if (!plain) {
             return std::nullopt;
         }
         sealings_.emplace_back(stateKey, nonce);
-        return nlohmann::json::from_cbor(*plain);
+        return nlohmann::json::from_cbor(plain->bytes());
     }
 
     bool hearsOffline(const milliseconds within)
@@ -700,7 +700,7 @@ int main()
             const auto knock = [&](const Key& signer) {
                 PresenceWatch watch;
                 watch.id = randomBytes(kPresenceSubscriptionIdBytes);
-                watch.key = randomBytes(kAeadKeyBytes);
+                watch.key = SecretBytes(randomBytes(kAeadKeyBytes));
                 watch.from = dave.fp();
                 watch.device
                     = deviceIdOf(dave.identity.classical().publicDer(), dave.identity.pq().publicDer());

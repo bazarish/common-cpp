@@ -382,7 +382,7 @@ Bytes sealWith(const EVP_CIPHER* const cipher, const Bytes& key, const Bytes& no
     return out;
 }
 
-std::optional<Bytes> openWith(const EVP_CIPHER* const cipher, const Bytes& key,
+std::optional<SecretBytes> openWith(const EVP_CIPHER* const cipher, const Bytes& key,
     const Bytes& nonce, const Bytes& sealed, const Bytes& associated)
 {
     if (key.size() != kAeadKeyBytes || nonce.size() != kAeadNonceBytes) {
@@ -422,7 +422,7 @@ std::optional<Bytes> openWith(const EVP_CIPHER* const cipher, const Bytes& key,
     if (EVP_DecryptFinal_ex(ctx.get(), out.data() + len, &finalLen) != 1) {
         return std::nullopt;
     }
-    return out.release();
+    return out;
 }
 
 }  // namespace
@@ -438,12 +438,12 @@ Bytes aeadSeal(
     return sealWith(EVP_aes_256_gcm(), key, nonce, plaintext, associated);
 }
 
-std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed)
+std::optional<SecretBytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed)
 {
     return openWith(EVP_aes_256_gcm(), key, nonce, sealed, {});
 }
 
-std::optional<Bytes> aeadOpen(
+std::optional<SecretBytes> aeadOpen(
     const Bytes& key, const Bytes& nonce, const Bytes& sealed, const Bytes& associated)
 {
     return openWith(EVP_aes_256_gcm(), key, nonce, sealed, associated);
@@ -454,7 +454,7 @@ Bytes chachaSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext)
     return sealWith(EVP_chacha20_poly1305(), key, nonce, plaintext, {});
 }
 
-std::optional<Bytes> chachaOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed)
+std::optional<SecretBytes> chachaOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed)
 {
     return openWith(EVP_chacha20_poly1305(), key, nonce, sealed, {});
 }

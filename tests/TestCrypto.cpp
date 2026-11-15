@@ -123,9 +123,9 @@ int main()
         const Bytes sealed = aeadSeal(key, nonce, plain);
         CHECK(sealed.size() == plain.size() + kAeadTagBytes);
         CHECK(sealed != plain);
-        const std::optional<Bytes> opened = aeadOpen(key, nonce, sealed);
+        const std::optional<SecretBytes> opened = aeadOpen(key, nonce, sealed);
         CHECK(opened.has_value());
-        CHECK(opened.value() == plain);
+        CHECK(opened->bytes() == plain);
 
         Bytes tampered = sealed;
         tampered[0] ^= 0x01;
@@ -140,8 +140,8 @@ int main()
 
         const Bytes emptySealed = aeadSeal(key, nonce, Bytes{});
         CHECK(emptySealed.size() == kAeadTagBytes);
-        const std::optional<Bytes> emptyOpened = aeadOpen(key, nonce, emptySealed);
-        CHECK(emptyOpened.has_value() && emptyOpened.value().empty());
+        const std::optional<SecretBytes> emptyOpened = aeadOpen(key, nonce, emptySealed);
+        CHECK(emptyOpened.has_value() && emptyOpened->empty());
 
         CHECK(!aeadOpen(key, nonce, Bytes(kAeadTagBytes - 1, 0)).has_value());
 
@@ -149,7 +149,7 @@ int main()
 
         const Bytes header = {'h', 'e', 'a', 'd'};
         const Bytes bound = aeadSeal(key, nonce, plain, header);
-        CHECK(aeadOpen(key, nonce, bound, header) == plain);
+        CHECK(aeadOpen(key, nonce, bound, header)->bytes() == plain);
         CHECK(bound.size() == plain.size() + kAeadTagBytes);
         Bytes otherHeader = header;
         otherHeader[0] ^= 0x01;

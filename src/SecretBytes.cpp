@@ -3,10 +3,20 @@
 
 #include <openssl/crypto.h>
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
 namespace bazarish {
+
+namespace {
+
+constexpr char kHexDigits[] = "0123456789abcdef";
+constexpr std::size_t kHexPerByte = 2;
+constexpr unsigned kNibbleBits = 4;
+constexpr unsigned char kNibbleMask = 0x0f;
+
+}  // namespace
 
 SecretBytes::SecretBytes(Bytes bytes)
     : bytes_(std::move(bytes))
@@ -106,6 +116,18 @@ bool SecretBytes::operator==(const SecretBytes& other) const
 {
     return bytes_.size() == other.bytes_.size()
         && CRYPTO_memcmp(bytes_.data(), other.bytes_.data(), bytes_.size()) == 0;
+}
+
+SecretBytes secretHexLine(const SecretBytes& secret, const std::string& tail)
+{
+    SecretBytes line(secret.size() * kHexPerByte + tail.size());
+    unsigned char* at = line.data();
+    for (const unsigned char byte : secret.bytes()) {
+        *at++ = static_cast<unsigned char>(kHexDigits[byte >> kNibbleBits]);
+        *at++ = static_cast<unsigned char>(kHexDigits[byte & kNibbleMask]);
+    }
+    std::copy(tail.begin(), tail.end(), at);
+    return line;
 }
 
 }  // namespace bazarish

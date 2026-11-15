@@ -38,7 +38,7 @@ public:
     std::optional<EpochNumber> last() const;
 
     // Throws when the frame names a key this ring does not hold.
-    Bytes open(const Bytes& frame) const;
+    SecretBytes open(const Bytes& frame) const;
 
     // False when nothing was erased.
     bool eraseEnded(std::int64_t utcSeconds);

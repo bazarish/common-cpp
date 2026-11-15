@@ -24,7 +24,8 @@ Bytes sealDeliveryEnvelope(const DeliveryEnvelope& envelope, const Key& recipien
 
 DeliveryEnvelope openDeliveryEnvelope(const Bytes& sealed, const Key& sealingKey)
 {
-    const nlohmann::json inner = parseJson(hybrid::unseal(sealed, sealingKey));
+    const SecretJson held(parseJson(hybrid::unseal(sealed, sealingKey).bytes()));
+    const nlohmann::json& inner = held.value;
     DeliveryEnvelope envelope;
     envelope.deliveryClass = inner.at("class").get<std::string>();
     envelope.mailbox = inner.at("mailbox").get<std::string>();

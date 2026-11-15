@@ -198,7 +198,7 @@ private:
         }
         for (const auto& [fingerprint, pem] : keys) {
             try {
-                return hybrid::unseal(sealed, Key::fromPrivatePem(pem));
+                return hybrid::unseal(sealed, Key::fromPrivatePem(pem)).bytes();
             } catch (const std::exception&) {
                 continue;
             }
@@ -619,7 +619,7 @@ int main()
                     continue;
                 }
                 const nlohmann::json bodies
-                    = nlohmann::json::from_cbor(unpadFromLadder(hybrid::unseal(item.payload, sealing)));
+                    = nlohmann::json::from_cbor(unpadFromLadder(hybrid::unseal(item.payload, sealing)).bytes());
                 for (const nlohmann::json& body : bodies) {
                     if (body.value("type", std::string()) == type) {
                         return true;
@@ -728,9 +728,9 @@ int main()
                     continue;
                 }
                 const Bytes& cardKey = m.cardKeyFor.at(owner);
-                const std::optional<Bytes> asked = KeyedSeal(cardKey, kCardRequestLabel).open(query);
+                const std::optional<SecretBytes> asked = KeyedSeal(cardKey, kCardRequestLabel).open(query);
                 if (!asked.has_value()
-                    || cardFetchQueryFromJson(nlohmann::json::parse(*asked)).fingerprint != owner) {
+                    || cardFetchQueryFromJson(nlohmann::json::parse(asked->bytes())).fingerprint != owner) {
                     return outcome;
                 }
                 outcome.ok = true;
@@ -3109,7 +3109,7 @@ int main()
                     = role == DeviceRole::ePrimary ? "bz-devices-paired-1" : "bz-devices-paired-2";
                 fs::remove(scratch / name);
                 Session::importAccountBundle(
-                    openPairBundle(key, completePairBundle(key, sealed, made)), scratch / name);
+                    openPairBundle(key, completePairBundle(key, sealed, made)).bytes(), scratch / name);
                 const std::unique_ptr<Session> paired = Session::open(scratch / name, std::string{});
                 CHECK(paired->deviceId() == made.id());
                 CHECK(paired->role() == role);

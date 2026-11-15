@@ -68,6 +68,13 @@ int main()
         CHECK(secret.empty());
     }
 
+    {
+        const SecretBytes secret(Bytes{0x0a, 0xff});
+        const SecretBytes line = secretHexLine(secret, "|tail");
+        const std::string expected = toHex(secret.bytes()) + "|tail";
+        CHECK(line.bytes() == Bytes(expected.begin(), expected.end()));
+    }
+
     std::printf("TestSecretBytes OK\n");
     return 0;
 }

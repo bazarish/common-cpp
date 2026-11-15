@@ -11,6 +11,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <openssl/crypto.h>
+
 #include <cctype>
 
 namespace bazarish::client {
@@ -85,16 +87,17 @@ PairVerdict pairVerdict(const std::string& method, const std::string& target, co
     if (method != kPairMethod || target != kPairPath) {
         return {kI2pHttpNotFound, false, std::nullopt};
     }
-    const std::optional<Bytes> given = KeyedSeal(key, kPairHelloLabel).open(hello);
+    const std::optional<SecretBytes> given = KeyedSeal(key, kPairHelloLabel).open(hello);
     if (!given.has_value()) {
         return {kI2pHttpBadRequest, false, std::nullopt};
     }
-    nlohmann::json asked;
+    SecretJson held;
     try {
-        asked = parseCbor(*given);
+        held.value = parseCbor(given->bytes());
     } catch (const std::exception&) {
         return {kI2pHttpBadRequest, false, std::nullopt};
     }
+    const nlohmann::json& asked = held.value;
     if (!asked.is_object() || !asked.contains(kHelloCodeField) || !asked.at(kHelloCodeField).is_string()) {
         return {kI2pHttpBadRequest, false, std::nullopt};
     }
@@ -131,12 +134,14 @@ std::string pairRequest(
 
 Bytes completePairBundle(const Bytes& key, const Bytes& sealed, const DeviceKeys& made)
 {
-    nlohmann::json bundle = parseJson(openPairBundle(key, sealed));
-    nlohmann::json& device = bundle.at(kBundleDeviceField);
+    SecretJson bundle(parseJson(openPairBundle(key, sealed).bytes()));
+    nlohmann::json& device = bundle.value.at(kBundleDeviceField);
     device[kBundleDeviceSigningField] = made.signingPem();
     device[kBundleDeviceSealingField] = made.sealingPem();
-    const std::string text = bundle.dump();
-    return sealPairBundle(key, Bytes(text.begin(), text.end()));
+    std::string text = bundle.value.dump();
+    const SecretBytes plain(Bytes(text.begin(), text.end()));
+    OPENSSL_cleanse(text.data(), text.size());
+    return sealPairBundle(key, plain.bytes());
 }
 
 Bytes sealPairBundle(const Bytes& key, const Bytes& bundle)
@@ -144,9 +149,9 @@ Bytes sealPairBundle(const Bytes& key, const Bytes& bundle)
     return KeyedSeal(key, kPairBundleLabel).seal(bundle);
 }
 
-Bytes openPairBundle(const Bytes& key, const Bytes& sealed)
+SecretBytes openPairBundle(const Bytes& key, const Bytes& sealed)
 {
-    const std::optional<Bytes> bundle = KeyedSeal(key, kPairBundleLabel).open(sealed);
+    const std::optional<SecretBytes> bundle = KeyedSeal(key, kPairBundleLabel).open(sealed);
     if (!bundle.has_value()) {
         throw std::runtime_error("the account came sealed under another key than the link's");
     }

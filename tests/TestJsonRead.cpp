@@ -4,6 +4,7 @@
 #include "TestUtil.hpp"
 
 #include <string>
+#include <vector>
 
 using namespace bazarish;
 
@@ -75,5 +76,20 @@ int main()
     CHECK(refusedAsParseError([] { return parseCbor(Bytes{kCborArrayOfOne}); }));
     CHECK(parseJsonOrDiscarded("{\"a\":").is_discarded());
     CHECK(parseCborOrDiscarded(Bytes{kCborArrayOfOne}).is_discarded());
+    {
+        nlohmann::json held = {{"pem", "secret text"}, {"key", nlohmann::json::binary(Bytes{1, 2, 3})},
+            {"list", {"inner", 7}}};
+        wipeJson(held);
+        CHECK(held.at("pem").get<std::string>() == std::string(std::string("secret text").size(), '\0'));
+        CHECK(held.at("key").get_binary() == nlohmann::json::binary_t(Bytes{0, 0, 0}));
+        CHECK(held.at("list").at(0).get<std::string>() == std::string(std::string("inner").size(), '\0'));
+        CHECK(held.at("list").at(1) == 7);
+        std::vector<nlohmann::json> documents{{{"k", "abc"}}};
+        {
+            const JsonWipe wiped(documents);
+        }
+        CHECK(documents.front().at("k").get<std::string>() == std::string(3, '\0'));
+    }
+
     return 0;
 }

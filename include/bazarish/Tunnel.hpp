@@ -4,6 +4,7 @@
 #include "bazarish/Auth.hpp"
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
+#include "bazarish/SecretBytes.hpp"
 
 #include <cstdint>
 #include <map>
@@ -38,7 +39,7 @@ struct Response {
 };
 
 struct Hello {
-    Bytes secret;
+    SecretBytes secret;
     Bytes replyKeyDer;
     auth::Headers signature;
 };
@@ -47,10 +48,10 @@ struct Welcome {
     std::int64_t expiresUnix = 0;
 };
 
-Bytes deriveTunnelKey(const Bytes& secret, const std::string& sessionId);
+SecretBytes deriveTunnelKey(const SecretBytes& secret, const std::string& sessionId);
 
 // What a hello's signature covers: the secret and the fingerprint of the server it is for.
-Bytes helloSigned(const Bytes& secret, const std::string& serverFingerprint);
+SecretBytes helloSigned(const SecretBytes& secret, const std::string& serverFingerprint);
 
 Bytes sealHello(const Hello& hello, const Key& serverSealingPublic);
 Hello openHello(const Bytes& frame, const Key& serverSealingPrivate);
@@ -61,15 +62,16 @@ Welcome openWelcome(const Bytes& sealed, const Key& replyKeyPrivate);
 enum class Direction { eRequest, eAnswer };
 
 // Sealed under a key of its own for the direction and the handle, so an answer opens only for its request.
-Bytes carry(const std::string& handle, const Bytes& tunnelKey, Direction direction,
-    const Bytes& plaintext);
+Bytes carry(const std::string& handle, const SecretBytes& tunnelKey, Direction direction,
+    const SecretBytes& plaintext);
 std::string handleOf(const Bytes& frame);
 bool isHello(const Bytes& frame);
-Bytes open(const Bytes& frame, const Bytes& tunnelKey, Direction direction, const std::string& handle);
+SecretBytes open(
+    const Bytes& frame, const SecretBytes& tunnelKey, Direction direction, const std::string& handle);
 
-Bytes encodeRequest(const Request& request);
-Request decodeRequest(const Bytes& plaintext);
-Bytes encodeResponse(const Response& response);
-Response decodeResponse(const Bytes& plaintext);
+SecretBytes encodeRequest(const Request& request);
+Request decodeRequest(const SecretBytes& plaintext);
+SecretBytes encodeResponse(const Response& response);
+Response decodeResponse(const SecretBytes& plaintext);
 
 }  // namespace bazarish::tunnel

@@ -3,6 +3,7 @@
 
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
+#include "bazarish/SecretBytes.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -34,6 +35,6 @@ bool isSealingKey(const Key& key);
 // One AEAD layer keyed from both shared secrets; `kid` names the recipient key and is bound in.
 Bytes seal(const Bytes& plaintext, const Key& recipientPublicKey, const Bytes& kid);
 Bytes sealedKid(const Bytes& frame);
-Bytes unseal(const Bytes& frame, const Key& recipientPrivateKey);
+SecretBytes unseal(const Bytes& frame, const Key& recipientPrivateKey);
 
 }  // namespace bazarish::hybrid

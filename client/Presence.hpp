@@ -8,6 +8,7 @@
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Epochs.hpp>
 #include <bazarish/I2p.hpp>
+#include <bazarish/SecretBytes.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -47,7 +48,7 @@ using PresenceNet = std::function<std::unique_ptr<PresenceLink>(const PresenceLi
 
 struct PresenceWatch {
     Bytes id;
-    Bytes key;
+    SecretBytes key;
     std::string from;
     std::string device;
     std::string reply;

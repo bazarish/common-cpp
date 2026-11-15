@@ -2,6 +2,7 @@
 #pragma once
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/SecretBytes.hpp>
 
 #include <filesystem>
 #include <stdexcept>
@@ -33,7 +34,7 @@ void removeKeyFiles(const std::filesystem::path& databaseFile);
 
 // Argon2id at the at-rest cost and AES-256-GCM over a header that names the cost.
 Bytes sealBackup(const Bytes& plain, const std::string& passphrase);
-Bytes openBackup(const Bytes& sealed, const std::string& passphrase);
+SecretBytes openBackup(const Bytes& sealed, const std::string& passphrase);
 
 void forget(const std::filesystem::path& databaseFile);
 

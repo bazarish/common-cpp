@@ -159,7 +159,7 @@ int main()
     const Bytes envelope = hybrid::seal(plaintext, sealingPublic, kid);
     CHECK(!envelope.empty());
     CHECK(hybrid::sealedKid(envelope) == kid);
-    CHECK(hybrid::unseal(envelope, sealing) == plaintext);
+    CHECK(hybrid::unseal(envelope, sealing).bytes() == plaintext);
     CHECK(hybrid::seal(plaintext, sealingPublic, kid) != envelope);
 
     CHECK_THROWS(hybrid::unseal(envelope, Key::generateSealing()));
@@ -213,13 +213,13 @@ int main()
     }
 
     const Bytes empty;
-    CHECK(hybrid::unseal(hybrid::seal(empty, sealingPublic, {}), sealing) == empty);
+    CHECK(hybrid::unseal(hybrid::seal(empty, sealingPublic, {}), sealing).bytes() == empty);
 
     Bytes large(100000);
     for (std::size_t i = 0; i < large.size(); ++i) {
         large[i] = static_cast<unsigned char>(i * 7 + 3);
     }
-    CHECK(hybrid::unseal(hybrid::seal(large, sealingPublic, kid), sealing) == large);
+    CHECK(hybrid::unseal(hybrid::seal(large, sealingPublic, kid), sealing).bytes() == large);
 
     return 0;
 }

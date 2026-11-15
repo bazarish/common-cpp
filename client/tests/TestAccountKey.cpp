@@ -138,7 +138,7 @@ void checkBackup()
     CHECK(Bytes(sealed.begin(), sealed.begin() + kMagicBytes) == Bytes({'B', 'Z', 'E', '1'}));
     CHECK(wordAt(sealed, kMemoryAt) == kAtRestMemoryKiB);
     CHECK(wordAt(sealed, kPassesAt) == kAtRestPasses);
-    CHECK(accountkey::openBackup(sealed, "bundle-pw") == plain);
+    CHECK(accountkey::openBackup(sealed, "bundle-pw").bytes() == plain);
     CHECK(accountkey::sealBackup(plain, "bundle-pw") != sealed);
     CHECK_THROWS(accountkey::openBackup(sealed, "wrong-pw"));
     CHECK_THROWS(accountkey::openBackup(sealed, ""));

@@ -267,11 +267,11 @@ int main()
         CHECK(pairVerdict("GET", "/hello", right, code, kKey).status == kI2pHttpNotFound);
 
         const Bytes plain = patternOf(100);
-        CHECK(openPairBundle(kKey, sealPairBundle(kKey, plain)) == plain);
+        CHECK(openPairBundle(kKey, sealPairBundle(kKey, plain)).bytes() == plain);
 
         const std::string made = nlohmann::json{{kBundleDeviceField, {{kBundleDeviceCertField, "c"}}}}.dump();
         const nlohmann::json completed = nlohmann::json::parse(
-            openPairBundle(kKey, completePairBundle(kKey, sealPairBundle(kKey, Bytes(made.begin(), made.end())), kNewDevice)));
+            openPairBundle(kKey, completePairBundle(kKey, sealPairBundle(kKey, Bytes(made.begin(), made.end())), kNewDevice)).bytes());
         CHECK(completed.at(kBundleDeviceField).at(kBundleDeviceCertField) == "c");
         CHECK(DeviceKeys::fromPems(completed.at(kBundleDeviceField).at(kBundleDeviceSigningField),
                   completed.at(kBundleDeviceField).at(kBundleDeviceSealingField))

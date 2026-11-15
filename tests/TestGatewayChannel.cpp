@@ -226,14 +226,14 @@ int main()
     CHECK_THROWS(cardSealingKey(card, Identity::generate().fingerprint()));
     const Bytes coveredCard = cover.seal(padded(card));
     CHECK(!Cover(Identity::generate().fingerprint()).open(coveredCard).has_value());
-    CHECK(unpadded(*cover.open(coveredCard)) == card);
+    CHECK(unpadded(cover.open(coveredCard)->bytes()) == card);
 
     std::set<std::size_t> lengths;
     for (int i = 0; i < kDraws; ++i) {
         lengths.insert(cover.seal(padded(card)).size());
     }
     CHECK(lengths.size() > 1);
-    CHECK(widest(coveredCard, *cover.open(coveredCard)) <= kMaxRecordBytes);
+    CHECK(widest(coveredCard, cover.open(coveredCard)->bytes()) <= kMaxRecordBytes);
 
     const Hello hello = makeHello(cover, gatewaySealing);
     const std::optional<Key> client = openHello(cover, hello.message, gatewaySealing);
@@ -249,9 +249,9 @@ int main()
         welcome.tickets.push_back(randomBytes(kTicketBytes));
     }
     const Bytes answer = makeWelcome(cover, welcome, *client, gatewayIdentity);
-    CHECK(widest(hello.message, hybrid::unseal(*cover.open(hello.message), gatewaySealing))
+    CHECK(widest(hello.message, hybrid::unseal(cover.open(hello.message)->bytes(), gatewaySealing).bytes())
         <= kMaxRecordBytes);
-    CHECK(widest(answer, hybrid::unseal(*cover.open(answer), hello.ephemeral)) <= kMaxRecordBytes);
+    CHECK(widest(answer, hybrid::unseal(cover.open(answer)->bytes(), hello.ephemeral).bytes()) <= kMaxRecordBytes);
     const std::optional<Welcome> taken = openWelcome(cover, answer, hello.ephemeral, fingerprint);
     CHECK(taken.has_value());
     CHECK(taken->sessionKey == welcome.sessionKey);

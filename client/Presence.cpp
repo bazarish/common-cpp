@@ -95,33 +95,35 @@ std::uint64_t subscriptionOf(const Bytes& id)
     return subscription;
 }
 
-Bytes watchSigningInput(const nlohmann::json& unsignedWatch)
+SecretBytes watchSigningInput(const nlohmann::json& unsignedWatch)
 {
-    Bytes input(kWatchDomain, kWatchDomain + sizeof(kWatchDomain) - 1);
-    const Bytes encoded = nlohmann::json::to_cbor(unsignedWatch);
-    input.insert(input.end(), encoded.begin(), encoded.end());
+    const SecretBytes encoded(nlohmann::json::to_cbor(unsignedWatch));
+    const std::size_t domainBytes = sizeof(kWatchDomain) - 1;
+    SecretBytes input(domainBytes + encoded.size());
+    std::copy(kWatchDomain, kWatchDomain + domainBytes, input.data());
+    std::copy(encoded.bytes().begin(), encoded.bytes().end(), input.data() + domainBytes);
     return input;
 }
 
-Bytes stateKeyFor(const Bytes& subscriptionKey, const Bytes& salt)
+SecretBytes stateKeyFor(const SecretBytes& subscriptionKey, const Bytes& salt)
 {
-    return hkdfSha256(subscriptionKey, salt, kStateKeyInfo, kAeadKeyBytes);
+    return SecretBytes(hkdfSha256(subscriptionKey.bytes(), salt, kStateKeyInfo, kAeadKeyBytes));
 }
 
-Bytes sealedFrame(const std::uint8_t type, const Bytes& id, const Bytes& salt, const Bytes& key,
+Bytes sealedFrame(const std::uint8_t type, const Bytes& id, const Bytes& salt, const SecretBytes& key,
     const std::uint8_t direction, const std::uint64_t sequence, const nlohmann::json& payload)
 {
     Bytes frame = headerFor(type, id);
     frame.insert(frame.end(), salt.begin(), salt.end());
     const Bytes nonce = nonceFor(direction, sequence);
-    const Bytes sealed = aeadSeal(key, nonce, nlohmann::json::to_cbor(payload));
+    const Bytes sealed = aeadSeal(key.bytes(), nonce, nlohmann::json::to_cbor(payload));
     frame.insert(frame.end(), nonce.begin(), nonce.end());
     frame.insert(frame.end(), sealed.begin(), sealed.end());
     return frame;
 }
 
 std::optional<nlohmann::json> openedFrame(const Bytes& frame, const std::size_t nonceAt,
-    const Bytes& key, const std::uint8_t direction, std::uint64_t& lastSequence)
+    const SecretBytes& key, const std::uint8_t direction, std::uint64_t& lastSequence)
 {
     if (frame.size() < nonceAt + kAeadNonceBytes + kAeadTagBytes) {
         return std::nullopt;
@@ -132,13 +134,13 @@ std::optional<nlohmann::json> openedFrame(const Bytes& frame, const std::size_t 
     if (nonce[0] != direction || sequence <= lastSequence) {
         return std::nullopt;
     }
-    const std::optional<Bytes> plain
-        = aeadOpen(key, nonce, Bytes(nonceBegin + kAeadNonceBytes, frame.end()));
+    const std::optional<SecretBytes> plain
+        = aeadOpen(key.bytes(), nonce, Bytes(nonceBegin + kAeadNonceBytes, frame.end()));
     if (!plain) {
         return std::nullopt;
     }
     lastSequence = sequence;
-    return parseCbor(*plain);
+    return parseCbor(plain->bytes());
 }
 
 class I2pPresenceLink final : public PresenceLink {
@@ -241,7 +243,7 @@ struct Outgoing {
     std::string peer;
     std::string host;
     Bytes id;
-    Bytes key;
+    SecretBytes key;
     std::uint64_t sent = 0;
     std::vector<std::pair<Bytes, std::uint64_t>> heardBySalt;
     bool answered = false;
@@ -257,9 +259,9 @@ struct Incoming {
     std::string peer;
     std::string reply;
     Bytes id;
-    Bytes key;
+    SecretBytes key;
     Bytes salt;
-    Bytes stateKey;
+    SecretBytes stateKey;
     std::uint64_t sent = 0;
     std::uint64_t heard = 0;
     Clock::time_point expires{};
@@ -270,17 +272,20 @@ struct Incoming {
 
 Bytes presenceWatchFrame(const PresenceWatch& watch, const Key& signer, const EpochPublic& recipient)
 {
-    nlohmann::json content = {
+    SecretJson held(nlohmann::json{
         {"t", kWatchTag},
         {"from", watch.from},
         {"dev", watch.device},
         {"reply", watch.reply},
         {"sub", toHex(watch.id)},
-        {"key", toBase64(watch.key)},
+        {"key", toBase64(watch.key.bytes())},
         {"sentAt", watch.sentAt},
-    };
-    content[kWatchSignatureField] = nlohmann::json::binary(sign(signer, watchSigningInput(content)));
-    const Bytes sealed = sealToEpoch(nlohmann::json::to_cbor(content), recipient);
+    });
+    nlohmann::json& content = held.value;
+    content[kWatchSignatureField]
+        = nlohmann::json::binary(sign(signer, watchSigningInput(content).bytes()));
+    const Bytes sealed
+        = sealToEpoch(SecretBytes(nlohmann::json::to_cbor(content)).bytes(), recipient);
     Bytes frame = headerFor(kWatchType, watch.id);
     frame.insert(frame.end(), sealed.begin(), sealed.end());
     return frame;
@@ -534,7 +539,7 @@ struct Presence::Impl {
     static void rewatch(Outgoing& outgoing)
     {
         outgoing.id = randomBytes(kPresenceSubscriptionIdBytes);
-        outgoing.key = randomBytes(kSubscriptionKeyBytes);
+        outgoing.key = SecretBytes(randomBytes(kSubscriptionKeyBytes));
         outgoing.sent = 0;
         outgoing.heardBySalt.clear();
         outgoing.answered = false;
@@ -609,14 +614,15 @@ struct Presence::Impl {
         const Clock::time_point now)
     {
         const Bytes subscriptionId(frame.begin() + kTypeBytes, frame.begin() + kHeaderBytes);
-        nlohmann::json content;
+        SecretJson opened;
         try {
-            content = parseCbor(
-                ring->open(Bytes(frame.begin() + kHeaderBytes, frame.end())));
+            opened.value = parseCbor(
+                ring->open(Bytes(frame.begin() + kHeaderBytes, frame.end())).bytes());
         } catch (const std::exception& error) {
             bazarish::log::debug("presence: a watch that does not open was dropped: {}", error.what());
             return;
         }
+        nlohmann::json& content = opened.value;
         if (content.value("t", std::string()) != kWatchTag
             || content.value("sub", std::string()) != toHex(subscriptionId)) {
             return;
@@ -633,7 +639,7 @@ struct Presence::Impl {
         content.erase(kWatchSignatureField);
         const auto device = contact->get().devices.find(content.value("dev", std::string()));
         if (device == contact->get().devices.end()
-            || !verify(Key::fromPublicDer(device->second), watchSigningInput(content), signature)) {
+            || !verify(Key::fromPublicDer(device->second), watchSigningInput(content).bytes(), signature)) {
             return;
         }
         const std::int64_t sentAt = content.value("sentAt", std::int64_t{0});
@@ -645,7 +651,7 @@ struct Presence::Impl {
         sub.peer = from;
         sub.reply = content.at("reply").get<std::string>();
         sub.id = subscriptionId;
-        sub.key = fromBase64(content.at("key").get<std::string>());
+        sub.key = SecretBytes(fromBase64(content.at("key").get<std::string>()));
         if (sub.key.size() != kSubscriptionKeyBytes) {
             return;
         }

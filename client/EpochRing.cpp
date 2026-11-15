@@ -133,7 +133,7 @@ bool EpochRing::holds(const EpochNumber n) const
     return false;
 }
 
-Bytes EpochRing::open(const Bytes& frame) const
+SecretBytes EpochRing::open(const Bytes& frame) const
 {
     const std::string kid = toHex(hybrid::sealedKid(frame));
     const std::lock_guard<std::mutex> lock(mutex_);

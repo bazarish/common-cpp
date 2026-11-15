@@ -2,6 +2,7 @@
 #pragma once
 
 #include "bazarish/Bytes.hpp"
+#include "bazarish/SecretBytes.hpp"
 
 #include <cstddef>
 
@@ -16,5 +17,9 @@ std::size_t paddedSize(std::size_t length);
 Bytes padToLadder(const Bytes& payload, std::size_t ceiling = 0);
 
 Bytes unpadFromLadder(const Bytes& padded);
+
+SecretBytes padToLadder(const SecretBytes& payload, std::size_t ceiling = 0);
+
+SecretBytes unpadFromLadder(const SecretBytes& padded);
 
 }  // namespace bazarish

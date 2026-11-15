@@ -65,7 +65,7 @@ struct Sidecar {
 
 struct Cached {
     Bytes verifier;
-    Bytes key;
+    SecretBytes key;
 };
 std::mutex g_cacheMutex;
 std::map<fs::path, Cached> g_cache;
@@ -148,12 +148,12 @@ void seal(const Bytes& wrapping, Sidecar& sidecar, const Bytes& key)
     std::copy(tagAt, sealed.end(), sidecar.tag.begin());
 }
 
-bool unseal(const Bytes& wrapping, const Sidecar& sidecar, Bytes& key)
+bool unseal(const Bytes& wrapping, const Sidecar& sidecar, SecretBytes& key)
 {
     Bytes sealed(sidecar.sealed.size() + sidecar.tag.size());
     const auto tagAt = std::copy(sidecar.sealed.begin(), sidecar.sealed.end(), sealed.begin());
     std::copy(sidecar.tag.begin(), sidecar.tag.end(), tagAt);
-    std::optional<Bytes> opened
+    std::optional<SecretBytes> opened
         = aeadOpen(wrapping, Bytes(sidecar.nonce.begin(), sidecar.nonce.end()), sealed);
     if (!opened.has_value()) {
         key.clear();
@@ -238,22 +238,22 @@ void requireChoosable(const std::string& passphrase)
     }
 }
 
-Bytes create(const fs::path& file, const std::string& passphrase)
+SecretBytes create(const fs::path& file, const std::string& passphrase)
 {
     requireChoosable(passphrase);
     Sidecar sidecar = freshSidecar(passphrase);
-    Bytes key(kKeyBytes);
-    fill(key);
-    seal(wrappingKey(passphrase, sidecar), sidecar, key);
+    SecretBytes key(kKeyBytes);
+    fill(ByteBuffer(key.data(), key.size()));
+    seal(SecretBytes(wrappingKey(passphrase, sidecar)).bytes(), sidecar, key.bytes());
     write(file, sidecar);
     return key;
 }
 
-Bytes open(const fs::path& file, const std::string& passphrase)
+SecretBytes open(const fs::path& file, const std::string& passphrase)
 {
     const Sidecar sidecar = read(file);
-    Bytes key;
-    if (!unseal(wrappingKey(passphrase, sidecar), sidecar, key)) {
+    SecretBytes key;
+    if (!unseal(SecretBytes(wrappingKey(passphrase, sidecar)).bytes(), sidecar, key)) {
         throw std::runtime_error("account key: wrong passphrase");
     }
     return key;
@@ -333,7 +333,7 @@ Bytes keyFor(const fs::path& databaseFile, const std::string& passphrase)
         if (found != g_cache.end() && found->second.verifier.size() == verifier.size()
             && CRYPTO_memcmp(found->second.verifier.data(), verifier.data(), verifier.size())
                 == 0) {
-            return found->second.key;
+            return found->second.key.bytes();
         }
     }
     settle(databaseFile);
@@ -342,10 +342,10 @@ Bytes keyFor(const fs::path& databaseFile, const std::string& passphrase)
         throw std::runtime_error("account key: " + sidecarFor(databaseFile).string()
             + " is missing - the account cannot be opened without it");
     }
-    Bytes key = fs::exists(sidecar) ? open(sidecar, passphrase) : create(sidecar, passphrase);
+    SecretBytes key = fs::exists(sidecar) ? open(sidecar, passphrase) : create(sidecar, passphrase);
     const std::lock_guard<std::mutex> lock(g_cacheMutex);
     g_cache[databaseFile] = Cached{verifier, key};
-    return key;
+    return key.bytes();
 }
 
 void rekey(const fs::path& databaseFile, const std::string& oldPassphrase,
@@ -355,7 +355,7 @@ void rekey(const fs::path& databaseFile, const std::string& oldPassphrase,
     const std::lock_guard<std::mutex> making(*forThisFile);
     requireChoosable(newPassphrase);
     settle(databaseFile);
-    const SecretBytes oldKey(open(sidecarFor(databaseFile), oldPassphrase));
+    const SecretBytes oldKey = open(sidecarFor(databaseFile), oldPassphrase);
     SecretBytes newKey(kKeyBytes);
     fill(ByteBuffer(newKey.data(), newKey.size()));
     const fs::path database = pendingDatabase(databaseFile);
@@ -372,7 +372,7 @@ void rekey(const fs::path& databaseFile, const std::string& oldPassphrase,
     fs::rename(pendingSidecar(databaseFile), sidecarFor(databaseFile));
     syncDirectory(directoryOf(databaseFile));
     const std::lock_guard<std::mutex> lock(g_cacheMutex);
-    g_cache[databaseFile] = Cached{verifierOf(newPassphrase), newKey.bytes()};
+    g_cache[databaseFile] = Cached{verifierOf(newPassphrase), newKey};
 }
 
 void removeKeyFiles(const fs::path& databaseFile)
@@ -405,7 +405,7 @@ Bytes sealBackup(const Bytes& plain, const std::string& passphrase)
     return sealed;
 }
 
-Bytes openBackup(const Bytes& sealed, const std::string& passphrase)
+SecretBytes openBackup(const Bytes& sealed, const std::string& passphrase)
 {
     if (sealed.size() < kBackupHeaderBytes + kTagBytes
         || !std::equal(kBackupMagic, kBackupMagic + sizeof kBackupMagic, sealed.begin())) {
@@ -420,7 +420,7 @@ Bytes openBackup(const Bytes& sealed, const std::string& passphrase)
     const auto bodyAt = nonceAt + static_cast<std::ptrdiff_t>(kNonceBytes);
     const SecretBytes key(argon2id(Bytes(passphrase.begin(), passphrase.end()),
         Bytes(saltAt, nonceAt), {memoryKiB, passes, kLanes}, kKeyBytes));
-    std::optional<Bytes> plain = aeadOpen(
+    std::optional<SecretBytes> plain = aeadOpen(
         key.bytes(), Bytes(nonceAt, bodyAt), Bytes(bodyAt, sealed.end()), Bytes(sealed.begin(), bodyAt));
     if (!plain.has_value()) {
         throw std::runtime_error("the backup does not open: a wrong password, or a damaged file");

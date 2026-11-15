@@ -70,20 +70,17 @@ std::string macCanonical(const std::int64_t timestamp, const std::string& method
 
 }  // namespace
 
-Bytes deriveSessionKey(const Bytes& secret, const std::string& sessionId)
+SecretBytes deriveSessionKey(const SecretBytes& secret, const std::string& sessionId)
 {
-    const std::string material
-        = toHex(secret) + "|" + sessionId + "|bazarish session v1";
-    return sha256(Bytes(material.begin(), material.end()));
+    return SecretBytes(sha256(secretHexLine(secret, "|" + sessionId + "|bazarish session v1").bytes()));
 }
 
-std::string sessionHandle(const Bytes& secret, const std::uint64_t seq)
+std::string sessionHandle(const SecretBytes& secret, const std::uint64_t seq)
 {
-    return bazarish::service::hmacSha256Hex(
-        std::string(secret.begin(), secret.end()), "handle|" + std::to_string(seq));
+    return bazarish::service::hmacSha256Hex(secret, "handle|" + std::to_string(seq));
 }
 
-Headers macRequest(const std::string& handle, const Bytes& sessionKey, const std::uint64_t seq,
+Headers macRequest(const std::string& handle, const SecretBytes& sessionKey, const std::uint64_t seq,
     const std::int64_t timestamp, const std::string& method, const std::string& target,
     const Bytes& body)
 {
@@ -91,9 +88,8 @@ Headers macRequest(const std::string& handle, const Bytes& sessionKey, const std
     headers[kHeaderSession] = handle;
     headers[kHeaderSeq] = std::to_string(seq);
     headers[kHeaderTimestamp] = std::to_string(timestamp);
-    headers[kHeaderMac] = bazarish::service::hmacSha256Hex(
-        std::string(sessionKey.begin(), sessionKey.end()),
-        macCanonical(timestamp, method, target, body, seq));
+    headers[kHeaderMac]
+        = bazarish::service::hmacSha256Hex(sessionKey, macCanonical(timestamp, method, target, body, seq));
     return headers;
 }
 
@@ -103,7 +99,7 @@ bool hasSessionHeaders(const Headers& headers)
         && headers.find(kHeaderMac) != headers.end();
 }
 
-std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, const std::int64_t now,
+std::uint64_t verifyMac(const Headers& headers, const SecretBytes& sessionKey, const std::int64_t now,
     const std::string& method, const std::string& target, const Bytes& body)
 {
     const std::int64_t timestamp = std::strtoll(
@@ -113,9 +109,8 @@ std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, const s
     }
     const std::uint64_t seq
         = std::strtoull(requireHeader(headers, kHeaderSeq).c_str(), nullptr, 10);
-    const std::string expected = bazarish::service::hmacSha256Hex(
-        std::string(sessionKey.begin(), sessionKey.end()),
-        macCanonical(timestamp, method, target, body, seq));
+    const std::string expected
+        = bazarish::service::hmacSha256Hex(sessionKey, macCanonical(timestamp, method, target, body, seq));
     const std::string presented = requireHeader(headers, kHeaderMac);
     if (expected.size() != presented.size()
         || CRYPTO_memcmp(expected.data(), presented.data(), expected.size()) != 0) {

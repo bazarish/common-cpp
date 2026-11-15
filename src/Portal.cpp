@@ -270,11 +270,11 @@ Bytes sealLoginChallenge(const Bytes& key, const std::string& challenge)
 
 std::string openLoginChallenge(const Bytes& key, const Bytes& sealed)
 {
-    const std::optional<Bytes> opened = KeyedSeal(key, kLoginChallengeLabel).open(sealed);
+    const std::optional<SecretBytes> opened = KeyedSeal(key, kLoginChallengeLabel).open(sealed);
     if (!opened.has_value()) {
         throw std::runtime_error("the challenge came sealed under another key than the link's");
     }
-    return std::string(opened->begin(), opened->end());
+    return std::string(opened->bytes().begin(), opened->bytes().end());
 }
 
 std::string sealLoginAnswer(const Bytes& key, const LoginAnswer& answer)
@@ -294,12 +294,12 @@ std::string loginAnswerNonce(const std::string& body)
 std::optional<LoginAnswer> openLoginAnswer(const Bytes& key, const std::string& body)
 {
     const nlohmann::json outer = parseJson(body);
-    const std::optional<Bytes> opened = KeyedSeal(key, kLoginAnswerLabel)
+    const std::optional<SecretBytes> opened = KeyedSeal(key, kLoginAnswerLabel)
                                             .open(fromBase64(outer.at("sealed").get<std::string>()));
     if (!opened.has_value()) {
         return std::nullopt;
     }
-    const nlohmann::json inner = parseJson(std::string(opened->begin(), opened->end()));
+    const nlohmann::json inner = parseJson(opened->bytes());
     LoginAnswer answer{
         inner.at("challenge").get<std::string>(), inner.at("blob").get<std::string>()};
     if (challengeNonceOf(answer.challenge) != outer.at("nonce").get<std::string>()) {

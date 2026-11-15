@@ -86,11 +86,11 @@ SealedChannelRequest sealChannelRequest(const ChannelRequest& request, const Key
 std::optional<OpenedChannelRequest> openChannelRequest(const Bytes& message, const Key& channelKey)
 {
     try {
-        const nlohmann::json plain = parseCbor(unpadFromLadder(hybrid::unseal(message, channelKey)));
+        const SecretJson plain(parseCbor(unpadFromLadder(hybrid::unseal(message, channelKey)).bytes()));
         OpenedChannelRequest opened;
-        opened.request.op = plain.at("op").get<std::string>();
-        opened.request.body = binaryOf(plain.at("body"));
-        opened.replyKey = binaryOf(plain.at("replyKey"));
+        opened.request.op = plain.value.at("op").get<std::string>();
+        opened.request.body = binaryOf(plain.value.at("body"));
+        opened.replyKey = binaryOf(plain.value.at("replyKey"));
         if (opened.replyKey.size() != kLinkKeyBytes) {
             return std::nullopt;
         }
@@ -110,11 +110,11 @@ Bytes sealChannelReply(const ChannelReply& reply, const Bytes& replyKey)
 
 std::optional<ChannelReply> openChannelReply(const Bytes& message, const Bytes& replyKey)
 {
-    const std::optional<Bytes> padded = KeyedSeal(replyKey, kReplyLabel).open(message);
+    const std::optional<SecretBytes> padded = KeyedSeal(replyKey, kReplyLabel).open(message);
     if (!padded.has_value()) {
         return std::nullopt;
     }
-    const nlohmann::json plain = parseCbor(unpadFromLadder(*padded));
+    const nlohmann::json plain = parseCbor(unpadFromLadder(*padded).bytes());
     return ChannelReply{plain.at("status").get<int>(), binaryOf(plain.at("body"))};
 }
 

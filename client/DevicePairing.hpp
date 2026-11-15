@@ -66,7 +66,7 @@ PairVerdict pairVerdict(const std::string& method, const std::string& target, co
 std::string pairRequest(
     const std::string& dest, const std::string& code, const Bytes& key, const DevicePublic& device);
 Bytes sealPairBundle(const Bytes& key, const Bytes& bundle);
-Bytes openPairBundle(const Bytes& key, const Bytes& sealed);
+SecretBytes openPairBundle(const Bytes& key, const Bytes& sealed);
 std::string pairRefusal(int status, int triesLeft);
 std::string pairBundleHead(std::size_t size);
 int pairTriesLeft(const std::map<std::string, std::string>& headers);

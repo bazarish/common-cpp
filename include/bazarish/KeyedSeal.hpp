@@ -24,7 +24,7 @@ public:
     KeyedSeal(const Bytes& secret, const std::string& label);
 
     Bytes seal(const Bytes& plaintext) const;
-    std::optional<Bytes> open(const Bytes& message) const;
+    std::optional<SecretBytes> open(const Bytes& message) const;
 
 private:
     SecretBytes key_;

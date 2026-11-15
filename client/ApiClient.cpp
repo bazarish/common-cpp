@@ -236,12 +236,12 @@ bool ApiClient::ensureSessionLocked(Tunnel& tunnel)
     try {
         ensureSealingKeyLocked(tunnel);
         bazarish::tunnel::Hello hello;
-        hello.secret = randomBytes(kSessionSecretBytes);
+        hello.secret = SecretBytes(randomBytes(kSessionSecretBytes));
         const Key replyKey = Key::generateSealing();
         hello.replyKeyDer = replyKey.publicDer();
         hello.signature = auth::signDeviceRequest(credential_, now, bazarish::tunnel::kHelloMethod,
             bazarish::tunnel::kHelloPath,
-            bazarish::tunnel::helloSigned(hello.secret, endpoint_.serverFingerprint));
+            bazarish::tunnel::helloSigned(hello.secret, endpoint_.serverFingerprint).bytes());
         const Bytes frame
             = bazarish::tunnel::sealHello(hello, Key::fromPublicDer(tunnel.sealingKeyDer));
         const ApiResponse response = transmitLocked("POST", tunnelPathOf(tunnel.service), frame,
@@ -253,11 +253,10 @@ bool ApiClient::ensureSessionLocked(Tunnel& tunnel)
             linkFailure_.store(LinkFailure::eServerRefused);
             throw;
         }
-        tunnel.sessionId = toHex(sha256(hello.secret)).substr(0, kSessionIdChars);
-        tunnel.sessionKey = SecretBytes(auth::deriveSessionKey(hello.secret, tunnel.sessionId));
-        tunnel.tunnelKey
-            = SecretBytes(bazarish::tunnel::deriveTunnelKey(hello.secret, tunnel.sessionId));
-        tunnel.sessionSecret = SecretBytes(std::move(hello.secret));
+        tunnel.sessionId = toHex(sha256(hello.secret.bytes())).substr(0, kSessionIdChars);
+        tunnel.sessionKey = auth::deriveSessionKey(hello.secret, tunnel.sessionId);
+        tunnel.tunnelKey = bazarish::tunnel::deriveTunnelKey(hello.secret, tunnel.sessionId);
+        tunnel.sessionSecret = std::move(hello.secret);
         tunnel.sessionUntil = welcome.expiresUnix;
         tunnel.sessionSeq = 0;
         tunnel.refusals = 0;
@@ -552,15 +551,15 @@ ApiResponse ApiClient::tunnelledLocked(Tunnel& tunnel, const std::string& method
     inner.body = body;
     inner.contentType = contentType;
     const std::uint64_t seq = ++tunnel.sessionSeq;
-    const std::string handle = auth::sessionHandle(tunnel.sessionSecret.bytes(), seq);
-    const Bytes frame = bazarish::tunnel::carry(handle, tunnel.tunnelKey.bytes(),
+    const std::string handle = auth::sessionHandle(tunnel.sessionSecret, seq);
+    const Bytes frame = bazarish::tunnel::carry(handle, tunnel.tunnelKey,
         bazarish::tunnel::Direction::eRequest, bazarish::tunnel::encodeRequest(inner));
     const ApiResponse carried = transmitLocked("POST", tunnelPathOf(tunnel.service), frame,
         "application/octet-stream", readTimeoutSeconds);
     bazarish::tunnel::Response answered;
     try {
         answered = bazarish::tunnel::decodeResponse(
-            bazarish::tunnel::open(carried.body, tunnel.tunnelKey.bytes(),
+            bazarish::tunnel::open(carried.body, tunnel.tunnelKey,
                 bazarish::tunnel::Direction::eAnswer, handle));
     } catch (const std::exception&) {
         linkFailure_.store(LinkFailure::eServerRefused);
@@ -593,8 +592,8 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     }
     const auto macHeaders = [&]() {
         const std::uint64_t seq = tunnel.sessionSeq + 1;
-        const auth::Headers mac = auth::macRequest(auth::sessionHandle(tunnel.sessionSecret.bytes(), seq),
-            tunnel.sessionKey.bytes(), seq, nowSeconds(), method, query.empty() ? path : path + "?" + query,
+        const auth::Headers mac = auth::macRequest(auth::sessionHandle(tunnel.sessionSecret, seq),
+            tunnel.sessionKey, seq, nowSeconds(), method, query.empty() ? path : path + "?" + query,
             body);
         return std::map<std::string, std::string>(mac.begin(), mac.end());
     };

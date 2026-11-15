@@ -4,6 +4,7 @@
 #include "bazarish/Bytes.hpp"
 
 #include <cstddef>
+#include <string>
 
 namespace bazarish {
 
@@ -35,5 +36,8 @@ public:
 private:
     Bytes bytes_;
 };
+
+// The lowercase hex of `secret` followed by `tail`, built without an unwiped copy of either.
+SecretBytes secretHexLine(const SecretBytes& secret, const std::string& tail);
 
 }  // namespace bazarish

@@ -9,8 +9,6 @@
 
 #include <nlohmann/json.hpp>
 
-#include <openssl/crypto.h>
-
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -62,9 +60,9 @@ nlohmann::json frameOf(const Bytes& frame)
     return parsed;
 }
 
-SecretBytes frameKey(const Bytes& tunnelKey, const Direction direction, const std::string& handle)
+SecretBytes frameKey(const SecretBytes& tunnelKey, const Direction direction, const std::string& handle)
 {
-    return SecretBytes(hkdfSha256(tunnelKey, Bytes(handle.begin(), handle.end()),
+    return SecretBytes(hkdfSha256(tunnelKey.bytes(), Bytes(handle.begin(), handle.end()),
         direction == Direction::eRequest ? kRequestKeyInfo : kAnswerKeyInfo, kAeadKeyBytes));
 }
 
@@ -88,36 +86,33 @@ std::map<std::string, std::string> headersFromJson(const nlohmann::json& value)
 
 }  // namespace
 
-Bytes deriveTunnelKey(const Bytes& secret, const std::string& sessionId)
+SecretBytes deriveTunnelKey(const SecretBytes& secret, const std::string& sessionId)
 {
-    std::string hex = toHex(secret);
-    const std::string tail = "|" + sessionId + "|bazarish tunnel v1";
-    SecretBytes material(hex.size() + tail.size());
-    std::copy(hex.begin(), hex.end(), material.data());
-    std::copy(tail.begin(), tail.end(), material.data() + hex.size());
-    OPENSSL_cleanse(hex.data(), hex.size());
-    return sha256(material.bytes());
+    return SecretBytes(sha256(secretHexLine(secret, "|" + sessionId + "|bazarish tunnel v1").bytes()));
 }
 
-Bytes helloSigned(const Bytes& secret, const std::string& serverFingerprint)
+SecretBytes helloSigned(const SecretBytes& secret, const std::string& serverFingerprint)
 {
     if (serverFingerprint.empty()) {
         throw std::invalid_argument("a hello names the server it is for");
     }
-    return toCbor({{"secret", asBinary(secret)}, {"server", serverFingerprint}});
+    const SecretJson signedPart(
+        nlohmann::json{{"secret", asBinary(secret.bytes())}, {"server", serverFingerprint}});
+    return SecretBytes(toCbor(signedPart.value));
 }
 
 Bytes sealHello(const Hello& hello, const Key& serverSealingPublic)
 {
-    nlohmann::json inner = {
-        {"secret", asBinary(hello.secret)},
+    const SecretJson inner(nlohmann::json{
+        {"secret", asBinary(hello.secret.bytes())},
         {"replyKey", asBinary(hello.replyKeyDer)},
         {"sig", headersToJson(hello.signature)},
-    };
+    });
+    const SecretBytes encoded(toCbor(inner.value));
     const nlohmann::json frame = {
         {kVersionField, kFrameVersion},
         {kTypeField, kHelloType},
-        {kSealedField, asBinary(hybrid::seal(padToLadder(toCbor(inner)), serverSealingPublic, {}))},
+        {kSealedField, asBinary(hybrid::seal(padToLadder(encoded).bytes(), serverSealingPublic, {}))},
     };
     return toCbor(frame);
 }
@@ -128,12 +123,12 @@ Hello openHello(const Bytes& frame, const Key& serverSealingPrivate)
     if (parsed.value(kTypeField, std::string()) != kHelloType) {
         throw std::runtime_error("tunnel frame does not open a tunnel");
     }
-    const nlohmann::json inner
-        = fromCbor(unpadFromLadder(hybrid::unseal(fromBinary(parsed.at(kSealedField)), serverSealingPrivate)));
+    const SecretBytes padded = hybrid::unseal(fromBinary(parsed.at(kSealedField)), serverSealingPrivate);
+    const SecretJson inner(fromCbor(unpadFromLadder(padded).bytes()));
     Hello hello;
-    hello.secret = fromBinary(inner.at("secret"));
-    hello.replyKeyDer = fromBinary(inner.at("replyKey"));
-    hello.signature = headersFromJson(inner.at("sig"));
+    hello.secret = SecretBytes(fromBinary(inner.value.at("secret")));
+    hello.replyKeyDer = fromBinary(inner.value.at("replyKey"));
+    hello.signature = headersFromJson(inner.value.at("sig"));
     return hello;
 }
 
@@ -145,14 +140,14 @@ Bytes sealWelcome(const Welcome& welcome, const Key& replyKeyPublic)
 
 Welcome openWelcome(const Bytes& sealed, const Key& replyKeyPrivate)
 {
-    const nlohmann::json inner = fromCbor(unpadFromLadder(hybrid::unseal(sealed, replyKeyPrivate)));
+    const nlohmann::json inner = fromCbor(unpadFromLadder(hybrid::unseal(sealed, replyKeyPrivate)).bytes());
     Welcome welcome;
     welcome.expiresUnix = inner.at("expiresUnix").get<std::int64_t>();
     return welcome;
 }
 
-Bytes carry(const std::string& handle, const Bytes& tunnelKey, const Direction direction,
-    const Bytes& plaintext)
+Bytes carry(const std::string& handle, const SecretBytes& tunnelKey, const Direction direction,
+    const SecretBytes& plaintext)
 {
     const Bytes nonce = randomBytes(kAeadNonceBytes);
     const nlohmann::json frame = {
@@ -160,7 +155,7 @@ Bytes carry(const std::string& handle, const Bytes& tunnelKey, const Direction d
         {kTypeField, kCarryType},
         {kHandleField, handle},
         {kNonceField, asBinary(nonce)},
-        {kCipherField, asBinary(aeadSeal(frameKey(tunnelKey, direction, handle).bytes(), nonce, padToLadder(plaintext)))},
+        {kCipherField, asBinary(aeadSeal(frameKey(tunnelKey, direction, handle).bytes(), nonce, padToLadder(plaintext).bytes()))},
     };
     return toCbor(frame);
 }
@@ -183,7 +178,8 @@ bool isHello(const Bytes& frame)
     }
 }
 
-Bytes open(const Bytes& frame, const Bytes& tunnelKey, const Direction direction, const std::string& handle)
+SecretBytes open(
+    const Bytes& frame, const SecretBytes& tunnelKey, const Direction direction, const std::string& handle)
 {
     const nlohmann::json parsed = frameOf(frame);
     if (parsed.value(kTypeField, std::string()) != kCarryType) {
@@ -192,7 +188,7 @@ Bytes open(const Bytes& frame, const Bytes& tunnelKey, const Direction direction
     if (parsed.at(kHandleField).get<std::string>() != handle) {
         throw std::runtime_error("tunnel frame names another handle");
     }
-    const std::optional<Bytes> opened = aeadOpen(frameKey(tunnelKey, direction, handle).bytes(),
+    const std::optional<SecretBytes> opened = aeadOpen(frameKey(tunnelKey, direction, handle).bytes(),
         fromBinary(parsed.at(kNonceField)), fromBinary(parsed.at(kCipherField)));
     if (!opened.has_value()) {
         throw std::runtime_error("tunnel frame did not open");
@@ -200,49 +196,49 @@ Bytes open(const Bytes& frame, const Bytes& tunnelKey, const Direction direction
     return unpadFromLadder(*opened);
 }
 
-Bytes encodeRequest(const Request& request)
+SecretBytes encodeRequest(const Request& request)
 {
-    const nlohmann::json inner = {
+    const SecretJson inner(nlohmann::json{
         {"m", request.method},
         {"p", request.path},
         {"q", request.query},
         {"h", headersToJson(request.headers)},
         {"b", asBinary(request.body)},
         {"c", request.contentType},
-    };
-    return toCbor(inner);
+    });
+    return SecretBytes(toCbor(inner.value));
 }
 
-Request decodeRequest(const Bytes& plaintext)
+Request decodeRequest(const SecretBytes& plaintext)
 {
-    const nlohmann::json inner = fromCbor(plaintext);
+    const SecretJson inner(fromCbor(plaintext.bytes()));
     Request request;
-    request.method = inner.at("m").get<std::string>();
-    request.path = inner.at("p").get<std::string>();
-    request.query = inner.value("q", std::string());
-    request.headers = headersFromJson(inner.at("h"));
-    request.body = fromBinary(inner.at("b"));
-    request.contentType = inner.value("c", std::string());
+    request.method = inner.value.at("m").get<std::string>();
+    request.path = inner.value.at("p").get<std::string>();
+    request.query = inner.value.value("q", std::string());
+    request.headers = headersFromJson(inner.value.at("h"));
+    request.body = fromBinary(inner.value.at("b"));
+    request.contentType = inner.value.value("c", std::string());
     return request;
 }
 
-Bytes encodeResponse(const Response& response)
+SecretBytes encodeResponse(const Response& response)
 {
-    const nlohmann::json inner = {
+    const SecretJson inner(nlohmann::json{
         {"s", response.status},
         {"c", response.contentType},
         {"b", asBinary(response.body)},
-    };
-    return toCbor(inner);
+    });
+    return SecretBytes(toCbor(inner.value));
 }
 
-Response decodeResponse(const Bytes& plaintext)
+Response decodeResponse(const SecretBytes& plaintext)
 {
-    const nlohmann::json inner = fromCbor(plaintext);
+    const SecretJson inner(fromCbor(plaintext.bytes()));
     Response response;
-    response.status = inner.at("s").get<int>();
-    response.contentType = inner.value("c", std::string());
-    response.body = fromBinary(inner.at("b"));
+    response.status = inner.value.at("s").get<int>();
+    response.contentType = inner.value.value("c", std::string());
+    response.body = fromBinary(inner.value.at("b"));
     return response;
 }
 

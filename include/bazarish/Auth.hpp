@@ -4,6 +4,7 @@
 #include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
 #include "bazarish/Devices.hpp"
+#include "bazarish/SecretBytes.hpp"
 
 #include <cstdint>
 #include <map>
@@ -35,15 +36,15 @@ extern const char* const kHeaderMac;
 inline constexpr std::int64_t kSessionMinLifetimeSeconds = 3600;
 inline constexpr std::int64_t kSessionMaxLifetimeSeconds = 7200;
 
-Bytes deriveSessionKey(const Bytes& secret, const std::string& sessionId);
+SecretBytes deriveSessionKey(const SecretBytes& secret, const std::string& sessionId);
 
-std::string sessionHandle(const Bytes& secret, std::uint64_t seq);
+std::string sessionHandle(const SecretBytes& secret, std::uint64_t seq);
 
 // The signed target is the request target as sent: the path, and ?query when it has one.
-Headers macRequest(const std::string& handle, const Bytes& sessionKey, std::uint64_t seq,
+Headers macRequest(const std::string& handle, const SecretBytes& sessionKey, std::uint64_t seq,
     std::int64_t timestamp, const std::string& method, const std::string& target, const Bytes& body);
 
-std::uint64_t verifyMac(const Headers& headers, const Bytes& sessionKey, std::int64_t now,
+std::uint64_t verifyMac(const Headers& headers, const SecretBytes& sessionKey, std::int64_t now,
     const std::string& method, const std::string& target, const Bytes& body);
 
 bool hasSessionHeaders(const Headers& headers);

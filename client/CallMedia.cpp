@@ -239,13 +239,13 @@ void CallMedia::receiveLoop()
         }
         const std::uint8_t track = nonce[1];
         const Bytes sealed(packet.begin() + kNonceSize, packet.end());
-        const std::optional<Bytes> opened = aeadOpen(mediaKey_.bytes(), nonce, sealed);
+        const std::optional<SecretBytes> opened = aeadOpen(mediaKey_.bytes(), nonce, sealed);
         if (!opened.has_value()) {
             continue;
         }
         if (track == kTrackAudio) {
             handleAudioPacket(
-                sequenceFromNonce(nonce), opened.value(), audioHavePlayed, audioLastPlayed);
+                sequenceFromNonce(nonce), opened->bytes(), audioHavePlayed, audioLastPlayed);
         }
         heardPeer_.store(true);
         if (nonce[kHeardFlagOffset] != 0 && !reportedConnected_.exchange(true)) {

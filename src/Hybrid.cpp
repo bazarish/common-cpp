@@ -330,7 +330,7 @@ Bytes sealedKid(const Bytes& frame)
     return kidOf(parsed);
 }
 
-Bytes unseal(const Bytes& frame, const Key& recipientPrivateKey)
+SecretBytes unseal(const Bytes& frame, const Key& recipientPrivateKey)
 {
     if (!recipientPrivateKey.hasPrivate()) {
         throw std::logic_error("unsealing requires a private key");
@@ -357,7 +357,7 @@ Bytes unseal(const Bytes& frame, const Key& recipientPrivateKey)
     pqSecret.clear();
     classicalSecret.clear();
 
-    std::optional<Bytes> opened = aeadOpen(key.bytes(), nonce, ciphertext);
+    std::optional<SecretBytes> opened = aeadOpen(key.bytes(), nonce, ciphertext);
     key.clear();
     if (!opened) {
         throw std::runtime_error("sealed payload does not authenticate");

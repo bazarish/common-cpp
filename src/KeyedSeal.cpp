@@ -48,7 +48,7 @@ Bytes KeyedSeal::seal(const Bytes& plaintext) const
     return message;
 }
 
-std::optional<Bytes> KeyedSeal::open(const Bytes& message) const
+std::optional<SecretBytes> KeyedSeal::open(const Bytes& message) const
 {
     if (message.size() < kAeadNonceBytes + kAeadTagBytes) {
         return std::nullopt;

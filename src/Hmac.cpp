@@ -11,7 +11,9 @@
 
 namespace bazarish::service {
 
-std::string hmacSha256Hex(const std::string& key, const std::string& data)
+namespace {
+
+std::string hmacHex(const unsigned char* const key, const std::size_t keySize, const std::string& data)
 {
     const std::unique_ptr<EVP_MAC, decltype(&EVP_MAC_free)> mac(
         EVP_MAC_fetch(nullptr, "HMAC", nullptr), &EVP_MAC_free);
@@ -31,8 +33,7 @@ std::string hmacSha256Hex(const std::string& key, const std::string& data)
     unsigned char out[EVP_MAX_MD_SIZE];
     std::size_t outLen = 0;
     const bool ok
-        = EVP_MAC_init(ctx.get(), reinterpret_cast<const unsigned char*>(key.data()), key.size(),
-              params)
+        = EVP_MAC_init(ctx.get(), key, keySize, params)
             == 1
         && EVP_MAC_update(
                ctx.get(), reinterpret_cast<const unsigned char*>(data.data()), data.size())
@@ -49,6 +50,18 @@ std::string hmacSha256Hex(const std::string& key, const std::string& data)
         hex.push_back(kHex[out[i] & 0x0f]);
     }
     return hex;
+}
+
+}  // namespace
+
+std::string hmacSha256Hex(const std::string& key, const std::string& data)
+{
+    return hmacHex(reinterpret_cast<const unsigned char*>(key.data()), key.size(), data);
+}
+
+std::string hmacSha256Hex(const SecretBytes& key, const std::string& data)
+{
+    return hmacHex(key.bytes().data(), key.size(), data);
 }
 
 bool constantTimeEqual(const std::string& a, const std::string& b)

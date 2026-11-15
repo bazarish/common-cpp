@@ -118,19 +118,21 @@ int main()
     }
 
     {
-        const Bytes secret = randomBytes(32);
-        const std::string sessionId = toHex(sha256(secret)).substr(0, 32);
-        const Bytes key = auth::deriveSessionKey(secret, sessionId);
+        const SecretBytes secret(randomBytes(32));
+        const std::string sessionId = toHex(sha256(secret.bytes())).substr(0, 32);
+        const SecretBytes key = auth::deriveSessionKey(secret, sessionId);
+        const std::string material = toHex(secret.bytes()) + "|" + sessionId + "|bazarish session v1";
+        CHECK(key.bytes() == sha256(Bytes(material.begin(), material.end())));
 
         CHECK(auth::deriveSessionKey(secret, sessionId) == key);
-        CHECK(auth::deriveSessionKey(randomBytes(32), sessionId) != key);
-        CHECK(auth::deriveSessionKey(secret, "00000000000000000000000000000000") != key);
+        CHECK(!(auth::deriveSessionKey(SecretBytes(randomBytes(32)), sessionId) == key));
+        CHECK(!(auth::deriveSessionKey(secret, "00000000000000000000000000000000") == key));
 
         const std::string handle1 = auth::sessionHandle(secret, 1);
         const std::string handle2 = auth::sessionHandle(secret, 2);
         CHECK(handle1 != handle2);
         CHECK(auth::sessionHandle(secret, 1) == handle1);
-        CHECK(auth::sessionHandle(randomBytes(32), 1) != handle1);
+        CHECK(auth::sessionHandle(SecretBytes(randomBytes(32)), 1) != handle1);
 
         constexpr std::uint64_t kSeq = 7;
         const auth::Headers maced = auth::macRequest(
@@ -146,7 +148,7 @@ int main()
             auth::verifyMac(maced, key, kNow, "POST", "/v1/messaging/pending", body));
         CHECK_THROWS(auth::verifyMac(
             maced, key, kNow, "POST", "/v1/messaging/ack", Bytes{'x'}));
-        CHECK_THROWS(auth::verifyMac(maced, auth::deriveSessionKey(randomBytes(32), sessionId),
+        CHECK_THROWS(auth::verifyMac(maced, auth::deriveSessionKey(SecretBytes(randomBytes(32)), sessionId),
             kNow, "POST", "/v1/messaging/ack", body));
 
         {

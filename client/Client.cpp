@@ -212,14 +212,14 @@ ContactInfo Client::fetchCard(const Descriptor& descriptor, const FetchTransport
     if (!outcome.ok) {
         throw std::runtime_error("that invite is out of date - ask for a new one");
     }
-    const std::optional<Bytes> cardDer
+    const std::optional<SecretBytes> cardDer
         = KeyedSeal(descriptor.cardKey, kCardReplyLabel).open(outcome.sealed);
     if (!cardDer.has_value()) {
         throw std::runtime_error("the card came back sealed under another key");
     }
 
     ContactInfo info;
-    info.card = ContactCard::verify(*cardDer);
+    info.card = ContactCard::verify(cardDer->bytes());
     info.cardKey = descriptor.cardKey;
     if (info.card.fingerprint() != descriptor.fingerprint) {
         throw std::runtime_error("fetched card is for a different fingerprint");

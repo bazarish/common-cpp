@@ -2,6 +2,7 @@
 #pragma once
 
 #include "bazarish/Bytes.hpp"
+#include "bazarish/SecretBytes.hpp"
 
 #include <cstddef>
 #include <filesystem>
@@ -71,13 +72,13 @@ inline constexpr std::size_t kAeadKeyBytes = 32;
 inline constexpr std::size_t kAeadNonceBytes = 12;
 inline constexpr std::size_t kAeadTagBytes = 16;
 Bytes aeadSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext);
-std::optional<Bytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed);
+std::optional<SecretBytes> aeadOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed);
 Bytes aeadSeal(
     const Bytes& key, const Bytes& nonce, const Bytes& plaintext, const Bytes& associated);
-std::optional<Bytes> aeadOpen(
+std::optional<SecretBytes> aeadOpen(
     const Bytes& key, const Bytes& nonce, const Bytes& sealed, const Bytes& associated);
 Bytes chachaSeal(const Bytes& key, const Bytes& nonce, const Bytes& plaintext);
-std::optional<Bytes> chachaOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed);
+std::optional<SecretBytes> chachaOpen(const Bytes& key, const Bytes& nonce, const Bytes& sealed);
 
 Bytes hkdfSha256(
     const Bytes& secret, const Bytes& salt, const std::string& info, std::size_t size);

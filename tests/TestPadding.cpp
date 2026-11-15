@@ -63,5 +63,12 @@ int main()
     }
 
     std::printf("TestPadding: ok\n");
+    {
+        const Bytes payload{'k', 'e', 'y'};
+        const SecretBytes padded = padToLadder(SecretBytes(payload));
+        CHECK(padded.bytes() == padToLadder(payload));
+        CHECK(unpadFromLadder(padded).bytes() == payload);
+    }
+
     return 0;
 }

@@ -1031,7 +1031,7 @@ const DeviceBook& Session::bookFor(const std::string& peerFingerprint) const
     return found == contacts_.end() ? kUnknown : found->second.devices;
 }
 
-Bytes Session::openItem(const Bytes& sealed) const
+SecretBytes Session::openItem(const Bytes& sealed) const
 {
     const Bytes kid = hybrid::sealedKid(sealed);
     if (!namesDevice(kid)) {
@@ -1625,7 +1625,9 @@ bool Session::adoptI2pMasterFromOwnMailbox(const std::string& wantedHost)
             begin = end;
         }
         for (const MailboxItem& item : held) {
-            for (const nlohmann::json& body : decodedBody(openItem(item.blob))) {
+            std::vector<nlohmann::json> bodies = decodedBody(openItem(item.blob).bytes());
+            const JsonWipe wipedBodies(bodies);
+            for (const nlohmann::json& body : bodies) {
                 if (body.value("type", std::string()) != "device.i2p-master"
                     || body.value("from", std::string()) != fingerprint()) {
                     continue;
@@ -4095,8 +4097,9 @@ std::vector<IncomingMessage> Session::takeIn(
         const log::Slow timedItem("taking in " + entry.id, kSlowStretch);
         try {
             const Bytes blob = std::move(item.blob);
-            const Bytes plain = openItem(blob);
-            std::vector<nlohmann::json> bodies = decodedBody(plain);
+            const SecretBytes plain = openItem(blob);
+            std::vector<nlohmann::json> bodies = decodedBody(plain.bytes());
+            const JsonWipe wipedBodies(bodies);
             if (entry.deliveryClass == kContactDeliveryClass
                 && (bodies.size() != 1
                     || bodies.front().value("type", std::string()) != "contact.request")) {
@@ -6731,7 +6734,7 @@ void Session::exportAccount(
 
 AccountKind Session::bundleKind(const Bytes& sealed, const std::string& password)
 {
-    const SecretBytes bundle(accountkey::openBackup(sealed, password));
+    const SecretBytes bundle = accountkey::openBackup(sealed, password);
     return bundleKindOf(bundle.bytes());
 }
 
@@ -6744,7 +6747,7 @@ AccountKind Session::bundleKindOf(const Bytes& plain)
 void Session::importAccountBytes(const Bytes& sealed, const fs::path& accountFile,
     const std::string& password, const std::string& atRestPassphrase)
 {
-    const SecretBytes bundle(accountkey::openBackup(sealed, password));
+    const SecretBytes bundle = accountkey::openBackup(sealed, password);
     importAccountBundle(bundle.bytes(), accountFile, atRestPassphrase);
 }
 
