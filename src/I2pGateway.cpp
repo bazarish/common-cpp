@@ -42,8 +42,6 @@ constexpr std::chrono::milliseconds kQuietBeforeChurn{1000};
 constexpr char kDecoyCookie[] = "sid";
 constexpr std::chrono::milliseconds kFirstRetry{500};
 constexpr std::chrono::milliseconds kSlowestRetry{15000};
-constexpr std::chrono::milliseconds kFarewellWait{2000};
-constexpr std::chrono::milliseconds kFarewellPoll{20};
 
 bool answers(const FrameType type)
 {
@@ -307,6 +305,7 @@ private:
     std::deque<unsigned char> outbox_;
     bool finished_ = false;
     bool closed_ = false;
+    bool broken_ = false;
     bool endWhenDrained_ = false;
 };
 
@@ -579,6 +578,7 @@ void StreamState::reset()
         const std::lock_guard<std::mutex> lock(mutex_);
         finished_ = true;
         closed_ = true;
+        broken_ = true;
         outbox_.clear();
     }
     arrived_.notify_all();
@@ -621,6 +621,11 @@ void StreamState::writeAll(const ByteView data)
         outbox_.insert(outbox_.end(), data.begin(), data.end());
     }
     drain();
+    std::unique_lock<std::mutex> lock(mutex_);
+    arrived_.wait(lock, [this]() { return outbox_.empty() || broken_ || finished_; });
+    if (!outbox_.empty() || broken_) {
+        throw std::runtime_error("bazarish::i2p: the stream ended with bytes unsent");
+    }
 }
 
 std::vector<Bytes> StreamState::replayFrames(const std::uint64_t peerReceived)
@@ -672,6 +677,7 @@ void StreamState::drain()
     if (ending) {
         link_->forget(id_);
     }
+    arrived_.notify_all();
 }
 
 std::size_t StreamState::pendingBytes() const
@@ -1034,10 +1040,8 @@ void GatewayRouter::stop()
             const std::lock_guard<std::mutex> lock(link_->mutex);
             saying = link_->control;
         }
-        const auto until = std::chrono::steady_clock::now() + kFarewellWait;
-        while (saying && saying->pending() > 0
-            && std::chrono::steady_clock::now() < until) {
-            std::this_thread::sleep_for(kFarewellPoll);
+        if (saying) {
+            saying->closeWhenSent();
         }
     }
     http::SocketPtr socket;

@@ -232,6 +232,7 @@ public:
     void send(std::vector<unsigned char> message) override;
     std::size_t pending() const override;
     void close() override;
+    void closeWhenSent() override;
     bool open() const override;
 
     const http::SocketPtr& raw() const { return raw_; }

@@ -8,38 +8,15 @@
 #include <exception>
 #include <functional>
 #include <string>
-#include <thread>
 
 namespace bazarish::client {
 
 inline constexpr std::size_t kPacedChunkBytes = 64 * 1024;
-inline constexpr std::size_t kPacedQueueCap = 128 * 1024;
-inline constexpr std::chrono::milliseconds kPacedQueuePoll{100};
 inline constexpr std::size_t kDrainProbeBytes = 64;
 
 inline std::uint64_t onTheWire(const std::uint64_t written, const std::size_t queued)
 {
     return written > queued ? written - queued : 0;
-}
-
-// Waits while more than the cap is unsent; false when told to stop meanwhile.
-template <class Stream>
-bool waitForRoom(Stream& stream, const std::uint64_t written,
-    const std::function<bool()>& stopped, const std::function<void(std::uint64_t)>& progress)
-{
-    while (stream.pendingBytes() > kPacedQueueCap) {
-        if (stopped()) {
-            return false;
-        }
-        if (progress) {
-            progress(onTheWire(written, stream.pendingBytes()));
-        }
-        std::this_thread::sleep_for(kPacedQueuePoll);
-    }
-    if (progress) {
-        progress(onTheWire(written, stream.pendingBytes()));
-    }
-    return true;
 }
 
 enum class DrainOutcome { eClosed, eBroken, eTimedOut };

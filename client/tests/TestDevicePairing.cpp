@@ -29,12 +29,11 @@ namespace {
 
 class FakeStream {
 public:
-    FakeStream(const int fd, std::atomic<std::size_t>* const pending)
+    explicit FakeStream(const int fd)
         : fd_(fd)
-        , pending_(pending)
     {
     }
-    FakeStream(FakeStream&& other) noexcept : fd_(other.fd_), pending_(other.pending_)
+    FakeStream(FakeStream&& other) noexcept : fd_(other.fd_)
     {
         other.fd_ = -1;
     }
@@ -63,7 +62,7 @@ public:
         }
     }
 
-    std::size_t pendingBytes() const { return pending_ == nullptr ? 0 : pending_->load(); }
+    std::size_t pendingBytes() const { return 0; }
 
     void close()
     {
@@ -75,7 +74,6 @@ public:
 
 private:
     int fd_;
-    std::atomic<std::size_t>* pending_;
 };
 
 class FakeEndpoint {
@@ -119,20 +117,19 @@ std::vector<int> g_peerFds;
 
 // A bundle outgrows a socketpair's default buffer (8 KiB on the BSDs).
 constexpr int kPairedPipeBytes = 1024 * 1024;
+// Far below a paced chunk: a write waits for the reader, as one to a stalled stream does.
+constexpr int kStalledPipeBytes = 4 * 1024;
+constexpr std::size_t kStalledChunks = 4;
 
-int wireInto(FakeEndpoint& endpoint, std::atomic<std::size_t>* const pending = nullptr)
+int wireInto(FakeEndpoint& endpoint, const int bufferBytes = kPairedPipeBytes)
 {
     int fds[2] = {-1, -1};
     CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
     for (const int fd : fds) {
-        CHECK(::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &kPairedPipeBytes,
-                  sizeof(kPairedPipeBytes))
-            == 0);
-        CHECK(::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &kPairedPipeBytes,
-                  sizeof(kPairedPipeBytes))
-            == 0);
+        CHECK(::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufferBytes, sizeof(bufferBytes)) == 0);
+        CHECK(::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufferBytes, sizeof(bufferBytes)) == 0);
     }
-    endpoint.queue(std::make_unique<FakeStream>(fds[0], pending));
+    endpoint.queue(std::make_unique<FakeStream>(fds[0]));
     g_peerFds.push_back(fds[1]);
     return fds[1];
 }
@@ -346,9 +343,8 @@ int main()
 
     {
         std::atomic<bool> cancel{false};
-        std::atomic<std::size_t> pending{kPacedQueueCap + 1};
         FakeEndpoint endpoint(&cancel);
-        const int reader = wireInto(endpoint, &pending);
+        const int reader = wireInto(endpoint);
         const Bytes big = patternOf(2 * kPacedChunkBytes + 1);
 
         PairServeResult result;
@@ -360,11 +356,6 @@ int main()
         const std::string head = readHeadFrom(reader);
         CHECK(head.find("Content-Length: " + std::to_string(big.size())) != std::string::npos);
         std::string body = head.substr(head.find("\r\n\r\n") + 4);
-
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        CHECK(body.size() < big.size());
-
-        pending.store(0);
         CHECK(readBodyFrom(reader, big.size(), body) == big.size());
         CHECK(Bytes(body.begin(), body.end()) == big);
         ::shutdown(reader, SHUT_WR);
@@ -375,20 +366,21 @@ int main()
 
     {
         std::atomic<bool> cancel{false};
-        std::atomic<std::size_t> pending{kPacedQueueCap + 1};
         FakeEndpoint endpoint(&cancel);
-        const int reader = wireInto(endpoint, &pending);
+        const int reader = wireInto(endpoint, kStalledPipeBytes);
+        const Bytes big = patternOf(kStalledChunks * kPacedChunkBytes);
 
         PairServeResult result;
         std::thread serving([&]() {
-            result = servePairBundle(endpoint, fixed(patternOf(2 * kPacedChunkBytes)), code, kKey, nullptr,
-                nullptr, cancel);
+            result = servePairBundle(endpoint, fixed(big), code, kKey, nullptr, nullptr, cancel);
         });
 
         writeTo(reader, requestWith(code));
-        CHECK(!readHeadFrom(reader).empty());
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        const std::string head = readHeadFrom(reader);
+        CHECK(!head.empty());
         cancel.store(true);
+        std::string body = head.substr(head.find("\r\n\r\n") + 4);
+        CHECK(readBodyFrom(reader, big.size(), body) < big.size());
 
         serving.join();
         CHECK(!result.delivered);

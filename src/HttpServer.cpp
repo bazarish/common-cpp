@@ -238,6 +238,9 @@ public:
         bool overflowing = false;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            if (finishing_) {
+                return;
+            }
             overflowing = queued_ + message.size() > Server::kMaxSocketQueueBytes;
             if (!overflowing) {
                 queued_ += message.size();
@@ -276,6 +279,19 @@ public:
         });
     }
 
+    void closeWhenSent() override
+    {
+        bool idle = false;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            finishing_ = true;
+            idle = !writing_;
+        }
+        if (idle) {
+            close();
+        }
+    }
+
     bool open() const override { return open_.load(); }
 
     websocket::stream<beast::tcp_stream>& stream() { return stream_; }
@@ -296,13 +312,23 @@ private:
     {
         // A deque keeps its front in place while others are pushed behind it.
         asio::const_buffer front;
+        bool emptied = false;
+        bool finished = false;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (queue_.empty()) {
+            emptied = queue_.empty();
+            if (emptied) {
                 writing_ = false;
-                return;
+                finished = finishing_;
+            } else {
+                front = asio::buffer(queue_.front());
             }
-            front = asio::buffer(queue_.front());
+        }
+        if (emptied) {
+            if (finished) {
+                close();
+            }
+            return;
         }
         const std::shared_ptr<SocketImpl> self = shared_from_this();
         stream_.binary(true);
@@ -332,6 +358,7 @@ private:
     std::deque<std::vector<unsigned char>> queue_;
     std::size_t queued_ = 0;
     bool writing_ = false;
+    bool finishing_ = false;
     std::atomic<bool> open_{true};
 };
 

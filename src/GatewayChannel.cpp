@@ -639,6 +639,12 @@ void ChannelSocket::close()
     raw_->close();
 }
 
+void ChannelSocket::closeWhenSent()
+{
+    stopPacing();
+    raw_->closeWhenSent();
+}
+
 bool ChannelSocket::open() const
 {
     return raw_->open();

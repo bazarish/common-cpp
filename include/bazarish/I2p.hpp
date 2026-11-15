@@ -105,6 +105,7 @@ public:
     void setReadTimeout(std::chrono::seconds timeout);
     std::size_t readSome(ByteBuffer buffer);
     void readExact(ByteBuffer buffer);
+    // Returns once the stream has taken every byte into its flow control; throws if it never will.
     void writeAll(ByteView data);
     std::size_t pendingBytes() const;
     void close();

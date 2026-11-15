@@ -61,6 +61,7 @@ public:
 
     virtual void setReadTimeout(std::chrono::seconds timeout) = 0;
     virtual std::size_t readSome(ByteBuffer buffer) = 0;
+    // Returns once the stream has taken every byte into its flow control; throws if it never will.
     virtual void writeAll(ByteView data) = 0;
     virtual std::size_t pendingBytes() const = 0;
     virtual void close() = 0;

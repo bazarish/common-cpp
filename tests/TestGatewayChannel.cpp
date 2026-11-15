@@ -49,6 +49,7 @@ public:
     void send(std::vector<unsigned char> message) override { sent.push_back(std::move(message)); }
     std::size_t pending() const override { return 0; }
     void close() override {}
+    void closeWhenSent() override {}
     bool open() const override { return true; }
 
     std::vector<std::vector<unsigned char>> sent;

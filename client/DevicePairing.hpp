@@ -112,9 +112,7 @@ bool writePairBundle(Stream& stream, const Bytes& bundle, const PairProgressFn& 
             = static_cast<std::size_t>(std::min<std::uint64_t>(kPacedChunkBytes, total - sent));
         stream.writeAll(ByteView(bundle).subspan(static_cast<std::size_t>(sent), chunk));
         sent += chunk;
-        if (!waitForRoom(stream, sent, stopped, progress)) {
-            return false;
-        }
+        progress(onTheWire(sent, stream.pendingBytes()));
     }
     std::string brokenBecause;
     const DrainOutcome drained = drainUntilClosed(

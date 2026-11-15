@@ -105,6 +105,7 @@ public:
     }
     std::size_t pending() const override { return pending_.load(); }
     void close() override { open_.store(false); }
+    void closeWhenSent() override { close(); }
     bool open() const override { return open_.load(); }
 
     void backlog(const std::size_t bytes) { pending_.store(bytes); }

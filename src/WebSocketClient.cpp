@@ -244,7 +244,7 @@ public:
         {
             // Under the lock ended() takes: a write is never posted to a loop that has stopped.
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (!open_.load()) {
+            if (!open_.load() || finishing_) {
                 return;
             }
             queued_ += message.size();
@@ -277,14 +277,23 @@ public:
                     tcp::socket::shutdown_both, ignored);
             });
         }
-        // A socket's own callbacks may close other sockets: waiting there could wait in a circle.
-        if (tOnSocketThread) {
-            return;
+        awaitLoop();
+    }
+
+    void closeWhenSent() override
+    {
+        bool idle = false;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (open_.load() && !finishing_) {
+                finishing_ = true;
+                idle = !writing_;
+            }
         }
-        const std::lock_guard<std::mutex> lock(joinMutex_);
-        if (thread_.joinable()) {
-            thread_.join();
+        if (idle) {
+            asio::post(*loop_, [self = this->shared_from_this()]() { self->cutConnection(); });
         }
+        awaitLoop();
     }
 
     bool open() const override { return open_.load(); }
@@ -314,6 +323,24 @@ public:
     }
 
 private:
+    // A socket's own callbacks may close other sockets: waiting there could wait in a circle.
+    void awaitLoop()
+    {
+        if (tOnSocketThread) {
+            return;
+        }
+        const std::lock_guard<std::mutex> lock(joinMutex_);
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    void cutConnection()
+    {
+        boost::system::error_code ignored;
+        beast::get_lowest_layer(*stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
+    }
+
     void readNext()
     {
         stream_->async_read(buffer_,
@@ -365,13 +392,23 @@ private:
     {
         // A deque keeps its front in place while others are pushed behind it.
         asio::const_buffer next;
+        bool stopped = false;
+        bool finished = false;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (queue_.empty() || !open_.load()) {
+            stopped = queue_.empty() || !open_.load();
+            if (stopped) {
                 writing_ = false;
-                return;
+                finished = finishing_;
+            } else {
+                next = asio::buffer(queue_.front());
             }
-            next = asio::buffer(queue_.front());
+        }
+        if (stopped) {
+            if (finished) {
+                cutConnection();
+            }
+            return;
         }
         stream_->binary(true);
         stream_->async_write(next,
@@ -475,6 +512,7 @@ private:
     std::deque<std::vector<unsigned char>> queue_;
     std::size_t queued_ = 0;
     bool writing_ = false;
+    bool finishing_ = false;
     std::atomic<bool> open_{true};
     asio::steady_timer keepalive_;
     const std::function<std::chrono::milliseconds()> drawSilence_;

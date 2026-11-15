@@ -367,6 +367,25 @@ std::vector<Bytes> backend::embeddedSampleRouterInfos(const std::size_t count)
     return sample;
 }
 
+namespace {
+
+// Under the mutex: what i2pd has yet to take from a stream, and whether it never will.
+struct SendWake {
+    std::mutex mutex;
+    std::condition_variable taken;
+};
+struct Sending {
+    std::size_t unsent = 0;
+    bool failed = false;
+};
+
+bool takesWrites(const i2pd::stream::StreamStatus status)
+{
+    return status == i2pd::stream::eStreamStatusNew || status == i2pd::stream::eStreamStatusOpen;
+}
+
+}  // namespace
+
 class EmbeddedStream final : public backend::StreamBackend {
 public:
     ~EmbeddedStream() override { close(); }
@@ -379,11 +398,14 @@ public:
     void writeAll(ByteView data) override;
     std::size_t pendingBytes() const override;
     void close() override;
-    void tellRenewedLeaseSet();
+    void tellRenewedLeaseSet(const std::shared_ptr<i2pd::stream::Stream>& live);
 
-    std::shared_ptr<i2pd::stream::Stream> stream;
+    // Weak: a stream i2pd has ended is destroyed, and that cancels what it had yet to send.
+    std::weak_ptr<i2pd::stream::Stream> stream;
     std::shared_ptr<i2pd::client::ClientDestination> owner;
     std::shared_ptr<std::atomic<bool>> stopped;
+    std::shared_ptr<SendWake> wake;
+    const std::shared_ptr<Sending> sending = std::make_shared<Sending>();
     std::atomic<bool> closed{false};
     std::atomic<int> readTimeoutSeconds{0};
     struct Told {
@@ -394,9 +416,9 @@ public:
 };
 
 // i2pd sends a renewed lease set only with a message: a silent stream's far end loses the way back.
-void EmbeddedStream::tellRenewedLeaseSet()
+void EmbeddedStream::tellRenewedLeaseSet(const std::shared_ptr<i2pd::stream::Stream>& live)
 {
-    boost::asio::post(owner->GetService(), [owner = owner, stream = stream, told = told]() {
+    boost::asio::post(owner->GetService(), [owner = owner, stream = live, told = told]() {
         const std::shared_ptr<const i2pd::data::LocalLeaseSet> current = owner->GetLeaseSet();
         bool first = false;
         {
@@ -419,22 +441,24 @@ void EmbeddedStream::tellRenewedLeaseSet()
 
 std::size_t EmbeddedStream::readSome(const ByteBuffer buffer)
 {
-    if (!stream || closed || (stopped && *stopped) || buffer.empty()) { return 0; }
+    if (closed || (stopped && *stopped) || buffer.empty()) { return 0; }
     const std::chrono::seconds timeout{readTimeoutSeconds.load()};
     const auto started = std::chrono::steady_clock::now();
     while (!closed && !(stopped && *stopped))
     {
+        const std::shared_ptr<i2pd::stream::Stream> live = stream.lock();
+        if (!live) { return 0; }
         auto promise = std::make_shared<std::promise<std::size_t>>();
         auto future = promise->get_future();
-        stream->AsyncReceive(boost::asio::buffer(buffer.data(), buffer.size()),
+        live->AsyncReceive(boost::asio::buffer(buffer.data(), buffer.size()),
             [promise](const boost::system::error_code&, std::size_t received)
             {
                 promise->set_value(received);
             }, kReceivePollSeconds);
         const std::size_t received = future.get();
         if (received > 0) { return received; }
-        if (isClosedStatus(stream->GetStatus())) { return 0; }
-        tellRenewedLeaseSet();
+        if (isClosedStatus(live->GetStatus())) { return 0; }
+        tellRenewedLeaseSet(live);
         if (timeout.count() > 0 && std::chrono::steady_clock::now() - started >= timeout)
         {
             throw std::runtime_error("bazarish::i2p: nothing read within "
@@ -446,31 +470,61 @@ std::size_t EmbeddedStream::readSome(const ByteBuffer buffer)
 
 void EmbeddedStream::writeAll(const ByteView data)
 {
-    if (!stream) { throw std::runtime_error("bazarish::i2p: write on a closed stream"); }
-    std::size_t off = 0;
-    while (off < data.size())
+    if (data.empty()) { return; }
     {
-        const ByteView rest = data.subspan(off);
-        const std::size_t written = stream->Send(rest.data(), rest.size());
-        if (written == 0) { break; }
-        off += written;
+        const std::shared_ptr<i2pd::stream::Stream> live = stream.lock();
+        if (!live || closed || !takesWrites(live->GetStatus()))
+        {
+            throw std::runtime_error("bazarish::i2p: write on a closed stream");
+        }
+        {
+            const std::lock_guard<std::mutex> lock(wake->mutex);
+            if (sending->failed)
+            {
+                throw std::runtime_error("bazarish::i2p: the stream lost earlier bytes");
+            }
+            sending->unsent += data.size();
+        }
+        live->AsyncSend(data.data(), data.size(),
+            [wake = wake, sending = sending, size = data.size()](
+                const boost::system::error_code& error, std::size_t)
+            {
+                {
+                    const std::lock_guard<std::mutex> lock(wake->mutex);
+                    sending->unsent -= size;
+                    sending->failed = sending->failed || static_cast<bool>(error);
+                }
+                wake->taken.notify_all();
+            });
+    }
+    std::unique_lock<std::mutex> lock(wake->mutex);
+    wake->taken.wait(lock, [this]() { return sending->unsent == 0 || sending->failed || *stopped; });
+    if (sending->failed)
+    {
+        throw std::runtime_error("bazarish::i2p: the stream ended with bytes unsent");
+    }
+    if (sending->unsent > 0)
+    {
+        throw std::runtime_error("bazarish::i2p: the destination stopped with bytes unsent");
     }
 }
 
 std::size_t EmbeddedStream::pendingBytes() const
 {
-    if (!stream || closed) {
+    const std::shared_ptr<i2pd::stream::Stream> live = stream.lock();
+    if (!live || closed) {
         return 0;
     }
-    return stream->GetSendBufferSize()
-        + stream->GetSendQueueSize() * i2pd::stream::STREAMING_MTU;
+    return live->GetSendBufferSize()
+        + live->GetSendQueueSize() * i2pd::stream::STREAMING_MTU;
 }
 
 void EmbeddedStream::close()
 {
-    if (stream && !closed.exchange(true))
+    const std::shared_ptr<i2pd::stream::Stream> live = stream.lock();
+    if (!closed.exchange(true) && live)
     {
-        stream->AsyncClose();
+        live->AsyncClose();
     }
 }
 
@@ -620,6 +674,7 @@ public:
     void stop() override;
 
     std::shared_ptr<std::atomic<bool>> stopped = std::make_shared<std::atomic<bool>>(false);
+    const std::shared_ptr<SendWake> sendWake = std::make_shared<SendWake>();
 
     std::shared_ptr<IoService> io;
     std::shared_ptr<i2pd::client::ClientDestination> dest;
@@ -709,9 +764,10 @@ std::string EmbeddedEndpoint::routingHost() const { return hostAddress; }
 void EmbeddedEndpoint::stop()
 {
     {
-        const std::scoped_lock lock(acceptMutex, dgMutex, rawMutex);
+        const std::scoped_lock lock(acceptMutex, dgMutex, rawMutex, sendWake->mutex);
         stopped->store(true);
     }
+    sendWake->taken.notify_all();
     acceptCv.notify_all();
     dgCv.notify_all();
     rawCv.notify_all();
@@ -789,9 +845,10 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::connect(
             if (auto stream = future.get())
             {
                 auto wrapped = std::make_unique<EmbeddedStream>();
-                wrapped->stream = std::move(stream);
+                wrapped->stream = stream;
                 wrapped->owner = destination;
                 wrapped->stopped = stopped;
+                wrapped->wake = sendWake;
                 return wrapped;
             }
             if (*stopped) { break; }
@@ -818,9 +875,10 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::accept(
 
     if (stream->GetRemoteIdentity()) { peerBase64 = stream->GetRemoteIdentity()->ToBase64(); }
     auto wrapped = std::make_unique<EmbeddedStream>();
-    wrapped->stream = std::move(stream);
+    wrapped->stream = stream;
     wrapped->owner = dest;
     wrapped->stopped = stopped;
+    wrapped->wake = sendWake;
     return wrapped;
 }
 

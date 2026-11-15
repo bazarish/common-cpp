@@ -8,6 +8,7 @@
 #include <bazarish/WebSocket.hpp>
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -86,6 +87,59 @@ public:
         return hellosClosed_;
     }
 
+    // While held, nothing sent to the gateway is read.
+    void holdReading(const bool held)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            readingHeld_ = held;
+        }
+        readingMoved_.notify_all();
+    }
+
+    void answerStreams()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        answeringStreams_ = true;
+    }
+
+    void resetStreams()
+    {
+        std::vector<std::pair<std::shared_ptr<http::Socket>, std::uint32_t>> opened;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            opened.swap(streams_);
+        }
+        for (const auto& [socket, stream] : opened) {
+            socket->send(gateway::encode(gateway::FrameType::eStreamReset, stream));
+        }
+    }
+
+    std::size_t framesOf(const gateway::FrameType type)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        std::size_t count = 0;
+        for (const Bytes& frame : received_) {
+            if (gateway::decode(frame).type == type) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    std::size_t streamBytes()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        std::size_t total = 0;
+        for (const Bytes& frame : received_) {
+            const gateway::Frame decoded = gateway::decode(frame);
+            if (decoded.type == gateway::FrameType::eStreamData) {
+                total += decoded.body.size();
+            }
+        }
+        return total;
+    }
+
     void askRenewals()
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -102,6 +156,10 @@ public:
             raw->send(std::vector<unsigned char>(card.begin(), card.end()));
         };
         routes.message = [this](const http::SocketPtr& raw, const std::vector<unsigned char>& in) {
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                readingMoved_.wait(lock, [this]() { return !readingHeld_; });
+            }
             arrived(raw, Bytes(in.begin(), in.end()));
         };
         routes.closed = [this](const http::SocketPtr& raw) {
@@ -190,6 +248,17 @@ private:
                     {"streams", nlohmann::json::array()}}));
             return;
         }
+        if (frame.type == FrameType::eStreamOpen) {
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (!answeringStreams_) {
+                    return;
+                }
+                streams_.emplace_back(socket, frame.ref);
+            }
+            socket->send(gateway::encode(FrameType::eStreamOpened, frame.ref));
+            return;
+        }
         if (frame.type == FrameType::eLeaseSetRefresh) {
             i2p::LeaseSetRefresh answer;
             {
@@ -226,6 +295,10 @@ private:
     i2p::LeaseSetRefresh lookupAnswer_;
     std::vector<nlohmann::json> lookups_;
     bool closeOnHello_ = false;
+    bool readingHeld_ = false;
+    bool answeringStreams_ = false;
+    std::condition_variable readingMoved_;
+    std::vector<std::pair<std::shared_ptr<http::Socket>, std::uint32_t>> streams_;
     std::vector<std::chrono::steady_clock::time_point> hellosClosed_;
 };
 

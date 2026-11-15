@@ -20,6 +20,8 @@ public:
     virtual void send(std::vector<unsigned char> message) = 0;
     virtual std::size_t pending() const = 0;
     virtual void close() = 0;
+    // Closes once every message sent before it is written.
+    virtual void closeWhenSent() = 0;
     virtual bool open() const = 0;
 };
 

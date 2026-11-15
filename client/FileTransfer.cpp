@@ -353,7 +353,6 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
 {
     const std::uint64_t total = fs::file_size(ciphertextPath);
     const auto deadline = std::chrono::steady_clock::now() + window;
-    const std::function<bool()> stopped = [&stop]() { return stop.requested(); };
     const std::function<void(std::uint64_t)> progress
         = [&onProgress, total](const std::uint64_t done) {
               if (onProgress) {
@@ -402,9 +401,7 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
                 }
                 stream->writeAll(ByteView(buffer).first(static_cast<std::size_t>(got)));
                 sent += static_cast<std::uint64_t>(got);
-                if (!waitForRoom(*stream, sent, stopped, progress)) {
-                    return false;
-                }
+                progress(onTheWire(sent, stream->pendingBytes()));
             }
             if (sent >= total) {
                 std::string brokenBecause;
