@@ -79,7 +79,7 @@ void respondJson(http::Response& response, const nlohmann::json& body)
 
 int main()
 {
-    bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
+    bazarish::setSelfHostedFacadeOnLoopback(true);
     const std::int64_t now = nowSeconds();
 
     const Identity serverIdentity = Identity::generate();

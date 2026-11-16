@@ -16,13 +16,8 @@ namespace bazarish {
 
 namespace {
 std::atomic<bool> g_selfHostedFacadeOnLoopback{false};
-std::atomic<bool> g_allowFacadeWithoutI2p{false};
 }  // namespace
 
-void setAllowFacadeWithoutI2pForDevPurposes(const bool allow)
-{
-    g_allowFacadeWithoutI2p.store(allow);
-}
 void setSelfHostedFacadeOnLoopback(const bool own)
 {
     g_selfHostedFacadeOnLoopback.store(own);
@@ -31,11 +26,6 @@ void setSelfHostedFacadeOnLoopback(const bool own)
 bool selfHostedFacadeOnLoopback()
 {
     return g_selfHostedFacadeOnLoopback.load();
-}
-
-bool allowFacadeWithoutI2pForDevPurposes()
-{
-    return g_allowFacadeWithoutI2p.load();
 }
 
 bool isI2pUrl(const std::string& url)
@@ -94,7 +84,7 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
                     throw std::invalid_argument(
                         "a facade is an address, with no scheme and no path");
                 }
-                if (!isI2pFacadeAddress(value) && !allowFacadeWithoutI2pForDevPurposes()) {
+                if (!isI2pFacadeAddress(value)) {
                     throw std::invalid_argument(
                         "a facade must be an I2P address: the client talks to its server over"
                         " nothing else (" + value + ")");
@@ -106,7 +96,7 @@ ServerDescriptor parseServerDescriptor(const std::string& uri)
                 if (!i2p::isReseedUrl(value)) {
                     throw std::invalid_argument("a reseed is an https URL (" + value + ")");
                 }
-                if (isI2pUrl(value) && !allowFacadeWithoutI2pForDevPurposes()) {
+                if (isI2pUrl(value)) {
                     throw std::invalid_argument(
                         "a reseed must not be an I2P address: it is what a client without a"
                         " router asks first (" + value + ")");

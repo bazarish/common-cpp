@@ -50,18 +50,19 @@ void testServerLink()
 {
     ServerLink link;
     link.serverFingerprint = "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq";
-    link.facades = {kI2pHost, "127.0.0.1:18482"};
+    link.facades = {kI2pHost};
     const std::string uri = bazarish::encodeServerDescriptor(
         {link.serverFingerprint, link.facades, link.reseedUrls});
     CHECK(uri.starts_with("https://bazari.sh/#server?v=1&"));
     CHECK(uri.find("fp=" + link.serverFingerprint) != std::string::npos);
     CHECK(uri.find("facade=" + kI2pHost) != std::string::npos);
-    CHECK(uri.find("facade=127.0.0.1:18482") != std::string::npos);
 
     const ServerLink back = decodeServerLink(uri);
     CHECK(back.serverFingerprint == link.serverFingerprint);
     CHECK(back.facades == link.facades);
 
+    CHECK_THROWS(decodeServerLink(bazarish::encodeServerDescriptor(
+        {link.serverFingerprint, {kI2pHost, "127.0.0.1:18482"}, link.reseedUrls})));
     CHECK_THROWS(decodeServerLink("bazarish://invite/abc"));
 }
 
@@ -71,29 +72,19 @@ void testI2pOnly()
     const bazarish::DeviceCredential& id = account.device;
     const std::vector<Facade> facades
         = {parseFacadeAddress("clear.example:8443"), parseFacadeAddress(kI2pHost)};
-    {
-        bazarish::setAllowFacadeWithoutI2pForDevPurposes(false);
-        ApiClient api(id, ServerEndpoint{"srvfp", facades, {}}, "/tmp/bazarish-test/i2p");
-        CHECK(api.activeFacadeAddress() == kI2pHost);
-    }
-    {
-        bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
-        ApiClient api(id, ServerEndpoint{"srvfp", facades, {}}, "/tmp/bazarish-test/i2p");
-        CHECK(api.activeFacadeAddress() == "clear.example:8443");
-    }
+    const ApiClient api(id, ServerEndpoint{"srvfp", facades, {}}, "/tmp/bazarish-test/i2p");
+    CHECK(api.activeFacadeAddress() == kI2pHost);
 }
 
 }  // namespace
 
 int main()
 {
-    bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
     testParse();
     testFormatRoundTrip();
     testInvalid();
     testServerLink();
     testI2pOnly();
-    bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
     std::fprintf(stderr, "TestFacade passed\n");
     return 0;
 }

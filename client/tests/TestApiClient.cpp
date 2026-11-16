@@ -48,7 +48,7 @@ static_assert(std::is_same_v<decltype(&ApiClient::postSecret),
 
 int main()
 {
-    bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
+    bazarish::setSelfHostedFacadeOnLoopback(true);
     const devicetest::Account aliceAccount;
     const DeviceCredential& alice = aliceAccount.device;
     const Identity serverIdentity = Identity::generate();

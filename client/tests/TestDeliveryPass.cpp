@@ -339,7 +339,7 @@ void addByInvite(Session& session, const std::string& invite, const std::string&
 
 int main()
 {
-    bazarish::setAllowFacadeWithoutI2pForDevPurposes(true);
+    bazarish::setSelfHostedFacadeOnLoopback(true);
     http::Server gatewayServer(http::Server::Options{});
     test::FakeGateway gateway;
     const int gatewayPort = gateway.start(gatewayServer);

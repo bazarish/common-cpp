@@ -171,12 +171,10 @@ bool ApiClient::facadeIsOwnLoopback(const Facade& facade)
 
 std::vector<std::size_t> ApiClient::facadeOrder() const
 {
-    const bool anything = bazarish::allowFacadeWithoutI2pForDevPurposes();
     std::vector<std::size_t> order;
     order.reserve(endpoint_.facades.size());
     for (std::size_t i = 0; i < endpoint_.facades.size(); ++i) {
-        if (anything || facadeIsI2p(endpoint_.facades[i])
-            || facadeIsOwnLoopback(endpoint_.facades[i])) {
+        if (facadeIsI2p(endpoint_.facades[i]) || facadeIsOwnLoopback(endpoint_.facades[i])) {
             order.push_back(i);
         }
     }
@@ -659,7 +657,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
         i2pHeaders["Content-Type"] = contentType;
     }
 
-    const auto clearnetAttempt = [&](const Facade& facade) -> bazarish::http::ClientResponse {
+    const auto loopbackAttempt = [&](const Facade& facade) -> bazarish::http::ClientResponse {
         bazarish::http::ClientRequest out;
         out.method = method;
         out.target = path;
@@ -714,11 +712,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
             return *response;
         }
 
-        if (!bazarish::allowFacadeWithoutI2pForDevPurposes() && !facadeIsOwnLoopback(facade)) {
-            lastError = "this client speaks to its server over I2P only: " + shortHost(facade.host);
-            continue;
-        }
-        const bazarish::http::ClientResponse result = clearnetAttempt(facade);
+        const bazarish::http::ClientResponse result = loopbackAttempt(facade);
         LinkAttempt attempt;
         attempt.reached = LinkStage::eExchange;
         attempt.status = result.status;
