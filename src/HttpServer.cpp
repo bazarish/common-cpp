@@ -33,8 +33,11 @@
 #include <string_view>
 #include <atomic>
 #include <cctype>
+#include <condition_variable>
 #include <deque>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 namespace bazarish::http {
@@ -504,6 +507,50 @@ std::string Request::param(const std::string& key) const
     return valueFrom(body, key);
 }
 
+namespace {
+
+// The answers a stop lets finish writing: those that exist when it begins.
+struct Drain {
+    std::mutex mutex;
+    std::condition_variable idle;
+    std::size_t answering = 0;
+    bool closed = false;
+};
+
+class Answering {
+public:
+    explicit Answering(std::shared_ptr<Drain> drain)
+        : drain_(std::move(drain))
+    {
+        const std::lock_guard<std::mutex> lock(drain_->mutex);
+        held_ = !drain_->closed;
+        if (held_) {
+            ++drain_->answering;
+        }
+    }
+
+    ~Answering()
+    {
+        if (!held_) {
+            return;
+        }
+        {
+            const std::lock_guard<std::mutex> lock(drain_->mutex);
+            --drain_->answering;
+        }
+        drain_->idle.notify_all();
+    }
+
+    Answering(const Answering&) = delete;
+    Answering& operator=(const Answering&) = delete;
+
+private:
+    const std::shared_ptr<Drain> drain_;
+    bool held_ = false;
+};
+
+}  // namespace
+
 struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Options options;
     asio::io_context io;
@@ -515,6 +562,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::vector<Route> routes;
     std::vector<SocketRoute> socketRoutes;
     std::atomic<bool> stopping{false};
+    const std::shared_ptr<Drain> drain = std::make_shared<Drain>();
 
     explicit Impl(Options o)
         : options(std::move(o))
@@ -688,9 +736,15 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                         = std::make_shared<std::atomic<bool>>(false);
                     const std::weak_ptr<Impl> alive = weak_from_this();
                     const std::weak_ptr<asio::steady_timer> waiting = parked;
+                    const std::shared_ptr<std::optional<Answering>> lateTicket
+                        = std::make_shared<std::optional<Answering>>();
                     // Weak: an answer that comes after the server is gone has nobody to go to.
                     // No executor kept: a strand outliving its io_context frees into a dead service.
-                    Responder respond = [waiting, answer, answered, alive](Response response) {
+                    Responder respond = [waiting, answer, answered, alive, lateTicket,
+                                            drain = drain](Response response) {
+                        if (!answered->load()) {
+                            lateTicket->emplace(drain);
+                        }
                         *answer = std::move(response);
                         answered->store(true);
                         const std::shared_ptr<Impl> server = alive.lock();
@@ -700,6 +754,8 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                                 [timer]() { timer->expires_at(std::chrono::steady_clock::now()); });
                         }
                     };
+                    std::optional<Answering> ticket;
+                    ticket.emplace(drain);
                     std::optional<Response> immediate;
                     try {
                         immediate = handler(request, respond);
@@ -708,6 +764,7 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                         immediate = errorResponse(500, ErrorCode::eRequestFailed, "internal error");
                     }
                     if (!immediate.has_value()) {
+                        ticket.reset();
                         while (!answered->load()) {
                             boost::system::error_code ignored;
                             co_await parked->async_wait(
@@ -731,6 +788,7 @@ asio::awaitable<void> Server::Impl::serveOn(Stream stream)
                     beast::get_lowest_layer(stream).expires_after(options.readTimeout);
                     co_await http::async_write(
                         stream, out, asio::redirect_error(asio::use_awaitable, writeError));
+                    lateTicket->reset();
                     if (writeError || !parsed.keep_alive()) {
                         break;
                     }
@@ -960,6 +1018,11 @@ void Server::stop()
         return;
     }
     impl_->stopping.store(true);
+    {
+        std::unique_lock<std::mutex> lock(impl_->drain->mutex);
+        impl_->drain->closed = true;
+        impl_->drain->idle.wait(lock, [this]() { return impl_->drain->answering == 0; });
+    }
     impl_->io.stop();
     for (std::thread& worker : impl_->workers) {
         if (worker.joinable()) {
