@@ -196,7 +196,14 @@ Resolved addressesOf(const std::vector<Outcome>& outcomes)
 
 std::string httpsQueryName(const std::string& host, const int port)
 {
-    return port == kHttpsPort ? host : "_" + std::to_string(port) + "._https." + host;
+    if (port == kHttpsPort) {
+        return host;
+    }
+    std::string name("_");
+    name += std::to_string(port);
+    name += "._https.";
+    name += host;
+    return name;
 }
 
 std::chrono::milliseconds httpsExtraWait(const std::chrono::milliseconds addressesTook)

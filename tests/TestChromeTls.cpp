@@ -198,7 +198,10 @@ std::string joined(const Values& values, const char* const separator, Format for
 {
     std::string out;
     for (const auto& value : values) {
-        out += (out.empty() ? "" : separator) + format(value);
+        if (!out.empty()) {
+            out += separator;
+        }
+        out += format(value);
     }
     return out;
 }
