@@ -256,6 +256,8 @@ public:
     std::atomic<std::int64_t> aloneSince{0};
     std::atomic<bool> unreachable{false};
     std::atomic<std::uint64_t> unreachableOnNetwork{0};
+    // Something that can let an orphaned flow attach happened: a socket freed, tickets, a new control.
+    std::atomic<bool> reattachDue{false};
 
     std::string describe() const
     {
@@ -486,7 +488,8 @@ public:
     void retagEndpoint(
         const EndpointBackend& endpoint, std::string label, std::string accountLabel) override;
 
-    bool attach(std::uint32_t flow);
+    enum class Attach { eAttached, eWaits, eRefused };
+    Attach attach(std::uint32_t flow);
     void reattachOrphans();
 
 private:
@@ -496,8 +499,9 @@ private:
     std::vector<std::shared_ptr<GatewayEndpoint>> endpointsHeld() const;
     http::SocketDial dialFor() const;
     http::SocketDial dialLocked() const;
+    enum class Channel { eControl, eFlow };
     gateway::ChannelOpened openChannelSocket(
-        gateway::ChannelMessageFn onMessage, gateway::ChannelClosedFn onClosed);
+        Channel channel, gateway::ChannelMessageFn onMessage, gateway::ChannelClosedFn onClosed);
     void openControl();
     void closeControl();
     void dropSockets();
@@ -917,7 +921,7 @@ http::SocketDial GatewayRouter::dialLocked() const
     return dial;
 }
 
-gateway::ChannelOpened GatewayRouter::openChannelSocket(
+gateway::ChannelOpened GatewayRouter::openChannelSocket(const Channel channel,
     gateway::ChannelMessageFn onMessage, gateway::ChannelClosedFn onClosed)
 {
     std::optional<gateway::ChannelJoin> join;
@@ -927,6 +931,11 @@ gateway::ChannelOpened GatewayRouter::openChannelSocket(
             join = gateway::ChannelJoin{link_->sessionKey, link_->tickets.front()};
             link_->tickets.pop_front();
         }
+    }
+    if (channel == Channel::eFlow && !join.has_value()) {
+        gateway::ChannelOpened none;
+        none.error = "no ticket to join the session with";
+        return none;
     }
     http::SocketDial dial;
     std::string fingerprint;
@@ -951,6 +960,9 @@ gateway::ChannelOpened GatewayRouter::openChannelSocket(
         }
     }
     const std::lock_guard<std::mutex> lock(link_->mutex);
+    if (opened.welcome.has_value() && channel == Channel::eFlow) {
+        return opened;
+    }
     if (opened.welcome.has_value()) {
         link_->sessionKey = opened.welcome->sessionKey;
         link_->tickets.assign(opened.welcome->tickets.begin(), opened.welcome->tickets.end());
@@ -1077,7 +1089,7 @@ bool GatewayRouter::ready() const
 void GatewayRouter::openControl()
 {
     const std::shared_ptr<Pending> pending = std::make_shared<Pending>();
-    const gateway::ChannelOpened opened = openChannelSocket(
+    const gateway::ChannelOpened opened = openChannelSocket(Channel::eControl,
         [this](const http::SocketPtr& socket, const std::vector<unsigned char>& message) {
             arrived(socket, message);
         },
@@ -1242,6 +1254,7 @@ void GatewayRouter::openControl()
         link_->holding = false;
         link_->lastUse.store(millisNow());
     }
+    link_->reattachDue.store(true);
     bazarish::log::info("i2p: a gateway running i2pd {}, {}",
         body.value("i2pd", std::string("?")), resumed ? "session rejoined" : "new session");
 }
@@ -1422,7 +1435,9 @@ void GatewayRouter::coverLoop()
             break;
         }
         const auto now = std::chrono::steady_clock::now();
-        reattachOrphans();
+        if (link_->reattachDue.exchange(false)) {
+            reattachOrphans();
+        }
         if (const std::uint64_t moved = networkChanges(); moved != networkSeen) {
             networkSeen = moved;
             bazarish::log::info("i2p: the device moved network: the gateway's sockets open anew");
@@ -1437,6 +1452,7 @@ void GatewayRouter::coverLoop()
             carrySeen = carry;
             openAt = now;
             backoff = kFirstRetry;
+            link_->reattachDue.store(true);
         }
         const bool exchange = exchanging();
         traffic_->exchanging.store(exchange);
@@ -1528,17 +1544,16 @@ http::SocketPtr Link::socketFor(const std::uint32_t flow) const
     return found == flows.end() ? nullptr : found->second;
 }
 
-bool GatewayRouter::attach(const std::uint32_t flow)
+GatewayRouter::Attach GatewayRouter::attach(const std::uint32_t flow)
 {
-    if (flow == 0) {
-        return false;
-    }
     bool media = false;
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
-        if (link_->flows.count(flow) > 0
-            || link_->flows.size() + kControlSocketsKept >= gateway::kMaxSocketsPerSession) {
-            return false;
+        if (link_->flows.count(flow) > 0) {
+            return Attach::eAttached;
+        }
+        if (link_->flows.size() + kControlSocketsKept >= gateway::kMaxSocketsPerSession) {
+            return Attach::eWaits;
         }
         const auto endpoint = link_->endpoints.find(flow);
         if (endpoint != link_->endpoints.end()) {
@@ -1547,24 +1562,26 @@ bool GatewayRouter::attach(const std::uint32_t flow)
             }
         }
     }
-    const gateway::ChannelOpened opened = openChannelSocket(
+    const gateway::ChannelOpened opened = openChannelSocket(Channel::eFlow,
         [this](const http::SocketPtr& socket, const std::vector<unsigned char>& message) {
             arrived(socket, message);
         },
         [link = link_, flow](const http::SocketPtr&) {
-            const std::lock_guard<std::mutex> lock(link->mutex);
-            link->flows.erase(flow);
-            link->orphaned.insert(flow);
+            {
+                const std::lock_guard<std::mutex> lock(link->mutex);
+                link->flows.erase(flow);
+                link->orphaned.insert(flow);
+            }
+            link->reattachDue.store(true);
         });
     if (opened.socket == nullptr) {
         bazarish::log::debug("i2p: no socket of its own for flow {}: {}", flow, opened.error);
-        return false;
+        return Attach::eWaits;
     }
     if (opened.welcome.has_value()) {
-        bazarish::log::warn("i2p: the gateway's session was gone when flow {} asked for a socket",
-            flow);
+        bazarish::log::warn("i2p: the gateway's session would not take flow {}", flow);
         opened.socket->close();
-        return false;
+        return Attach::eRefused;
     }
     if (media) {
         opened.socket->carryMedia();
@@ -1574,7 +1591,7 @@ bool GatewayRouter::attach(const std::uint32_t flow)
         link_->flows[flow] = opened.socket;
     }
     opened.socket->send(gateway::encodeJson(FrameType::eAttach, flow, nlohmann::json::object()));
-    return true;
+    return Attach::eAttached;
 }
 
 void GatewayRouter::reattachOrphans()
@@ -1593,9 +1610,21 @@ void GatewayRouter::reattachOrphans()
         }
     }
     for (const std::uint32_t flow : again) {
-        if (attach(flow)) {
+        const Attach attached = attach(flow);
+        if (attached == Attach::eWaits) {
+            continue;
+        }
+        std::shared_ptr<GatewayEndpoint> refused;
+        {
             const std::lock_guard<std::mutex> lock(link_->mutex);
             link_->orphaned.erase(flow);
+            const auto endpoint = link_->endpoints.find(flow);
+            if (attached == Attach::eRefused && endpoint != link_->endpoints.end()) {
+                refused = endpoint->second.lock();
+            }
+        }
+        if (refused) {
+            refused->lost();
         }
     }
 }
@@ -1794,9 +1823,12 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         link_->creating.erase(early);
     }
     if (raw || config.bulk) {
-        if (!attach(id)) {
+        const Attach attached = attach(id);
+        if (attached == Attach::eWaits) {
             const std::lock_guard<std::mutex> lock(link_->mutex);
             link_->orphaned.insert(id);
+        } else if (attached == Attach::eRefused) {
+            endpoint->lost();
         }
     }
     return endpoint;
@@ -1920,6 +1952,7 @@ void GatewayRouter::dispatch(const Frame& frame)
             for (const nlohmann::json& ticket : body.at("tickets")) {
                 link_->tickets.push_back(fromBase64(ticket.get<std::string>()));
             }
+            link_->reattachDue.store(true);
             return;
         }
         case FrameType::eEndpointStatus: {
