@@ -315,6 +315,7 @@ endif()
     bazarish_client_add_test(TestFederationFetch)
     bazarish_client_add_test(TestLongRestore)
     bazarish_client_add_test(TestWireLog)
+    bazarish_client_add_test(TestSessionSchedule)
 endif()
 
 add_library(bazarish_test_util INTERFACE)

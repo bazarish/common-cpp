@@ -17,12 +17,28 @@ void WireLog::record(WireEvent event)
     while (events_.size() > kWireLogCapacity) {
         events_.pop_front();
     }
+    if (listener_) {
+        listener_(events_.back());
+    }
 }
 
 std::vector<WireEvent> WireLog::snapshot() const
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     return std::vector<WireEvent>(events_.begin(), events_.end());
+}
+
+std::vector<WireEvent> WireLog::watch(Listener listener)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    listener_ = std::move(listener);
+    return std::vector<WireEvent>(events_.begin(), events_.end());
+}
+
+void WireLog::unwatch()
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    listener_ = nullptr;
 }
 
 void WireLog::clear()

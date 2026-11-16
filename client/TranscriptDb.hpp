@@ -139,6 +139,8 @@ public:
     std::string botMenu(const std::string& peer) const;
     // Oldest first.
     std::vector<std::pair<std::string, std::int64_t>> expiredBy(std::int64_t nowMs) const;
+    // Milliseconds; none while no message waits to expire.
+    std::optional<std::int64_t> nextExpiryAt() const;
     LastMessage lastMessage(const std::string& peer) const;
     std::int64_t lastTime(const std::string& peer) const;
     // 0 when this side wrote nothing in the chat.

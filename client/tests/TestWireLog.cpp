@@ -61,12 +61,36 @@ void testConcurrentRecordAndSnapshot()
     CHECK(log.snapshot().size() <= kWireLogCapacity);
 }
 
+void testListenerHearsEachEntry()
+{
+    WireLog log;
+    log.record(lineFor(0));
+    std::vector<WireEvent> heard;
+    const std::vector<WireEvent> held
+        = log.watch([&heard](const WireEvent& event) { heard.push_back(event); });
+    CHECK(held.size() == 1);
+    CHECK(held.front().what == "line 0");
+    CHECK(heard.empty());
+
+    log.record(lineFor(1));
+    log.record(lineFor(2));
+    CHECK(heard.size() == 2);
+    CHECK(heard.front().what == "line 1");
+    CHECK(heard.back().what == "line 2");
+    CHECK(heard.back().atMillis > 0);
+
+    log.unwatch();
+    log.record(lineFor(3));
+    CHECK(heard.size() == 2);
+}
+
 }  // namespace
 
 int main()
 {
     testRingKeepsTheNewest();
     testConcurrentRecordAndSnapshot();
+    testListenerHearsEachEntry();
     std::printf("TestWireLog: all checks passed\n");
     return 0;
 }

@@ -746,8 +746,10 @@ void Session::connectServer(const ServerEndpoint& endpoint)
         requireFingerprint(endpoint.serverFingerprint);
     }
     if (endpoint != client_->endpoint()) {
+        std::shared_ptr<WireLog> log = client_->wireLogHandle();
         client_ = std::make_unique<Client>(
             client_->credential().copy(), endpoint, i2pDirFor(accountPath_));
+        client_->shareWireLog(std::move(log));
         client_->setAccountLabel(accountLabel());
         stopCourier();
     }
@@ -2362,6 +2364,16 @@ void Session::setDeviceSync(const bool enabled)
 std::vector<WireEvent> Session::connectionLog() const
 {
     return client_->wireLog().snapshot();
+}
+
+std::vector<WireEvent> Session::watchConnectionLog(WireLog::Listener listener)
+{
+    return client_->wireLog().watch(std::move(listener));
+}
+
+void Session::unwatchConnectionLog()
+{
+    client_->wireLog().unwatch();
 }
 
 void Session::clearConnectionLog()
@@ -4040,7 +4052,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
     const bazarish::i2p::Privacy privacy = tunnelPrivacy();
     startTransferWorker([registry, routerDir, reseeds, privacy, accountLabel = accountLabel(),
                             peerFingerprint, fileId, serveId, forAsk, source, files, ciphertextPath,
-                            stop]() {
+                            stop, news = courierNews_]() {
         const auto emit = [&registry, &fileId, &peerFingerprint](const TransferState state,
                               const std::uint64_t bytes, const std::uint64_t total,
                               const std::string& error, const TransferStage stage) {
@@ -4084,6 +4096,7 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                 registry->outbox.push_back(
                     TransferMail{peerFingerprint, fileId, offer, forAsk, serveId, stop});
             }
+            (*news)();
             emit(TransferState::eRequested, 0, 0, {}, TransferStage::eWaiting);
 
             const bool served
@@ -4105,9 +4118,12 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             }
             emit(TransferState::eFailed, 0, 0, error.what(), TransferStage::eNone);
             dropServe(*registry, serveId, stop);
-            const std::lock_guard<std::mutex> lock(registry->mutex);
-            registry->outbox.push_back(
-                TransferMail{peerFingerprint, fileId, std::nullopt, forAsk, serveId, stop});
+            {
+                const std::lock_guard<std::mutex> lock(registry->mutex);
+                registry->outbox.push_back(
+                    TransferMail{peerFingerprint, fileId, std::nullopt, forAsk, serveId, stop});
+            }
+            (*news)();
         }
         std::error_code ec;
         fs::remove(ciphertextPath, ec);
@@ -5362,6 +5378,95 @@ void Session::flushPendingEchoes()
     takeNewerLeaseSets();
     keepEpochs();
     keepPresenceSchedules();
+}
+
+std::optional<std::chrono::milliseconds> Session::untilNextDue() const
+{
+    std::optional<std::chrono::milliseconds> soonest;
+    const auto dueIn = [&soonest](const std::chrono::milliseconds in) {
+        const std::chrono::milliseconds wait = std::max(in, std::chrono::milliseconds::zero());
+        if (!soonest.has_value() || wait < *soonest) {
+            soonest = wait;
+        }
+    };
+    const auto dueAt = [&dueIn](const std::int64_t atSecond, const std::int64_t nowSecond) {
+        dueIn(std::chrono::seconds(atSecond - nowSecond));
+    };
+    const auto dueNow = [&dueIn]() { dueIn(std::chrono::milliseconds::zero()); };
+
+    {
+        const std::lock_guard<std::mutex> lock(outbound_->mutex);
+        if (!switchedOff_ && !outbox_.empty() && !outbound_->courier) {
+            dueNow();
+        }
+    }
+    {
+        const std::lock_guard<std::mutex> lock(settledQueue_->mutex);
+        if (!settledQueue_->settled.empty()) {
+            dueNow();
+        }
+    }
+    {
+        const std::lock_guard<std::mutex> lock(newerLeaseSets_->mutex);
+        if (!newerLeaseSets_->dests.empty()) {
+            dueNow();
+        }
+    }
+    {
+        const std::lock_guard<std::mutex> lock(transfers_->mutex);
+        if (!transfers_->outbox.empty()) {
+            dueNow();
+        }
+        const std::int64_t nowMs = nowMillis();
+        for (const auto& [fileId, request] : transfers_->pending) {
+            if (!request.fetching) {
+                dueIn(std::chrono::milliseconds(request.answerByMs + 1 - nowMs));
+            }
+        }
+    }
+
+    const std::int64_t epochUtc = epochClock_();
+    if (const std::optional<EpochNumber> oldest = ring_->first(); oldest.has_value()) {
+        dueAt(epochEnd(*oldest) + kEpochKeptAfterEndSeconds, epochUtc);
+    }
+    if (!switchedOff_) {
+        const PresenceDay today = presenceDayOf(epochUtc);
+        if (epochsCheckedDay_ != today) {
+            dueNow();
+        }
+        dueAt(presenceDayStart(today + 1), epochUtc);
+        for (const auto& [peerFingerprint, at] : epochsDue_) {
+            dueAt(at, epochUtc);
+        }
+        if (createsEpochs()) {
+            for (const auto& [n, at] : epochsMakeAt_) {
+                dueAt(at, epochUtc);
+            }
+            const EpochNumber current = epochAt(epochUtc);
+            if (!ring_->holds(current) && !epochsMakeAt_.contains(current)) {
+                dueNow();
+            }
+            const EpochNumber last = std::max(current, ring_->last().value_or(current));
+            if (!lessThanAnEpochAhead(last, epochUtc)) {
+                dueAt(epochStart(last) + 1, epochUtc);
+            } else if (!epochsMakeAt_.contains(last + 1)) {
+                dueNow();
+            }
+        }
+    }
+
+    if (kind_ == AccountKind::eUser && !switchedOff_) {
+        const std::int64_t presenceUtc = presenceClock_();
+        const PresenceDay today = presenceDayOf(presenceUtc);
+        if (presenceCheckedDay_ != today) {
+            dueNow();
+        }
+        dueAt(presenceDayStart(today + 1), presenceUtc);
+        for (const auto& [peerFingerprint, at] : presenceDue_) {
+            dueAt(at, presenceUtc);
+        }
+    }
+    return soonest;
 }
 
 void Session::settleDeliveries()
@@ -6965,10 +7070,16 @@ bool Session::aliasUpdatePending() const
 
 bool Session::aliasServicingDue() const
 {
+    const std::optional<std::int64_t> dueAt = aliasServiceDueAt();
+    return dueAt.has_value() && nowSeconds() >= *dueAt;
+}
+
+std::optional<std::int64_t> Session::aliasServiceDueAt() const
+{
     if (!isPrimary() || !resolverCoordinate_.configured() || aliasNames_.empty()) {
-        return false;
+        return std::nullopt;
     }
-    return aliasUpdatePending() || nowSeconds() >= aliasCheckAfter_;
+    return aliasUpdatePending() ? nowSeconds() : aliasCheckAfter_;
 }
 
 bool Session::pushAliasDescriptor()

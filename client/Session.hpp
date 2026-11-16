@@ -29,6 +29,7 @@
 
 #include <atomic>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -489,6 +490,8 @@ public:
     void askDevicesForContacts();
 
     std::vector<WireEvent> connectionLog() const;
+    std::vector<WireEvent> watchConnectionLog(WireLog::Listener listener);
+    void unwatchConnectionLog();
     void clearConnectionLog();
 
     std::string inviteUri() const;
@@ -655,6 +658,8 @@ public:
     bool pushAliasDescriptor();
 
     bool aliasServicingDue() const;
+    // UTC second the aliases are next due for servicing; none while there is nothing to service.
+    std::optional<std::int64_t> aliasServiceDueAt() const;
 
     bool aliasDepositCovers() const { return aliasDepositCovers_; }
 
@@ -797,7 +802,9 @@ public:
     bool switchedOff() const { return switchedOff_; }
     void requireSwitchedOn() const;
     void flushPendingEchoes();
-    // Runs on a courier thread each time it leaves something for flushPendingEchoes.
+    // How long until flushPendingEchoes or expireFileRequests has work; none while nothing waits.
+    std::optional<std::chrono::milliseconds> untilNextDue() const;
+    // Runs on a courier or transfer thread each time one leaves something for flushPendingEchoes.
     void onCourierNews(std::function<void()> tell);
     // Runs on the owner's thread each time this account's devices or epoch keys change.
     void onOwnDevicesChanged(std::function<void()> tell);

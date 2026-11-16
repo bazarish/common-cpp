@@ -128,6 +128,18 @@ std::vector<EpochPublic> EpochRing::inUse(const EpochNumber first) const
     return epochs;
 }
 
+std::optional<EpochNumber> EpochRing::first() const
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    std::optional<EpochNumber> first;
+    for (const auto& [kid, held] : byKid_) {
+        if (!first.has_value() || held.n < *first) {
+            first = held.n;
+        }
+    }
+    return first;
+}
+
 std::optional<EpochNumber> EpochRing::last() const
 {
     const std::lock_guard<std::mutex> lock(mutex_);

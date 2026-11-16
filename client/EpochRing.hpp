@@ -40,6 +40,7 @@ public:
     std::vector<EpochPublic> inUse(EpochNumber first) const;
     bool holds(EpochNumber n) const;
     bool holdsKid(const Bytes& kid) const;
+    std::optional<EpochNumber> first() const;
     std::optional<EpochNumber> last() const;
 
     // Throws when the frame names a key this ring does not hold.

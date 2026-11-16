@@ -1176,6 +1176,16 @@ std::vector<std::pair<std::string, std::int64_t>> TranscriptReader::expiredBy(
     return due;
 }
 
+std::optional<std::int64_t> TranscriptReader::nextExpiryAt() const
+{
+    Query query(db_);
+    query.prepare("SELECT at FROM expiries ORDER BY at LIMIT 1");
+    if (!query.exec() || !query.next()) {
+        return std::nullopt;
+    }
+    return query.number(0);
+}
+
 std::int64_t TranscriptReader::lastReadId(const std::string& peer) const
 {
     Query query(db_);
