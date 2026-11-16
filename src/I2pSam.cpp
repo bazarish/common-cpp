@@ -23,8 +23,6 @@ constexpr auto kHeldDestinationRetry = std::chrono::seconds(5);
 
 constexpr auto kProbeInterval = std::chrono::seconds(5);
 
-constexpr auto kDialRetryDelay = std::chrono::seconds(2);
-
 [[noreturn]] void notWithAnExternalRouter(const std::string& what)
 {
     throw std::runtime_error(
@@ -65,13 +63,22 @@ public:
     {
         stream_->setReadTimeout(static_cast<int>(timeout.count()));
     }
-    std::size_t readSome(const ByteBuffer buffer) override { return stream_->readSome(buffer); }
+    std::size_t readSome(const ByteBuffer buffer) override
+    {
+        const std::size_t got = stream_->readSome(buffer);
+        if (got > 0) {
+            answered_.store(true);
+        }
+        return got;
+    }
     void writeAll(const ByteView data) override { stream_->writeAll(data); }
     std::size_t pendingBytes() const override { return stream_->pendingBytes(); }
     void close() override { stream_->close(); }
+    bool answered() const override { return answered_.load(); }
 
 private:
     std::unique_ptr<sam::Stream> stream_;
+    std::atomic<bool> answered_{false};
 };
 
 class SamEndpoint final : public backend::EndpointBackend {
@@ -130,25 +137,20 @@ public:
     {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         const std::shared_ptr<sam::Session> session = waitForStreams(timeout);
-        if (session == nullptr) {
+        if (session == nullptr || stopped_) {
             return nullptr;
         }
-        while (std::chrono::steady_clock::now() < deadline && !stopped_) {
-            const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
-                deadline - std::chrono::steady_clock::now());
-            try {
-                return std::make_unique<SamStream>(session->connect(host, remaining));
-            } catch (const sam::Error& error) {
-                if (error.result() != sam::Result::eCantReachPeer) {
-                    bazarish::log::warn("i2p: no stream to {}: {}", host, error.what());
-                    return nullptr;
-                }
-                bazarish::log::info("i2p: {} not found yet, trying again", host);
-            }
-            std::this_thread::sleep_for(kDialRetryDelay);
+        const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining.count() <= 0) {
+            return nullptr;
         }
-        bazarish::log::warn("i2p: no route to {} inside the dial window", host);
-        return nullptr;
+        try {
+            return std::make_unique<SamStream>(session->connect(host, remaining));
+        } catch (const sam::Error& error) {
+            bazarish::log::warn("i2p: no stream to {}: {}", host, error.what());
+            return nullptr;
+        }
     }
 
     std::unique_ptr<backend::StreamBackend> accept(

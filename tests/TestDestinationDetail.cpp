@@ -4,6 +4,7 @@
 #include "TestRouter.hpp"
 #include "TestUtil.hpp"
 
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -17,6 +18,9 @@ constexpr std::size_t kHopHashChars = 6;
 const std::string kB32Suffix = ".b32.i2p";
 const std::string kLabel = "Detail probe";
 const std::string kAccountLabel = "Probe account";
+constexpr std::chrono::seconds kDialWindow{10};
+// A destination without tunnels finds no lease set at once: the dial answers then, not at its deadline.
+constexpr std::chrono::seconds kOneLookupWithin{2};
 
 bool knownState(const bazarish::i2p::TunnelState state)
 {
@@ -66,6 +70,10 @@ int main()
         CHECK(!unknown.before.has_value());
         CHECK(!unknown.after.has_value());
         CHECK_THROWS(router.refreshLeaseSet(stranger, host));
+
+        const auto dialed = std::chrono::steady_clock::now();
+        CHECK(endpoint->connect(stranger, kDialWindow) == nullptr);
+        CHECK(std::chrono::steady_clock::now() - dialed < kOneLookupWithin);
     }
     fs::remove_all(dir);
     return 0;

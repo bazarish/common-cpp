@@ -86,6 +86,22 @@ struct FetchOutcome {
 using FetchTransport
     = std::function<FetchOutcome(const std::string& toDest, const std::string& op, const Bytes& sealed)>;
 
+// Why a fetch brought no answer; a transport throws it, the caller decides what follows.
+enum class FetchFailure { eLeaseSetNotFound, eNotConnected, eBrokeAfterOpen, eProtocol };
+
+class FetchFailed : public std::runtime_error {
+public:
+    FetchFailed(const FetchFailure failure, const std::string& what)
+        : std::runtime_error(what)
+        , failure_(failure)
+    {
+    }
+    FetchFailure failure() const { return failure_; }
+
+private:
+    FetchFailure failure_;
+};
+
 class AliasUnknown : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;

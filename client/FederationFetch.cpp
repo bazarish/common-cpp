@@ -1,7 +1,6 @@
 // Bazarish project (c) 2026
 #include "FederationFetch.hpp"
 
-#include "AttemptBudget.hpp"
 #include "I2pRouter.hpp"
 #include "ResolverAsk.hpp"
 
@@ -10,28 +9,20 @@
 #include <bazarish/I2pHttp.hpp>
 #include <bazarish/JsonRead.hpp>
 #include <bazarish/Limits.hpp>
-#include <bazarish/Log.hpp>
 #include <bazarish/Resolve.hpp>
 #include <bazarish/ResolverChannel.hpp>
 
 #include <nlohmann/json.hpp>
 
-#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <map>
 #include <memory>
 #include <stdexcept>
-#include <thread>
 
 namespace bazarish::client {
 
 constexpr int kReplySeconds = 90;
-constexpr int kFetchAttempts = 3;
-constexpr int kLeastDialSeconds = 10;
-constexpr int kLeastReplySeconds = 20;
-constexpr int kFetchRetryGapSeconds[kFetchAttempts - 1] = {2, 6};
-constexpr int kFetchRunSeconds = kDialSeconds + kReplySeconds;
 constexpr char kContactLookupLabel[] = "Contact lookup";
 constexpr char kSignInLabel[] = "Sign-in";
 
@@ -73,7 +64,8 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(bazarish::i2p::Router
 
 enum class Face { eFederationFrame, eResolverHttp };
 
-void sendI2pHttpRequest(bazarish::i2p::Stream& stream, const std::string& method,
+template <class Stream>
+void sendI2pHttpRequest(Stream& stream, const std::string& method,
     const std::string& host, const std::string& path,
     const std::map<std::string, std::string>& headers, const std::string& body)
 {
@@ -96,7 +88,42 @@ std::unique_ptr<bazarish::i2p::Stream> dialI2pHttp(bazarish::i2p::Endpoint& endp
     return stream;
 }
 
-FetchOutcome askResolverHttp(bazarish::i2p::Stream& stream, const std::string& host,
+// Tells a stream that failed under an exchange from an answer that does not read.
+class WatchedStream {
+public:
+    explicit WatchedStream(bazarish::i2p::Stream& stream) : stream_(stream) {}
+
+    std::size_t readSome(const ByteBuffer buffer)
+    {
+        try {
+            const std::size_t got = stream_.readSome(buffer);
+            ended_ = ended_ || got == 0;
+            return got;
+        } catch (const std::exception&) {
+            broke_ = true;
+            throw;
+        }
+    }
+
+    void writeAll(const ByteView data)
+    {
+        try {
+            stream_.writeAll(data);
+        } catch (const std::exception&) {
+            broke_ = true;
+            throw;
+        }
+    }
+
+    bool failed() const { return ended_ || broke_; }
+
+private:
+    bazarish::i2p::Stream& stream_;
+    bool ended_ = false;
+    bool broke_ = false;
+};
+
+FetchOutcome askResolverHttp(WatchedStream& stream, const std::string& host,
     const std::string& op, const Bytes& body)
 {
     std::string method;
@@ -138,24 +165,13 @@ FetchOutcome askResolverHttp(bazarish::i2p::Stream& stream, const std::string& h
     return outcome;
 }
 
-FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& dest,
-    const std::string& op, const Bytes& sealed, const std::chrono::seconds dialFor,
-    const std::chrono::seconds waitFor, std::chrono::seconds& dialTook, const Face face)
+FetchOutcome exchange(WatchedStream& stream, const std::string& dest, const std::string& op,
+    const Bytes& sealed, const Face face)
 {
-    const auto dialStarted = std::chrono::steady_clock::now();
-    const std::unique_ptr<bazarish::i2p::Stream> stream
-        = dialI2pHttp(endpoint, dest, dialFor, waitFor);
-    dialTook = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::steady_clock::now() - dialStarted);
-    if (!stream) {
-        throw std::runtime_error("federation fetch: cannot reach " + dest);
-    }
-
-    sayStage(FetchStage::eWaiting);
     if (face == Face::eResolverHttp) {
-        return askResolverHttp(*stream, dest, op, sealed);
+        return askResolverHttp(stream, dest, op, sealed);
     }
-    const FederationFetchResult reply = federationSendFetch(*stream, op, sealed);
+    const FederationFetchResult reply = federationSendFetch(stream, op, sealed);
     FetchOutcome outcome;
     outcome.ok = reply.ok;
     outcome.sealed = reply.sealed;
@@ -166,28 +182,29 @@ FetchOutcome fetchOnce(bazarish::i2p::Endpoint& endpoint, const std::string& des
 FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& dest,
     const std::string& op, const Bytes& sealed, const Face face)
 {
-    const AttemptBudget budget{std::chrono::seconds(kFetchRunSeconds)};
-    std::chrono::seconds dialTook{kDialSeconds};
-    for (int attempt = 1;; ++attempt) {
-        const std::chrono::seconds left = budget.left();
-        try {
-            return fetchOnce(endpoint, dest, op, sealed,
-                std::min(left, std::chrono::seconds(kDialSeconds)),
-                std::min(left, std::chrono::seconds(kReplySeconds)), dialTook, face);
-        } catch (const std::exception& error) {
-            const auto gap = attempt < kFetchAttempts
-                ? std::chrono::seconds(kFetchRetryGapSeconds[attempt - 1])
-                : std::chrono::seconds(0);
-            const auto next = std::max(dialTook, std::chrono::seconds(kLeastDialSeconds))
-                + std::chrono::seconds(kLeastReplySeconds);
-            if (attempt >= kFetchAttempts || !budget.pays(gap, next)) {
-                throw;
-            }
-            sayStage(FetchStage::eAskingAgain);
-            bazarish::log::info("federation fetch: no answer from {} on try {}, asking again: {}",
-                bazarish::log::redact(dest), attempt, error.what());
-            std::this_thread::sleep_for(gap);
+    const std::unique_ptr<bazarish::i2p::Stream> stream = dialI2pHttp(endpoint, dest,
+        std::chrono::seconds(kDialSeconds), std::chrono::seconds(kReplySeconds));
+    if (!stream) {
+        throw FetchFailed(
+            FetchFailure::eLeaseSetNotFound, "federation fetch: no lease set of " + dest + " found");
+    }
+    sayStage(FetchStage::eWaiting);
+    WatchedStream watched(*stream);
+    try {
+        return exchange(watched, dest, op, sealed, face);
+    } catch (const std::logic_error&) {
+        throw;
+    } catch (const std::exception& error) {
+        if (!watched.failed()) {
+            throw FetchFailed(FetchFailure::eProtocol,
+                "federation fetch: " + dest + " answered what does not read: " + error.what());
         }
+        if (!stream->answered()) {
+            throw FetchFailed(FetchFailure::eNotConnected,
+                "federation fetch: " + dest + " did not answer: " + error.what());
+        }
+        throw FetchFailed(FetchFailure::eBrokeAfterOpen,
+            "federation fetch: the answer of " + dest + " broke off: " + error.what());
     }
 }
 

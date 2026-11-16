@@ -322,6 +322,7 @@ public:
     void writeAll(const ByteView data) override { state_->writeAll(data); }
     std::size_t pendingBytes() const override { return state_->pendingBytes(); }
     void close() override { state_->close(); }
+    bool answered() const override { return state_->received() > 0; }
     void reset() { state_->reset(); }
 
 private:

@@ -87,9 +87,6 @@ constexpr std::int64_t kMillisPerSecond = 1000;
 constexpr int kReceivePollSeconds = 5;
 constexpr int kServerShareRatio = 100;
 constexpr int kSessionSnapshotSeconds = 2;
-constexpr int kDialRoundMillis = 30000;
-constexpr int kDialSliceMillis = 250;
-constexpr int kDialRetryPauseMillis = 2000;
 constexpr std::chrono::seconds kRawLookupPause{2};
 // RFC 862's echo port: path probes and their echoes, apart from the call media on port 0.
 constexpr std::uint16_t kPathProbePort = 7;
@@ -378,6 +375,20 @@ struct Sending {
     std::size_t unsent = 0;
     bool failed = false;
 };
+struct Dialing {
+    bool done = false;
+    bool abandoned = false;
+    std::shared_ptr<i2pd::stream::Stream> stream;
+};
+
+void noteAnswered(std::atomic<bool>& answered, const std::weak_ptr<i2pd::stream::Stream>& stream,
+    const std::size_t received)
+{
+    const std::shared_ptr<i2pd::stream::Stream> live = stream.lock();
+    if (received > 0 || (live && live->IsEstablished())) {
+        answered.store(true);
+    }
+}
 
 bool takesWrites(const i2pd::stream::StreamStatus status)
 {
@@ -398,6 +409,7 @@ public:
     void writeAll(ByteView data) override;
     std::size_t pendingBytes() const override;
     void close() override;
+    bool answered() const override { return peerAnswered->load(); }
     void tellRenewedLeaseSet(const std::shared_ptr<i2pd::stream::Stream>& live);
 
     // Weak: a stream i2pd has ended is destroyed, and that cancels what it had yet to send.
@@ -408,6 +420,8 @@ public:
     const std::shared_ptr<Sending> sending = std::make_shared<Sending>();
     std::atomic<bool> closed{false};
     std::atomic<int> readTimeoutSeconds{0};
+    // Set on i2pd's thread, which alone reads the stream's state.
+    const std::shared_ptr<std::atomic<bool>> peerAnswered = std::make_shared<std::atomic<bool>>(false);
     struct Told {
         std::mutex mutex;
         std::shared_ptr<const i2pd::data::LocalLeaseSet> leaseSet;
@@ -451,8 +465,10 @@ std::size_t EmbeddedStream::readSome(const ByteBuffer buffer)
         auto promise = std::make_shared<std::promise<std::size_t>>();
         auto future = promise->get_future();
         live->AsyncReceive(boost::asio::buffer(buffer.data(), buffer.size()),
-            [promise](const boost::system::error_code&, std::size_t received)
+            [promise, heard = peerAnswered, weak = stream](
+                const boost::system::error_code&, std::size_t received)
             {
+                noteAnswered(*heard, weak, received);
                 promise->set_value(received);
             }, kReceivePollSeconds);
         const std::size_t received = future.get();
@@ -486,9 +502,10 @@ void EmbeddedStream::writeAll(const ByteView data)
             sending->unsent += data.size();
         }
         live->AsyncSend(data.data(), data.size(),
-            [wake = wake, sending = sending, size = data.size()](
-                const boost::system::error_code& error, std::size_t)
+            [wake = wake, sending = sending, size = data.size(), heard = peerAnswered,
+                weak = stream](const boost::system::error_code& error, std::size_t)
             {
+                noteAnswered(*heard, weak, 0);
                 {
                     const std::lock_guard<std::mutex> lock(wake->mutex);
                     sending->unsent -= size;
@@ -822,41 +839,39 @@ std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::connect(
     }
 
     const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline && !*stopped)
-    {
-        auto promise = std::make_shared<std::promise<std::shared_ptr<i2pd::stream::Stream>>>();
-        auto future = promise->get_future();
-        issue([promise](std::shared_ptr<i2pd::stream::Stream> s) { promise->set_value(s); });
-
-        const auto remaining = deadline - std::chrono::steady_clock::now();
-        const auto attempt = std::min(
-            std::chrono::duration_cast<std::chrono::milliseconds>(remaining),
-            std::chrono::milliseconds(kDialRoundMillis));
-        if (attempt.count() <= 0) { break; }
-        std::future_status waited = std::future_status::timeout;
-        for (auto spent = std::chrono::milliseconds(0);
-             spent < attempt && waited == std::future_status::timeout && !*stopped;
-             spent += std::chrono::milliseconds(kDialSliceMillis))
+    const std::shared_ptr<SendWake> wake = sendWake;
+    const auto dialing = std::make_shared<Dialing>();
+    issue([wake, dialing](std::shared_ptr<i2pd::stream::Stream> made) {
         {
-            waited = future.wait_for(std::chrono::milliseconds(kDialSliceMillis));
-        }
-        if (waited == std::future_status::ready)
-        {
-            if (auto stream = future.get())
+            const std::lock_guard<std::mutex> lock(wake->mutex);
+            if (!dialing->abandoned)
             {
-                auto wrapped = std::make_unique<EmbeddedStream>();
-                wrapped->stream = stream;
-                wrapped->owner = destination;
-                wrapped->stopped = stopped;
-                wrapped->wake = sendWake;
-                return wrapped;
+                dialing->done = true;
+                dialing->stream = std::move(made);
             }
-            if (*stopped) { break; }
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(kDialRetryPauseMillis));
         }
+        wake->taken.notify_all();
+        if (made) { made->Close(); }
+    });
+    std::shared_ptr<i2pd::stream::Stream> stream;
+    {
+        std::unique_lock<std::mutex> lock(wake->mutex);
+        wake->taken.wait_until(lock, deadline, [&]() { return dialing->done || *stopped; });
+        dialing->abandoned = true;
+        stream = std::move(dialing->stream);
     }
-    return nullptr;
+    if (!stream) { return nullptr; }
+    if (*stopped)
+    {
+        stream->AsyncClose();
+        return nullptr;
+    }
+    auto wrapped = std::make_unique<EmbeddedStream>();
+    wrapped->stream = stream;
+    wrapped->owner = destination;
+    wrapped->stopped = stopped;
+    wrapped->wake = sendWake;
+    return wrapped;
 }
 
 std::unique_ptr<backend::StreamBackend> EmbeddedEndpoint::accept(

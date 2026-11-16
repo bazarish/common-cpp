@@ -471,6 +471,11 @@ void Stream::close()
     impl_->transport->close();
 }
 
+bool Stream::answered() const
+{
+    return impl_->transport->answered();
+}
+
 struct Endpoint::Impl {
     std::shared_ptr<backend::EndpointBackend> transport;
 };

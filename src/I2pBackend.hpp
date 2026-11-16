@@ -65,6 +65,7 @@ public:
     virtual void writeAll(ByteView data) = 0;
     virtual std::size_t pendingBytes() const = 0;
     virtual void close() = 0;
+    virtual bool answered() const = 0;
 };
 
 class EndpointBackend {
@@ -78,6 +79,7 @@ public:
     virtual void refreshOfflineSignature(const Keys& newTransient) = 0;
     virtual void setLeaseSetReaderKey(const Bytes& rawPrivate) = 0;
 
+    // One attempt: null when the host's lease set is not found in time.
     virtual std::unique_ptr<StreamBackend> connect(
         const std::string& host, std::chrono::seconds timeout)
         = 0;

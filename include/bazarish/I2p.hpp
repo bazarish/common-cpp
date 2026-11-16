@@ -109,6 +109,8 @@ public:
     void writeAll(ByteView data);
     std::size_t pendingBytes() const;
     void close();
+    // The far end has answered on this stream.
+    bool answered() const;
 
 private:
     Stream();
@@ -161,6 +163,7 @@ public:
     void refreshOfflineSignature(const Keys& newTransient);
     void setLeaseSetReaderKey(const Bytes& rawPrivate);
 
+    // One attempt: null when the host's lease set is not found in time.
     std::unique_ptr<Stream> connect(const std::string& host, std::chrono::seconds timeout);
     std::unique_ptr<Stream> accept(std::string& peerBase64, std::chrono::seconds timeout);
 
