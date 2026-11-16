@@ -1084,6 +1084,9 @@ std::vector<std::string> Session::siblingDevices() const
 void Session::persistOwnDevices() const
 {
     db_->putText(kOwnDevicesRow, ownDevicesJson(ownBook_, ownSealing_).dump());
+    if (ownDevicesChanged_) {
+        ownDevicesChanged_();
+    }
 }
 
 const std::string& Session::displayName() const
@@ -1214,6 +1217,9 @@ void Session::persistRing()
     db_->put(kEpochRingRow, ring_->toText().bytes());
     if (erased) {
         forgetEndedKeys();
+    }
+    if (ownDevicesChanged_) {
+        ownDevicesChanged_();
     }
 }
 
@@ -2551,9 +2557,13 @@ void Session::buildCourierLocked()
         links.keepOwn = [&leases](const std::string& toDest) { leases.keepOwn(toDest); };
         links.release = [&leases](const std::string& toDest) { leases.release(toDest); };
     }
-    links.newerLeaseSet = [found = newerLeaseSets_](const std::string& toDest) {
-        const std::lock_guard<std::mutex> lock(found->mutex);
-        found->dests.insert(toDest);
+    links.newerLeaseSet = [found = newerLeaseSets_, news = courierNews_](
+                              const std::string& toDest) {
+        {
+            const std::lock_guard<std::mutex> lock(found->mutex);
+            found->dests.insert(toDest);
+        }
+        (*news)();
     };
     links.ownMailbox = [mailbox = ownMailboxLink(contactFetchContext(), client_->wireLogHandle()),
                            told = serverAnswered_](const Letter& letter) {
@@ -2566,9 +2576,13 @@ void Session::buildCourierLocked()
     CourierTimings timings = outbound_->timings;
     timings.utcNow = epochClock_;
     outbound_->courier = std::make_unique<OutboundCourier>(std::move(links),
-        [queue = settledQueue_](const std::uint64_t seq, const DeliveryOutcome& outcome) {
-            const std::lock_guard<std::mutex> held(queue->mutex);
-            queue->settled.emplace_back(seq, outcome);
+        [queue = settledQueue_, news = courierNews_](
+            const std::uint64_t seq, const DeliveryOutcome& outcome) {
+            {
+                const std::lock_guard<std::mutex> held(queue->mutex);
+                queue->settled.emplace_back(seq, outcome);
+            }
+            (*news)();
         },
         timings, outbound_->workers);
     for (const auto& [seq, entry] : outbox_) {
@@ -5305,6 +5319,17 @@ void Session::closeAccountOnServer()
 {
     requirePrimary("delete the account");
     client_->closeAccount();
+}
+
+void Session::onCourierNews(std::function<void()> tell)
+{
+    const std::lock_guard<std::mutex> lock(courierNews_->mutex);
+    courierNews_->tell = std::move(tell);
+}
+
+void Session::onOwnDevicesChanged(std::function<void()> tell)
+{
+    ownDevicesChanged_ = std::move(tell);
 }
 
 void Session::flushPendingEchoes()

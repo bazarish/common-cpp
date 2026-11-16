@@ -52,6 +52,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -1871,10 +1872,20 @@ int main()
             dana->sendReceipt(alice->fingerprint(), "whatever-they-sent");
             CHECK(heldForAlice() == beforeRequests);
 
+            const auto courierNews = std::make_shared<std::atomic<int>>(0);
+            dana->onCourierNews([courierNews]() { ++*courierNews; });
             dana->acceptContactRequest(alice->fingerprint());
             CHECK(dana->contactIsPending(alice->fingerprint()));
             CHECK(dana->contactAcceptInFlight(alice->fingerprint()));
             dana->acceptContactRequest(alice->fingerprint());
+            CHECK(testutil::waitFor([&]() {
+                if (courierNews->load() == 0) {
+                    return false;
+                }
+                dana->flushPendingEchoes();
+                return !dana->contactAcceptInFlight(alice->fingerprint());
+            }));
+            CHECK(!dana->contactIsPending(alice->fingerprint()));
             CHECK(testutil::waitFor([&]() { return heldForAlice() > beforeRequests; }));
             CHECK(testutil::waitFor([&]() {
                 dana->sync();

@@ -792,6 +792,10 @@ public:
     bool switchedOff() const { return switchedOff_; }
     void requireSwitchedOn() const;
     void flushPendingEchoes();
+    // Runs on a courier thread each time it leaves something for flushPendingEchoes.
+    void onCourierNews(std::function<void()> tell);
+    // Runs on the owner's thread each time this account's devices or epoch keys change.
+    void onOwnDevicesChanged(std::function<void()> tell);
     std::size_t awaitingAcks() const { return awaitingAck_.size(); }
 
     void ackPending(const std::string& pendingId);
@@ -1254,6 +1258,24 @@ private:
     // UTC second each one is due at, spread so a day's checks are not one burst.
     std::map<std::string, std::int64_t> presenceDue_;
     std::string passphrase_;
+    struct CourierNews {
+        std::mutex mutex;
+        std::function<void()> tell;
+
+        void operator()()
+        {
+            std::function<void()> told;
+            {
+                const std::lock_guard<std::mutex> lock(mutex);
+                told = tell;
+            }
+            if (told) {
+                told();
+            }
+        }
+    };
+    std::shared_ptr<CourierNews> courierNews_ = std::make_shared<CourierNews>();
+    std::function<void()> ownDevicesChanged_;
     // Filled on the courier's threads, emptied on the owner's.
     struct SettledQueue {
         std::mutex mutex;
