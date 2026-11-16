@@ -26,6 +26,9 @@ namespace {
 constexpr std::size_t kPictureBytes = 2 * 1024 * 1024;
 constexpr const char* kPeer = "peer";
 constexpr const char* kOther = "other";
+constexpr const char* kSharer = "sharer";
+constexpr std::size_t kSharedPictureBytes = 16;
+constexpr std::size_t kNamelessPictureBytes = 8;
 constexpr const char* kThisDevice = "abcd2efgh3";
 constexpr const char* kHostDevice = "hostdev234";
 constexpr std::size_t kLooseMediaBytes = 1024 * 1024;
@@ -91,6 +94,50 @@ void checkWritesGoOnDuringCompaction(const fs::path& root)
     CHECK(store.latestMessages(kOther, kLooseMedia).size()
         == static_cast<std::size_t>(kLooseMedia));
     CHECK(account.text("tick") == std::to_string(writes - 1));
+}
+
+void checkChatList(const fs::path& root)
+{
+    const fs::path file = root / "chats.db";
+    AccountDb account(file, "secret");
+    TranscriptStore store;
+    CHECK(store.open(file, "secret"));
+    CHECK(store.conversationPeers().empty());
+    CHECK(store.unreadTotal() == 0);
+    CHECK(store.chatWeights().empty());
+
+    const auto put = [&store](const std::string& peer, const std::string& type,
+                         const std::string& e2eId, const std::int64_t at, const bool outgoing) {
+        StoredMessage message = line(peer, type, e2eId);
+        message.ts = at;
+        message.orderKey = at;
+        message.outgoing = outgoing;
+        const std::int64_t id = store.append(message);
+        CHECK(id != 0);
+        return id;
+    };
+    const std::int64_t read = put(kPeer, "text", "p1", 100, false);
+    put(kOther, "text", "o1", 150, false);
+    put(kPeer, "image", "p2", 300, false);
+    put(kOther, "text", "o2", 120, true);
+    put(kPeer, "text", "p3", 200, false);
+    put(kPeer, "system", "", 400, false);
+    put(kPeer, "reaction", "p4", 500, false);
+    put(kSharer, "text", "p2", 50, true);
+    CHECK(store.setLastReadId(kPeer, read));
+    account.put(kPictureKeyPrefix + std::string("p2"), Bytes(kSharedPictureBytes, 0x11));
+    account.put(kPictureKeyPrefix, Bytes(kNamelessPictureBytes, 0x22));
+
+    CHECK((store.conversationPeers() == std::vector<std::string>{kOther, kPeer, kSharer}));
+    CHECK(store.unreadTotal() == 4);
+    const std::vector<ChatWeight> weights = store.chatWeights();
+    CHECK(weights.size() == 3);
+    for (const ChatWeight& weight : weights) {
+        const bool holdsPicture = weight.peer == kPeer || weight.peer == kSharer;
+        CHECK(weight.mediaCount == (holdsPicture ? 1 : 0));
+        CHECK(weight.mediaBytes
+            == (holdsPicture ? static_cast<std::int64_t>(kSharedPictureBytes) : 0));
+    }
 }
 
 }  // namespace
@@ -173,6 +220,7 @@ int main()
         store.close();
     }
     checkWritesGoOnDuringCompaction(root);
+    checkChatList(root);
     fs::remove_all(root);
     std::fprintf(stderr, "TestTranscriptCore passed\n");
     return 0;

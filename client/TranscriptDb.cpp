@@ -31,6 +31,12 @@ namespace fs = std::filesystem;
 // What people wrote and sent; never a service note.
 constexpr std::array<const char*, 4> kExpiringTypes{kTypeText, kTypeImage, kTypeAudio, kTypeFile};
 
+// SQLite reads every index entry for a DISTINCT; this seeks once per chat.
+const std::string kEachPeer
+    = "WITH RECURSIVE walk(peer) AS (SELECT MIN(peer) FROM messages UNION ALL"
+      " SELECT (SELECT MIN(peer) FROM messages WHERE peer > walk.peer) FROM walk"
+      " WHERE walk.peer IS NOT NULL), peers(peer) AS (SELECT peer FROM walk WHERE peer IS NOT NULL)";
+
 bool expires(const std::string& type)
 {
     return std::find(kExpiringTypes.begin(), kExpiringTypes.end(), type) != kExpiringTypes.end();
@@ -294,6 +300,17 @@ std::string messageBytesExpression()
     return sum + std::to_string(kFixedColumnBytes);
 }
 
+std::string keptMediaRows()
+{
+    std::string rows;
+    for (const std::string prefix : {kPictureKeyPrefix, kVoiceKeyPrefix, kFileKeyPrefix}) {
+        rows += (rows.empty() ? "" : " UNION ALL ") + std::string("SELECT substr(name, ")
+            + std::to_string(prefix.size() + 1) + ") AS e2eId, LENGTH(value) AS bytes"
+            + " FROM state WHERE name GLOB '" + prefix + "*'";
+    }
+    return rows;
+}
+
 std::string mediaOfRows(const std::string& rowCondition)
 {
     return std::string("DELETE FROM state WHERE name IN (SELECT '") + kPictureKeyPrefix
@@ -384,7 +401,10 @@ bool TranscriptStore::open(const fs::path& file, const std::string& passphrase)
              "CREATE INDEX IF NOT EXISTS expiries_by_at ON expiries (at)",
              "CREATE UNIQUE INDEX IF NOT EXISTS messages_by_e2e"
              " ON messages (peer, e2eId, outgoing) WHERE e2eId != ''",
-             "CREATE INDEX IF NOT EXISTS messages_by_peer_id ON messages (peer, id)"}) {
+             "CREATE INDEX IF NOT EXISTS messages_by_peer_id ON messages (peer, id)",
+             "CREATE INDEX IF NOT EXISTS messages_by_peer_order ON messages (peer, orderKey, id)",
+             "CREATE INDEX IF NOT EXISTS messages_unread"
+             " ON messages (peer, outgoing, id, type)"}) {
         if (!query.exec(statement)) {
             return failed();
         }
@@ -989,7 +1009,7 @@ std::vector<std::string> TranscriptReader::conversationPeers() const
 {
     std::vector<std::string> peers;
     Query query(db_);
-    if (query.exec("SELECT DISTINCT peer FROM messages")) {
+    if (query.exec(kEachPeer + " SELECT peer FROM peers")) {
         while (query.next()) {
             peers.push_back(query.text(0));
         }
@@ -1229,10 +1249,11 @@ int TranscriptReader::unreadCount(const std::string& peer) const
 int TranscriptReader::unreadTotal() const
 {
     Query query(db_);
-    query.prepare("SELECT COALESCE(SUM((SELECT COUNT(*) FROM messages m WHERE m.peer = p.peer"
-                  " AND m.outgoing = 0 AND m.type != ? AND m.id > (SELECT"
-                  " COALESCE(MAX(last_read_id), 0) FROM read_state r WHERE r.peer = p.peer))), 0)"
-                  " FROM (SELECT DISTINCT peer FROM messages) p");
+    query.prepare(kEachPeer
+        + " SELECT COALESCE(SUM((SELECT COUNT(*) FROM messages m WHERE m.peer = p.peer"
+          " AND m.outgoing = 0 AND m.type != ? AND m.id > (SELECT"
+          " COALESCE(MAX(last_read_id), 0) FROM read_state r WHERE r.peer = p.peer))), 0)"
+          " FROM peers p");
     query.bind(kTypeSystem);
     return static_cast<int>(readNumber(query));
 }
@@ -1362,21 +1383,20 @@ bool TranscriptStore::removeMediaOfTrimmed(const std::string& peer, const int ke
 std::vector<ChatWeight> TranscriptReader::chatWeights() const
 {
     std::vector<ChatWeight> weights;
-    const bool media = hasMediaTable();
-    const std::string joins = media
-        ? std::string(" LEFT JOIN state AS p ON m.e2eId != '' AND p.name = '") + kPictureKeyPrefix
-            + "' || m.e2eId LEFT JOIN state AS v ON m.e2eId != '' AND v.name = '"
-            + kVoiceKeyPrefix + "' || m.e2eId LEFT JOIN state AS f ON m.e2eId != '' AND f.name = '"
-            + kFileKeyPrefix + "' || m.e2eId"
-        : std::string();
-    const std::string sums = media
-        ? "TOTAL(COALESCE(LENGTH(p.value), 0) + COALESCE(LENGTH(v.value), 0)"
-          " + COALESCE(LENGTH(f.value), 0)),"
-          " TOTAL((p.name IS NOT NULL) + (v.name IS NOT NULL) + (f.name IS NOT NULL))"
-        : "0, 0";
+    // A chat's rows lie across the whole table; walking them chat by chat rereads every page.
+    const std::string rows = "SELECT peer, COUNT(*) AS messages, TOTAL(" + messageBytesExpression()
+        + ") AS bytes FROM messages AS m NOT INDEXED GROUP BY peer";
+    const std::string sql = hasMediaTable()
+        ? "WITH kept AS (" + keptMediaRows()
+            + ") SELECT r.peer, r.messages, r.bytes, COALESCE(k.bytes, 0), COALESCE(k.count, 0)"
+              " FROM ("
+            + rows
+            + ") AS r LEFT JOIN (SELECT m.peer, TOTAL(kept.bytes) AS bytes, COUNT(*) AS count"
+              " FROM kept JOIN messages AS m ON m.e2eId = kept.e2eId WHERE m.e2eId != ''"
+              " GROUP BY m.peer) AS k ON k.peer = r.peer"
+        : "SELECT peer, messages, bytes, 0, 0 FROM (" + rows + ")";
     Query query(db_);
-    if (!query.exec("SELECT m.peer, COUNT(*), TOTAL(" + messageBytesExpression() + "), " + sums
-            + " FROM messages AS m" + joins + " GROUP BY m.peer")) {
+    if (!query.exec(sql)) {
         return weights;
     }
     while (query.next()) {
