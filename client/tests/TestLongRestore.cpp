@@ -1227,8 +1227,7 @@ int main()
             CHECK(v.readBy("restored U to C2", kPromptHours));
             CHECK(v.readBy("restored U to C1 again", kPromptHours));
             CHECK(v.readBy("restored U to C1", kPromptHours));
-            const std::optional<std::int64_t> toBot = v.read("restored U to B");
-            CHECK(toBot.has_value() && *toBot + 1 >= v.nextDayHour && *toBot <= v.nextDayHour + kPromptHours);
+            CHECK(v.readBy("restored U to B", v.nextDayHour + kPromptHours));
             CHECK(v.waiting("restored U to C3"));
             for (const auto& [sender, toLost] : v.sealsToLostDevice) {
                 CHECK(v.stored(sender + " after the restore"));
