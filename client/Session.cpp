@@ -440,6 +440,8 @@ bool echoesToOwnDevices(const nlohmann::json& inner)
 }
 
 constexpr std::size_t kMessageCeiling = kMaxSealedBodyBytes;
+// Immediate re-asks of a card whose download broke off; the next lease set seen allows as many again.
+constexpr int kCardBrokenRetries = 2;
 // Messages.md: an envelope's delivery id is derived from the ids of all its messages.
 constexpr const char* kEnvelopeIdSeparator = ",";
 
@@ -2550,6 +2552,10 @@ void Session::buildCourierLocked()
         links.keepOwn = [&leases](const std::string& toDest) { leases.keepOwn(toDest); };
         links.release = [&leases](const std::string& toDest) { leases.release(toDest); };
     }
+    links.newerLeaseSet = [found = newerLeaseSets_](const std::string& toDest) {
+        const std::lock_guard<std::mutex> lock(found->mutex);
+        found->dests.insert(toDest);
+    };
     links.ownMailbox = [mailbox = ownMailboxLink(contactFetchContext(), client_->wireLogHandle()),
                            told = serverAnswered_](const Letter& letter) {
         std::optional<DeliveryOutcome> outcome = mailbox(letter);
@@ -4408,7 +4414,7 @@ std::vector<IncomingMessage> Session::takeIn(
                         attempt();
                         if (!signer.has_value() && unknownDeviceOf(claimed, body)
                             && resolvedPeers.insert(claimed).second) {
-                            const std::optional<ContactInfo> info = fetchContactCard(claimed);
+                            const std::optional<ContactInfo> info = fetchContactCard(claimed).info;
                             if (info.has_value()) {
                                 takeContactBook(contacts_.at(claimed), info->card.devices);
                                 persistContacts();
@@ -5229,6 +5235,7 @@ void Session::flushPendingEchoes()
         resumeDeliveries();
     }
     settleDeliveries();
+    takeNewerLeaseSets();
     keepEpochs();
     keepPresenceSchedules();
 }
@@ -6143,11 +6150,11 @@ bool Session::unknownDeviceOf(const std::string& peerFingerprint, const nlohmann
     return !book.active(device).has_value() && !book.revoked(device);
 }
 
-std::optional<ContactInfo> Session::fetchContactCard(const std::string& peerFingerprint)
+Session::CardFetched Session::fetchContactCard(const std::string& peerFingerprint)
 {
     const auto found = contacts_.find(peerFingerprint);
     if (found == contacts_.end() || found->second.dest.empty() || found->second.cardKey.empty()) {
-        return std::nullopt;
+        return {};
     }
     Descriptor descriptor;
     descriptor.fingerprint = peerFingerprint;
@@ -6160,15 +6167,19 @@ std::optional<ContactInfo> Session::fetchContactCard(const std::string& peerFing
                              const Bytes& sealed) -> FetchOutcome {
               return federationFetchOverI2p(readySharedI2pRouter(), toDest, op, sealed, privacy, label);
           });
+    CardFetched fetched;
     try {
-        ContactInfo info = client_->fetchCard(descriptor, transport);
+        fetched.info = client_->fetchCard(descriptor, transport);
         bazarish::log::info("fetched the card of {}", bazarish::log::redact(peerFingerprint));
-        return info;
+    } catch (const FetchFailed& error) {
+        fetched.failure = error.failure();
+        bazarish::log::warn("the card of {} did not come: {}", bazarish::log::redact(peerFingerprint),
+            error.what());
     } catch (const std::exception& error) {
         bazarish::log::warn("the card of {} did not come: {}", bazarish::log::redact(peerFingerprint),
             error.what());
-        return std::nullopt;
     }
+    return fetched;
 }
 
 std::vector<OwnDevice> Session::devicesToReview() const
@@ -6213,15 +6224,47 @@ bool Session::refreshContactEpochs(const std::string& peerFingerprint, const Car
         return false;
     }
     tries.tried = today;
-    const std::optional<ContactInfo> info = fetchContactCard(peerFingerprint);
-    if (!info.has_value()) {
+    CardFetched fetched = fetchContactCard(peerFingerprint);
+    while (fetched.failure == FetchFailure::eBrokeAfterOpen && tries.brokenRetries < kCardBrokenRetries) {
+        ++tries.brokenRetries;
+        bazarish::log::info("the card of {} broke off: asking again at once ({} of {})",
+            bazarish::log::redact(peerFingerprint), tries.brokenRetries, kCardBrokenRetries);
+        fetched = fetchContactCard(peerFingerprint);
+    }
+    if (!fetched.info.has_value()) {
+        if (fetched.failure.has_value() && *fetched.failure != FetchFailure::eProtocol) {
+            tellCourier([dest = contacts_.at(peerFingerprint).dest](OutboundCourier& courier) {
+                courier.unreachable(dest);
+            });
+        }
         return false;
     }
-    cardTries_[peerFingerprint].came = today;
-    takeContactBook(contacts_.at(peerFingerprint), info->card.devices);
+    tries.came = today;
+    tries.brokenRetries = 0;
+    takeContactBook(contacts_.at(peerFingerprint), fetched.info->card.devices);
     persistContacts();
-    takeContactEpochs(peerFingerprint, info->card.epochs);
+    takeContactEpochs(peerFingerprint, fetched.info->card.epochs);
     return true;
+}
+
+void Session::takeNewerLeaseSets()
+{
+    std::set<std::string> dests;
+    {
+        const std::lock_guard<std::mutex> lock(newerLeaseSets_->mutex);
+        dests.swap(newerLeaseSets_->dests);
+    }
+    std::vector<std::string> keyless;
+    for (const auto& [peer, contact] : contacts_) {
+        if (dests.contains(contact.dest) && !epochFor(contact.epochs, epochClock_()).has_value()
+            && queuedLetter(peer, [](const OutboxEntry&) { return true; })) {
+            keyless.push_back(peer);
+        }
+    }
+    for (const std::string& peer : keyless) {
+        cardTries_[peer].brokenRetries = 0;
+        refreshContactEpochs(peer, CardAsk::eEvent);
+    }
 }
 
 void Session::presenceWatch(std::vector<std::string> peerFingerprints)

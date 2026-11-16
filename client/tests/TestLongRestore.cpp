@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -108,6 +109,17 @@ struct Mock {
     bool moderated = false;
     int nextId = 1;
     std::size_t stored = 0;
+    // Grows with every pass and every send: asks made in one of them share its number.
+    std::atomic<int> phase{0};
+    // What a card fetch from an account fails with, in turn, before its card comes.
+    std::map<std::string, std::deque<FetchFailure>> cardScript;
+    struct CardAsk {
+        int phase = 0;
+        bool came = false;
+    };
+    std::map<std::string, std::vector<CardAsk>> cardAsks;
+    // What the sending side holds of each lease set: the lookup's "before".
+    std::map<std::string, i2p::LeaseSetSeen> leaseHeld;
 
     // Under the lock.
     const Account* servingAt(const std::string& dest) const
@@ -287,6 +299,8 @@ struct Options {
     std::int64_t livedOnDays = 0;
     bool firstContactsDownAtRestore = false;
     bool reachesEveryContact = true;
+    // After the restore C1's card breaks off twice and B's does not connect once.
+    bool cardHiccups = false;
 };
 
 struct Verdict {
@@ -357,6 +371,7 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
         {c2->fingerprint(), "C2"}, {c3->fingerprint(), "C3"}, {bot->fingerprint(), "B"}};
 
     const auto pass = [&]() {
+        ++m.phase;
         for (Session* session : live) {
             session->flushPendingEchoes();
             for (IncomingMessage& item : session->sync()) {
@@ -422,6 +437,7 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
             track->storedHour = watchHour.load();
         };
         tracks.push_back(track);
+        ++m.phase;
         from.sendMessage(to, text, track->id, watch);
         return track;
     };
@@ -566,6 +582,12 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
         const std::lock_guard<std::mutex> lock(m.mu);
         m.down = {c1->fingerprint(), bot->fingerprint()};
     }
+    if (run.cardHiccups) {
+        const std::lock_guard<std::mutex> lock(m.mu);
+        m.cardAsks.clear();
+        m.cardScript[c1->fingerprint()] = {FetchFailure::eBrokeAfterOpen, FetchFailure::eBrokeAfterOpen};
+        m.cardScript[bot->fingerprint()] = {FetchFailure::eNotConnected};
+    }
     const fs::path restoredDir = scratch / (run.tag + "-restored");
     Session::importAccount(backup, restoredDir, "backup-password");
     CHECK(nlohmann::json::parse(AccountDb(restoredDir, std::string{}).text("meta")).at("reviewDevices").get<bool>());
@@ -660,6 +682,28 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
         const std::optional<EpochPublic> chosen = epochFor(epochsFromJson(held.at(uFp).at("epochs")), m.utc.load());
         return chosen.has_value() ? chosen->by : std::string();
     };
+    if (run.cardHiccups) {
+        const auto holdsEpochOf = [&](Session& contact) {
+            const nlohmann::json held
+                = nlohmann::json::parse(AccountDb(restoredDir, std::string{}).text("contacts"));
+            return epochFor(epochsFromJson(held.at(contact.fingerprint()).at("epochs")), m.utc.load())
+                .has_value();
+        };
+        const bool failedFirst = [&]() {
+            const std::lock_guard<std::mutex> lock(m.mu);
+            const std::vector<Mock::CardAsk>& asks = m.cardAsks[bot->fingerprint()];
+            return !asks.empty() && !asks.front().came;
+        }();
+        const bool onTheLeaseSet = testutil::waitFor([&]() {
+            r->flushPendingEchoes();
+            return holdsEpochOf(*bot);
+        });
+        std::printf("%s: B's card %s; with B's lease set looked up it %s before U wrote to B\n",
+            run.tag.c_str(), failedFirst ? "did not connect" : "was not asked",
+            onTheLeaseSet ? "came" : "did not come");
+        CHECK(failedFirst);
+        CHECK(onTheLeaseSet);
+    }
     for (Session* contact : contacts) {
         send(*r, contact->fingerprint(), run.tag + ": restored U to " + nameOf[contact->fingerprint()]);
         const std::string by = sealedToBy(*contact);
@@ -695,6 +739,15 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
         }
     }
 
+    if (run.cardHiccups) {
+        const std::lock_guard<std::mutex> lock(m.mu);
+        const std::vector<Mock::CardAsk>& asks = m.cardAsks[c1->fingerprint()];
+        std::printf("%s: C1's card was asked %zu time(s) after the restore; the first in phase %d\n",
+            run.tag.c_str(), asks.size(), asks.empty() ? -1 : asks.front().phase);
+        CHECK(asks.size() >= 3);
+        CHECK(!asks[0].came && !asks[1].came && asks[2].came);
+        CHECK(asks[1].phase == asks[0].phase && asks[2].phase == asks[0].phase);
+    }
     std::printf("%s: after the restore (hours from registration, test clock; next UTC day at hour %lld):\n",
         run.tag.c_str(), static_cast<long long>(nextDayHour));
     for (const auto& [name, hour] : keysAt) {
@@ -1081,7 +1134,15 @@ int main()
         const std::lock_guard<std::mutex> lock(m.mu);
         const Account* serving = m.servingAt(toDest);
         if (serving == nullptr) {
-            throw std::runtime_error("no lease set for " + toDest.substr(0, 8));
+            throw FetchFailed(FetchFailure::eLeaseSetNotFound, "no lease set for " + toDest.substr(0, 8));
+        }
+        const std::string owner = m.ownerOf.at(toDest);
+        std::deque<FetchFailure>& script = m.cardScript[owner];
+        m.cardAsks[owner].push_back({m.phase.load(), script.empty()});
+        if (!script.empty()) {
+            const FetchFailure failure = script.front();
+            script.pop_front();
+            throw FetchFailed(failure, "a scripted failure for " + toDest.substr(0, 8));
         }
         FetchOutcome outcome;
         const std::optional<SecretBytes> asked = KeyedSeal(serving->cardKey, kCardRequestLabel).open(query);
@@ -1106,11 +1167,24 @@ int main()
             }
             return std::make_shared<MockStream>(m, ackSigning, toDest);
         };
+        made.lookup = [&m](const std::string& toDest) {
+            const std::lock_guard<std::mutex> lock(m.mu);
+            i2p::LeaseSetRefresh found;
+            if (const auto held = m.leaseHeld.find(toDest); held != m.leaseHeld.end()) {
+                found.before = held->second;
+            }
+            const Account* serving = m.servingAt(toDest);
+            if (serving != nullptr) {
+                found.after = i2p::LeaseSetSeen{serving->delegatedUntil - kSecondsPerDay, serving->delegatedUntil};
+                m.leaseHeld[toDest] = *found.after;
+            }
+            return std::optional<i2p::LeaseSetRefresh>(found);
+        };
         return made;
     };
 
     const fs::path scratch = testutil::freshDir("longrestore");
-    restoreAfter({"long", kLongAbsenceDays, true, true, 0}, m, endpoint, dial, links, scratch,
+    restoreAfter({"long", kLongAbsenceDays, true, true, 0, false, true, true}, m, endpoint, dial, links, scratch,
         [](const Verdict& v) {
             for (const std::string sender : {"C1", "C2", "C3", "B"}) {
                 CHECK(v.stored(sender + " on day 10"));

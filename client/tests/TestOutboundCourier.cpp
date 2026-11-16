@@ -434,6 +434,39 @@ int main()
     {
         Record record;
         FakeNet net(keys);
+        net.floodfill = 2;
+        net.cached = 1;
+        std::mutex toldMutex;
+        std::vector<std::string> told;
+        OutboundCourier::Links links = net.links(true);
+        links.newerLeaseSet = [&](const std::string& toDest) {
+            const std::lock_guard<std::mutex> lock(toldMutex);
+            told.push_back(toDest);
+        };
+        const auto toldOf = [&]() {
+            const std::lock_guard<std::mutex> lock(toldMutex);
+            return told;
+        };
+        OutboundCourier courier(links, {}, quick(kFarBound));
+        Letter keyless = letterTo(keys, dest, 1);
+        keyless.sealTo = {keyless.sealTo.front()};
+        courier.submit(keyless, record.watchFor(1));
+        CHECK(waits(record, 1));
+        courier.unreachable(dest);
+        CHECK(testutil::waitFor([&]() { return toldOf().size() == 1; }));
+        CHECK(toldOf().front() == dest);
+        courier.unreachable(dest);
+        CHECK(testutil::waitFor([&net]() { return net.lookupsMade() == 2; }));
+        CHECK(staysUnsettled(record, 1));
+        CHECK(toldOf().size() == 1);
+        CHECK(net.dialled().empty());
+        std::printf("TestOutboundCourier: a letter that waits for a key still has its route looked"
+                    " up, and a newer lease set is told once\n");
+    }
+
+    {
+        Record record;
+        FakeNet net(keys);
         net.live = 2;
         net.floodfill = 2;
         net.cached = 1;

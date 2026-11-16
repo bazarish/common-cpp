@@ -121,6 +121,8 @@ public:
         std::function<void(const std::string& toDest)> release;
         // None when the server did not answer.
         std::function<std::optional<Outcome>(const Letter& letter)> ownMailbox;
+        // Told on the courier's threads when a closed gate's lookup finds a newer lease set.
+        std::function<void(const std::string& toDest)> newerLeaseSet;
     };
 
     explicit OutboundCourier(Links links, SettledFn settled = {}, CourierTimings timings = {},
@@ -135,6 +137,8 @@ public:
     void forget(std::uint64_t seq);
     // Something came from the route: a closed gate looks the lease set up; our server opens all.
     void heard(const std::string& route);
+    // The route did not answer outside the courier: its gate closes as after a failed attempt.
+    void unreachable(const std::string& route);
     void readdress(
         const std::string& mailbox, const std::string& toDest, const Bytes& servingSealingDer);
     // A letter that found no current epoch of its recipient waits for this.

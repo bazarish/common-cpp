@@ -207,6 +207,23 @@ void OutboundCourier::heard(const std::string& route)
     cv_.notify_all();
 }
 
+void OutboundCourier::unreachable(const std::string& route)
+{
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        const auto gate = gates_.find(route);
+        if (route == kOwnMailboxRoute || (gate != gates_.end() && gate->second.closed)) {
+            return;
+        }
+        for (const auto& [watch, phase] : closeGateLocked(route)) {
+            if (watch.onPhase) {
+                notices_.push_back(Notice{watch, phase, std::nullopt});
+            }
+        }
+    }
+    cv_.notify_all();
+}
+
 void OutboundCourier::readdress(
     const std::string& mailbox, const std::string& toDest, const Bytes& servingSealingDer)
 {
@@ -366,8 +383,20 @@ std::optional<OutboundCourier::Job> OutboundCourier::pickLocked()
     std::set<std::string> seen;
     for (auto& [seq, held] : letters_) {
         const std::string& route = held.letter.route;
-        if ((held.keyless && !epochFor(held.letter.sealTo, timings_.utcNow()).has_value())
-            || !seen.insert(route).second) {
+        if (held.keyless && !epochFor(held.letter.sealTo, timings_.utcNow()).has_value()) {
+            const auto gate = gates_.find(route);
+            if (gate != gates_.end() && gate->second.closed && gate->second.lookupDue
+                && !gate->second.busy) {
+                gate->second.lookupDue = false;
+                gate->second.busy = true;
+                Job job;
+                job.route = route;
+                job.kind = JobKind::eLookup;
+                return job;
+            }
+            continue;
+        }
+        if (!seen.insert(route).second) {
             continue;
         }
         Gate& gate = gates_[route];
@@ -573,6 +602,7 @@ void OutboundCourier::runLookup(const Job& job)
         bazarish::log::warn(
             "the lease set of {} was not looked up: {}", routeName(job.route), error.what());
     }
+    bool newer = false;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         Gate& gate = gates_[job.route];
@@ -585,12 +615,16 @@ void OutboundCourier::runLookup(const Job& job)
             if (found->after.has_value() && i2p::publishedLater(*found->after, gate.failedSeen)) {
                 gate.closed = false;
                 gate.awaitsServer = false;
+                newer = true;
                 bazarish::log::info(
                     "{} published a newer lease set: trying again", routeName(job.route));
             }
         }
     }
     cv_.notify_all();
+    if (newer && links_.newerLeaseSet) {
+        links_.newerLeaseSet(job.route);
+    }
 }
 
 OutboundCourier::Answer OutboundCourier::attempt(const Letter& plainLetter, Outcome& outcome)

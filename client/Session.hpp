@@ -939,7 +939,13 @@ private:
     // What asks for a contact's card: maintenance waits a day after any try, the others only after one that came.
     enum class CardAsk { eMaintenance, eUser, eEvent };
     bool refreshContactEpochs(const std::string& peerFingerprint, CardAsk ask);
-    std::optional<ContactInfo> fetchContactCard(const std::string& peerFingerprint);
+    struct CardFetched {
+        std::optional<ContactInfo> info;
+        // Set when the transport named why nothing came.
+        std::optional<FetchFailure> failure;
+    };
+    CardFetched fetchContactCard(const std::string& peerFingerprint);
+    void takeNewerLeaseSets();
     bool unknownDeviceOf(const std::string& peerFingerprint, const nlohmann::json& body) const;
     void syncAvatarToSelf();
     void syncContactNameToSelf(const std::string& peerFingerprint, const std::string& name);
@@ -1167,6 +1173,8 @@ private:
     struct CardTries {
         std::optional<PresenceDay> came;
         std::optional<PresenceDay> tried;
+        // Immediate re-asks after a download that broke off, since the last lease set seen.
+        int brokenRetries = 0;
     };
     std::map<std::string, CardTries> cardTries_;
     std::string deliveryIdSeed_;
@@ -1227,6 +1235,12 @@ private:
         std::vector<std::pair<std::uint64_t, DeliveryOutcome>> settled;
     };
     std::shared_ptr<SettledQueue> settledQueue_ = std::make_shared<SettledQueue>();
+    // Filled on the courier's threads, emptied on the owner's.
+    struct NewerLeaseSets {
+        std::mutex mutex;
+        std::set<std::string> dests;
+    };
+    std::shared_ptr<NewerLeaseSets> newerLeaseSets_ = std::make_shared<NewerLeaseSets>();
     AddressDecisionFn addressDecision_;
     Bytes i2pMaster_;
     std::string i2pAddress_;
