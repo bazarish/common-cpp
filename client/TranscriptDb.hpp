@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -175,6 +176,8 @@ class TranscriptStore : public TranscriptReader {
 public:
     bool open(const std::filesystem::path& file, const std::string& passphrase = {});
     const std::string& lastError() const { return lastError_; }
+    // Told the UTC millisecond of each expiry a change stamps, before that change commits.
+    void onExpiryStamped(std::function<void(std::int64_t atMs)> tell);
 
     [[nodiscard]] std::int64_t append(const StoredMessage& message);
     [[nodiscard]] bool updateStatus(std::int64_t id, int status);
@@ -234,6 +237,7 @@ private:
     std::int64_t pruneRowsOf(const std::string& peer, int keep);
 
     std::string lastError_;
+    std::function<void(std::int64_t)> expiryStamped_;
 };
 
 }  // namespace bazarish::client

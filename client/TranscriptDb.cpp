@@ -1103,6 +1103,11 @@ bool TranscriptStore::applyReadThrough(const std::string& peer, const std::int64
     return true;
 }
 
+void TranscriptStore::onExpiryStamped(std::function<void(std::int64_t atMs)> tell)
+{
+    expiryStamped_ = std::move(tell);
+}
+
 bool TranscriptStore::stampExpiry(
     const std::int64_t id, const std::string& peer, const std::int64_t atMs)
 {
@@ -1111,7 +1116,13 @@ bool TranscriptStore::stampExpiry(
     query.bind(id);
     query.bind(peer);
     query.bind(atMs);
-    return query.exec() || failed();
+    if (!query.exec()) {
+        return failed();
+    }
+    if (query.changes() > 0 && expiryStamped_) {
+        expiryStamped_(atMs);
+    }
+    return true;
 }
 
 bool TranscriptStore::stampNewlyRead(
@@ -1121,16 +1132,23 @@ bool TranscriptStore::stampNewlyRead(
     if (seconds <= 0 || uptoId <= afterId) {
         return true;
     }
+    const std::int64_t atMs = nowMillis() + seconds * kMillisPerSecond;
     Query query(db_);
     query.prepare("INSERT OR IGNORE INTO expiries (id, peer, at)"
                   " SELECT id, peer, ? FROM messages WHERE peer = ? AND outgoing = 0"
                   " AND id > ? AND id <= ? AND type IN ("
         + expiringTypesSql() + ")");
-    query.bind(nowMillis() + seconds * kMillisPerSecond);
+    query.bind(atMs);
     query.bind(peer);
     query.bind(afterId);
     query.bind(uptoId);
-    return query.exec() || failed();
+    if (!query.exec()) {
+        return failed();
+    }
+    if (query.changes() > 0 && expiryStamped_) {
+        expiryStamped_(atMs);
+    }
+    return true;
 }
 
 std::int64_t TranscriptReader::chatTimer(const std::string& peer) const

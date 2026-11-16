@@ -7,14 +7,18 @@
 
 #include "TestUtil.hpp"
 
+#include <bazarish/Clock.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace bazarish;
 using namespace bazarish::client;
@@ -140,6 +144,48 @@ void checkChatList(const fs::path& root)
     }
 }
 
+void checkExpiryStamps(const fs::path& root)
+{
+    const fs::path file = root / "expiries.db";
+    AccountDb account(file, "secret");
+    TranscriptStore store;
+    CHECK(store.open(file, "secret"));
+    std::vector<std::int64_t> told;
+    store.onExpiryStamped([&told](const std::int64_t atMs) { told.push_back(atMs); });
+    const auto put = [&store](
+                         const std::string& e2eId, const std::int64_t at, const bool outgoing) {
+        StoredMessage message = line(kPeer, "text", e2eId);
+        message.ts = at;
+        message.orderKey = at;
+        message.outgoing = outgoing;
+        const std::int64_t id = store.append(message);
+        CHECK(id != 0);
+        return id;
+    };
+    constexpr std::int64_t kSentAt = 1000;
+
+    put("before", kSentAt, true);
+    CHECK(told.empty());
+    CHECK(!store.nextExpiryAt().has_value());
+
+    CHECK(store.setChatTimer(kPeer, kSecondsPerHour));
+    put("sent", kSentAt, true);
+    const std::int64_t sentExpires = kSentAt + kSecondsPerHour * kMillisPerSecond;
+    CHECK((told == std::vector<std::int64_t>{sentExpires}));
+    CHECK(store.nextExpiryAt() == sentExpires);
+
+    const std::int64_t incoming = put("came", kSentAt, false);
+    CHECK(told.size() == 1);
+    const std::int64_t readFrom = nowMillis() + kSecondsPerHour * kMillisPerSecond;
+    CHECK(store.setLastReadId(kPeer, incoming));
+    const std::int64_t readTo = nowMillis() + kSecondsPerHour * kMillisPerSecond;
+    CHECK(told.size() == 2);
+    CHECK(told.back() >= readFrom && told.back() <= readTo);
+    CHECK(store.setLastReadId(kPeer, incoming));
+    CHECK(told.size() == 2);
+    CHECK(store.nextExpiryAt() == sentExpires);
+}
+
 }  // namespace
 
 int main()
@@ -221,6 +267,7 @@ int main()
     }
     checkWritesGoOnDuringCompaction(root);
     checkChatList(root);
+    checkExpiryStamps(root);
     fs::remove_all(root);
     std::fprintf(stderr, "TestTranscriptCore passed\n");
     return 0;
