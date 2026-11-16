@@ -2934,7 +2934,7 @@ int main()
             pam->flushPendingEchoes();
             utc.store(utc.load() + kSecondsPerHour);
             const PresenceSchedule refreshed
-                = presenceScheduleFrom(pam->presenceSeed(), today + wholeDays + 2);
+                = presenceScheduleFrom(pam->presenceSeed(), presenceDayOf(utc.load()));
             CHECK(testutil::waitFor([&]() {
                 pam->sync();
                 quin->sync();
