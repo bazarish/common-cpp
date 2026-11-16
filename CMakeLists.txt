@@ -261,8 +261,8 @@ if(BAZARISH_WITH_CLIENT)
     target_compile_options(bazarish_client PRIVATE -Wall -Wextra -Werror)
     # libc++ before 20 keeps std::jthread and std::stop_token behind this switch.
     if(ANDROID OR APPLE)
-        target_compile_options(bazarish_client PUBLIC -fexperimental-library)
-        target_link_options(bazarish_client PUBLIC -fexperimental-library)
+        target_compile_options(bazarish_common PUBLIC -fexperimental-library)
+        target_link_options(bazarish_common PUBLIC -fexperimental-library)
     endif()
 
     function(bazarish_client_add_test name)
