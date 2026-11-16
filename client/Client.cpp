@@ -130,6 +130,29 @@ std::vector<PendingEntry> pendingEntries(const nlohmann::json& listed)
     return entries;
 }
 
+constexpr char kI2pStatusPath[] = "/v1/account/i2p-status";
+constexpr char kOverviewPath[] = "/v1/messaging/overview";
+constexpr char kSinceQuery[] = "&since=";
+
+std::string heldSince(const std::string& since)
+{
+    return std::string(kEventsHoldQuery) + kSinceQuery + since;
+}
+
+I2pDestStatus i2pStatusOf(const nlohmann::json& body)
+{
+    I2pDestStatus status;
+    status.approval = body.value("approval", std::string());
+    status.registrationMessage = body.value("registrationMessage", std::string());
+    status.transientExpires = body.value("transientExpires", std::int64_t{0});
+    return status;
+}
+
+MailboxUsage usageOf(const nlohmann::json& body)
+{
+    return {body.at("usedBytes").get<std::uint64_t>(), body.at("quotaBytes").get<std::uint64_t>()};
+}
+
 Bytes cardQueryBytes(const CardFetchQuery& query)
 {
     const std::string text = toJson(query).dump();
@@ -260,27 +283,57 @@ DestinationInfo Client::sendI2pTransient(
 
 I2pDestStatus Client::i2pStatus()
 {
-    const ApiResponse response = api_.get("/v1/account/i2p-status");
-    const nlohmann::json body = response.json();
-    I2pDestStatus status;
-    status.approval = body.value("approval", std::string());
-    status.registrationMessage = body.value("registrationMessage", std::string());
-    status.transientExpires = body.value("transientExpires", std::int64_t{0});
-    return status;
+    return i2pStatusOf(api_.get(kI2pStatusPath).json());
 }
 
-StorageUsage Client::storageUsage()
+I2pDestStatus Client::awaitApprovalChange(const std::string& approval)
 {
-    StorageUsage usage;
-    try {
-        const nlohmann::json body = api_.get("/v1/messaging/storage-usage").json();
-        usage.mailboxUsedBytes = body.value("usedBytes", std::uint64_t{0});
-        usage.mailboxQuotaBytes = body.value("quotaBytes", std::uint64_t{0});
-        usage.mailboxOk = true;
-    } catch (const std::exception& error) {
-        bazarish::log::warn("storage usage unavailable: {}", error.what());
+    return i2pStatusOf(
+        api_.getWaiting(kI2pStatusPath, heldSince(approval), kNoReadDeadline).json());
+}
+
+AccountOverview Client::overview(const std::string& since)
+{
+    const ApiResponse response = since.empty()
+        ? api_.get(kOverviewPath)
+        : api_.getWaiting(kOverviewPath, heldSince(since), kNoReadDeadline);
+    return overviewFromJson(response.json());
+}
+
+nlohmann::json overviewToJson(const AccountOverview& overview)
+{
+    nlohmann::json clients = nlohmann::json::array();
+    for (const OverviewDevice& device : overview.devices) {
+        clients.push_back(
+            {{"device", device.device}, {"current", device.current}, {"queue", device.queued}});
     }
-    return usage;
+    return {
+        {"version", overview.version},
+        {"dest", overview.dest},
+        {"state", overview.state},
+        {"transientExpires", overview.transientExpires},
+        {"usedBytes", overview.usage.usedBytes},
+        {"quotaBytes", overview.usage.quotaBytes},
+        {"clients", clients},
+    };
+}
+
+AccountOverview overviewFromJson(const nlohmann::json& body)
+{
+    AccountOverview overview;
+    overview.version = body.at("version").get<std::string>();
+    overview.dest = body.at("dest").get<std::string>();
+    overview.state = body.at("state").get<std::string>();
+    overview.transientExpires = body.at("transientExpires").get<std::int64_t>();
+    overview.usage = usageOf(body);
+    for (const nlohmann::json& entry : body.at("clients")) {
+        overview.devices.push_back({entry.at("device").get<std::string>(),
+            entry.at("current").get<bool>(), entry.at("queue").get<std::size_t>()});
+    }
+    if (!overview.dest.empty()) {
+        validateB33I2pHost(overview.dest);
+    }
+    return overview;
 }
 
 ContactInfo Client::fetchCard(const Descriptor& descriptor, const FetchTransport& transport)
@@ -370,19 +423,6 @@ void Client::registerThisDevice(const std::string& install)
     api_.postJson("/v1/messaging/clients", {{"install", install}});
 }
 
-std::vector<Client::DeviceEntry> Client::listClients()
-{
-    const ApiResponse response = api_.get("/v1/messaging/clients");
-    const nlohmann::json body = parseJson(response.body);
-    std::vector<DeviceEntry> devices;
-    for (const nlohmann::json& entry : body.at("clients")) {
-        devices.push_back(DeviceEntry{entry.at("device").get<std::string>(),
-            entry.value("current", false),
-            entry.value("queue", static_cast<std::size_t>(0))});
-    }
-    return devices;
-}
-
 void Client::registerPasses(const std::vector<Bytes>& handles)
 {
     nlohmann::json encoded = nlohmann::json::array();
@@ -420,11 +460,18 @@ std::vector<PendingEntry> Client::waitForPending(
     }
     const ApiResponse response = api_.getWaiting(kEventsPath, query,
         held ? kNoReadDeadline : ApiClient::kDefaultReadTimeoutSeconds);
-    const std::vector<PendingEntry> entries = pendingEntries(response.json().at("pending"));
+    const nlohmann::json body = response.json();
+    const std::vector<PendingEntry> entries = pendingEntries(body.at("pending"));
+    lastMailboxUsage_ = usageOf(body);
     if (!entries.empty()) {
         log_->record({0, false, "poll: " + std::to_string(entries.size()) + " waiting", "200", {}});
     }
     return entries;
+}
+
+std::optional<MailboxUsage> Client::lastMailboxUsage() const
+{
+    return lastMailboxUsage_;
 }
 
 std::vector<PendingEntry> Client::listPending()

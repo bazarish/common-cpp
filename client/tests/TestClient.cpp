@@ -38,6 +38,9 @@ using namespace bazarish::client;
 
 namespace {
 
+constexpr std::uint64_t kMailboxUsed = 1234;
+constexpr std::uint64_t kMailboxQuota = 50000;
+constexpr std::int64_t kOverviewExpires = 1900000000;
 constexpr std::uint32_t kBusyBits = 2;
 constexpr std::size_t kBusyStampBytes = 16;
 constexpr unsigned char kBusyStampFill = 0x5a;
@@ -238,8 +241,33 @@ int main()
             waitedWith = request.query(kEventsDeferredKey);
             respondJson(response,
                 {{"pending",
-                    nlohmann::json::array({{{"id", "blob1"}, {"class", "content"}, {"bytes", 9}},
-                        {{"id", "blob2"}, {"class", "contact"}, {"bytes", 4}}})}});
+                     nlohmann::json::array({{{"id", "blob1"}, {"class", "content"}, {"bytes", 9}},
+                         {{"id", "blob2"}, {"class", "contact"}, {"bytes", 4}}})},
+                    {"usedBytes", kMailboxUsed}, {"quotaBytes", kMailboxQuota}});
+        }));
+
+    std::string overviewQuery;
+    server.get("/v1/messaging/overview",
+        stub([&](const http::Request& request, http::Response& response) {
+            (void)requireCaller(request);
+            overviewQuery = request.query("hold") + "/" + request.query("since");
+            respondJson(response,
+                {{"version", "v2"}, {"dest", aliceDest}, {"state", "active"},
+                    {"transientExpires", kOverviewExpires}, {"usedBytes", kMailboxUsed},
+                    {"quotaBytes", kMailboxQuota},
+                    {"clients",
+                        nlohmann::json::array({{{"device", "phone"}, {"current", true},
+                            {"queue", 0}}, {{"device", "laptop"}, {"current", false},
+                            {"queue", 3}}})}});
+        }));
+
+    std::string statusQuery;
+    server.get("/v1/account/i2p-status",
+        stub([&](const http::Request& request, http::Response& response) {
+            (void)requireCaller(request);
+            statusQuery = request.query("hold") + "/" + request.query("since");
+            respondJson(response,
+                {{"approval", "approved"}, {"registrationMessage", ""}, {"transientExpires", 0}});
         }));
 
     server.post("/v1/messaging/fetch",
@@ -407,10 +435,26 @@ int main()
             = Session::waitForMail(client, Client::MailWait::eHeld, kept);
         CHECK(waitedWith == "blob1");
         CHECK(news.size() == 1 && news.front().id == "blob2");
+        CHECK((client.lastMailboxUsage() == MailboxUsage{kMailboxUsed, kMailboxQuota}));
         for (std::size_t i = 0; kept.ids().size() < kMaxDeferredMailItems; ++i) {
             CHECK(kept.keep("held-" + std::to_string(i)));
         }
         CHECK(!kept.keep("one-too-many"));
+    }
+
+    {
+        const AccountOverview atOnce = client.overview();
+        CHECK(overviewQuery == "/");
+        CHECK(atOnce.version == "v2");
+        CHECK(atOnce.dest == aliceDest);
+        CHECK(atOnce.transientExpires == kOverviewExpires);
+        CHECK((atOnce.usage == MailboxUsage{kMailboxUsed, kMailboxQuota}));
+        CHECK(atOnce.devices.size() == 2 && atOnce.devices[1].queued == 3);
+        CHECK(overviewFromJson(overviewToJson(atOnce)) == atOnce);
+        (void)client.overview("v1");
+        CHECK(overviewQuery == "1/v1");
+        CHECK(client.awaitApprovalChange(kApprovalPending).approved());
+        CHECK(statusQuery == "1/pending");
     }
 
     server.stop();

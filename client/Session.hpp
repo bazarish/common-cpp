@@ -442,8 +442,6 @@ public:
         const Bytes& bytes, const std::string& e2eId = {}, const DeliveryWatch& watch = {},
         const std::string& replyTo = {}, bool forwarded = false);
 
-    // The devices this account's server holds mail for.
-    std::vector<Client::DeviceEntry> devices();
     void closeAccountOnServer();
 
     std::string ensureI2pDestination();
@@ -459,10 +457,17 @@ public:
 
     struct ApprovalState {
         bool pending = false;
+        bool refused = false;
         std::string message;
     };
     ApprovalState approvalState() const { return approval_; }
-    StorageUsage storageUsage();
+    void takeApproval(const I2pDestStatus& status);
+    void refuseApproval(const std::string& reason);
+
+    // The last overview the server gave, kept across runs; its usage follows every mail wait.
+    void keepOverview(const AccountOverview& overview);
+    void keepMailboxUsage(const MailboxUsage& usage);
+    std::optional<AccountOverview> keptOverview() const;
     std::int64_t delegationDays() const;
     void setDelegationDays(std::int64_t days, bool announce = true);
 

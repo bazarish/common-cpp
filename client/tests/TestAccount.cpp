@@ -23,6 +23,14 @@
 using namespace bazarish;
 using namespace bazarish::client;
 
+namespace {
+
+constexpr std::uint64_t kKeptUsedBytes = 4096;
+constexpr std::uint64_t kKeptQuotaBytes = 65536;
+constexpr std::int64_t kKeptExpires = 1900000000;
+
+}  // namespace
+
 int main()
 {
     namespace fs = std::filesystem;
@@ -270,6 +278,25 @@ int main()
         }
         CHECK(fs::exists(named));
         CHECK(AccountDb(named, "secret").text("probe") == "value");
+    }
+
+    {
+        const fs::path file = root / "overview.db";
+        const std::unique_ptr<Session> fresh = Session::create(file, AccountKind::eUser);
+        CHECK(!fresh->keptOverview().has_value());
+        fresh->keepMailboxUsage({kKeptUsedBytes, kKeptQuotaBytes});
+        CHECK(fresh->keptOverview()->usage.usedBytes == kKeptUsedBytes);
+        CHECK(fresh->keptOverview()->state.empty());
+        AccountOverview overview;
+        overview.version = "v1";
+        overview.state = "active";
+        overview.transientExpires = kKeptExpires;
+        overview.usage = {kKeptUsedBytes, kKeptQuotaBytes};
+        overview.devices = {{"phone", true, 0}, {"laptop", false, 2}};
+        fresh->keepOverview(overview);
+        fresh->keepMailboxUsage({kKeptQuotaBytes, kKeptQuotaBytes});
+        overview.usage.usedBytes = kKeptQuotaBytes;
+        CHECK(Session::open(file)->keptOverview() == overview);
     }
 
     {

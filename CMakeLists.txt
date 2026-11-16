@@ -239,6 +239,7 @@ if(BAZARISH_WITH_CLIENT)
         client/KeyedDatabase.cpp
         client/OutboundCourier.cpp
         client/OutboundLeases.cpp
+        client/OverviewWatch.cpp
         client/Presence.cpp
         client/PresenceSeed.cpp
         client/Session.cpp
@@ -288,6 +289,7 @@ endif()
     target_sources(TestCallMedia PRIVATE client/tests/AudioDoubles.cpp)
     bazarish_client_add_test(TestCallWindow)
     bazarish_client_add_test(TestClient)
+    bazarish_client_add_test(TestOverviewWatch)
     bazarish_client_add_test(TestPresence)
     bazarish_client_add_test(TestPresenceSeed)
     bazarish_client_add_test(TestPresenceGateway)

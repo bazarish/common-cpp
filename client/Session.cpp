@@ -209,6 +209,7 @@ constexpr char kDeviceSigningRow[] = "device-signing.pem";
 constexpr char kDeviceSealingRow[] = "device-sealing.pem";
 constexpr char kDeviceCertRow[] = "device-cert";
 constexpr char kOwnDevicesRow[] = "own-devices";
+constexpr char kOverviewRow[] = "overview";
 constexpr std::size_t kInstallTokenBytes = 16;
 constexpr char kBundleRootField[] = "root";
 constexpr char kBundleOwnDevicesField[] = "ownDevices";
@@ -1442,7 +1443,7 @@ void Session::registerAccount()
     }
     announceOwed_ = announceOwed_ || newHere;
     const bool movedOnCard = storeCard(result);
-    approval_ = {result.approvalPending, result.registrationMessage};
+    approval_ = {result.approvalPending, false, result.registrationMessage};
     if (approval_.pending) {
         bazarish::log::info("account awaiting operator approval: no mailbox until then");
         return;
@@ -1474,8 +1475,7 @@ void Session::joinAsSecondary()
         throw DeviceRoleRefusal("only a primary device can register the account");
     }
     const bool newHere = !ContactCard::verify(fromBase64(cardB64_)).devices.active(deviceId()).has_value();
-    const I2pDestStatus status = client_->i2pStatus();
-    approval_ = {status.approval == kApprovalPending, status.registrationMessage};
+    takeApproval(client_->i2pStatus());
     if (approval_.pending) {
         bazarish::log::info("account awaiting operator approval: no mailbox until then");
         return;
@@ -2188,13 +2188,38 @@ void Session::removeContact(const std::string& peerFingerprint)
 I2pDestStatus Session::i2pDestStatus()
 {
     const I2pDestStatus status = client_->i2pStatus();
-    approval_ = {status.approval == kApprovalPending, status.registrationMessage};
+    takeApproval(status);
     return status;
 }
 
-StorageUsage Session::storageUsage()
+void Session::takeApproval(const I2pDestStatus& status)
 {
-    return client_->storageUsage();
+    approval_ = {status.approval == kApprovalPending, false, status.registrationMessage};
+}
+
+void Session::refuseApproval(const std::string& reason)
+{
+    approval_ = {false, true, reason};
+}
+
+void Session::keepOverview(const AccountOverview& overview)
+{
+    db_->putText(kOverviewRow, overviewToJson(overview).dump());
+}
+
+void Session::keepMailboxUsage(const MailboxUsage& usage)
+{
+    AccountOverview kept = keptOverview().value_or(AccountOverview{});
+    kept.usage = usage;
+    keepOverview(kept);
+}
+
+std::optional<AccountOverview> Session::keptOverview() const
+{
+    if (!db_->has(kOverviewRow)) {
+        return std::nullopt;
+    }
+    return overviewFromJson(parseJson(db_->text(kOverviewRow)));
 }
 
 std::int64_t Session::delegationDays() const
@@ -5308,11 +5333,6 @@ void Session::putVoice(const std::string& e2eId, const Bytes& bytes)
 std::optional<Bytes> Session::voice(const std::string& e2eId) const
 {
     return db_->get(voiceKey(e2eId));
-}
-
-std::vector<Client::DeviceEntry> Session::devices()
-{
-    return client_->listClients();
 }
 
 void Session::closeAccountOnServer()

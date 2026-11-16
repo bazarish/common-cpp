@@ -42,11 +42,35 @@ struct I2pDestStatus {
     bool approved() const { return approval == "approved"; }
 };
 
-struct StorageUsage {
-    bool mailboxOk = false;
-    std::uint64_t mailboxUsedBytes = 0;
-    std::uint64_t mailboxQuotaBytes = 0;
+struct MailboxUsage {
+    std::uint64_t usedBytes = 0;
+    std::uint64_t quotaBytes = 0;
+
+    bool operator==(const MailboxUsage&) const = default;
 };
+
+struct OverviewDevice {
+    std::string device;
+    bool current = false;
+    std::size_t queued = 0;
+
+    bool operator==(const OverviewDevice&) const = default;
+};
+
+// What the Account page shows of the server's side; the version names one state of it.
+struct AccountOverview {
+    std::string version;
+    std::string dest;
+    std::string state;
+    std::int64_t transientExpires = 0;
+    MailboxUsage usage;
+    std::vector<OverviewDevice> devices;
+
+    bool operator==(const AccountOverview&) const = default;
+};
+
+nlohmann::json overviewToJson(const AccountOverview& overview);
+AccountOverview overviewFromJson(const nlohmann::json& body);
 
 struct PublishResult {
     std::string dest;
@@ -140,7 +164,10 @@ public:
     DestinationInfo sendI2pTransient(
         const Bytes& transient, std::int64_t expiresUnix, const AddressKeys& keys);
     I2pDestStatus i2pStatus();
-    StorageUsage storageUsage();
+    // Held while the approval is still `approval`; a refusal throws.
+    I2pDestStatus awaitApprovalChange(const std::string& approval);
+    // Answered at once without `since`; with it, held until the overview is another.
+    AccountOverview overview(const std::string& since = {});
     ContactInfo fetchCard(const Descriptor& descriptor, const FetchTransport& transport);
     // `solving` is called before the work starts when the resolver asks for work first.
     static Descriptor resolveAlias(const AliasQuery& alias, const ResolverCoordinate& resolver,
@@ -150,12 +177,6 @@ public:
 
     // `install` tells this copy of the device from any other copy of its keys.
     void registerThisDevice(const std::string& install);
-    struct DeviceEntry {
-        std::string device;
-        bool current = false;
-        std::size_t queued = 0;
-    };
-    std::vector<DeviceEntry> listClients();
     void registerPasses(const std::vector<Bytes>& handles);
     std::size_t revokePasses(const std::vector<Bytes>& handles);
     std::vector<PendingEntry> listPending();
@@ -163,6 +184,7 @@ public:
     enum class MailWait { eAtOnce, eHeld };
     // A held wait is not ended by the items named in `deferred`, which this device holds already.
     std::vector<PendingEntry> waitForPending(MailWait wait, const std::vector<std::string>& deferred);
+    std::optional<MailboxUsage> lastMailboxUsage() const;
     // Items no longer held are left out of the answer.
     std::vector<FetchedItem> fetch(const std::vector<std::string>& ids);
     void ack(const std::vector<std::string>& ids);
@@ -177,6 +199,7 @@ private:
     const DeviceCredential credential_;
     std::shared_ptr<WireLog> log_ = std::make_shared<WireLog>();
     ApiClient api_;
+    std::optional<MailboxUsage> lastMailboxUsage_;
 };
 
 }  // namespace bazarish::client
