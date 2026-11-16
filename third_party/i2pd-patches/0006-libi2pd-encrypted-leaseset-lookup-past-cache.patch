@@ -1,0 +1,32 @@
+--- a/libi2pd/Destination.cpp
++++ b/libi2pd/Destination.cpp
+@@ -794,6 +794,18 @@
+ 			Publish ();
+ 	}
+ 
++	bool LeaseSetDestination::RequestDestinationWithEncryptedLeaseSetFromNetDb (std::shared_ptr<const i2p::data::BlindedPublicKey> dest, RequestComplete requestComplete)
++	{
++		if (!dest || !m_Pool || !IsReady ())
++		{
++			if (requestComplete)
++				boost::asio::post (m_Service, [requestComplete](void){requestComplete (nullptr);});
++			return false;
++		}
++		boost::asio::post (m_Service, std::bind (&LeaseSetDestination::RequestLeaseSet, shared_from_this (), dest->GetStoreHash (), requestComplete, dest));
++		return true;
++	}
++
+ 	bool LeaseSetDestination::RequestDestination (const i2p::data::IdentHash& dest, RequestComplete requestComplete)
+ 	{
+ 		if (!m_Pool || !IsReady ())
+--- a/libi2pd/Destination.h
++++ b/libi2pd/Destination.h
+@@ -179,6 +179,8 @@
+ 			void ProcessDeliveryStatusMessage (std::shared_ptr<I2NPMessage> msg) override;
+ 			void SetLeaseSetUpdated (bool post) override;
+ 
++			// asks the netDb even when a current encrypted LeaseSet is cached; the cached one stays as it is
++			bool RequestDestinationWithEncryptedLeaseSetFromNetDb (std::shared_ptr<const i2p::data::BlindedPublicKey> dest, RequestComplete requestComplete = nullptr);
+ 			bool IsPublic () const { return m_IsPublic; };
+ 			void SetPublic (bool pub) { m_IsPublic = pub; };
+ 

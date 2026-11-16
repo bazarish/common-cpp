@@ -378,7 +378,7 @@ public:
     std::vector<TransportPeer> transportPeers() const;
     std::vector<LocalDestination> localDestinations() const;
     std::optional<DestinationDetail> destinationDetail(const std::string& host) const;
-    // Drops what localHost holds of remoteHost's lease set and asks the netDb again; blocks.
+    // Asks the netDb for remoteHost's lease set past what localHost holds, which stays as it is; blocks.
     LeaseSetRefresh refreshLeaseSet(const std::string& localHost, const std::string& remoteHost);
 
     void setSocksProxy(const std::string& host, int port);

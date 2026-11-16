@@ -69,3 +69,10 @@ file here.
   `unique_ptr` member and was destroyed after its `io_context`: a use-after-free at
   every process exit that ran the router (ASan, 2026-11-09). Drop this patch when
   upstream resets it before deleting the service.
+- `0006-libi2pd-encrypted-leaseset-lookup-past-cache.patch` - adds
+  `LeaseSetDestination::RequestDestinationWithEncryptedLeaseSetFromNetDb`, a lookup by
+  blinded key that asks the netDb even while a current copy is cached.
+  `RequestDestinationWithEncryptedLeaseSet` answers from the cache, so the only way to
+  look again was to expire the cached copy, which the streams and datagram sessions to
+  that destination share. A reply replaces the cached entry with a new object, so what
+  those already hold is not touched. Upstreamable as is; drop this patch when merged.

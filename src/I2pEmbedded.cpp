@@ -1616,10 +1616,8 @@ LeaseSetRefresh EmbeddedRouter::refreshLeaseSet(
     const std::shared_ptr<i2pd::client::ClientDestination> dest = held->dest;
     boost::asio::post(dest->GetService(), [dest, remoteHost, answered]() {
         LeaseSetRefresh refresh;
-        std::vector<std::shared_ptr<i2pd::data::LeaseSet>> cached;
         for (const auto& leaseSet : dest->GetLeaseSetsList()) {
             if (hasIdentity(leaseSet) && remoteHostOf(*leaseSet) == remoteHost) {
-                cached.push_back(leaseSet);
                 const LeaseSetSeen seen = seenOf(*leaseSet);
                 if (!refresh.before.has_value() || publishedLater(seen, refresh.before)) {
                     refresh.before = seen;
@@ -1642,11 +1640,7 @@ LeaseSetRefresh EmbeddedRouter::refreshLeaseSet(
             (void)dest->RequestDestination(*target->ident, done);
             return;
         }
-        // A lookup by blinded key answers from the cache while the cached copy is current.
-        for (const auto& leaseSet : cached) {
-            leaseSet->ExpireLease();
-        }
-        (void)dest->RequestDestinationWithEncryptedLeaseSet(target->blinded, done);
+        (void)dest->RequestDestinationWithEncryptedLeaseSetFromNetDb(target->blinded, done);
     });
     return answer.get();
 }
