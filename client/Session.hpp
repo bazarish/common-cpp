@@ -11,6 +11,7 @@
 #include "Client.hpp"
 #include "EpochRing.hpp"
 #include "FileTransfer.hpp"
+#include "KeptMail.hpp"
 #include "OutboundLeases.hpp"
 #include "Presence.hpp"
 #include "PresenceSeed.hpp"
@@ -504,6 +505,7 @@ public:
         bazarish::i2p::Privacy privacy = bazarish::i2p::Privacy::eMax;
         std::string accountLabel;
         FetchTransport transport;
+        std::shared_ptr<const KeptMail> keptMail;
     };
     struct AliasErrandContext {
         std::string rootPem;
@@ -559,7 +561,9 @@ public:
 
     ContactFetchContext contactFetchContext() const;
     static std::unique_ptr<Client> makeEventClient(const ContactFetchContext& context);
-    static std::vector<PendingEntry> waitForMail(Client& waiter, Client::MailWait wait);
+    // The items this device keeps are left out of the answer and do not end a held wait.
+    static std::vector<PendingEntry> waitForMail(
+        Client& waiter, Client::MailWait wait, const KeptMail& kept);
 
     enum class CardStep { eLookingUpAlias, eSolvingPuzzle, eFetchingCard };
     static ContactCardResolved resolveContactCard(const ContactFetchContext& context,
@@ -800,6 +804,8 @@ public:
 
     using AckSink = std::function<void(const std::string& pendingId)>;
     void setAckSink(AckSink sink);
+    // Told of each mailbox item released unread with no contact to note it for.
+    void onUnreadableMail(std::function<void()> tell);
 
     struct MailboxItem {
         PendingEntry entry;
@@ -1191,6 +1197,25 @@ private:
     std::vector<std::string> owedAcks_;
     void flushOwedAcks();
     void releaseItem(const std::string& pendingId);
+
+    enum class KeptCause { eEpochKey, eContactDevice };
+    struct KeptItem {
+        MailboxItem item;
+        KeptCause cause = KeptCause::eEpochKey;
+        // The epoch key id in hex, or the contact's fingerprint.
+        std::string waitsOn;
+    };
+    std::map<std::string, KeptItem> kept_;
+    const std::shared_ptr<KeptMail> keptMail_ = std::make_shared<KeptMail>();
+    // An epoch key or the own device list arrived since kept items were last tried.
+    bool ownKeysArrived_ = false;
+    std::set<std::string> devicesArrivedFor_;
+    std::function<void()> unreadableMail_;
+    bool awaitsOwnEpochKey(const Bytes& kid) const;
+    // False when the bound on kept items is reached.
+    bool keepItem(const MailboxItem& item, KeptCause cause, const std::string& waitsOn);
+    bool appendReadyKept(std::vector<MailboxItem>& items);
+    void dropUnreadable(const std::string& pendingId, const std::string& why);
     Bytes deliverySecret_;
     Bytes cardKey_;
     std::map<std::string, Contact> contacts_;

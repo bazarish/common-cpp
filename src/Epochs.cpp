@@ -93,6 +93,30 @@ Bytes epochKid(const EpochNumber n, const EpochGeneration g, const std::string& 
     return kid;
 }
 
+std::optional<EpochKidParts> parseEpochKid(const Bytes& kid)
+{
+    constexpr std::size_t kNumbersEnd
+        = sizeof(kEpochKidTag) + kEpochKidNumberBytes + kEpochKidGenerationBytes;
+    if (kid.size() <= kNumbersEnd || kid.front() != kEpochKidTag) {
+        return std::nullopt;
+    }
+    const auto readBigEndian = [&kid](const std::size_t from, const std::size_t bytes) {
+        std::int64_t value = 0;
+        for (std::size_t i = 0; i < bytes; ++i) {
+            value = (value << CHAR_BIT) | kid[from + i];
+        }
+        return value;
+    };
+    EpochKidParts parts;
+    parts.n = readBigEndian(sizeof(kEpochKidTag), kEpochKidNumberBytes);
+    parts.g = readBigEndian(sizeof(kEpochKidTag) + kEpochKidNumberBytes, kEpochKidGenerationBytes);
+    parts.by.assign(kid.begin() + static_cast<std::ptrdiff_t>(kNumbersEnd), kid.end());
+    if (!isDeviceId(parts.by)) {
+        return std::nullopt;
+    }
+    return parts;
+}
+
 bool chosenOver(const EpochGeneration g, const std::string& by, const EpochGeneration otherG,
     const std::string& otherBy)
 {

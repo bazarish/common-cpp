@@ -151,6 +151,12 @@ bool EpochRing::holds(const EpochNumber n) const
     return false;
 }
 
+bool EpochRing::holdsKid(const Bytes& kid) const
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return byKid_.contains(toHex(kid));
+}
+
 SecretBytes EpochRing::open(const Bytes& frame) const
 {
     const std::string kid = toHex(hybrid::sealedKid(frame));

@@ -57,6 +57,14 @@ struct EpochPublic {
 };
 
 Bytes epochKid(EpochNumber n, EpochGeneration g, const std::string& by);
+
+struct EpochKidParts {
+    EpochNumber n = 0;
+    EpochGeneration g = 0;
+    std::string by;
+};
+// Empty when the id is not an epoch key's.
+std::optional<EpochKidParts> parseEpochKid(const Bytes& kid);
 // For one epoch: the key of the higher generation, then of the maker with the smaller id.
 bool chosenOver(EpochGeneration g, const std::string& by, EpochGeneration otherG,
     const std::string& otherBy);

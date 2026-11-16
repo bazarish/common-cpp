@@ -161,7 +161,8 @@ public:
     std::vector<PendingEntry> listPending();
     // A held wait ends when mail arrives or the link breaks, and at no set time.
     enum class MailWait { eAtOnce, eHeld };
-    std::vector<PendingEntry> waitForPending(MailWait wait);
+    // A held wait is not ended by the items named in `deferred`, which this device holds already.
+    std::vector<PendingEntry> waitForPending(MailWait wait, const std::vector<std::string>& deferred);
     // Items no longer held are left out of the answer.
     std::vector<FetchedItem> fetch(const std::vector<std::string>& ids);
     void ack(const std::vector<std::string>& ids);

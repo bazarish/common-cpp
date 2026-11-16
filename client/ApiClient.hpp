@@ -50,6 +50,8 @@ struct ServerEndpoint {
 
 inline constexpr const char* kEventsPath = "/v1/messaging/events";
 inline constexpr const char* kEventsHoldQuery = "hold=1";
+inline constexpr const char* kEventsDeferredKey = "deferred";
+inline constexpr char kEventsDeferredSeparator = ',';
 inline constexpr int kNoReadDeadline = 0;
 
 struct ApiResponse {

@@ -2978,6 +2978,7 @@ Session::ContactFetchContext Session::contactFetchContext() const
     ctx.privacy = tunnelPrivacy();
     ctx.accountLabel = accountLabel();
     ctx.transport = fetchTransportOverride_;
+    ctx.keptMail = keptMail_;
     return ctx;
 }
 
@@ -2990,9 +2991,12 @@ std::unique_ptr<Client> Session::makeEventClient(const ContactFetchContext& cont
     return waiter;
 }
 
-std::vector<PendingEntry> Session::waitForMail(Client& waiter, const Client::MailWait wait)
+std::vector<PendingEntry> Session::waitForMail(
+    Client& waiter, const Client::MailWait wait, const KeptMail& kept)
 {
-    return waiter.waitForPending(wait);
+    std::vector<PendingEntry> waiting = waiter.waitForPending(wait, kept.ids());
+    std::erase_if(waiting, [&kept](const PendingEntry& entry) { return kept.holds(entry.id); });
+    return waiting;
 }
 
 Session::ContactCardResolved Session::resolveContactCard(const ContactFetchContext& context,
@@ -4316,7 +4320,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
     tellCourier([](OutboundCourier& courier) { courier.heard(kOwnMailboxRoute); });
     std::vector<PendingEntry> taking;
     for (const PendingEntry& entry : waiting) {
-        if (awaitingAck_.find(entry.id) != awaitingAck_.end()) {
+        if (awaitingAck_.find(entry.id) != awaitingAck_.end() || keptMail_->holds(entry.id)) {
             continue;
         }
         if (maxItems > 0 && taking.size() >= maxItems) {
@@ -4373,27 +4377,34 @@ std::vector<IncomingMessage> Session::takeIn(
     std::set<std::string> resolvedPeers;
     const log::Slow timedItems(
         "taking in " + std::to_string(items.size()) + " mailbox item(s)", kSlowStretch);
-    for (MailboxItem& item : items) {
+    std::set<std::string> cardCame;
+    for (std::size_t at = 0; at < items.size() || appendReadyKept(items); ++at) {
+        MailboxItem& item = items[at];
         const PendingEntry& entry = item.entry;
-        if (awaitingAck_.find(entry.id) != awaitingAck_.end()) {
+        if (awaitingAck_.find(entry.id) != awaitingAck_.end() || keptMail_->holds(entry.id)) {
             continue;
         }
         const log::Slow timedItem("taking in " + entry.id, kSlowStretch);
         try {
             const Bytes blob = std::move(item.blob);
+            if (awaitsOwnEpochKey(hybrid::sealedKid(blob))) {
+                if (!keepItem({entry, blob}, KeptCause::eEpochKey, toHex(hybrid::sealedKid(blob)))) {
+                    dropUnreadable(entry.id, "too many items wait for a key already");
+                }
+                continue;
+            }
             const SecretBytes plain = openItem(blob);
             std::vector<nlohmann::json> bodies = decodedBody(plain.bytes());
             const JsonWipe wipedBodies(bodies);
             if (entry.deliveryClass == kContactDeliveryClass
                 && (bodies.size() != 1
                     || bodies.front().value("type", std::string()) != "contact.request")) {
-                bazarish::log::warn("sync: dropping a contact delivery that is not one request");
-                noteWire(false, "contact delivery that is not one request", "dropped", {});
-                releaseItem(entry.id);
+                dropUnreadable(entry.id, "a contact delivery that is not one request");
                 continue;
             }
             std::vector<IncomingMessage> surfaced;
             std::set<std::string> unreadFrom;
+            std::string keepFor;
             for (nlohmann::json& body : bodies) {
                 std::string verifiedFrom;
                 try {
@@ -4416,10 +4427,16 @@ std::vector<IncomingMessage> Session::takeIn(
                             && resolvedPeers.insert(claimed).second) {
                             const std::optional<ContactInfo> info = fetchContactCard(claimed).info;
                             if (info.has_value()) {
+                                cardCame.insert(claimed);
                                 takeContactBook(contacts_.at(claimed), info->card.devices);
                                 persistContacts();
                                 attempt();
                             }
+                        }
+                        if (!signer.has_value() && &body == &bodies.front()
+                            && unknownDeviceOf(claimed, body) && !cardCame.contains(claimed)) {
+                            keepFor = claimed;
+                            break;
                         }
                         if (!signer.has_value()) {
                             bazarish::log::warn("sync: dropping an item that does not name its "
@@ -4977,6 +4994,12 @@ std::vector<IncomingMessage> Session::takeIn(
                     }
                 }
             }
+            if (!keepFor.empty()) {
+                if (keepItem({entry, blob}, KeptCause::eContactDevice, keepFor)) {
+                    continue;
+                }
+                unreadFrom.insert(keepFor);
+            }
             for (const std::string& peer : unreadFrom) {
                 IncomingMessage note;
                 note.contentType = kTypeUnreadable;
@@ -4995,10 +5018,7 @@ std::vector<IncomingMessage> Session::takeIn(
         } catch (const StorageError&) {
             throw;
         } catch (const std::exception& error) {
-            bazarish::log::warn(
-                "sync: dropping unreadable pending item: {}", error.what());
-            noteWire(false, "unreadable item", "dropped", error.what());
-            releaseItem(entry.id);
+            dropUnreadable(entry.id, error.what());
         }
     }
     persistContacts();
@@ -5094,6 +5114,68 @@ void Session::openOutboxWhenAnswered(MailWaitGate& gate)
 void Session::setAckSink(AckSink sink)
 {
     ackSink_ = std::move(sink);
+}
+
+void Session::onUnreadableMail(std::function<void()> tell)
+{
+    unreadableMail_ = std::move(tell);
+}
+
+void Session::dropUnreadable(const std::string& pendingId, const std::string& why)
+{
+    bazarish::log::warn("sync: an unreadable mailbox item was released: {}", why);
+    noteWire(false, "unreadable item", "dropped", why);
+    releaseItem(pendingId);
+    if (unreadableMail_) {
+        unreadableMail_();
+    }
+}
+
+bool Session::awaitsOwnEpochKey(const Bytes& kid) const
+{
+    if (namesDevice(kid) || ring_->holdsKid(kid)) {
+        return false;
+    }
+    const std::optional<EpochKidParts> parts = parseEpochKid(kid);
+    if (!parts.has_value() || parts->by == deviceId()
+        || epochClock_() >= epochEnd(parts->n) + kEpochKeptAfterEndSeconds) {
+        return false;
+    }
+    const std::optional<DeviceCertificate> maker = ownBook_.active(parts->by);
+    return maker.has_value() && maker->role == DeviceRole::ePrimary;
+}
+
+bool Session::keepItem(const MailboxItem& item, const KeptCause cause, const std::string& waitsOn)
+{
+    if (!keptMail_->keep(item.entry.id)) {
+        return false;
+    }
+    bazarish::log::info("sync: item {} is kept until {} arrives", item.entry.id,
+        cause == KeptCause::eEpochKey ? "its epoch key" : "its author's device");
+    kept_.insert_or_assign(item.entry.id, KeptItem{item, cause, waitsOn});
+    return true;
+}
+
+bool Session::appendReadyKept(std::vector<MailboxItem>& items)
+{
+    const bool ownKeys = std::exchange(ownKeysArrived_, false);
+    const std::set<std::string> devicesFor = std::exchange(devicesArrivedFor_, {});
+    bool added = false;
+    for (auto held = kept_.begin(); held != kept_.end();) {
+        const KeptItem& kept = held->second;
+        const bool ready = kept.cause == KeptCause::eEpochKey
+            ? ownKeys && !awaitsOwnEpochKey(fromHex(kept.waitsOn))
+            : devicesFor.contains(kept.waitsOn);
+        if (!ready) {
+            ++held;
+            continue;
+        }
+        keptMail_->release(held->first);
+        items.push_back(kept.item);
+        added = true;
+        held = kept_.erase(held);
+    }
+    return added;
 }
 
 void Session::releaseItem(const std::string& pendingId)
@@ -5946,6 +6028,7 @@ void Session::takeOwnEpochs(const std::string& fromDevice, const nlohmann::json&
     if (!added) {
         return;
     }
+    ownKeysArrived_ = true;
     persistRing();
     epochsCheckedDay_.reset();
     tellCourier([this](OutboundCourier& courier) {
@@ -6068,6 +6151,7 @@ void Session::takeContactBook(Contact& contact, const DeviceBook& offered)
         contact.devices.take(offered.activeCertDers(),
             offered.complete() ? std::optional<Bytes>(offered.revocationDer()) : std::nullopt);
         dropUnmadeEpochs(contact);
+        devicesArrivedFor_.insert(contact.devices.root());
     }
 }
 
@@ -6088,6 +6172,7 @@ void Session::takeContactDevices(const std::string& peerFingerprint, const nlohm
     }
     contact.devices = std::move(next);
     dropUnmadeEpochs(contact);
+    devicesArrivedFor_.insert(peerFingerprint);
     persistContacts();
     tellCourier([&](OutboundCourier& courier) { courier.rekey(peerFingerprint, contact.epochs); });
     setPresenceOrder(presenceOrder_);

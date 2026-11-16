@@ -3162,6 +3162,135 @@ int main()
             CHECK(!sawErased);
             CHECK(sawCurrent);
 
+            int unreadable = 0;
+            gina2->onUnreadableMail([&unreadable]() { ++unreadable; });
+            const auto lastIdFor = [&](const std::string& account) {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[account].back().id;
+            };
+            const auto stillPending = [&](const std::string& account, const std::string& id) {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                const std::vector<Mock::Item>& box = m.mailbox[account];
+                return std::any_of(
+                    box.begin(), box.end(), [&id](const Mock::Item& item) { return item.id == id; });
+            };
+            const auto readNow = [](Session& session, const std::string& text) {
+                for (const IncomingMessage& item : session.sync()) {
+                    if (item.text == text) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            const auto intoDevice = [&](Session& to, const fs::path& toDir, nlohmann::json inner,
+                                        const DeviceCredential& by) {
+                inner["v"] = 1;
+                inner["id"] = toHex(randomBytes(kMessageIdBytes));
+                inner["from"] = gina->fingerprint();
+                inner["sentAt"] = nowMillis();
+                signAuthorship(inner, by, /*withCert=*/false);
+                const Key sealing
+                    = Key::fromPrivatePem(AccountDb(toDir, std::string{}).text("device-sealing.pem"));
+                const std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[gina->fingerprint()].push_back({inner.at("id").get<std::string>(), "device",
+                    hybrid::seal(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({inner}))),
+                        Key::fromPublicDer(sealing.publicDer()), deviceKid(to.deviceId())),
+                    to.deviceId()});
+            };
+
+            {
+                const DeviceCredential ginaDevice = deviceOf(scratch / "bz-epochs-gina");
+                const EpochPublic held = gina->ownEpochs().back();
+                const Key raced = Key::generateSealing();
+                const EpochPublic racedEpoch{held.n + 1, held.g, gina->deviceId(), raced.publicDer()};
+                sealedFromHal("sealed before its key came", racedEpoch);
+                const std::string racedId = lastIdFor(gina->fingerprint());
+                CHECK(!readNow(*gina2, "sealed before its key came"));
+                CHECK(stillPending(gina->fingerprint(), racedId));
+                CHECK(unreadable == 0);
+                intoDevice(*gina2, twinDir,
+                    {{"type", "device.epochs"},
+                        {"epochs", nlohmann::json::array({{{"n", racedEpoch.n}, {"g", racedEpoch.g},
+                                       {"by", racedEpoch.by}, {"pem", raced.privatePem()}}})}},
+                    ginaDevice);
+                CHECK(readNow(*gina2, "sealed before its key came"));
+                CHECK(testutil::waitFor([&]() {
+                    gina2->sync();
+                    return !stillPending(gina->fingerprint(), racedId);
+                }));
+                std::printf("TestDeliveryPass: a letter sealed before its key came was read once "
+                            "device.epochs arrived\n");
+            }
+
+            {
+                const Identity halRoot
+                    = Identity::fromPrivatePem(AccountDb(scratch / "bz-epochs-hal", std::string{}).text("root.pem"));
+                const DeviceKeys tab = DeviceKeys::generate();
+                const Bytes tabCert = DeviceCertificate::issue(
+                    halRoot, DevicePublic::of(tab), DeviceRole::eSecondary, nowSeconds());
+                const DeviceCredential tabKey(Identity::fromPrivatePem(tab.signingPem()), tabCert);
+                nlohmann::json fromTab = {{"v", 1}, {"type", "text"},
+                    {"id", toHex(randomBytes(kMessageIdBytes))}, {"from", hal->fingerprint()},
+                    {"sentAt", nowMillis()}, {"text", "from hal's new tablet"}};
+                signAuthorship(fromTab, tabKey, /*withCert=*/false);
+                {
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    m.mailbox[gina->fingerprint()].push_back({fromTab.at("id").get<std::string>(),
+                        "content",
+                        sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({fromTab}))),
+                            gina->ownEpochs().front())});
+                }
+                const std::string tabId = lastIdFor(gina->fingerprint());
+                gina2->setFetchTransport([](const std::string&, const std::string&, const Bytes&) -> FetchOutcome {
+                    throw std::runtime_error("the card does not come in this test");
+                });
+                CHECK(!readNow(*gina2, "from hal's new tablet"));
+                CHECK(stillPending(gina->fingerprint(), tabId));
+                gina2->setFetchTransport(directDial);
+                const DeviceBook halBook = [&]() {
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    return ContactCard::verify(fromBase64(m.certFor.at(hal->fingerprint()))).devices;
+                }();
+                nlohmann::json certs = nlohmann::json::array();
+                for (const Bytes& der : halBook.activeCertDers()) {
+                    certs.push_back(toBase64(der));
+                }
+                certs.push_back(toBase64(tabCert));
+                nlohmann::json devices = {{"v", 1}, {"type", "account.devices"},
+                    {"id", toHex(randomBytes(kMessageIdBytes))}, {"from", hal->fingerprint()},
+                    {"sentAt", nowMillis()}, {"devices", certs},
+                    {"revocation", toBase64(halBook.revocationDer())}};
+                signAuthorship(devices, halIdentity, /*withCert=*/false);
+                {
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    m.mailbox[gina->fingerprint()].push_back({devices.at("id").get<std::string>(),
+                        "content",
+                        sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({devices}))),
+                            gina->ownEpochs().front())});
+                }
+                CHECK(readNow(*gina2, "from hal's new tablet"));
+                std::printf("TestDeliveryPass: a letter of an unknown device of a contact was read "
+                            "once its device list arrived\n");
+            }
+
+            {
+                const DeviceKeys stranger = DeviceKeys::generate();
+                const std::string strangerDevice = DeviceCertificate::verify(DeviceCertificate::issue(
+                    Identity::generate(), DevicePublic::of(stranger), DeviceRole::ePrimary, nowSeconds()))
+                                                       .device;
+                sealedFromHal("sealed to a key no device of ours made",
+                    EpochPublic{gina->ownEpochs().front().n, gina->ownEpochs().front().g, strangerDevice,
+                        Key::generateSealing().publicDer()});
+                const std::string strayId = lastIdFor(gina->fingerprint());
+                CHECK(!readNow(*gina2, "sealed to a key no device of ours made"));
+                CHECK(unreadable == 1);
+                CHECK(testutil::waitFor([&]() {
+                    gina2->sync();
+                    return !stillPending(gina->fingerprint(), strayId);
+                }));
+            }
+            gina2->onUnreadableMail({});
+
             utc.store(epochEnd(gina->ownEpochs().back().n) - kLowEpochReserveDays * kSecondsPerDay + 1);
             CHECK(gina->ownEpochReserveLow());
         }

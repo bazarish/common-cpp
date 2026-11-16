@@ -404,10 +404,21 @@ std::size_t Client::revokePasses(const std::vector<Bytes>& handles)
         .get<std::size_t>();
 }
 
-std::vector<PendingEntry> Client::waitForPending(const MailWait wait)
+std::vector<PendingEntry> Client::waitForPending(
+    const MailWait wait, const std::vector<std::string>& deferred)
 {
     const bool held = wait == MailWait::eHeld;
-    const ApiResponse response = api_.getWaiting(kEventsPath, held ? kEventsHoldQuery : "",
+    std::string query = held ? kEventsHoldQuery : "";
+    if (held && !deferred.empty()) {
+        query += std::string("&") + kEventsDeferredKey + "=";
+        for (std::size_t i = 0; i < deferred.size(); ++i) {
+            if (i > 0) {
+                query += kEventsDeferredSeparator;
+            }
+            query += deferred[i];
+        }
+    }
+    const ApiResponse response = api_.getWaiting(kEventsPath, query,
         held ? kNoReadDeadline : ApiClient::kDefaultReadTimeoutSeconds);
     const std::vector<PendingEntry> entries = pendingEntries(response.json().at("pending"));
     if (!entries.empty()) {

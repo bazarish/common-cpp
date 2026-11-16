@@ -1,5 +1,7 @@
 // Bazarish project (c) 2026
 #include "Client.hpp"
+#include "KeptMail.hpp"
+#include "Session.hpp"
 
 #include "ResolverStub.hpp"
 #include "DeviceTestKit.hpp"
@@ -229,6 +231,17 @@ int main()
                         {{"id", "blob2"}, {"class", "contact"}, {"bytes", 4}}})}});
         }));
 
+    std::string waitedWith;
+    server.get(kEventsPath,
+        stub([&](const http::Request& request, http::Response& response) {
+            (void)requireCaller(request);
+            waitedWith = request.query(kEventsDeferredKey);
+            respondJson(response,
+                {{"pending",
+                    nlohmann::json::array({{{"id", "blob1"}, {"class", "content"}, {"bytes", 9}},
+                        {{"id", "blob2"}, {"class", "contact"}, {"bytes", 4}}})}});
+        }));
+
     server.post("/v1/messaging/fetch",
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
@@ -385,6 +398,19 @@ int main()
         CHECK(inner.at("mailbox") == bob.fingerprint());
         CHECK(inner.at("deliveryId") == "msg-1");
         CHECK(fromBase64(inner.at("pass").get<std::string>()) == pass);
+    }
+
+    {
+        KeptMail kept;
+        CHECK(kept.keep("blob1"));
+        const std::vector<PendingEntry> news
+            = Session::waitForMail(client, Client::MailWait::eHeld, kept);
+        CHECK(waitedWith == "blob1");
+        CHECK(news.size() == 1 && news.front().id == "blob2");
+        for (std::size_t i = 0; kept.ids().size() < kMaxDeferredMailItems; ++i) {
+            CHECK(kept.keep("held-" + std::to_string(i)));
+        }
+        CHECK(!kept.keep("one-too-many"));
     }
 
     server.stop();

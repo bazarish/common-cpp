@@ -43,6 +43,8 @@ inline constexpr std::size_t kMaxPassesPerMailbox = 4096;
 // Any one stored item fits.
 inline constexpr std::size_t kMaxFetchBytes = 2 * kMaxMessagePayloadBytes;
 inline constexpr std::size_t kMaxAckIdsPerRequest = 256;
+// ClientApi.md, events: the ids a held wait may name as already held.
+inline constexpr std::size_t kMaxDeferredMailItems = 32;
 
 inline constexpr std::size_t kMaxRequestBodyBytes = 2 * 1024 * 1024;
 
