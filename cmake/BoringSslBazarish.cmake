@@ -2,27 +2,6 @@
 # BoringSSL for the TLS of the gateway link alone, built from the pristine submodule's
 # generated source lists. Never installed and never exported: find_package(OpenSSL) must not see it.
 
-option(BAZARISH_GATEWAY_TLS_OPENSSL
-    "Windows only, until BoringSSL builds there: the gateway link over OpenSSL, without a browser's ClientHello"
-    OFF)
-
-if(BAZARISH_GATEWAY_TLS_OPENSSL AND NOT WIN32)
-    message(FATAL_ERROR "BAZARISH_GATEWAY_TLS_OPENSSL is for Windows only")
-endif()
-if(WIN32 AND NOT BAZARISH_GATEWAY_TLS_OPENSSL)
-    message(FATAL_ERROR
-        "BoringSSL is not built for Windows yet. Configure with -DBAZARISH_GATEWAY_TLS_OPENSSL=ON: "
-        "the gateway link then shows OpenSSL's ClientHello, not a browser's")
-endif()
-
-if(BAZARISH_GATEWAY_TLS_OPENSSL)
-    message(WARNING "The gateway link is built over OpenSSL: its ClientHello is not a browser's")
-    add_library(bazarish_gateway_tls STATIC ${CMAKE_CURRENT_SOURCE_DIR}/src/OpenSslTlsEngine.cpp)
-    target_link_libraries(bazarish_gateway_tls PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-    target_compile_options(bazarish_gateway_tls PRIVATE -Wall -Wextra -Werror)
-    return()
-endif()
-
 set(BORINGSSL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/boringssl)
 # The pinned commit is the one Chrome 157.0.8103.78 builds with (its DEPS, boringssl_revision).
 set(BAZARISH_BORINGSSL_PREFIX BZB)
@@ -34,11 +13,21 @@ if(NOT EXISTS ${BORINGSSL_DIR}/gen/sources.cmake)
 endif()
 
 enable_language(C)
-enable_language(ASM)
 include(${BORINGSSL_DIR}/gen/sources.cmake)
 
+# The x86 assembly in the .S files is ELF and Mach-O only; COFF on x86 takes BoringSSL's NASM output.
+if(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64|amd64|x86|i[3-6]86")
+    enable_language(ASM_NASM)
+    set(CMAKE_ASM_NASM_FLAGS
+        "${CMAKE_ASM_NASM_FLAGS} -DBORINGSSL_PREFIX=${BAZARISH_BORINGSSL_PREFIX} -I${BORINGSSL_DIR}/gen/")
+    set(BORINGSSL_BAZARISH_ASM ${BCM_SOURCES_NASM} ${CRYPTO_SOURCES_NASM})
+else()
+    enable_language(ASM)
+    set(BORINGSSL_BAZARISH_ASM ${BCM_SOURCES_ASM} ${CRYPTO_SOURCES_ASM})
+endif()
+
 set(BORINGSSL_BAZARISH_SOURCES
-    ${BCM_SOURCES} ${CRYPTO_SOURCES} ${SSL_SOURCES} ${BCM_SOURCES_ASM} ${CRYPTO_SOURCES_ASM})
+    ${BCM_SOURCES} ${CRYPTO_SOURCES} ${SSL_SOURCES} ${BORINGSSL_BAZARISH_ASM})
 list(TRANSFORM BORINGSSL_BAZARISH_SOURCES PREPEND ${BORINGSSL_DIR}/)
 
 add_library(boringssl_bazarish STATIC ${BORINGSSL_BAZARISH_SOURCES})
@@ -55,7 +44,10 @@ target_compile_options(boringssl_bazarish PRIVATE
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(boringssl_bazarish PRIVATE $<$<COMPILE_LANGUAGE:C>:_XOPEN_SOURCE=700>)
 endif()
-if(NOT ANDROID)
+if(WIN32)
+    target_compile_definitions(boringssl_bazarish PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(boringssl_bazarish PRIVATE ws2_32)
+elseif(NOT ANDROID)
     target_link_libraries(boringssl_bazarish PRIVATE Threads::Threads)
 endif()
 

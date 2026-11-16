@@ -198,6 +198,7 @@ bazarish_add_test(TestHostCache)
 bazarish_add_test(TestLoginChallenge)
 bazarish_add_test(TestConfigFile)
 bazarish_add_test(TestWebAssets)
+bazarish_add_test(TestChromeTls)
 
 # These fake the far end over POSIX sockets; Windows is a client-only target.
 if(NOT WIN32)
@@ -205,7 +206,6 @@ if(NOT WIN32)
     bazarish_add_test(TestSam)
     bazarish_add_test(TestI2pHttp)
     bazarish_add_test(TestWebSocketTlsDuplex)
-    bazarish_add_test(TestChromeTls)
     bazarish_add_test(TestBrowserHeaders)
 endif()
 

@@ -4,10 +4,8 @@
 #include "TestUtil.hpp"
 #include "WebCredential.hpp"
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
 
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -29,6 +27,9 @@
 
 using namespace bazarish;
 using namespace bazarish::http;
+
+namespace asio = boost::asio;
+using Tcp = asio::ip::tcp;
 
 namespace {
 
@@ -267,19 +268,15 @@ std::string ja3n(const Hello& hello)
     return digestHex(EVP_md5(), text);
 }
 
-int listening(int& port)
+Tcp::endpoint loopback(const int port)
 {
-    const int handle = ::socket(AF_INET, SOCK_STREAM, 0);
-    CHECK(handle >= 0);
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = ::inet_addr(kLoopback);
-    CHECK(::bind(handle, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0);
-    CHECK(::listen(handle, kSmallCount) == 0);
-    socklen_t length = sizeof address;
-    CHECK(::getsockname(handle, reinterpret_cast<sockaddr*>(&address), &length) == 0);
-    port = ntohs(address.sin_port);
-    return handle;
+    return Tcp::endpoint(asio::ip::make_address(kLoopback), static_cast<std::uint16_t>(port));
+}
+
+// OpenSSL takes a Winsock handle as an int: Windows keeps socket handles within 32 bits.
+int sslHandle(Tcp::socket& socket)
+{
+    return static_cast<int>(socket.native_handle());
 }
 
 // An OpenSSL server that keeps every ClientHello it is sent and answers each request with "ok".
@@ -288,6 +285,8 @@ public:
     HelloServer(const tls::Credential& credential, std::string chosen)
         : chosen_(std::move(chosen))
         , context_(SSL_CTX_new(TLS_server_method()))
+        , listener_(io_, loopback(0))
+        , port_(listener_.local_endpoint().port())
     {
         CHECK(context_ != nullptr);
         CHECK(SSL_CTX_use_certificate_chain_file(
@@ -299,15 +298,14 @@ public:
         SSL_CTX_set_msg_callback(context_.get(), heard);
         CHECK(SSL_CTX_set_app_data(context_.get(), this) == 1);
         SSL_CTX_set_alpn_select_cb(context_.get(), choose, this);
-        listen_ = listening(port_);
         acceptor_ = std::thread([this]() { acceptAll(); });
     }
 
     ~HelloServer()
     {
         running_.store(false);
-        ::shutdown(listen_, SHUT_RDWR);
-        ::close(listen_);
+        Tcp::socket wake(io_);
+        wake.connect(loopback(port_));
         acceptor_.join();
         for (std::thread& worker : workers_) {
             worker.join();
@@ -362,20 +360,22 @@ private:
 
     void acceptAll()
     {
-        while (running_.load()) {
-            const int in = ::accept(listen_, nullptr, nullptr);
-            if (in < 0) {
+        for (;;) {
+            Tcp::socket in(io_);
+            boost::system::error_code failed;
+            listener_.accept(in, failed);
+            if (failed || !running_.load()) {
                 return;
             }
-            workers_.emplace_back([this, in]() { serve(in); });
+            workers_.emplace_back([this, in = std::move(in)]() mutable { serve(in); });
         }
     }
 
-    void serve(const int in)
+    void serve(Tcp::socket& in)
     {
         const SslPtr session(SSL_new(context_.get()));
         CHECK(session != nullptr);
-        CHECK(SSL_set_fd(session.get(), in) == 1);
+        CHECK(SSL_set_fd(session.get(), sslHandle(in)) == 1);
         if (SSL_accept(session.get()) == 1) {
             std::string pending;
             std::vector<char> buffer(kBufferBytes);
@@ -397,13 +397,13 @@ private:
                 }
             }
         }
-        ::close(in);
     }
 
     const std::string chosen_;
     const SslContextPtr context_;
-    int listen_ = -1;
-    int port_ = 0;
+    asio::io_context io_;
+    Tcp::acceptor listener_;
+    const int port_;
     std::atomic<bool> running_{true};
     std::atomic<std::size_t> dataRecordsIn_{0};
     std::thread acceptor_;
@@ -426,16 +426,12 @@ SocketDial dialTo(const int port)
 // OpenSSL's own client in the same process: one request, one answer.
 bool openSslAsks(SSL_CTX* const context, const int port)
 {
-    const int handle = ::socket(AF_INET, SOCK_STREAM, 0);
-    CHECK(handle >= 0);
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = ::inet_addr(kLoopback);
-    address.sin_port = htons(static_cast<std::uint16_t>(port));
-    CHECK(::connect(handle, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0);
+    asio::io_context io;
+    Tcp::socket socket(io);
+    socket.connect(loopback(port));
     const SslPtr session(SSL_new(context));
     CHECK(session != nullptr);
-    CHECK(SSL_set_fd(session.get(), handle) == 1);
+    CHECK(SSL_set_fd(session.get(), sslHandle(socket)) == 1);
     bool answered = false;
     if (SSL_connect(session.get()) == 1) {
         const std::string request(kRequest);
@@ -453,7 +449,6 @@ bool openSslAsks(SSL_CTX* const context, const int port)
         }
         answered = got.rfind("HTTP/1.1 200", 0) == 0;
     }
-    ::close(handle);
     return answered;
 }
 
@@ -461,8 +456,10 @@ bool openSslAsks(SSL_CTX* const context, const int port)
 
 int main()
 {
+#ifndef _WIN32
     // The server below writes tickets to clients that may already have hung up.
     CHECK(std::signal(SIGPIPE, SIG_IGN) != SIG_ERR);
+#endif
     const std::filesystem::path root = testutil::freshDir("chrome-tls-test");
     const tls::Credential credential = testutil::webCredential(root);
 
