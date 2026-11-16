@@ -183,7 +183,8 @@ const std::string kMessageColumns = "id, peer, outgoing, type, e2eId, text, attN
                                     " (SELECT author FROM group_posts g"
                                     " WHERE g.peer = messages.peer AND g.e2eId = messages.e2eId),"
                                     " (SELECT contactable FROM group_posts g"
-                                    " WHERE g.peer = messages.peer AND g.e2eId = messages.e2eId)";
+                                    " WHERE g.peer = messages.peer AND g.e2eId = messages.e2eId),"
+                                    " EXISTS (SELECT 1 FROM group_mentions n WHERE n.id = messages.id)";
 
 void sortByOrder(std::vector<StoredMessage>& rows)
 {
@@ -224,6 +225,7 @@ StoredMessage readMessageRow(const Query& query)
     m.author = query.text(23);
     m.contactable = query.flag(24);
     m.fromHost = !query.isNull(23) && m.author.empty();
+    m.mentionsMe = query.flag(25);
     return m;
 }
 
@@ -393,6 +395,13 @@ bool TranscriptStore::open(const fs::path& file, const std::string& passphrase)
              "CREATE TABLE IF NOT EXISTS group_state ("
              "peer TEXT PRIMARY KEY, kind TEXT, members INTEGER, write INTEGER,"
              " admin INTEGER, at INTEGER)",
+             "CREATE TABLE IF NOT EXISTS group_members ("
+             "peer TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (peer, name))",
+             "CREATE TABLE IF NOT EXISTS group_rosters ("
+             "peer TEXT PRIMARY KEY, state INTEGER NOT NULL, own TEXT NOT NULL)",
+             "CREATE TABLE IF NOT EXISTS group_mentions ("
+             "id INTEGER PRIMARY KEY, peer TEXT NOT NULL)",
+             "CREATE INDEX IF NOT EXISTS group_mentions_by_peer ON group_mentions (peer, id)",
              "CREATE TABLE IF NOT EXISTS chat_timers ("
              "peer TEXT PRIMARY KEY, seconds INTEGER NOT NULL)",
              "CREATE TABLE IF NOT EXISTS bot_menus (peer TEXT PRIMARY KEY, items TEXT NOT NULL)",
@@ -474,6 +483,16 @@ std::int64_t TranscriptStore::append(const StoredMessage& message)
         post.bind(message.author);
         post.bind(message.contactable ? 1 : 0);
         if (!post.exec()) {
+            failed();
+            return 0;
+        }
+    }
+    if (message.mentionsMe) {
+        Query mention(db_);
+        mention.prepare("INSERT INTO group_mentions (id, peer) VALUES (?, ?)");
+        mention.bind(id);
+        mention.bind(message.peer);
+        if (!mention.exec()) {
             failed();
             return 0;
         }
@@ -860,8 +879,8 @@ std::optional<std::string> TranscriptStore::removeRow(const std::int64_t id)
             }
         }
     }
-    for (const char* const statement :
-        {"DELETE FROM expiries WHERE id = ?", "DELETE FROM messages WHERE id = ?"}) {
+    for (const char* const statement : {"DELETE FROM expiries WHERE id = ?",
+             "DELETE FROM group_mentions WHERE id = ?", "DELETE FROM messages WHERE id = ?"}) {
         Query query(db_);
         query.prepare(statement);
         query.bind(id);
@@ -880,7 +899,8 @@ bool TranscriptStore::clearPeerRows(const std::string& peer)
     for (const char* const statement : {"DELETE FROM messages WHERE peer = ?",
              "DELETE FROM expiries WHERE peer = ?", "DELETE FROM reactions WHERE peer = ?",
              "DELETE FROM read_state WHERE peer = ?", "DELETE FROM group_posts WHERE peer = ?",
-             "DELETE FROM group_reaction_counts WHERE peer = ?"}) {
+             "DELETE FROM group_reaction_counts WHERE peer = ?",
+             "DELETE FROM group_mentions WHERE peer = ?"}) {
         Query query(db_);
         query.prepare(statement);
         query.bind(peer);
@@ -914,7 +934,8 @@ bool TranscriptStore::forgetPeer(const std::string& peer)
     }
     for (const char* const statement : {"DELETE FROM pinned_chats WHERE peer = ?",
              "DELETE FROM chat_timers WHERE peer = ?", "DELETE FROM bot_menus WHERE peer = ?",
-             "DELETE FROM group_state WHERE peer = ?"}) {
+             "DELETE FROM group_state WHERE peer = ?", "DELETE FROM group_members WHERE peer = ?",
+             "DELETE FROM group_rosters WHERE peer = ?"}) {
         Query query(db_);
         query.prepare(statement);
         query.bind(peer);
@@ -953,9 +974,173 @@ std::optional<GroupState> TranscriptReader::groupState(const std::string& peer) 
 
 bool TranscriptStore::dropGroupState(const std::string& peer)
 {
+    Transaction change(db_);
+    if (!change.begun()) {
+        return failed();
+    }
+    for (const char* const statement : {"DELETE FROM group_state WHERE peer = ?",
+             "DELETE FROM group_members WHERE peer = ?", "DELETE FROM group_rosters WHERE peer = ?"}) {
+        Query query(db_);
+        query.prepare(statement);
+        query.bind(peer);
+        if (!query.exec()) {
+            return failed();
+        }
+    }
+    return change.commit() || failed();
+}
+
+std::vector<std::string> TranscriptReader::groupMembers(const std::string& peer) const
+{
+    std::vector<std::string> names;
     Query query(db_);
-    query.prepare("DELETE FROM group_state WHERE peer = ?");
+    query.prepare("SELECT name FROM group_members WHERE peer = ? ORDER BY name");
     query.bind(peer);
+    if (!query.exec()) {
+        return names;
+    }
+    while (query.next()) {
+        names.push_back(query.text(0));
+    }
+    return names;
+}
+
+MemberListState TranscriptReader::memberListState(const std::string& peer) const
+{
+    Query query(db_);
+    query.prepare("SELECT state FROM group_rosters WHERE peer = ?");
+    query.bind(peer);
+    if (!query.exec() || !query.next()) {
+        return MemberListState::eUnknown;
+    }
+    return static_cast<MemberListState>(query.number(0));
+}
+
+std::string TranscriptReader::ownGroupName(const std::string& peer) const
+{
+    Query query(db_);
+    query.prepare("SELECT own FROM group_rosters WHERE peer = ?");
+    query.bind(peer);
+    if (!query.exec() || !query.next()) {
+        return {};
+    }
+    return query.text(0);
+}
+
+int TranscriptReader::unreadMentionCount(const std::string& peer) const
+{
+    Query query(db_);
+    query.prepare("SELECT COUNT(*) FROM group_mentions n JOIN messages m ON m.id = n.id"
+                  " WHERE n.peer = ? AND m.id >"
+                  " (SELECT COALESCE(MAX(last_read_id), 0) FROM read_state WHERE peer = ?)");
+    query.bind(peer);
+    query.bind(peer);
+    return static_cast<int>(readNumber(query));
+}
+
+std::int64_t TranscriptReader::firstUnreadMentionId(const std::string& peer) const
+{
+    Query query(db_);
+    query.prepare("SELECT MIN(m.id) FROM group_mentions n JOIN messages m ON m.id = n.id"
+                  " WHERE n.peer = ? AND m.id >"
+                  " (SELECT COALESCE(MAX(last_read_id), 0) FROM read_state WHERE peer = ?)");
+    query.bind(peer);
+    query.bind(peer);
+    if (!query.exec() || !query.next() || query.isNull(0)) {
+        return 0;
+    }
+    return query.number(0);
+}
+
+bool TranscriptStore::replaceGroupMembers(
+    const std::string& peer, const std::vector<std::string>& names)
+{
+    Transaction change(db_);
+    if (!change.begun()) {
+        return failed();
+    }
+    Query clear(db_);
+    clear.prepare("DELETE FROM group_members WHERE peer = ?");
+    clear.bind(peer);
+    if (!clear.exec()) {
+        return failed();
+    }
+    if (!addGroupMembers(peer, names) || !setMemberListState(peer, MemberListState::eHeld)) {
+        return false;
+    }
+    return change.commit() || failed();
+}
+
+bool TranscriptStore::addGroupMembers(const std::string& peer, const std::vector<std::string>& names)
+{
+    for (const std::string& name : names) {
+        Query insert(db_);
+        insert.prepare("INSERT OR IGNORE INTO group_members (peer, name) VALUES (?, ?)");
+        insert.bind(peer);
+        insert.bind(name);
+        if (!insert.exec()) {
+            return failed();
+        }
+    }
+    return true;
+}
+
+bool TranscriptStore::removeGroupMembers(
+    const std::string& peer, const std::vector<std::string>& names)
+{
+    for (const std::string& name : names) {
+        Query remove(db_);
+        remove.prepare("DELETE FROM group_members WHERE peer = ? AND name = ?");
+        remove.bind(peer);
+        remove.bind(name);
+        if (!remove.exec()) {
+            return failed();
+        }
+    }
+    return true;
+}
+
+bool TranscriptStore::setMemberListState(const std::string& peer, const MemberListState state)
+{
+    Query query(db_);
+    query.prepare("INSERT INTO group_rosters (peer, state, own) VALUES (?, ?, '')"
+                  " ON CONFLICT (peer) DO UPDATE SET state = excluded.state");
+    query.bind(peer);
+    query.bind(static_cast<int>(state));
+    if (!query.exec()) {
+        return failed();
+    }
+    if (state != MemberListState::eNone) {
+        return true;
+    }
+    Query clear(db_);
+    clear.prepare("DELETE FROM group_members WHERE peer = ?");
+    clear.bind(peer);
+    return clear.exec() || failed();
+}
+
+bool TranscriptStore::setOwnGroupName(const std::string& peer, const std::string& name)
+{
+    Query query(db_);
+    query.prepare("INSERT INTO group_rosters (peer, state, own) VALUES (?, ?, ?)"
+                  " ON CONFLICT (peer) DO UPDATE SET own = excluded.own");
+    query.bind(peer);
+    query.bind(static_cast<int>(MemberListState::eUnknown));
+    query.bind(name);
+    return query.exec() || failed();
+}
+
+bool TranscriptStore::setMentionsMe(const std::int64_t id, const std::string& peer, const bool mentions)
+{
+    Query query(db_);
+    if (mentions) {
+        query.prepare("INSERT OR IGNORE INTO group_mentions (id, peer) VALUES (?, ?)");
+        query.bind(id);
+        query.bind(peer);
+    } else {
+        query.prepare("DELETE FROM group_mentions WHERE id = ?");
+        query.bind(id);
+    }
     return query.exec() || failed();
 }
 
@@ -1475,6 +1660,16 @@ std::int64_t TranscriptStore::pruneRowsOf(const std::string& peer, const int kee
     reactions.bind(peer);
     if (!reactions.exec()) {
         throw std::runtime_error("the reactions of trimmed messages could not be removed");
+    }
+    Query mentions(db_);
+    if (!mentions.prepare("DELETE FROM group_mentions WHERE peer = ? AND id NOT IN ("
+                          "SELECT id FROM messages WHERE peer = ?)")) {
+        throw std::runtime_error("the mentions of trimmed messages could not be removed");
+    }
+    mentions.bind(peer);
+    mentions.bind(peer);
+    if (!mentions.exec()) {
+        throw std::runtime_error("the mentions of trimmed messages could not be removed");
     }
     return removed;
 }

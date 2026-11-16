@@ -25,6 +25,8 @@ inline constexpr char kTypeUnsupported[] = "unsupported";
 inline constexpr char kTypeUnreadable[] = "unreadable";
 inline constexpr char kTypeGroupState[] = "group.state";
 inline constexpr char kTypeGroupReactions[] = "group.reactions";
+inline constexpr char kTypeGroupMembers[] = "group.members";
+inline constexpr char kTypeGroupMembersAsk[] = "group.members.ask";
 inline constexpr char kTypeCallPrefix[] = "call.";
 
 inline constexpr char kTypeDeviceChatClear[] = "device.chat-clear";

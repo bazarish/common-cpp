@@ -1397,8 +1397,22 @@ try {
             counts.id = "group-counts-1";
             counts.reactions
                 = nlohmann::json::array({{{"ref", "group-post-1"}, {"counts", {{"+", 2}}}}});
-            CHECK(alice->relayFitter()({post, hostPost, counts}) == 3);
-            alice->relayPosts(bob->fingerprint(), {post, hostPost, counts});
+            RelayedPost roster;
+            roster.kind = RelayKind::eMembers;
+            roster.id = "group-members-1";
+            roster.members.op = MemberListOp::eFull;
+            roster.members.part = 1;
+            roster.members.parts = 1;
+            roster.members.total = 2;
+            roster.members.names = {"Ann", "Bob Two"};
+            roster.members.you = "Bob Two";
+            RelayedPost widest = roster;
+            widest.members.names.assign(
+                kMaxMemberNamesPerLetter, std::string(kMaxGroupNameBytes, 'n'));
+            widest.members.you.clear();
+            CHECK(alice->relayFitter()({widest}) == 1);
+            CHECK(alice->relayFitter()({post, hostPost, counts, roster}) == 4);
+            alice->relayPosts(bob->fingerprint(), {post, hostPost, counts, roster});
             alice->sendGroupState(bob->fingerprint());
             alice->sendMessage(bob->fingerprint(), "plain");
 
@@ -1410,9 +1424,23 @@ try {
                     seen[key] = item;
                     order.push_back(key);
                 }
-                return seen.size() >= 5;
+                return seen.size() >= 6;
             }));
-            CHECK(seen.size() == 5);
+            CHECK(seen.size() == 6);
+            const std::optional<MemberListLetter>& list = seen["group.members"].memberList;
+            CHECK(list.has_value());
+            CHECK(list->op == MemberListOp::eFull);
+            CHECK(list->names == (std::vector<std::string>{"Ann", "Bob Two"}));
+            CHECK(list->total == 2 && list->part == 1 && list->parts == 1);
+            CHECK(list->you == "Bob Two");
+            bob->askGroupMembers(alice->fingerprint());
+            bool asked = false;
+            CHECK(testutil::waitFor([&]() {
+                for (const IncomingMessage& item : alice->sync()) {
+                    asked = asked || item.contentType == "group.members.ask";
+                }
+                return asked;
+            }));
             const auto relayedAt = std::find(order.begin(), order.end(), "relayed");
             CHECK(relayedAt != order.end() && std::next(relayedAt) != order.end()
                 && *std::next(relayedAt) == "from the host");

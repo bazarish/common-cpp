@@ -9,6 +9,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace bazarish::client {
 
@@ -38,6 +39,9 @@ public:
         const std::string&, const std::string&, const std::string&, const std::string&) {}
     virtual void groupReactionsChanged(const std::string&) {}
     virtual void groupChanged(const std::string&) {}
+    // The app answers with Session::askGroupMembers.
+    virtual void memberListWanted(const std::string&) {}
+    virtual void memberListChanged(const std::string&) {}
     virtual void accountRenamed(const std::string&) {}
     virtual void contactsRevised() {}
     virtual void settingsAsked() {}
@@ -59,6 +63,10 @@ public:
 private:
     bool noteGroupBlock(const IncomingMessage& message);
     bool applyGroupReactions(const std::string& peer, const std::string& json);
+    bool applyMemberList(const std::string& peer, const MemberListLetter& letter);
+    bool applyMemberChange(const std::string& peer, const MemberListLetter& letter);
+    void askMemberList(const std::string& peer);
+    bool mentionsMe(const std::string& peer, const std::string& text, const std::string& replyTo) const;
     bool markOutgoingRead(const std::string& peer, std::int64_t uptoId);
     void noteReceiptAhead(const std::string& peer, const std::string& refId);
     std::int64_t appendNote(const IncomingMessage& message, const std::string& text, bool placed);
@@ -70,6 +78,16 @@ private:
     const IngestNotes& notes_;
     IngestListener& listener_;
     std::map<std::string, std::set<std::string>> receiptsAhead_;
+
+    struct ListParts {
+        std::int64_t parts = 0;
+        std::int64_t total = 0;
+        std::int64_t next = 1;
+        std::vector<std::string> names;
+        std::string you;
+    };
+    std::map<std::string, ListParts> listParts_;
+    std::set<std::string> listAsked_;
 };
 
 }  // namespace bazarish::client

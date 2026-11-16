@@ -103,11 +103,35 @@ struct GroupBlock {
 nlohmann::json groupBlockToJson(const GroupBlock& block);
 GroupBlock groupBlockFromJson(const nlohmann::json& body);
 
+// docs-main Groups.md, Member list: 32 code points of at most 4 UTF-8 bytes each.
+inline constexpr std::size_t kMaxGroupNameBytes = 128;
+inline constexpr std::size_t kMaxMemberNamesPerLetter = 1000;
+
+enum class MemberListOp {
+    eFull,
+    eAdded,
+    eRemoved,
+    eNone,
+};
+
+struct MemberListLetter {
+    MemberListOp op = MemberListOp::eNone;
+    std::vector<std::string> names;
+    std::int64_t total = 0;
+    std::int64_t part = 0;
+    std::int64_t parts = 0;
+    std::string you;
+};
+
+nlohmann::json memberListToJson(const MemberListLetter& letter);
+MemberListLetter memberListFromJson(const nlohmann::json& body);
+
 enum class RelayKind {
     ePost,
     eEdit,
     eDelete,
     eReactions,
+    eMembers,
 };
 
 // A post, or an edit, delete or reaction; `ref` names the post the last three are about.
@@ -127,6 +151,7 @@ struct RelayedPost {
     std::string author;
     bool contactable = false;
     bool fromHost = false;
+    MemberListLetter members;
 };
 
 inline constexpr std::int64_t kLowEpochReserveDays = 14;
@@ -190,6 +215,7 @@ struct IncomingMessage {
     bool contactable = false;
     bool fromHost = false;
     std::string groupReactionsJson;
+    std::optional<MemberListLetter> memberList;
     std::int64_t timerSeconds = kChatTimerOff;
 };
 
@@ -630,6 +656,7 @@ public:
         const DeliveryWatch& watch = {});
     RelayFitter relayFitter() const;
     void sendGroupState(const std::string& peerFingerprint, const DeliveryWatch& watch = {});
+    void askGroupMembers(const std::string& hostFingerprint);
 
     struct AliasHolding {
         std::string alias;

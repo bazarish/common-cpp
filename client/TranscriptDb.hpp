@@ -53,6 +53,7 @@ struct StoredMessage {
     std::string author;
     bool contactable = false;
     bool fromHost = false;
+    bool mentionsMe = false;
 };
 
 struct SearchableRow {
@@ -82,6 +83,12 @@ struct GroupState {
     bool write = false;
     bool admin = false;
     std::int64_t at = 0;
+};
+
+enum class MemberListState {
+    eUnknown,
+    eHeld,
+    eNone,
 };
 
 struct ChatWeight {
@@ -156,6 +163,14 @@ public:
     std::optional<GroupState> groupState(const std::string& peer) const;
     std::map<std::string, std::int64_t> groupReactionCounts(
         const std::string& peer, const std::string& target) const;
+    // In the byte order of the names; the window sorts them for its language.
+    std::vector<std::string> groupMembers(const std::string& peer) const;
+    MemberListState memberListState(const std::string& peer) const;
+    // Empty until the host names this account in the chat.
+    std::string ownGroupName(const std::string& peer) const;
+    int unreadMentionCount(const std::string& peer) const;
+    // 0 when no unread message mentions this account.
+    std::int64_t firstUnreadMentionId(const std::string& peer) const;
     std::vector<ChatWeight> chatWeights() const;
     DatabaseFootprint footprint() const;
 
@@ -213,6 +228,16 @@ public:
         const std::string& reactor, const std::string& emoji);
     [[nodiscard]] bool setGroupState(const std::string& peer, const GroupState& state);
     [[nodiscard]] bool dropGroupState(const std::string& peer);
+    // The list becomes held.
+    [[nodiscard]] bool replaceGroupMembers(
+        const std::string& peer, const std::vector<std::string>& names);
+    [[nodiscard]] bool addGroupMembers(const std::string& peer, const std::vector<std::string>& names);
+    [[nodiscard]] bool removeGroupMembers(
+        const std::string& peer, const std::vector<std::string>& names);
+    // eNone drops the names.
+    [[nodiscard]] bool setMemberListState(const std::string& peer, MemberListState state);
+    [[nodiscard]] bool setOwnGroupName(const std::string& peer, const std::string& name);
+    [[nodiscard]] bool setMentionsMe(std::int64_t id, const std::string& peer, bool mentions);
     [[nodiscard]] bool setGroupReactionCounts(const std::string& peer, const std::string& target,
         const std::map<std::string, std::int64_t>& counts);
     std::int64_t pruneToLatest(const std::string& peer, int keep);

@@ -547,9 +547,83 @@ nlohmann::json groupBlockToJson(const GroupBlock& block)
 
 namespace {
 
+constexpr const char* kMemberListOpNames[] = {"full", "added", "removed", "none"};
+
+std::string checkedGroupName(const nlohmann::json& value)
+{
+    std::string name = value.get<std::string>();
+    if (name.empty() || name.size() > kMaxGroupNameBytes) {
+        throw std::runtime_error("a member list names a member by an empty or overlong name");
+    }
+    return name;
+}
+
+}  // namespace
+
+nlohmann::json memberListToJson(const MemberListLetter& letter)
+{
+    nlohmann::json body{{"op", kMemberListOpNames[static_cast<std::size_t>(letter.op)]}};
+    if (letter.op == MemberListOp::eNone) {
+        return body;
+    }
+    body["names"] = letter.names;
+    body["total"] = letter.total;
+    if (letter.op == MemberListOp::eFull) {
+        body["part"] = letter.part;
+        body["parts"] = letter.parts;
+    }
+    if (!letter.you.empty()) {
+        body["you"] = letter.you;
+    }
+    return body;
+}
+
+MemberListLetter memberListFromJson(const nlohmann::json& body)
+{
+    MemberListLetter letter;
+    const std::string op = body.at("op").get<std::string>();
+    const auto named = std::find(std::begin(kMemberListOpNames), std::end(kMemberListOpNames), op);
+    if (named == std::end(kMemberListOpNames)) {
+        throw std::runtime_error("a member list letter names an unknown op");
+    }
+    letter.op = static_cast<MemberListOp>(named - std::begin(kMemberListOpNames));
+    if (letter.op == MemberListOp::eNone) {
+        return letter;
+    }
+    const nlohmann::json& names = body.at("names");
+    if (!names.is_array() || names.size() > kMaxMemberNamesPerLetter) {
+        throw std::runtime_error("a member list letter carries too many names");
+    }
+    for (const nlohmann::json& name : names) {
+        letter.names.push_back(checkedGroupName(name));
+    }
+    letter.total = body.at("total").get<std::int64_t>();
+    if (letter.total < 0) {
+        throw std::runtime_error("a member list letter counts fewer than no members");
+    }
+    if (letter.op == MemberListOp::eFull) {
+        letter.part = body.at("part").get<std::int64_t>();
+        letter.parts = body.at("parts").get<std::int64_t>();
+        if (letter.part < 1 || letter.part > letter.parts) {
+            throw std::runtime_error("a member list part is out of its range");
+        }
+    }
+    if (body.contains("you")) {
+        letter.you = checkedGroupName(body.at("you"));
+        if (std::find(letter.names.begin(), letter.names.end(), letter.you) == letter.names.end()) {
+            throw std::runtime_error("a member list letter marks a name it does not carry");
+        }
+    }
+    return letter;
+}
+
+namespace {
+
 nlohmann::json relayedEnvelopeFrom(const std::string& from, const RelayedPost& post)
 {
     switch (post.kind) {
+    case RelayKind::eMembers:
+        return envelopeFrom(from, kTypeGroupMembers, post.id, memberListToJson(post.members));
     case RelayKind::eEdit:
         return envelopeFrom(from, "edit", post.id,
             {{"ref", post.ref}, {"text", post.text}, {"keyboard", keyboardToJson({})}});
@@ -3432,6 +3506,12 @@ void Session::sendGroupState(const std::string& peerFingerprint, const DeliveryW
     sendContent(peerFingerprint, envelope(kTypeGroupState, newMessageId(), nlohmann::json::object()), watch);
 }
 
+void Session::askGroupMembers(const std::string& hostFingerprint)
+{
+    sendContent(hostFingerprint,
+        envelope(kTypeGroupMembersAsk, newMessageId(), nlohmann::json::object()), {});
+}
+
 void Session::sendFileBytes(const std::string& peerFingerprint, const std::string& name,
     const Bytes& bytes, const std::string& e2eId, const DeliveryWatch& watch,
     const std::string& replyTo, const bool forwarded)
@@ -4634,6 +4714,11 @@ std::vector<IncomingMessage> Session::takeIn(
                     } else if (type == kTypeGroupReactions && message.group) {
                         message.contentType = type;
                         message.groupReactionsJson = body.at("reactions").dump();
+                    } else if (type == kTypeGroupMembers && message.group) {
+                        message.contentType = type;
+                        message.memberList = memberListFromJson(body);
+                    } else if (type == kTypeGroupMembersAsk) {
+                        message.contentType = type;
                     } else if (type == kTypeImage) {
                         message.contentType = type;
                         const nlohmann::json& picture = body.at("image");

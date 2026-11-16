@@ -3,6 +3,7 @@
 
 #include "AudioCodec.hpp"
 #include "MediaKeys.hpp"
+#include "Mentions.hpp"
 #include "MessageTypes.hpp"
 
 #include <bazarish/Clock.hpp>
@@ -99,8 +100,16 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
     if (!message.sentByUs && !noteGroupBlock(message)) {
         return false;
     }
-    if (type == kTypeGroupState || type == kTypePresenceSchedule) {
+    if (message.group && type != kTypeGroupMembers
+        && store_.memberListState(peer) == MemberListState::eUnknown
+        && listAsked_.count(peer) == 0) {
+        askMemberList(peer);
+    }
+    if (type == kTypeGroupState || type == kTypePresenceSchedule || type == kTypeGroupMembersAsk) {
         return true;
+    }
+    if (type == kTypeGroupMembers) {
+        return applyMemberList(peer, message.memberList.value());
     }
     if (type == kTypeGroupReactions) {
         return applyGroupReactions(peer, message.groupReactionsJson);
@@ -203,6 +212,11 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
         const std::int64_t localId = localIdOf(message);
         if (localId != 0) {
             if (!store_.editContent(localId, message.text, message.keyboardJson)) {
+                return false;
+            }
+            if (!message.sentByUs && message.group
+                && !store_.setMentionsMe(localId, peer,
+                    mentionsMe(peer, message.text, store_.messageById(localId).replyTo))) {
                 return false;
             }
             listener_.rowChanged(peer, localId);
@@ -326,6 +340,7 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
         m.author = message.author;
         m.contactable = message.contactable;
         m.fromHost = message.fromHost;
+        m.mentionsMe = !m.outgoing && mentionsMe(peer, m.text, m.replyTo);
     }
     const Placement placement = placeReceived(message.sentAt, nowMillis(), orderFloor(message));
     m.ts = placement.displayTs;
@@ -404,6 +419,103 @@ bool TranscriptIngest::applyGroupReactions(const std::string& peer, const std::s
         }
     }
     listener_.groupReactionsChanged(peer);
+    return true;
+}
+
+bool TranscriptIngest::mentionsMe(
+    const std::string& peer, const std::string& text, const std::string& replyTo) const
+{
+    if (!replyTo.empty() && store_.idForKey(peer, replyTo, true) != 0) {
+        return true;
+    }
+    return mentionsName(text, store_.groupMembers(peer), store_.ownGroupName(peer));
+}
+
+void TranscriptIngest::askMemberList(const std::string& peer)
+{
+    listAsked_.insert(peer);
+    listener_.memberListWanted(peer);
+}
+
+bool TranscriptIngest::applyMemberList(const std::string& peer, const MemberListLetter& letter)
+{
+    if (letter.op == MemberListOp::eAdded || letter.op == MemberListOp::eRemoved) {
+        return applyMemberChange(peer, letter);
+    }
+    if (letter.op == MemberListOp::eNone) {
+        listParts_.erase(peer);
+        if (!store_.setMemberListState(peer, MemberListState::eNone)) {
+            return false;
+        }
+        listener_.memberListChanged(peer);
+        return true;
+    }
+    if (letter.part == 1) {
+        ListParts fresh;
+        fresh.parts = letter.parts;
+        fresh.total = letter.total;
+        listParts_[peer] = std::move(fresh);
+    }
+    const auto held = listParts_.find(peer);
+    if (held == listParts_.end() || held->second.next != letter.part
+        || held->second.parts != letter.parts || held->second.total != letter.total) {
+        log::info("a member list from {} arrived out of order; asked again", log::redact(peer));
+        listParts_.erase(peer);
+        askMemberList(peer);
+        return true;
+    }
+    ListParts& parts = held->second;
+    parts.names.insert(parts.names.end(), letter.names.begin(), letter.names.end());
+    if (!letter.you.empty()) {
+        parts.you = letter.you;
+    }
+    ++parts.next;
+    if (letter.part < letter.parts) {
+        return true;
+    }
+    const ListParts whole = std::move(parts);
+    listParts_.erase(held);
+    const std::set<std::string> distinct(whole.names.begin(), whole.names.end());
+    if (static_cast<std::int64_t>(distinct.size()) != whole.total) {
+        log::info("a member list from {} does not add up to its total; asked again",
+            log::redact(peer));
+        askMemberList(peer);
+        return true;
+    }
+    if (!store_.replaceGroupMembers(peer, whole.names) || !store_.setOwnGroupName(peer, whole.you)) {
+        return false;
+    }
+    listener_.memberListChanged(peer);
+    return true;
+}
+
+bool TranscriptIngest::applyMemberChange(const std::string& peer, const MemberListLetter& letter)
+{
+    if (store_.memberListState(peer) != MemberListState::eHeld) {
+        return true;
+    }
+    const bool added = letter.op == MemberListOp::eAdded;
+    if (!(added ? store_.addGroupMembers(peer, letter.names)
+                : store_.removeGroupMembers(peer, letter.names))) {
+        return false;
+    }
+    const std::string own = store_.ownGroupName(peer);
+    const bool ownLeft = !added
+        && std::find(letter.names.begin(), letter.names.end(), own) != letter.names.end();
+    if (added && !letter.you.empty() && !store_.setOwnGroupName(peer, letter.you)) {
+        return false;
+    }
+    if (ownLeft && !store_.setOwnGroupName(peer, {})) {
+        return false;
+    }
+    if (static_cast<std::int64_t>(store_.groupMembers(peer).size()) != letter.total) {
+        log::info("the member list of {} no longer adds up; asked again", log::redact(peer));
+        if (!store_.setMemberListState(peer, MemberListState::eUnknown)) {
+            return false;
+        }
+        askMemberList(peer);
+    }
+    listener_.memberListChanged(peer);
     return true;
 }
 

@@ -237,6 +237,7 @@ if(BAZARISH_WITH_CLIENT)
         client/I2pRouter.cpp
         client/Invite.cpp
         client/KeyedDatabase.cpp
+        client/Mentions.cpp
         client/OutboundCourier.cpp
         client/OutboundLeases.cpp
         client/OverviewWatch.cpp
