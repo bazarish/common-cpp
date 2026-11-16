@@ -26,6 +26,8 @@ constexpr std::size_t kFillingStreams = 40;
 constexpr std::chrono::seconds kGatewayStalls{3};
 // The farewell's 200 ms, a cover tick the router's thread may be in, and the joins.
 constexpr std::chrono::milliseconds kStopWithin{1000};
+// Far less than the dial's deadline and the call timeout after it.
+constexpr std::chrono::seconds kResetAnswersWithin{2};
 
 i2p::RouterConfig gatewayAt(const int port, const test::FakeGateway& fake)
 {
@@ -137,6 +139,26 @@ int main()
             return fake.framesOf(gateway::FrameType::eEndpointStop) == 1;
         }));
         CHECK(fake.streamBytes() == gateway::kStreamWindowBytes);
+        server.stop();
+    }
+    {
+        http::Server server(http::Server::Options{});
+        test::FakeGateway fake;
+        const int port = fake.start(server);
+        CHECK(port > 0);
+        fake.resetDials();
+        i2p::Router router(gatewayAt(port, fake));
+        router.start();
+        CHECK(router.waitReady(kReadyWithin));
+        const std::shared_ptr<i2p::Endpoint> endpoint = router.createEndpoint(unpublished());
+        const auto dialled = std::chrono::steady_clock::now();
+        CHECK(endpoint->connect(kPeer, kDialWithin) == nullptr);
+        const auto took = std::chrono::steady_clock::now() - dialled;
+        std::printf("a dial the gateway reset was answered in %lld ms\n",
+            static_cast<long long>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(took).count()));
+        CHECK(took < kResetAnswersWithin);
+        router.stop();
         server.stop();
     }
     return 0;

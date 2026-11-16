@@ -45,8 +45,9 @@ constexpr std::chrono::milliseconds kSlowestRetry{15000};
 
 bool answers(const FrameType type)
 {
+    // A dial the gateway gave up on is answered by the reset of its stream.
     return type == FrameType::eOk || type == FrameType::eError || type == FrameType::eReady
-        || type == FrameType::eStreamOpened;
+        || type == FrameType::eStreamOpened || type == FrameType::eStreamReset;
 }
 
 std::int64_t millisNow()
@@ -806,7 +807,13 @@ std::unique_ptr<StreamBackend> GatewayEndpoint::connect(
     }
     link_->send(ask, dial.get());
     const std::optional<Frame> answer = link_->await(dial, id, timeout + kCallTimeout);
-    if (!answer || answer->type != FrameType::eStreamOpened) {
+    if (!answer) {
+        return nullptr;
+    }
+    if (answer->type != FrameType::eStreamOpened) {
+        const std::string named(gateway::frameTypeName(answer->type));
+        bazarish::log::info("i2p: the gateway reached no stream to {}: {}", host,
+            answer->body.empty() ? named : gateway::bodyJson(*answer).value("message", named));
         return nullptr;
     }
     return stream;

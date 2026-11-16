@@ -154,6 +154,13 @@ public:
         refusingStreams_ = true;
     }
 
+    // As the gateway gives up a dial: it resets the stream being opened and names why.
+    void resetDials()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        resettingDials_ = true;
+    }
+
     enum class StreamEnd { eClose, eReset };
 
     // What the far end says to the first bytes of each stream, and how it ends the stream then.
@@ -372,6 +379,11 @@ private:
             bool refusing = false;
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
+                if (resettingDials_) {
+                    socket->send(gateway::encodeJson(FrameType::eStreamReset, frame.ref,
+                        {{"code", "unreachable"}, {"message", "no lease set found"}}));
+                    return;
+                }
                 refusing = refusingStreams_;
                 if (!answeringStreams_ && !refusing) {
                     return;
@@ -451,6 +463,7 @@ private:
     bool readingHeld_ = false;
     bool answeringStreams_ = false;
     bool refusingStreams_ = false;
+    bool resettingDials_ = false;
     struct StreamReply {
         Bytes bytes;
         StreamEnd end = StreamEnd::eClose;
