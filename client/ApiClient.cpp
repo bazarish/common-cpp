@@ -56,6 +56,8 @@ constexpr int kFacadeDialSeconds = 60;
 constexpr auto kKeptStreamIdleSeconds = std::chrono::seconds(60);
 constexpr std::size_t kSessionSecretBytes = 32;
 constexpr std::size_t kSessionIdChars = 32;
+// Until the link or the facade's lease set changes, asking again meets the same silence.
+constexpr std::int64_t kSilenceStandOffSeconds = 60;
 
 constexpr const char* kServiceNodePrefix = "/v1/account/";
 
@@ -190,16 +192,6 @@ const ServerEndpoint& ApiClient::endpoint() const
     return endpoint_;
 }
 
-std::int64_t ApiClient::sessionBackoffSeconds(const int httpStatus)
-{
-    constexpr std::int64_t kAfterRefusalSeconds = 900;
-    constexpr std::int64_t kAfterSilenceSeconds = 60;
-    // RFC 9110 15.6: a 5xx is the far side failing for now (a facade's 502 upstream), not refusing.
-    constexpr int kFirstServerErrorStatus = 500;
-    return httpStatus == 0 || httpStatus >= kFirstServerErrorStatus ? kAfterSilenceSeconds
-                                                                    : kAfterRefusalSeconds;
-}
-
 ApiClient::Tunnel& ApiClient::tunnelFor(const std::string& path)
 {
     return path.starts_with(kServiceNodePrefix) ? serviceNode_ : messaging_;
@@ -213,8 +205,16 @@ void ApiClient::ensureSealingKeyLocked(Tunnel& tunnel)
     requireFingerprint(endpoint_.serverFingerprint);
     const ApiResponse response
         = transmitLocked("GET", cardPathOf(tunnel.service), {}, {}, kDefaultReadTimeoutSeconds);
-    const ServerCard card = ServerCard::verify(response.body, tunnel.service);
+    const ServerCard card = [&]() {
+        try {
+            return ServerCard::verify(response.body, tunnel.service);
+        } catch (const std::exception&) {
+            linkFailure_.store(LinkFailure::eServerRefused);
+            throw;
+        }
+    }();
     if (card.server != endpoint_.serverFingerprint) {
+        linkFailure_.store(LinkFailure::eServerRefused);
         throw std::runtime_error("the server card names another server than the one we joined");
     }
     tunnel.sealingKeyDer = card.sealingPublicKeyDer;
@@ -250,44 +250,42 @@ bool ApiClient::ensureSessionLocked(Tunnel& tunnel)
         try {
             welcome = bazarish::tunnel::openWelcome(response.body, replyKey);
         } catch (const std::exception&) {
+            // A server refuses a hello with noise, so nothing tells why.
             linkFailure_.store(LinkFailure::eServerRefused);
-            throw;
+            tunnel.lastError = "the server refused the tunnel";
+            bazarish::log::info("no tunnel to the {}: {}", serviceName(tunnel.service),
+                tunnel.lastError);
+            return false;
         }
-        tunnel.sessionId = toHex(sha256(hello.secret.bytes())).substr(0, kSessionIdChars);
-        tunnel.sessionKey = auth::deriveSessionKey(hello.secret, tunnel.sessionId);
-        tunnel.tunnelKey = bazarish::tunnel::deriveTunnelKey(hello.secret, tunnel.sessionId);
+        const std::string sessionId
+            = toHex(sha256(hello.secret.bytes())).substr(0, kSessionIdChars);
+        tunnel.sessionKey = auth::deriveSessionKey(hello.secret, sessionId);
+        tunnel.tunnelKey = bazarish::tunnel::deriveTunnelKey(hello.secret, sessionId);
         tunnel.sessionSecret = std::move(hello.secret);
         tunnel.sessionUntil = welcome.expiresUnix;
         tunnel.sessionSeq = 0;
-        tunnel.refusals = 0;
+        tunnel.sessionId = sessionId;
         bazarish::log::info("tunnel to the {} open for {} s", serviceName(tunnel.service),
             tunnel.sessionUntil - now);
         return true;
     } catch (const ApiError& error) {
-        tunnel.sessionId.clear();
-        standOffLocked(tunnel, sessionBackoffSeconds(error.httpStatus));
+        // An answered status is the facade's or the server's word, which the next ask hears too.
+        if (error.httpStatus == 0) {
+            standOffAfterSilenceLocked(tunnel);
+        }
         tunnel.lastError = error.what();
         bazarish::log::info("no tunnel to the {}: {}", serviceName(tunnel.service), error.what());
         return false;
     } catch (const bazarish::i2p::GatewayRefusal& error) {
-        // No facade was asked, so there is nothing to stand off from.
-        tunnel.sessionId.clear();
         tunnel.lastError = error.what();
         bazarish::log::warn("no tunnel to the {}: {}", serviceName(tunnel.service), error.what());
-        return false;
-    } catch (const std::exception& error) {
-        tunnel.sessionId.clear();
-        // Any other failure is waited out as silence, not as a refusal.
-        standOffLocked(tunnel, sessionBackoffSeconds(0));
-        tunnel.lastError = error.what();
-        bazarish::log::info("no tunnel to the {}: {}", serviceName(tunnel.service), error.what());
         return false;
     }
 }
 
-void ApiClient::standOffLocked(Tunnel& tunnel, const std::int64_t seconds)
+void ApiClient::standOffAfterSilenceLocked(Tunnel& tunnel)
 {
-    tunnel.blockedUntil = nowSeconds() + seconds;
+    tunnel.blockedUntil = nowSeconds() + kSilenceStandOffSeconds;
     tunnel.blockedAtCarry = bazarish::i2p::carryReturns();
 }
 
@@ -588,13 +586,33 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     }
     const std::lock_guard<std::mutex> lock(netMutex_);
     Tunnel& tunnel = tunnelFor(path);
-    if (!ensureSessionLocked(tunnel)) {
-        const std::string reason = tunnel.lastError.empty()
-            ? std::string("no tunnel to the server")
-            : "no tunnel to the server: " + tunnel.lastError;
-        noteWire(method, path, note, "failed: " + reason, 0, 0);
-        throw ApiError(std::nullopt, 0, reason);
-    }
+    const auto startedAt = std::chrono::steady_clock::now();
+    const auto elapsedMillis = [&startedAt]() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - startedAt)
+            .count();
+    };
+    const auto failed = [&](const std::string& why) {
+        noteWire(method, path, note, "failed: " + why, 0, elapsedMillis());
+    };
+    // A request no tunnel carried was never put to the server, whatever stopped the tunnel.
+    const auto openTunnel = [&]() {
+        bool opened = false;
+        try {
+            opened = ensureSessionLocked(tunnel);
+        } catch (const std::exception& error) {
+            failed(error.what());
+            throw;
+        }
+        if (!opened) {
+            const std::string reason = tunnel.lastError.empty()
+                ? std::string("no tunnel to the server")
+                : "no tunnel to the server: " + tunnel.lastError;
+            failed(reason);
+            throw ApiError(std::nullopt, 0, reason);
+        }
+    };
+    openTunnel();
     const auto macHeaders = [&]() {
         const std::uint64_t seq = tunnel.sessionSeq + 1;
         const auth::Headers mac = auth::macRequest(auth::sessionHandle(tunnel.sessionSecret, seq),
@@ -603,12 +621,6 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
         return std::map<std::string, std::string>(mac.begin(), mac.end());
     };
     const bool quietOnSuccess = path == kEventsPath;
-    const auto startedAt = std::chrono::steady_clock::now();
-    const auto elapsedMillis = [&startedAt]() {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - startedAt)
-            .count();
-    };
     const auto accept = [&](const ApiResponse& response) {
         if (!answeredWell(response.status)) {
             linkFailure_.store(LinkFailure::eServerRefused);
@@ -618,9 +630,6 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
             noteWire(method, path, note, std::to_string(response.status), response.body.size(),
                 elapsedMillis());
         }
-    };
-    const auto failed = [&](const std::string& why) {
-        noteWire(method, path, note, "failed: " + why, 0, elapsedMillis());
     };
     try {
         const ApiResponse response = tunnelledLocked(
@@ -632,20 +641,9 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
             failed(error.what());
             throw;
         }
-        constexpr int kRefusalsBeforeGivingUp = 3;
-        bazarish::log::info("the tunnel was refused mid-request; opening another");
+        bazarish::log::info("the server no longer holds the tunnel; opening another");
         tunnel.sessionId.clear();
-        if (++tunnel.refusals >= kRefusalsBeforeGivingUp) {
-            tunnel.refusals = 0;
-            standOffLocked(tunnel, sessionBackoffSeconds(1));
-            bazarish::log::warn("tunnels keep being refused; standing off for a while");
-            failed(error.what());
-            throw;
-        }
-        if (!ensureSessionLocked(tunnel)) {
-            failed("no tunnel");
-            throw;
-        }
+        openTunnel();
         const ApiResponse response = tunnelledLocked(
             tunnel, method, path, query, body, contentType, macHeaders(), readTimeoutSeconds);
         accept(response);

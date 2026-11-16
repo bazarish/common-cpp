@@ -98,8 +98,6 @@ public:
     bool facadePublishedAnew();
     void liftStandOff();
 
-    static std::int64_t sessionBackoffSeconds(int httpStatus);
-
 private:
     void noteWire(const std::string& method, const std::string& path, const std::string& note,
         const std::string& status, std::size_t bytes, std::int64_t elapsedMillis);
@@ -140,12 +138,11 @@ private:
         std::uint64_t sessionSeq = 0;
         std::int64_t blockedUntil = 0;
         std::uint64_t blockedAtCarry = 0;
-        int refusals = 0;
         std::string lastError;
     };
     Tunnel& tunnelFor(const std::string& path);
     bool ensureSessionLocked(Tunnel& tunnel);
-    void standOffLocked(Tunnel& tunnel, std::int64_t seconds);
+    void standOffAfterSilenceLocked(Tunnel& tunnel);
     void ensureSealingKeyLocked(Tunnel& tunnel);
     ApiResponse tunnelledLocked(Tunnel& tunnel, const std::string& method,
         const std::string& path, const std::string& query, const SecretBytes& body,

@@ -197,13 +197,67 @@ int main()
         ServerEndpoint impostor = endpoint;
         impostor.serverFingerprint = Identity::generate().fingerprint();
         ApiClient api(alice, impostor);
-        bool threw = false;
-        try {
-            (void)api.get("/v1/messaging/storage-usage");
-        } catch (const ApiError&) {
-            threw = true;
+        const auto ownCheckFailed = [&api]() {
+            try {
+                (void)api.get("/v1/messaging/storage-usage");
+            } catch (const ApiError&) {
+                return false;
+            } catch (const std::runtime_error&) {
+                return true;
+            }
+            return false;
+        };
+        CHECK(ownCheckFailed());
+        CHECK(api.linkFailure() == LinkFailure::eServerRefused);
+        CHECK(ownCheckFailed());
+    }
+
+    {
+        const Bytes card = ServerCard::issue(serverIdentity, ServerCard::Service::eMessaging,
+            Key::fromPublicDer(serverSealing.publicDer()), static_cast<std::int64_t>(std::time(nullptr)));
+        const auto answeringHellos = [&card](http::Server& facade, std::atomic<int>& hellos,
+                                         const http::Response answer) {
+            facade.get(std::string(tunnel::kServerCardPath), [card](const http::Request&) {
+                http::Response response;
+                response.contentType = "application/octet-stream";
+                response.body = std::string(card.begin(), card.end());
+                return response;
+            });
+            facade.post(std::string(tunnel::kTunnelPath), [&hellos, answer](const http::Request&) {
+                ++hellos;
+                return answer;
+            });
+        };
+        constexpr std::size_t kNoiseBytes = 64;
+        const Bytes noise = randomBytes(kNoiseBytes);
+        http::Response noiseAnswer;
+        noiseAnswer.contentType = "application/octet-stream";
+        noiseAnswer.body = std::string(noise.begin(), noise.end());
+        http::Response notFound;
+        notFound.status = 404;
+        notFound.body = makeErrorEnvelope(ErrorCode::eRequestFailed, "no such route").dump();
+        for (const http::Response& answer : {noiseAnswer, notFound}) {
+            http::Server refusing(localOptions());
+            std::atomic<int> hellos{0};
+            answeringHellos(refusing, hellos, answer);
+            ServerEndpoint refused = endpoint;
+            refused.facades[0].port = refusing.start();
+            ApiClient api(alice, refused);
+            const auto unanswered = [&api]() {
+                try {
+                    (void)api.get("/v1/messaging/storage-usage");
+                } catch (const ApiError& error) {
+                    return error.httpStatus == 0 && !error.code.has_value();
+                }
+                return false;
+            };
+            CHECK(unanswered());
+            CHECK(hellos.load() == 1);
+            CHECK(api.linkFailure() == LinkFailure::eServerRefused);
+            CHECK(unanswered());
+            CHECK(hellos.load() == 2);
+            refusing.stop();
         }
-        CHECK(threw);
     }
 
     {
@@ -314,14 +368,10 @@ int main()
         CHECK(api.serverBehindFacadeDown());
         CHECK(api.linkFailure() == LinkFailure::eServerDown);
         CHECK(refused());
-        CHECK(hellos.load() == 1);
-        bazarish::i2p::backend::noteCarryReturned();
-        CHECK(refused());
         CHECK(hellos.load() == 2);
         CHECK(api.serverBehindFacadeDown());
 
         bazarish::i2p::networkLost();
-        api.liftStandOff();
         CHECK(refused());
         CHECK(hellos.load() == 2);
         CHECK(api.linkFailure() == LinkFailure::eNoNetwork);
@@ -332,14 +382,28 @@ int main()
         CHECK(api.linkFailure() == LinkFailure::eServerDown);
 
         upstreamless.stop();
-        api.liftStandOff();
         CHECK(refused());
         CHECK(!api.serverBehindFacadeDown());
         CHECK(api.linkFailure() == LinkFailure::eServerUnreachable);
-    }
 
-    CHECK(ApiClient::sessionBackoffSeconds(0) < ApiClient::sessionBackoffSeconds(401));
-    CHECK(ApiClient::sessionBackoffSeconds(502) == ApiClient::sessionBackoffSeconds(0));
+        http::Server::Options samePort = localOptions();
+        samePort.port = behind.facades[0].port;
+        http::Server returned(samePort);
+        teststub::Tunnel returnedStub(
+            returned, serverIdentity, serverSealing, ServerCard::Service::eMessaging);
+        returned.get("/v1/messaging/storage-usage", [](const http::Request&) {
+            http::Response response;
+            response.body = nlohmann::json{{"used", 0}}.dump();
+            return response;
+        });
+        CHECK(returned.start() == samePort.port);
+        CHECK(refused());
+        CHECK(returnedStub.opened() == 0);
+        bazarish::i2p::backend::noteCarryReturned();
+        CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+        CHECK(returnedStub.opened() == 1);
+        returned.stop();
+    }
 
     std::fprintf(stderr, "TestApiClient passed\n");
     return 0;
