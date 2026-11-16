@@ -4,6 +4,7 @@
 #include "TestUtil.hpp"
 
 #include <stdexcept>
+#include <string>
 
 using namespace bazarish;
 
@@ -153,7 +154,7 @@ int main()
 
         {
             auth::Headers renumbered = maced;
-            renumbered[auth::kHeaderSeq] = "8";
+            renumbered[auth::kHeaderSeq] = std::to_string(kSeq + 1);
             CHECK_THROWS(
                 auth::verifyMac(renumbered, key, kNow, "POST", "/v1/messaging/ack", body));
         }
