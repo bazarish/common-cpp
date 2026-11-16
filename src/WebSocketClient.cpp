@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -45,6 +46,8 @@ constexpr int kHttpVersion = 11;
 constexpr std::size_t kKeptAnswerMaxBytes = 16 * 1024 * 1024;
 constexpr int kHttpPort = 80;
 constexpr int kHttpsPort = 443;
+// A farewell not written by then is not waited for: closing must not hang on a stuck link.
+constexpr std::chrono::milliseconds kFarewellBound{200};
 constexpr std::string_view kHttp2 = "h2";
 
 // Chrome 157.0.8103.78 as captured 2026-11-12: values, and in each list the order it sends.
@@ -216,6 +219,7 @@ public:
         : loop_(std::move(loop))
         , stream_(std::move(stream))
         , keepalive_(*loop_)
+        , farewell_(*loop_)
         , drawSilence_(dial.silenceBeforePing)
         , pongWait_(dial.pongTimeout)
         , pingPayload_(dial.pingPayload)
@@ -292,6 +296,15 @@ public:
         }
         if (idle) {
             asio::post(*loop_, [self = this->shared_from_this()]() { self->cutConnection(); });
+        } else {
+            asio::post(*loop_, [self = this->shared_from_this()]() {
+                self->farewell_.expires_after(kFarewellBound);
+                self->farewell_.async_wait([self](const boost::system::error_code& error) {
+                    if (!error) {
+                        self->cutConnection();
+                    }
+                });
+            });
         }
         awaitLoop();
     }
@@ -337,6 +350,7 @@ private:
 
     void cutConnection()
     {
+        farewell_.cancel();
         boost::system::error_code ignored;
         beast::get_lowest_layer(*stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
     }
@@ -515,6 +529,7 @@ private:
     bool finishing_ = false;
     std::atomic<bool> open_{true};
     asio::steady_timer keepalive_;
+    asio::steady_timer farewell_;
     const std::function<std::chrono::milliseconds()> drawSilence_;
     SteadyClock::duration silence_{};
     SteadyClock::time_point drawnFor_ = SteadyClock::time_point::max();

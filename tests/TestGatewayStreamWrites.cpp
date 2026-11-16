@@ -6,6 +6,7 @@
 #include "TestUtil.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <exception>
 #include <memory>
 #include <string>
@@ -21,8 +22,10 @@ constexpr std::chrono::seconds kDialWithin{10};
 constexpr const char* kPeer = test::kFakeGatewayHost;
 // Each stream fills its window at once: together they outgrow what the sockets buffer.
 constexpr std::size_t kFillingStreams = 40;
-// Longer than the old farewell, which closed after two seconds whatever was still unsent.
+// Far past the farewell's bound: a stop that waits for the gateway shows.
 constexpr std::chrono::seconds kGatewayStalls{3};
+// The farewell's 200 ms, a cover tick the router's thread may be in, and the joins.
+constexpr std::chrono::milliseconds kStopWithin{1000};
 
 i2p::RouterConfig gatewayAt(const int port, const test::FakeGateway& fake)
 {
@@ -105,12 +108,35 @@ int main()
             std::this_thread::sleep_for(kGatewayStalls);
             fake.holdReading(false);
         });
+        const auto stopping = std::chrono::steady_clock::now();
         router.stop();
+        const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - stopping);
+        std::printf("a stop with the gateway not reading took %lld ms\n",
+            static_cast<long long>(took.count()));
+        CHECK(took < kStopWithin);
         release.join();
+        server.stop();
+    }
+
+    {
+        http::Server server(http::Server::Options{});
+        test::FakeGateway fake;
+        const int port = fake.start(server);
+        CHECK(port > 0);
+        fake.answerStreams();
+        i2p::Router router(gatewayAt(port, fake));
+        router.start();
+        CHECK(router.waitReady(kReadyWithin));
+        const std::shared_ptr<i2p::Endpoint> endpoint = router.createEndpoint(unpublished());
+        const std::unique_ptr<i2p::Stream> stream = endpoint->connect(kPeer, kDialWithin);
+        CHECK(stream != nullptr);
+        stream->writeAll(Bytes(gateway::kStreamWindowBytes, 'r'));
+        router.stop();
         CHECK(testutil::waitFor([&fake]() {
             return fake.framesOf(gateway::FrameType::eEndpointStop) == 1;
         }));
-        CHECK(fake.streamBytes() == kFillingStreams * gateway::kStreamWindowBytes);
+        CHECK(fake.streamBytes() == gateway::kStreamWindowBytes);
         server.stop();
     }
     return 0;
