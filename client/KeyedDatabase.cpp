@@ -6,6 +6,8 @@
 #include <openssl/crypto.h>
 #include <sqlcipher/sqlite3.h>
 
+#include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -22,6 +24,7 @@ constexpr int kAllPages = -1;
 constexpr int kWholeStatement = -1;
 constexpr const char* kSoleJournalMode = "delete";
 constexpr const char* kJournalSuffix = "-journal";
+constexpr std::int64_t kNoPages = 0;
 
 struct BackupFinish {
     void operator()(sqlite3_backup* const backup) const
@@ -29,6 +32,18 @@ struct BackupFinish {
         static_cast<void>(sqlite3_backup_finish(backup));
     }
 };
+
+std::optional<std::int64_t> pageCount(sqlite3* const db)
+{
+    sqlite3_stmt* prepared = nullptr;
+    const int status
+        = sqlite3_prepare_v2(db, "PRAGMA page_count", kWholeStatement, &prepared, nullptr);
+    const StatementHandle statement(prepared);
+    if (status != SQLITE_OK || sqlite3_step(statement.get()) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+    return sqlite3_column_int64(statement.get(), 0);
+}
 
 }  // namespace
 
@@ -64,6 +79,16 @@ SqliteHandle openKeyed(const std::filesystem::path& file, const SecretBytes& key
     }
     if (sqlite3_exec(db.get(), "SELECT count(*) FROM sqlite_master", nullptr, nullptr, nullptr)
         != SQLITE_OK) {
+        return nullptr;
+    }
+    // SQLite takes the vacuum mode only while the file has no page yet.
+    const std::optional<std::int64_t> pages = pageCount(db.get());
+    if (!pages.has_value()) {
+        return nullptr;
+    }
+    if (*pages == kNoPages
+        && sqlite3_exec(db.get(), "PRAGMA auto_vacuum = INCREMENTAL", nullptr, nullptr, nullptr)
+            != SQLITE_OK) {
         return nullptr;
     }
     return db;
@@ -119,6 +144,7 @@ void reencryptKeyed(
         OPENSSL_cleanse(keySpec.data(), keySpec.size());
         static_cast<void>(attach.step());
     }
+    source.run("PRAGMA rekeyed.auto_vacuum = INCREMENTAL");
     source.run("SELECT sqlcipher_export('rekeyed')");
     source.run("DETACH DATABASE rekeyed");
 }

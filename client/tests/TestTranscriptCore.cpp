@@ -7,10 +7,14 @@
 
 #include "TestUtil.hpp"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <thread>
 
 using namespace bazarish;
 using namespace bazarish::client;
@@ -24,6 +28,11 @@ constexpr const char* kPeer = "peer";
 constexpr const char* kOther = "other";
 constexpr const char* kThisDevice = "abcd2efgh3";
 constexpr const char* kHostDevice = "hostdev234";
+constexpr std::size_t kLooseMediaBytes = 1024 * 1024;
+constexpr int kLooseMedia = 96;
+// Well under the 5 s busy timeout; a whole-file VACUUM of this file holds a writer for seconds.
+constexpr std::chrono::milliseconds kLongestWriteWait{1000};
+constexpr std::chrono::milliseconds kBetweenWrites{5};
 
 StoredMessage line(const std::string& peer, const std::string& type, const std::string& e2eId)
 {
@@ -33,6 +42,55 @@ StoredMessage line(const std::string& peer, const std::string& type, const std::
     message.e2eId = e2eId;
     message.text = type == "text" ? "hello" : "";
     return message;
+}
+
+void checkWritesGoOnDuringCompaction(const fs::path& root)
+{
+    const fs::path file = root / "loose.db";
+    AccountDb account(file, "secret");
+    TranscriptStore store;
+    CHECK(store.open(file, "secret"));
+    for (int at = 0; at < kLooseMedia; ++at) {
+        account.put(kPictureKeyPrefix + std::to_string(at), Bytes(kLooseMediaBytes, 0x33));
+        account.put(kVoiceKeyPrefix + std::to_string(at), Bytes(kLooseMediaBytes, 0x44));
+        CHECK(store.append(line(kOther, "text", "kept" + std::to_string(at))) != 0);
+    }
+    for (int at = 0; at < kLooseMedia; ++at) {
+        account.erase(kPictureKeyPrefix + std::to_string(at));
+    }
+    account.dropOverwritten();
+    const DatabaseFootprint before = store.footprint();
+    CHECK(before.freeBytes >= static_cast<std::int64_t>(kLooseMediaBytes) * kLooseMedia);
+
+    std::atomic<bool> compacting{true};
+    bool compacted = false;
+    std::string reason;
+    std::thread compactor([&]() {
+        TranscriptStore own;
+        CHECK(own.open(file, "secret"));
+        compacted = own.compact(reason);
+        compacting = false;
+    });
+    int writes = 0;
+    std::chrono::steady_clock::duration longest{};
+    while (compacting) {
+        const auto started = std::chrono::steady_clock::now();
+        account.putText("tick", std::to_string(writes));
+        longest = std::max(longest, std::chrono::steady_clock::now() - started);
+        ++writes;
+        std::this_thread::sleep_for(kBetweenWrites);
+    }
+    compactor.join();
+    CHECK(compacted);
+    CHECK(writes > 1);
+    CHECK(longest < kLongestWriteWait);
+    const DatabaseFootprint after = store.footprint();
+    CHECK(after.freeBytes == 0);
+    CHECK(after.fileBytes + static_cast<std::int64_t>(kLooseMediaBytes) * kLooseMedia / 2
+        < before.fileBytes);
+    CHECK(store.latestMessages(kOther, kLooseMedia).size()
+        == static_cast<std::size_t>(kLooseMedia));
+    CHECK(account.text("tick") == std::to_string(writes - 1));
 }
 
 }  // namespace
@@ -98,7 +156,7 @@ int main()
         const DatabaseFootprint before = store.footprint();
         CHECK(before.freeBytes >= static_cast<std::int64_t>(kPictureBytes / 2));
         std::string reason;
-        CHECK(store.rebuild(reason));
+        CHECK(store.compact(reason));
         const DatabaseFootprint after = store.footprint();
         CHECK(after.freeBytes == 0);
         CHECK(after.fileBytes + static_cast<std::int64_t>(kPictureBytes / 2) < before.fileBytes);
@@ -114,6 +172,7 @@ int main()
         }
         store.close();
     }
+    checkWritesGoOnDuringCompaction(root);
     fs::remove_all(root);
     std::fprintf(stderr, "TestTranscriptCore passed\n");
     return 0;

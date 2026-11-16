@@ -19,6 +19,7 @@
 #include <chrono>
 #include <stdexcept>
 #include <system_error>
+#include <thread>
 
 namespace bazarish::client {
 
@@ -270,6 +271,18 @@ std::uintmax_t sizeOrZero(const fs::path& file)
 }
 
 constexpr int kFixedColumnBytes = 32;
+// PRAGMA auto_vacuum reads 2 for INCREMENTAL.
+constexpr std::int64_t kIncrementalVacuum = 2;
+// One step is one short write lock; 256 pages of 4 KiB are 1 MiB.
+constexpr int kPagesPerStep = 256;
+const std::string kVacuumStep = "PRAGMA incremental_vacuum(" + std::to_string(kPagesPerStep) + ")";
+constexpr std::int64_t kUnknownCount = -1;
+
+bool vacuumsIncrementally(const SqliteHandle& db)
+{
+    Query mode(db);
+    return mode.exec("PRAGMA auto_vacuum") && mode.number(0) == kIncrementalVacuum;
+}
 
 std::string messageBytesExpression()
 {
@@ -1460,18 +1473,30 @@ std::int64_t TranscriptStore::pruneEveryChatToLatest(const int keep)
     return removed;
 }
 
-bool TranscriptStore::rebuild(std::string& reason)
+bool TranscriptStore::compact(std::string& reason)
 {
-    std::error_code unknown;
-    const fs::space_info room = fs::space(fs::absolute(path_).parent_path(), unknown);
-    if (unknown || room.available < sizeOrZero(path_)) {
-        reason = "there is not enough free disk space to rewrite the database";
+    if (!vacuumsIncrementally(db_)) {
+        reason = "the database was made without incremental vacuum";
         return false;
     }
-    Query vacuum(db_);
-    if (!vacuum.exec("VACUUM")) {
-        reason = sqlite3_errmsg(db_.get());
-        return false;
+    for (std::int64_t loose = freePages(); loose != 0;) {
+        if (loose < 0) {
+            reason = sqlite3_errmsg(db_.get());
+            return false;
+        }
+        const auto stepStarted = std::chrono::steady_clock::now();
+        if (sqlite3_exec(db_.get(), kVacuumStep.c_str(), nullptr, nullptr, nullptr) != SQLITE_OK) {
+            reason = sqlite3_errmsg(db_.get());
+            return false;
+        }
+        // A writer the step held off gets as long again to take its turn.
+        std::this_thread::sleep_for(std::chrono::steady_clock::now() - stepStarted);
+        const std::int64_t left = freePages();
+        if (left >= loose) {
+            reason = "the free pages did not go back to the disk";
+            return false;
+        }
+        loose = left;
     }
     Query checkpoint(db_);
     if (!checkpoint.exec("PRAGMA wal_checkpoint(TRUNCATE)")) {
@@ -1483,6 +1508,12 @@ bool TranscriptStore::rebuild(std::string& reason)
         return false;
     }
     return true;
+}
+
+std::int64_t TranscriptStore::freePages() const
+{
+    Query count(db_);
+    return count.exec("PRAGMA freelist_count") ? count.number(0) : kUnknownCount;
 }
 
 }  // namespace bazarish::client

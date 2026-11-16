@@ -53,6 +53,10 @@ constexpr EpochNumber kMonthsAgo = 6;
 constexpr std::size_t kMessageIdBytes = 8;
 constexpr std::int64_t kMsPerSecond = 1000;
 constexpr std::int64_t kLongAgoMs = 1'000'000'000'000;
+// PRAGMA auto_vacuum reads 2 for INCREMENTAL.
+constexpr std::int64_t kIncrementalVacuum = 2;
+constexpr int kErasedLines = 400;
+constexpr std::size_t kLinePaddingBytes = 1500;
 
 std::uint32_t wordAt(const Bytes& bytes, const std::size_t at)
 {
@@ -74,6 +78,14 @@ fs::path suffixed(fs::path file, const std::string& suffix)
 {
     file += suffix;
     return file;
+}
+
+std::int64_t vacuumModeOf(const fs::path& file, const SecretBytes& key)
+{
+    const Database db(openKeyed(file, key), "vacuum mode");
+    Statement mode(db, "PRAGMA auto_vacuum");
+    CHECK(mode.step());
+    return mode.number(0);
 }
 
 void checkBackup()
@@ -126,6 +138,7 @@ void checkLargeRekey(const fs::path& dir)
     const Bytes lastRow = *AccountDb(file, "old pass").get("row-" + std::to_string(kLargeRows - 1));
     const std::int64_t databaseBytes = static_cast<std::int64_t>(fs::file_size(file));
     CHECK(databaseBytes > static_cast<std::int64_t>(kRowBytes * kLargeRows));
+    CHECK(vacuumModeOf(file, oldKey) == kIncrementalVacuum);
 
     sqlite3_int64 heapBefore = 0;
     sqlite3_int64 heapPeak = 0;
@@ -141,6 +154,7 @@ void checkLargeRekey(const fs::path& dir)
     CHECK_THROWS(AccountDb(file, "old pass"));
     CHECK(*AccountDb(file, "new pass").get("row-" + std::to_string(kLargeRows - 1)) == lastRow);
     CHECK(*AccountDb(file, "new pass").get("row-0") != lastRow);
+    CHECK(vacuumModeOf(file, accountkey::keyFor(file, "new pass")) == kIncrementalVacuum);
     for (const char* const suffix : {"-rekey", "-rekey-journal"}) {
         CHECK(!fs::exists(suffixed(file, suffix)));
         CHECK(!fs::exists(suffixed(accountkey::sidecarFor(file), suffix)));
@@ -325,6 +339,11 @@ void checkBundleHoldsActiveKeysOnly(const fs::path& dir)
     kept.addAll(AccountDb(file, "pw").document("epochs"));
     CHECK(!kept.holds(current));
     CHECK(!filesHold(file, accountkey::keyFor(file, "pw"), needle));
+
+    const fs::path imported = dir / "bundle" / "imported.db";
+    Session::importAccountBytes(sealed, imported, "bundle-pw", "imported pw");
+    CHECK(vacuumModeOf(imported, accountkey::keyFor(imported, "imported pw"))
+        == kIncrementalVacuum);
 }
 
 StoredMessage textLine(const std::string& peer, const std::string& text)
@@ -387,6 +406,24 @@ void checkDeletedMessagesLeaveNoTrace(const fs::path& dir)
     CHECK(fs::file_size(suffixed(file, "-wal")) == 0);
     CHECK(!filesHold(file, key, three));
     CHECK(AccountDb(file, "pw").text("kept") == "yes");
+
+    const std::string padding(kLinePaddingBytes, '.');
+    const std::string erased = "an erased secret " + toHex(randomBytes(kMessageIdBytes));
+    const std::string survivor = "a surviving line " + toHex(randomBytes(kMessageIdBytes));
+    for (int at = 0; at < kErasedLines; ++at) {
+        CHECK(store.append(textLine("erin", erased + std::to_string(at) + padding)) != 0);
+    }
+    CHECK(store.append(textLine("frank", survivor)) != 0);
+    CHECK(store.clearPeer("erin"));
+    CHECK(store.footprint().freeBytes > 0);
+    const std::uintmax_t loose = fs::file_size(file);
+    std::string reason;
+    CHECK(store.compact(reason));
+    CHECK(store.footprint().freeBytes == 0);
+    CHECK(fs::file_size(file) < loose);
+    CHECK(fs::file_size(suffixed(file, "-wal")) == 0);
+    CHECK(!filesHold(file, key, erased));
+    CHECK(filesHold(file, key, survivor));
 }
 
 }  // namespace

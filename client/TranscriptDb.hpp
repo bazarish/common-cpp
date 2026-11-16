@@ -212,11 +212,12 @@ public:
         const std::map<std::string, std::int64_t>& counts);
     std::int64_t pruneToLatest(const std::string& peer, int keep);
     std::int64_t pruneEveryChatToLatest(int keep);
-    // Rewrites the file without the free pages deleted rows left behind.
-    bool rebuild(std::string& reason);
+    // Hands the free pages deleted rows left behind back to the disk a step at a time.
+    bool compact(std::string& reason);
 
 private:
     bool failed();
+    std::int64_t freePages() const;
     bool stampExpiry(std::int64_t id, const std::string& peer, std::int64_t atMs);
     bool stampNewlyRead(const std::string& peer, std::int64_t afterId, std::int64_t uptoId);
     bool clearPeerRows(const std::string& peer);
