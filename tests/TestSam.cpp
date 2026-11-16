@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <cstdio>
 #include <mutex>
 #include <string>
@@ -120,6 +121,9 @@ public:
 
     // The next sessions are refused the way a router refuses a destination it still holds.
     void holdDestination(const int times) { held_ = times; }
+
+    // Every next session is refused for a cause that waiting does not cure.
+    void refuseSessions() { refusing_ = true; }
 
     void setStreamStatus(const std::string& line)
     {
@@ -297,6 +301,10 @@ private:
                     writeAll(fd, "SESSION STATUS RESULT=DUPLICATED_DEST\n");
                     break;
                 }
+                if (refusing_.load()) {
+                    writeAll(fd, "SESSION STATUS RESULT=I2P_ERROR MESSAGE=\"refused\"\n");
+                    break;
+                }
                 writeAll(fd, "SESSION STATUS RESULT=OK DESTINATION=" + kPrivateKeys + "\n");
             } else if (line.starts_with("NAMING LOOKUP")) {
                 writeAll(fd, "NAMING REPLY RESULT=OK NAME=ME VALUE=" + kDestination + "\n");
@@ -343,6 +351,7 @@ private:
     std::atomic<std::uint16_t> clientUdpPort_{0};
     std::atomic<bool> stopping_{false};
     std::atomic<int> held_{0};
+    std::atomic<bool> refusing_{false};
     std::thread acceptor_;
     mutable std::mutex mutex_;
     std::vector<std::thread> workers_;
@@ -571,7 +580,24 @@ void testRepliableDatagrams()
     CHECK(std::string(received.data.begin(), received.data.end()) == payload);
 }
 
-void testSessionComesBackAfterTheRouterDoes()
+bool waitUntil(const std::function<bool()>& condition)
+{
+    for (int waited = 0; waited < kWaitSeconds * 1000 / kPollSliceMs && !condition(); ++waited) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kPollSliceMs));
+    }
+    return condition();
+}
+
+i2p::RouterConfig samAt(const FakeRouter& router)
+{
+    i2p::RouterConfig config;
+    config.backend = i2p::Backend::eSam;
+    config.samHost = "127.0.0.1";
+    config.samControlPort = router.address().controlPort;
+    return config;
+}
+
+void testSessionIsLostWhenTheRouterDropsIt()
 {
     FakeRouter router;
     sam::Session session(router.address(), streamConfig(), kReady);
@@ -580,14 +606,46 @@ void testSessionComesBackAfterTheRouterDoes()
 
     router.dropConnections();
 
-    CHECK(router.waitForCommand("SESSION CREATE", 2) != "");
-    CHECK(router.waitForCommand("STREAM FORWARD", 2) != "");
-    for (int waited = 0; waited < kWaitSeconds * 1000 / kPollSliceMs && !session.alive();
-         ++waited) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(kPollSliceMs));
+    CHECK(waitUntil([&session]() { return !session.alive(); }));
+    std::this_thread::sleep_for(kStrangerWait);
+    CHECK(!session.alive());
+    std::size_t creates = 0;
+    for (const std::string& line : router.commands()) {
+        creates += line.starts_with("SESSION CREATE") ? 1 : 0;
     }
-    CHECK(session.alive());
-    CHECK(session.publicDestination() == kDestination);
+    CHECK(creates == 1);
+    std::string peer;
+    CHECK_THROWS(session.accept(peer, kAcceptWait));
+}
+
+void testEndpointTellsADeadSession()
+{
+    {
+        FakeRouter router;
+        i2p::Router over(samAt(router));
+        over.start();
+        i2p::EndpointConfig wanted;
+        wanted.keys = i2p::Keys::generate();
+        const std::shared_ptr<i2p::Endpoint> endpoint = over.createEndpoint(wanted);
+        CHECK(waitUntil([&endpoint]() { return endpoint->ready(); }));
+        CHECK(!endpoint->lost());
+        router.dropConnections();
+        CHECK(waitUntil([&endpoint]() { return endpoint->lost(); }));
+        std::string peer;
+        CHECK_THROWS(endpoint->accept(peer, std::chrono::duration_cast<std::chrono::seconds>(kAcceptWait)));
+    }
+    {
+        FakeRouter router;
+        router.refuseSessions();
+        i2p::Router over(samAt(router));
+        over.start();
+        i2p::EndpointConfig wanted;
+        wanted.keys = i2p::Keys::generate();
+        const std::shared_ptr<i2p::Endpoint> endpoint = over.createEndpoint(wanted);
+        CHECK(waitUntil([&endpoint]() { return endpoint->lost(); }));
+        std::string peer;
+        CHECK_THROWS(endpoint->accept(peer, std::chrono::duration_cast<std::chrono::seconds>(kAcceptWait)));
+    }
 }
 
 void testWaitsForAHeldDestination()
@@ -683,7 +741,8 @@ int main()
     testRawDatagrams();
     testLeaseSetReaders();
     testRepliableDatagrams();
-    testSessionComesBackAfterTheRouterDoes();
+    testSessionIsLostWhenTheRouterDropsIt();
+    testEndpointTellsADeadSession();
     testWaitsForAHeldDestination();
     testRefusesWhatIsNotLoopback();
     testRefusesAnEndlessReply();

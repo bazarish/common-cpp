@@ -48,7 +48,6 @@ constexpr int kControlIoTimeoutSeconds = 240;
 constexpr std::size_t kMaxDatagramBytes = 32768;
 
 constexpr int kWatchPollMs = 1000;
-constexpr int kRebuildDelaySeconds = 5;
 
 constexpr int kListenBacklog = 16;
 
@@ -728,36 +727,8 @@ struct Session::Impl {
                 break;
             }
             alive = false;
-            bazarish::log::warn("i2p: the router dropped SAM session {}, rebuilding", id);
-            rebuild();
-        }
-    }
-
-    void rebuild()
-    {
-        while (!stopping) {
-            try {
-                {
-                    const std::lock_guard<std::mutex> lock(mutex);
-                    control.reset();
-                    forward.reset();
-                    config.privateKeys = privateKeys;
-                }
-                create();
-                {
-                    const std::lock_guard<std::mutex> lock(listenMutex);
-                    if (listening) {
-                        startForwarding();
-                    }
-                }
-                bazarish::log::info("i2p: SAM session {} is back", id);
-                return;
-            } catch (const std::exception& error) {
-                bazarish::log::warn("i2p: SAM session {} not back yet: {}", id, error.what());
-            }
-            for (int waited = 0; waited < kRebuildDelaySeconds && !stopping; ++waited) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-            }
+            bazarish::log::warn("i2p: the router dropped SAM session {}", id);
+            break;
         }
     }
 };
@@ -839,6 +810,9 @@ std::unique_ptr<Stream> Session::accept(
 {
     if (!impl_->listening) {
         throw Error(Result::eI2pError, "SAM: accept before listen");
+    }
+    if (!impl_->alive) {
+        throw Error(Result::eInvalidId, "SAM: the session is down");
     }
     if (!waitReadable(impl_->listener.get(), static_cast<int>(timeout.count()))) {
         return nullptr;

@@ -109,7 +109,12 @@ public:
         return streams_ != nullptr && streams_->alive();
     }
 
-    bool lost() const override { return stopped_.load(); }
+    // A session the router dropped, or one that never came up, is not rebuilt here.
+    bool lost() const override
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return stopped_.load() || !failure_.empty() || (streams_ != nullptr && !streams_->alive());
+    }
     std::string publicBase64() const override { return publicDestination_; }
     std::string routingHost() const override { return hostAddress_; }
 
@@ -158,6 +163,11 @@ public:
     {
         const std::shared_ptr<sam::Session> session = waitForStreams(timeout);
         if (session == nullptr) {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (!failure_.empty()) {
+                throw std::runtime_error("bazarish::i2p: destination " + tag_.named()
+                    + " did not come up: " + failure_);
+            }
             return nullptr;
         }
         session->listen();
