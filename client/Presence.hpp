@@ -94,7 +94,6 @@ struct PresenceTimings {
     std::chrono::milliseconds onlineTail{60000};
     std::chrono::milliseconds typingPulse{5000};
     std::chrono::milliseconds readersSettle{10000};
-    std::chrono::milliseconds tick{250};
     UtcClock utcNow = systemUtcSeconds;
 };
 

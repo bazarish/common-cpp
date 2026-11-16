@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -88,7 +89,9 @@ private:
 
 class Session {
 public:
-    Session(RouterAddress router, SessionConfig config, std::chrono::seconds readyTimeout);
+    // dropped runs on the session's own thread once the router drops it.
+    Session(RouterAddress router, SessionConfig config, std::chrono::seconds readyTimeout,
+        std::function<void()> dropped = {});
     ~Session();
 
     Session(const Session&) = delete;

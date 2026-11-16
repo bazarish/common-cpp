@@ -666,6 +666,7 @@ struct Session::Impl {
     std::atomic<bool> alive{false};
 
     std::atomic<bool> stopping{false};
+    std::function<void()> dropped;
     std::thread watch;
 
     void create()
@@ -728,17 +729,22 @@ struct Session::Impl {
             }
             alive = false;
             bazarish::log::warn("i2p: the router dropped SAM session {}", id);
+            if (dropped) {
+                dropped();
+            }
             break;
         }
     }
 };
 
-Session::Session(RouterAddress router, SessionConfig config, const std::chrono::seconds readyTimeout)
+Session::Session(RouterAddress router, SessionConfig config,
+    const std::chrono::seconds readyTimeout, std::function<void()> dropped)
     : impl_(std::make_unique<Impl>())
 {
     impl_->router = std::move(router);
     impl_->config = std::move(config);
     impl_->readyTimeout = readyTimeout;
+    impl_->dropped = std::move(dropped);
     impl_->id = "bazarish-" + toHex(randomBytes(8));
     if (impl_->config.style != Style::eStream) {
         impl_->datagrams.reset(openLocalUdpSocket(impl_->datagramPort,

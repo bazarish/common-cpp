@@ -92,7 +92,6 @@ PresenceTimings fastTimings()
     timings.onlineTail = milliseconds(800);
     timings.typingPulse = milliseconds(500);
     timings.readersSettle = milliseconds(200);
-    timings.tick = milliseconds(20);
     timings.utcNow = fakeUtc;
     return timings;
 }

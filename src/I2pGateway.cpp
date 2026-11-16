@@ -259,6 +259,25 @@ public:
     std::atomic<std::uint64_t> unreachableOnNetwork{0};
     // Something that can let an orphaned flow attach happened: a socket freed, tickets, a new control.
     std::atomic<bool> reattachDue{false};
+    std::mutex wakeMutex;
+    std::condition_variable woken;
+    bool wakeDue = false;
+
+    // Wakes the cover loop: something it acts on happened.
+    void wake()
+    {
+        {
+            const std::lock_guard<std::mutex> lock(wakeMutex);
+            wakeDue = true;
+        }
+        woken.notify_all();
+    }
+
+    void dueToReattach()
+    {
+        reattachDue.store(true);
+        wake();
+    }
 
     std::string describe() const
     {
@@ -534,6 +553,8 @@ private:
     std::atomic<bool> stopping_{false};
     std::atomic<bool> openFailing_{false};
     std::unique_ptr<LossWatch> loss_;
+    std::unique_ptr<CarryWatch> carry_;
+    std::unique_ptr<ActivityWatch> activity_;
     bool givenUp_ = false;
 };
 
@@ -759,6 +780,7 @@ void GatewayEndpoint::statusChanged(
         bazarish::log::info("i2p: the way to {} goes into I2P: the gateway does not route it",
             bazarish::log::redact(target_));
     }
+    stateSignal->changed();
 }
 
 void GatewayEndpoint::datagramArrived(std::vector<std::uint8_t> payload)
@@ -886,6 +908,7 @@ void GatewayEndpoint::stop()
     link_->endStreamsOf(id_);
     link_->forget(id_);
     arrived_.notify_all();
+    stateSignal->changed();
 }
 
 void GatewayEndpoint::lost()
@@ -900,6 +923,7 @@ void GatewayEndpoint::lost()
     link_->endStreamsOf(id_);
     link_->forget(id_);
     arrived_.notify_all();
+    stateSignal->changed();
     bazarish::log::warn("i2p: the gateway has lost the destination for {}", label());
 }
 
@@ -1019,18 +1043,24 @@ void GatewayRouter::start()
     openControl();
     live_.store(true);
     loss_ = std::make_unique<LossWatch>([this]() { networkLost(); });
+    carry_ = std::make_unique<CarryWatch>([link = link_]() { link->wake(); });
+    activity_ = std::make_unique<ActivityWatch>([link = link_]() { link->wake(); });
     cover_ = std::thread([this]() { coverLoop(); });
+    stateSignal->changed();
 }
 
 void GatewayRouter::stop()
 {
     loss_.reset();
+    carry_.reset();
+    activity_.reset();
     {
         const std::lock_guard<std::mutex> lock(pauseMutex_);
         stopping_.store(true);
     }
     pauseWake_.notify_all();
     if (live_.exchange(false) && cover_.joinable()) {
+        link_->wake();
         link_->abandonCalls();
         cover_.join();
     }
@@ -1086,6 +1116,7 @@ void GatewayRouter::stop()
     if (socket) {
         socket->close();
     }
+    stateSignal->changed();
 }
 
 bool GatewayRouter::ready() const
@@ -1113,6 +1144,7 @@ void GatewayRouter::openControl()
                 const std::lock_guard<std::mutex> lock(pending->mutex);
             }
             pending->answered.notify_all();
+            link->wake();
         });
     if (opened.socket == nullptr) {
         if (opened.wrongGateway) {
@@ -1261,7 +1293,7 @@ void GatewayRouter::openControl()
         link_->holding = false;
         link_->lastUse.store(millisNow());
     }
-    link_->reattachDue.store(true);
+    link_->dueToReattach();
     bazarish::log::info("i2p: a gateway running i2pd {}, {}",
         body.value("i2pd", std::string("?")), resumed ? "session rejoined" : "new session");
 }
@@ -1423,6 +1455,7 @@ void GatewayRouter::startBurst()
     burst_ = std::thread([this, burst = shape::drawBurst(random_)]() {
         decoyBurst(burst);
         bursting_.store(false);
+        link_->wake();
     });
 }
 
@@ -1437,7 +1470,22 @@ void GatewayRouter::coverLoop()
     bool burstSeen = false;
 
     while (live_.load()) {
-        std::this_thread::sleep_for(kCoverTick);
+        std::optional<std::chrono::steady_clock::time_point> until;
+        if (hasControl()) {
+            until = std::chrono::steady_clock::now() + kCoverTick;
+        } else if (!networkDown()) {
+            until = openAt;
+        }
+        {
+            std::unique_lock<std::mutex> lock(link_->wakeMutex);
+            const auto due = [this]() { return link_->wakeDue; };
+            if (until.has_value()) {
+                (void)link_->woken.wait_until(lock, *until, due);
+            } else {
+                link_->woken.wait(lock, due);
+            }
+            link_->wakeDue = false;
+        }
         if (!live_.load()) {
             break;
         }
@@ -1451,6 +1499,7 @@ void GatewayRouter::coverLoop()
             dropSockets();
             if (openFailing_.exchange(false)) {
                 link_->unreachable.store(false);
+                stateSignal->changed();
             }
             openAt = now;
             backoff = kFirstRetry;
@@ -1459,7 +1508,7 @@ void GatewayRouter::coverLoop()
             carrySeen = carry;
             openAt = now;
             backoff = kFirstRetry;
-            link_->reattachDue.store(true);
+            link_->dueToReattach();
         }
         const bool exchange = exchanging();
         traffic_->exchanging.store(exchange);
@@ -1483,6 +1532,7 @@ void GatewayRouter::coverLoop()
                 givenUp_ = false;
                 if (openFailing_.exchange(false)) {
                     link_->unreachable.store(false);
+                    stateSignal->changed();
                     noteGatewayReach(true);
                     noteCarryReturned();
                     carrySeen = carryReturns();
@@ -1493,6 +1543,7 @@ void GatewayRouter::coverLoop()
                     link_->unreachableOnNetwork.store(networkSeen);
                     link_->unreachable.store(true);
                     link_->abandonCalls();
+                    stateSignal->changed();
                     noteGatewayReach(false);
                 }
                 bazarish::log::warn(
@@ -1573,13 +1624,18 @@ GatewayRouter::Attach GatewayRouter::attach(const std::uint32_t flow)
         [this](const http::SocketPtr& socket, const std::vector<unsigned char>& message) {
             arrived(socket, message);
         },
-        [link = link_, flow](const http::SocketPtr&) {
+        [link = link_, flow](const http::SocketPtr& gone) {
             {
                 const std::lock_guard<std::mutex> lock(link->mutex);
-                link->flows.erase(flow);
+                const auto held = link->flows.find(flow);
+                // A socket the session refused, or one closed before it was taken, is no flow's.
+                if (held == link->flows.end() || held->second != gone) {
+                    return;
+                }
+                link->flows.erase(held);
                 link->orphaned.insert(flow);
             }
-            link->reattachDue.store(true);
+            link->dueToReattach();
         });
     if (opened.socket == nullptr) {
         bazarish::log::debug("i2p: no socket of its own for flow {}: {}", flow, opened.error);
@@ -1595,7 +1651,13 @@ GatewayRouter::Attach GatewayRouter::attach(const std::uint32_t flow)
     }
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
-        link_->flows[flow] = opened.socket;
+        if (opened.socket->open()) {
+            link_->flows[flow] = opened.socket;
+        }
+    }
+    if (!opened.socket->open()) {
+        link_->dueToReattach();
+        return Attach::eWaits;
     }
     opened.socket->send(gateway::encodeJson(FrameType::eAttach, flow, nlohmann::json::object()));
     return Attach::eAttached;
@@ -1959,7 +2021,7 @@ void GatewayRouter::dispatch(const Frame& frame)
             for (const nlohmann::json& ticket : body.at("tickets")) {
                 link_->tickets.push_back(fromBase64(ticket.get<std::string>()));
             }
-            link_->reattachDue.store(true);
+            link_->dueToReattach();
             return;
         }
         case FrameType::eEndpointStatus: {

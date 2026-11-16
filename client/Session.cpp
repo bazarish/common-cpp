@@ -378,7 +378,6 @@ constexpr int kServeWindowSeconds = 30 * 60;
 constexpr std::int64_t kFileRequestFreshnessMs = 5 * 60 * 1000;
 constexpr std::size_t kHashChunkBytes = 64 * 1024;
 constexpr int kPublishWaitSeconds = 180;
-constexpr int kPublishPollSeconds = 2;
 
 std::string guessMime(const fs::path& path)
 {
@@ -4025,15 +4024,13 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                 = sharedI2pRouter(routerDir).createEndpoint(config);
             stop->watch(endpoint);
             emit(TransferState::eRequested, 0, 0, {}, TransferStage::ePublishing);
-            const auto publishDeadline
-                = std::chrono::steady_clock::now() + std::chrono::seconds(kPublishWaitSeconds);
-            while (!endpoint->waitReady(std::chrono::seconds(kPublishPollSeconds))) {
+            if (!endpoint->waitReady(std::chrono::seconds(kPublishWaitSeconds))) {
                 if (stop->requested()) {
                     throw std::runtime_error("transfer stopped");
                 }
-                if (std::chrono::steady_clock::now() >= publishDeadline) {
-                    throw std::runtime_error("could not publish a one-time destination");
-                }
+                throw std::runtime_error(bazarish::i2p::networkDown()
+                        ? "no network to publish a one-time destination on"
+                        : "could not publish a one-time destination");
             }
 
             FileOffer offer;
@@ -7098,17 +7095,12 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent, const Device
             PairingEvent publishing;
             publishing.stage = PairingStage::ePublishing;
             say(publishing);
-            const auto deadline
-                = std::chrono::steady_clock::now() + std::chrono::seconds(kPublishWaitSeconds);
-            bool published = false;
-            while (!cancel->load()) {
-                if (endpoint->waitReady(std::chrono::seconds(kPublishPollSeconds))) {
-                    published = true;
-                    break;
-                }
-                if (std::chrono::steady_clock::now() >= deadline) {
-                    throw std::runtime_error("could not publish the pairing address");
-                }
+            const bool published
+                = endpoint->waitReady(std::chrono::seconds(kPublishWaitSeconds));
+            if (!published && !cancel->load()) {
+                throw std::runtime_error(bazarish::i2p::networkDown()
+                        ? "no network to publish the pairing address on"
+                        : "could not publish the pairing address");
             }
             if (published) {
                 PairingEvent waiting;

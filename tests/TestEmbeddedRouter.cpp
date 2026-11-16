@@ -39,10 +39,8 @@ int main()
         boost::asio::post(ssu2->GetService(), [released]() { released.wait(); });
 
         const auto asked = std::chrono::steady_clock::now();
-        const auto peers = router.transportPeers();
-        const auto took = std::chrono::steady_clock::now() - asked;
-        CHECK(took < kTransportBusy);
-        CHECK(peers.empty());
+        CHECK_THROWS(router.transportPeers());
+        CHECK(std::chrono::steady_clock::now() - asked < kTransportBusy);
 
         release.set_value();
         std::promise<void> drained;

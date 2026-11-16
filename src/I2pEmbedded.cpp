@@ -788,6 +788,7 @@ void EmbeddedEndpoint::stop()
     acceptCv.notify_all();
     dgCv.notify_all();
     rawCv.notify_all();
+    stateSignal->changed();
 }
 
 void EmbeddedEndpoint::setLeaseSetReaderKey(const Bytes& rawPrivate)
@@ -1130,6 +1131,40 @@ std::vector<std::uint8_t> EmbeddedEndpoint::receiveRawDatagram(std::chrono::mill
     return payload;
 }
 
+namespace {
+
+// libi2pd names only the pool that took a new outbound tunnel; this finds whose state it tells.
+struct PoolSignals {
+    std::mutex mutex;
+    std::vector<std::pair<std::weak_ptr<i2pd::tunnel::TunnelPool>,
+        std::weak_ptr<backend::StateSignal>>>
+        pools;
+};
+
+void tellPool(PoolSignals& signals, backend::StateSignal& router,
+    const std::shared_ptr<i2pd::tunnel::TunnelPool>& pool)
+{
+    if (pool == i2pd::tunnel::tunnels.GetExploratoryPool()) {
+        router.changed();
+        return;
+    }
+    std::shared_ptr<backend::StateSignal> told;
+    {
+        const std::lock_guard<std::mutex> lock(signals.mutex);
+        for (const auto& [held, signal] : signals.pools) {
+            if (held.lock() == pool) {
+                told = signal.lock();
+                break;
+            }
+        }
+    }
+    if (told) {
+        told->changed();
+    }
+}
+
+}  // namespace
+
 class EmbeddedRouter final : public backend::RouterBackend {
 public:
     explicit EmbeddedRouter(const RouterConfig& config);
@@ -1163,6 +1198,7 @@ public:
     bool started = false;
     std::string builtInReseedUrls;
     std::shared_ptr<IoService> io;
+    const std::shared_ptr<PoolSignals> poolSignals = std::make_shared<PoolSignals>();
 
     struct DestEntry {
         std::weak_ptr<i2pd::client::ClientDestination> dest;
@@ -1186,6 +1222,7 @@ public:
         io.reset();
         if (started)
         {
+            i2pd::tunnel::tunnels.SetPoolOutboundTunnelCreatedHandler(nullptr);
             i2pd::api::StopI2P();
         }
         if (inited)
@@ -1270,6 +1307,11 @@ void EmbeddedRouter::start()
         bazarish::log::emit(mapLevel(level), text);
     });
     backend::setEmbeddedLogLevel(i2pLogLevel());
+    i2pd::tunnel::tunnels.SetPoolOutboundTunnelCreatedHandler(
+        [pools = poolSignals, router = stateSignal](
+            const std::shared_ptr<i2pd::tunnel::TunnelPool>& pool) {
+            tellPool(*pools, *router, pool);
+        });
     started = true;
     bazarish::log::info("i2p: engine running");
     io = std::make_shared<IoService>(ioContextCount());
@@ -1322,6 +1364,7 @@ void EmbeddedRouter::stop()
     const std::lock_guard<std::mutex> lock(lifecycleMutex);
     if (!started) { return; }
     io.reset();
+    i2pd::tunnel::tunnels.SetPoolOutboundTunnelCreatedHandler(nullptr);
     i2pd::api::StopI2P();
     started = false;
 }
@@ -1384,17 +1427,19 @@ std::vector<TransportPeer> EmbeddedRouter::transportPeers() const
         std::future<Sessions> copy = taken->get_future();
         boost::asio::post(
             ntcp2->GetService(), [ntcp2, taken]() { taken->set_value(ntcp2->GetNTCP2Sessions()); });
-        if (copy.wait_for(patience) == std::future_status::ready) {
-            collect(copy.get(), "NTCP2");
+        if (copy.wait_for(patience) != std::future_status::ready) {
+            throw std::runtime_error("bazarish::i2p: the NTCP2 thread did not answer in time");
         }
+        collect(copy.get(), "NTCP2");
     }
     if (auto* const ssu2 = i2pd::transport::transports.GetSSU2Server()) {
         const auto sessions = std::make_shared<i2pd::transport::SSU2Server::SSU2Sessions>();
         std::future<void> copied = ssu2->GetSSU2Sessions(*sessions);
         boost::asio::post(ssu2->GetService(), [sessions]() {});
-        if (copied.wait_for(patience) == std::future_status::ready) {
-            collect(*sessions, "SSU2");
+        if (copied.wait_for(patience) != std::future_status::ready) {
+            throw std::runtime_error("bazarish::i2p: the SSU2 thread did not answer in time");
         }
+        collect(*sessions, "SSU2");
     }
     return peers;
 }
@@ -1693,6 +1738,14 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     impl->dest = std::make_shared<i2pd::client::ClientDestination>(
         config.realtime ? impl->io->reserved() : impl->io->next(),
         parseKeys(keys.blob()), config.published, &params);
+    impl->dest->SetLeaseSetChangedHandler(
+        [signal = impl->stateSignal]() { signal->changed(); });
+    {
+        const std::lock_guard<std::mutex> lock(poolSignals->mutex);
+        std::erase_if(poolSignals->pools,
+            [](const auto& entry) { return entry.first.expired() || entry.second.expired(); });
+        poolSignals->pools.emplace_back(impl->dest->GetTunnelPool(), impl->stateSignal);
+    }
     impl->dest->Start();
     {
         std::lock_guard<std::mutex> lock(destsMutex);

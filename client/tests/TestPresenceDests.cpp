@@ -36,7 +36,6 @@ constexpr char kBob[] = "bob";
 constexpr char kDora[] = "dora";
 constexpr char kEve[] = "eve";
 constexpr milliseconds kQuietSpell{2000};
-constexpr milliseconds kTick{20};
 // 2026-11-11.
 constexpr PresenceDay kDay = 20768;
 constexpr std::int64_t kScheduledDays = 2;
@@ -48,7 +47,6 @@ std::atomic<std::int64_t> g_utc{kDay * kSecondsPerDay + kSecondsPerDay / 2};
 PresenceTimings testTimings()
 {
     PresenceTimings timings;
-    timings.tick = kTick;
     timings.utcNow = []() { return g_utc.load(); };
     return timings;
 }

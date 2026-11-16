@@ -1,0 +1,103 @@
+--- a/libi2pd/Destination.h
++++ b/libi2pd/Destination.h
+@@ -158,6 +158,8 @@
+
+ 			/** i2cp reconfigure */
+ 			virtual bool Reconfigure(const i2p::util::Mapping& i2cpOpts);
++			// the handler runs on the thread that makes the destination's own LeaseSet, each time it does
++			void SetLeaseSetChangedHandler (std::function<void ()> handler);
+
+ 			std::shared_ptr<i2p::tunnel::TunnelPool> GetTunnelPool () { return m_Pool; };
+ 			bool IsReady () const { return m_LeaseSet && !m_LeaseSet->IsExpired () && m_Pool->HasOutboundTunnels (); };
+@@ -234,6 +236,7 @@
+ 			std::shared_ptr<i2p::tunnel::TunnelPool> m_Pool;
+ 			std::mutex m_LeaseSetMutex;
+ 			std::shared_ptr<const i2p::data::LocalLeaseSet> m_LeaseSet;
++			std::function<void ()> m_LeaseSetChanged;
+ 			bool m_IsPublic;
+ 			uint32_t m_PublishReplyToken;
+ 			uint64_t m_LastSubmissionTime; // in seconds
+--- a/libi2pd/Destination.cpp
++++ b/libi2pd/Destination.cpp
+@@ -267,9 +267,11 @@
+
+ 	void LeaseSetDestination::SetLeaseSet (std::shared_ptr<const i2p::data::LocalLeaseSet> newLeaseSet)
+ 	{
++		std::function<void ()> changed;
+ 		{
+ 			std::lock_guard<std::mutex> l(m_LeaseSetMutex);
+ 			m_LeaseSet = newLeaseSet;
++			changed = m_LeaseSetChanged;
+ 		}
+ 		i2p::garlic::GarlicDestination::SetLeaseSetUpdated ();
+ 		if (m_IsPublic)
+@@ -281,6 +283,13 @@
+ 				s->Publish ();
+ 			});
+ 		}
++		if (changed) changed ();
++	}
++
++	void LeaseSetDestination::SetLeaseSetChangedHandler (std::function<void ()> handler)
++	{
++		std::lock_guard<std::mutex> l(m_LeaseSetMutex);
++		m_LeaseSetChanged = std::move (handler);
+ 	}
+
+ 	void LeaseSetDestination::UpdateLeaseSet ()
+--- a/libi2pd/Tunnel.h
++++ b/libi2pd/Tunnel.h
+@@ -235,6 +235,9 @@
+ 			int GetTransitTunnelsExpirationTimeout ();
+ 			void AddOutboundTunnel (std::shared_ptr<OutboundTunnel> newTunnel);
+ 			void AddInboundTunnel (std::shared_ptr<InboundTunnel> newTunnel);
++			// the handler runs on the thread that hands a pool its new outbound tunnel
++			void SetPoolOutboundTunnelCreatedHandler (std::function<void (std::shared_ptr<TunnelPool> pool)> handler);
++			void PoolOutboundTunnelCreated (std::shared_ptr<TunnelPool> pool);
+ 			std::shared_ptr<InboundTunnel> CreateInboundTunnel (std::shared_ptr<TunnelConfig> config, std::shared_ptr<TunnelPool> pool, std::shared_ptr<OutboundTunnel> outboundTunnel);
+ 			std::shared_ptr<OutboundTunnel> CreateOutboundTunnel (std::shared_ptr<TunnelConfig> config, std::shared_ptr<TunnelPool> pool);
+ 			void PostTunnelData (std::shared_ptr<I2NPMessage> msg);
+@@ -316,6 +319,8 @@
+ 			mutable std::mutex m_PoolsMutex;
+ 			std::list<std::shared_ptr<TunnelPool>> m_Pools;
+ 			std::shared_ptr<TunnelPool> m_ExploratoryPool;
++			std::mutex m_PoolOutboundTunnelCreatedMutex;
++			std::function<void (std::shared_ptr<TunnelPool> pool)> m_PoolOutboundTunnelCreated;
+ 			i2p::util::Queue<std::shared_ptr<I2NPMessage> > m_Queue;
+ 			uint32_t m_MaxNumTransitTunnels;
+ 			// count of tunnels for total TCSR algorithm
+--- a/libi2pd/Tunnel.cpp
++++ b/libi2pd/Tunnel.cpp
+@@ -1078,6 +1078,22 @@
+ 			newTunnel->SetTunnelPool (nullptr);
+ 	}
+
++	void Tunnels::SetPoolOutboundTunnelCreatedHandler (std::function<void (std::shared_ptr<TunnelPool> pool)> handler)
++	{
++		std::lock_guard<std::mutex> l(m_PoolOutboundTunnelCreatedMutex);
++		m_PoolOutboundTunnelCreated = std::move (handler);
++	}
++
++	void Tunnels::PoolOutboundTunnelCreated (std::shared_ptr<TunnelPool> pool)
++	{
++		std::function<void (std::shared_ptr<TunnelPool> pool)> handler;
++		{
++			std::lock_guard<std::mutex> l(m_PoolOutboundTunnelCreatedMutex);
++			handler = m_PoolOutboundTunnelCreated;
++		}
++		if (handler) handler (pool);
++	}
++
+ 	void Tunnels::AddInboundTunnel (std::shared_ptr<InboundTunnel> newTunnel)
+ 	{
+ 		if (AddTunnel (newTunnel))
+--- a/libi2pd/TunnelPool.cpp
++++ b/libi2pd/TunnelPool.cpp
+@@ -180,6 +180,7 @@
+ 			std::unique_lock<std::mutex> l(m_OutboundTunnelsMutex);
+ 			m_OutboundTunnels.insert (createdTunnel);
+ 		}
++		tunnels.PoolOutboundTunnelCreated (shared_from_this ());
+ 	}
+
+ 	void TunnelPool::TunnelExpired (std::shared_ptr<OutboundTunnel> expiredTunnel)

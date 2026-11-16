@@ -5,14 +5,17 @@
 #include <bazarish/I2p.hpp>
 
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <functional>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -55,6 +58,26 @@ private:
     std::string accountLabel_;
 };
 
+// Told each time a destination's or a router's state may have changed; waiters block on it.
+class StateSignal {
+public:
+    void changed();
+    // True once done() holds; false at the deadline or once stop is requested.
+    bool waitUntil(std::chrono::steady_clock::time_point deadline, const std::stop_token& stop,
+        const std::function<bool()>& done);
+    std::uint64_t watch(std::function<void()> listener);
+    // Waits out a call already under way, so the listener's owner may go once this returns.
+    void unwatch(std::uint64_t id);
+
+private:
+    std::mutex mutex_;
+    std::condition_variable_any wake_;
+    std::mutex listenersMutex_;
+    std::mutex calling_;
+    std::map<std::uint64_t, std::function<void()>> listeners_;
+    std::uint64_t nextWatch_ = 0;
+};
+
 class StreamBackend {
 public:
     virtual ~StreamBackend() = default;
@@ -93,6 +116,9 @@ public:
     virtual std::vector<std::uint8_t> receiveRawDatagram(std::chrono::milliseconds timeout) = 0;
 
     virtual void stop() = 0;
+
+    // Told whenever ready() or lost() may have changed.
+    const std::shared_ptr<StateSignal> stateSignal = std::make_shared<StateSignal>();
 };
 
 class RouterBackend {
@@ -105,6 +131,8 @@ public:
     virtual void stop() = 0;
     virtual bool running() const = 0;
     virtual bool ready() const = 0;
+    virtual bool waitReady(
+        std::chrono::steady_clock::time_point deadline, const std::stop_token& stop);
 
     virtual int knownRouters() const = 0;
     virtual int floodfills() const = 0;
@@ -132,6 +160,9 @@ public:
     virtual void retagEndpoint(
         const EndpointBackend& endpoint, std::string label, std::string accountLabel)
         = 0;
+
+    // Told whenever ready() may have changed.
+    const std::shared_ptr<StateSignal> stateSignal = std::make_shared<StateSignal>();
 };
 
 void noteCarryReturned();
@@ -144,6 +175,18 @@ public:
     ~LossWatch();
     LossWatch(const LossWatch&) = delete;
     LossWatch& operator=(const LossWatch&) = delete;
+
+private:
+    const std::uint64_t id_;
+};
+
+// Calls its listener on the thread that reports the window, the screen or the user acting.
+class ActivityWatch {
+public:
+    explicit ActivityWatch(std::function<void()> listener);
+    ~ActivityWatch();
+    ActivityWatch(const ActivityWatch&) = delete;
+    ActivityWatch& operator=(const ActivityWatch&) = delete;
 
 private:
     const std::uint64_t id_;

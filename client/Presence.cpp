@@ -17,6 +17,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string_view>
@@ -345,6 +346,7 @@ struct Presence::Impl {
         std::unique_ptr<Runner> runner;
         std::deque<Bytes> inbox;
         std::map<std::string, Outgoing> peers;
+        Clock::time_point openAfter{};
     };
 
     PresenceAccount account;
@@ -360,6 +362,8 @@ struct Presence::Impl {
     std::condition_variable wake;
     std::condition_variable left;
     bool stopping = false;
+    // Something the worker acts on happened; the first pass needs none.
+    bool woken = true;
     std::uint64_t leftThrough = 0;
     struct Inputs {
         bool focused = false;
@@ -384,7 +388,9 @@ struct Presence::Impl {
     std::map<PresenceDay, WatcherLane> watchers;
     std::map<std::string, PresenceState> shownStates;
     Clock::time_point lastOnline{};
+    std::optional<Clock::time_point> dueAt;
     std::thread worker;
+    std::unique_ptr<i2p::TransportWatch> transport;
 
     Impl(PresenceAccount accountIn, PresenceNet netIn, PresenceSink sinkIn,
         PresenceTimings timingsIn)
@@ -399,6 +405,7 @@ struct Presence::Impl {
         inputs.shown = account.shown;
         shown = account.shown;
         setPresenceWanted(id, account.shown);
+        transport = std::make_unique<i2p::TransportWatch>([this]() { poke(); });
         worker = std::thread([this]() { run(); });
     }
 
@@ -410,7 +417,31 @@ struct Presence::Impl {
         }
         wake.notify_all();
         worker.join();
+        transport.reset();
         setPresenceWanted(id, false);
+    }
+
+    void poke()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            woken = true;
+        }
+        wake.notify_all();
+    }
+
+    void dueBy(const Clock::time_point at)
+    {
+        dueAt = dueAt.has_value() ? std::min(*dueAt, at) : at;
+    }
+
+    // UTC seconds at which liveDays() next answers differently.
+    static std::int64_t nextDayChange(const std::int64_t utc)
+    {
+        const PresenceDay ending = presenceDayOf(utc - kPresenceHalfOverlapSeconds);
+        const PresenceDay starting = presenceDayOf(utc + kPresenceHalfOverlapSeconds);
+        return std::min(presenceDayStart(ending + 1) + kPresenceHalfOverlapSeconds,
+            presenceDayStart(starting + 1) - kPresenceHalfOverlapSeconds);
     }
 
     static std::vector<PresenceDay> liveDays(const std::int64_t utc)
@@ -436,9 +467,11 @@ struct Presence::Impl {
                 {
                     std::lock_guard<std::mutex> lock(mutex);
                     inbox.push_back(std::move(*got));
+                    woken = true;
                 }
                 wake.notify_all();
             }
+            poke();
         });
         return runner;
     }
@@ -562,6 +595,7 @@ struct Presence::Impl {
         if (!epoch.has_value()) {
             bazarish::log::debug("presence: no current key of {} to watch with",
                 bazarish::log::redact(outgoing.peer));
+            outgoing.lastSent = now;
             return;
         }
         const PresenceWatch watch{outgoing.id, outgoing.key, account.fingerprint, account.device,
@@ -830,23 +864,35 @@ struct Presence::Impl {
                     dropHolder(day, lane, ended);
                     continue;
                 }
-                if (!sameReaders(lane.wanted, lane.readers)
-                    && now - lane.readersChanged >= timings.readersSettle) {
-                    tellAllOffline(lane, now);
-                    dropHolder(day, lane, "the readers changed");
+                if (!sameReaders(lane.wanted, lane.readers)) {
+                    if (now - lane.readersChanged >= timings.readersSettle) {
+                        tellAllOffline(lane, now);
+                        dropHolder(day, lane, "the readers changed");
+                    } else {
+                        dueBy(lane.readersChanged + timings.readersSettle);
+                    }
                 }
             }
             if (!lane.runner) {
-                if (online && !lane.wanted.empty() && now >= lane.raiseAfter
+                if (online && !lane.wanted.empty()
                     && i2p::transportState() == i2p::TransportState::eUp) {
-                    raise(day, lane, now);
+                    if (now >= lane.raiseAfter) {
+                        raise(day, lane, now);
+                    }
+                    if (!lane.runner) {
+                        dueBy(lane.raiseAfter);
+                    }
                 }
                 continue;
+            }
+            if (!online) {
+                dueBy(lastOnline + timings.onlineTail);
             }
             for (auto& [subscription, sub] : lane.incoming) {
                 if (sub.told != stateFor(sub, now)) {
                     tell(lane, sub, now, false);
                 }
+                dueBy(sub.expires);
             }
         }
     }
@@ -913,6 +959,10 @@ struct Presence::Impl {
             if (now - outgoing.lastSent >= timings.renewEvery) {
                 sendRenew(lane, outgoing, now);
             }
+            if (outgoing.lastSent > outgoing.lastHeard) {
+                dueBy(outgoing.lastSent + timings.watchRetry);
+            }
+            dueBy(outgoing.lastSent + timings.renewEvery);
             return;
         }
         if (outgoing.carriedUntil != Clock::time_point{} && now >= outgoing.carriedUntil) {
@@ -922,9 +972,13 @@ struct Presence::Impl {
         if (now - outgoing.lastSent >= timings.watchRetry) {
             sendWatch(lane, outgoing, now);
         }
+        if (outgoing.carriedUntil != Clock::time_point{}) {
+            dueBy(outgoing.carriedUntil);
+        }
+        dueBy(outgoing.lastSent + timings.watchRetry);
     }
 
-    void openWatchers(const std::vector<PresenceDay>& days)
+    void openWatchers(const std::vector<PresenceDay>& days, const Clock::time_point now)
     {
         if (!active() || i2p::transportState() != i2p::TransportState::eUp) {
             return;
@@ -934,6 +988,10 @@ struct Presence::Impl {
             if (lane.runner) {
                 continue;
             }
+            if (now < lane.openAfter) {
+                dueBy(lane.openAfter);
+                continue;
+            }
             PresenceLinkConfig config;
             config.readerKey = seed.readerFor(day).rawPrivate();
             try {
@@ -941,6 +999,8 @@ struct Presence::Impl {
             } catch (const std::exception& error) {
                 bazarish::log::info("presence: the watching address for {} did not come up: {}",
                     presenceDayText(day), error.what());
+                lane.openAfter = now + timings.watchRetry;
+                dueBy(lane.openAfter);
             }
             OPENSSL_cleanse(config.readerKey.data(), config.readerKey.size());
         }
@@ -1012,7 +1072,13 @@ struct Presence::Impl {
             std::uint64_t leaveAsked = 0;
             {
                 std::unique_lock<std::mutex> lock(mutex);
-                wake.wait_for(lock, timings.tick);
+                const auto acting = [this]() { return woken || stopping; };
+                if (dueAt.has_value()) {
+                    (void)wake.wait_until(lock, *dueAt, acting);
+                } else {
+                    wake.wait(lock, acting);
+                }
+                woken = false;
                 if (stopping) {
                     break;
                 }
@@ -1034,9 +1100,15 @@ struct Presence::Impl {
                     watcherFrames[day].swap(lane.inbox);
                 }
             }
+            dueAt.reset();
             const Clock::time_point now = Clock::now();
             std::erase_if(typingUntil, [now](const auto& entry) { return entry.second <= now; });
-            const std::vector<PresenceDay> days = liveDays(timings.utcNow());
+            for (const auto& [peer, until] : typingUntil) {
+                dueBy(until);
+            }
+            const std::int64_t utc = timings.utcNow();
+            const std::vector<PresenceDay> days = liveDays(utc);
+            dueBy(now + std::chrono::seconds(nextDayChange(utc) - utc));
             retireDays(days, now);
             takeContacts(days, contactsChanged, now);
             for (auto& [day, lane] : holders) {
@@ -1071,7 +1143,7 @@ struct Presence::Impl {
                     dropWatcher(day, lane, now);
                 }
             }
-            openWatchers(days);
+            openWatchers(days, now);
             tickHolders(now);
             tickPeers(now);
             if (!active()) {
@@ -1108,7 +1180,7 @@ void Presence::setFocused(const bool focused)
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->inputs.focused = focused;
     }
-    impl_->wake.notify_all();
+    impl_->poke();
 }
 
 void Presence::setAway(const bool away)
@@ -1117,7 +1189,7 @@ void Presence::setAway(const bool away)
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->inputs.away = away;
     }
-    impl_->wake.notify_all();
+    impl_->poke();
 }
 
 void Presence::leave()
@@ -1125,6 +1197,7 @@ void Presence::leave()
     std::unique_lock<std::mutex> lock(impl_->mutex);
     impl_->inputs.away = true;
     const std::uint64_t asked = ++impl_->inputs.leaveAsked;
+    impl_->woken = true;
     impl_->wake.notify_all();
     impl_->left.wait(lock, [this, asked]() { return impl_->leftThrough >= asked; });
 }
@@ -1136,7 +1209,7 @@ void Presence::setShown(const bool shown)
         impl_->inputs.shown = shown;
         setPresenceWanted(impl_->id, shown);
     }
-    impl_->wake.notify_all();
+    impl_->poke();
 }
 
 void Presence::setContacts(std::vector<PresenceContact> ordered)
@@ -1146,7 +1219,7 @@ void Presence::setContacts(std::vector<PresenceContact> ordered)
         impl_->inputs.contacts = std::move(ordered);
         ++impl_->inputs.contactsVersion;
     }
-    impl_->wake.notify_all();
+    impl_->poke();
 }
 
 void Presence::watch(std::vector<std::string> peers)
@@ -1155,7 +1228,7 @@ void Presence::watch(std::vector<std::string> peers)
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->inputs.watched = std::move(peers);
     }
-    impl_->wake.notify_all();
+    impl_->poke();
 }
 
 void Presence::stoppedTyping(const std::string& peer)
@@ -1164,7 +1237,7 @@ void Presence::stoppedTyping(const std::string& peer)
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->inputs.typingUntil.erase(peer);
     }
-    impl_->wake.notify_all();
+    impl_->poke();
 }
 
 void Presence::typed(const std::string& peer)
@@ -1176,7 +1249,7 @@ void Presence::typed(const std::string& peer)
             [now](const auto& entry) { return entry.second <= now; });
         impl_->inputs.typingUntil[peer] = now + impl_->timings.typingPulse;
     }
-    impl_->wake.notify_all();
+    impl_->poke();
 }
 
 }  // namespace bazarish::client

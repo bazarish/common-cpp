@@ -15,7 +15,6 @@
 #include <map>
 #include <mutex>
 #include <stdexcept>
-#include <thread>
 #include <vector>
 
 namespace bazarish::i2p {
@@ -30,12 +29,52 @@ std::string leaseSetKeyBase64(const Bytes& raw)
     return standardToI2pBase64(toBase64(raw));
 }
 
+void StateSignal::changed()
+{
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+    }
+    wake_.notify_all();
+    const std::lock_guard<std::mutex> calling(calling_);
+    std::vector<std::function<void()>> listeners;
+    {
+        const std::lock_guard<std::mutex> lock(listenersMutex_);
+        for (const auto& [id, listener] : listeners_) {
+            listeners.push_back(listener);
+        }
+    }
+    for (const std::function<void()>& listener : listeners) {
+        listener();
+    }
+}
+
+bool StateSignal::waitUntil(const std::chrono::steady_clock::time_point deadline,
+    const std::stop_token& stop, const std::function<bool()>& done)
+{
+    std::unique_lock<std::mutex> lock(mutex_);
+    return wake_.wait_until(lock, stop, deadline, done);
+}
+
+std::uint64_t StateSignal::watch(std::function<void()> listener)
+{
+    const std::lock_guard<std::mutex> lock(listenersMutex_);
+    const std::uint64_t id = ++nextWatch_;
+    listeners_.emplace(id, std::move(listener));
+    return id;
+}
+
+void StateSignal::unwatch(const std::uint64_t id)
+{
+    {
+        const std::lock_guard<std::mutex> lock(listenersMutex_);
+        listeners_.erase(id);
+    }
+    const std::lock_guard<std::mutex> waited(calling_);
+}
+
 }  // namespace backend
 
 namespace {
-
-constexpr auto kEndpointReadyPoll = std::chrono::milliseconds(200);
-constexpr auto kRouterReadyPoll = std::chrono::milliseconds(500);
 
 std::atomic<I2pLogLevel> g_i2pLogLevel{I2pLogLevel::eNone};
 std::atomic<std::uint64_t> g_carryReturns{0};
@@ -92,6 +131,7 @@ private:
 
 Listeners g_lossListeners;
 Listeners g_transportListeners;
+Listeners g_activityListeners;
 std::mutex g_activityMutex;
 shape::ActivityState g_activity;
 
@@ -351,20 +391,39 @@ TransportWatch::~TransportWatch()
 
 void windowActive(const bool active)
 {
-    const std::lock_guard<std::mutex> lock(g_activityMutex);
-    g_activity.windowActive(active);
+    {
+        const std::lock_guard<std::mutex> lock(g_activityMutex);
+        g_activity.windowActive(active);
+    }
+    g_activityListeners.call();
 }
 
 void screenOn(const bool on)
 {
-    const std::lock_guard<std::mutex> lock(g_activityMutex);
-    g_activity.screenOn(on);
+    {
+        const std::lock_guard<std::mutex> lock(g_activityMutex);
+        g_activity.screenOn(on);
+    }
+    g_activityListeners.call();
 }
 
 void userActed()
 {
-    const std::lock_guard<std::mutex> lock(g_activityMutex);
-    g_activity.userActed(shape::Clock::now());
+    {
+        const std::lock_guard<std::mutex> lock(g_activityMutex);
+        g_activity.userActed(shape::Clock::now());
+    }
+    g_activityListeners.call();
+}
+
+backend::ActivityWatch::ActivityWatch(std::function<void()> listener)
+    : id_(g_activityListeners.add(std::move(listener)))
+{
+}
+
+backend::ActivityWatch::~ActivityWatch()
+{
+    g_activityListeners.remove(id_);
 }
 
 shape::Activity backend::activityNow(const bool exchanging)
@@ -493,19 +552,24 @@ bool Endpoint::lost() const
     return impl_->transport->lost();
 }
 
-bool Endpoint::waitReady(const std::chrono::seconds timeout)
+bool Endpoint::waitReady(const std::chrono::seconds timeout, const std::stop_token& stop)
 {
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (ready()) {
-            return true;
-        }
-        if (lost() || networkDown()) {
-            return false;
-        }
-        std::this_thread::sleep_for(kEndpointReadyPoll);
-    }
+    const std::shared_ptr<backend::StateSignal> signal = impl_->transport->stateSignal;
+    const backend::LossWatch loss([signal]() { signal->changed(); });
+    (void)signal->waitUntil(std::chrono::steady_clock::now() + timeout, stop,
+        [this]() { return ready() || lost() || networkDown(); });
     return ready();
+}
+
+EndpointWatch::EndpointWatch(const Endpoint& endpoint, std::function<void()> listener)
+    : signal_(endpoint.impl_->transport->stateSignal)
+    , id_(signal_->watch(std::move(listener)))
+{
+}
+
+EndpointWatch::~EndpointWatch()
+{
+    signal_->unwatch(id_);
 }
 
 std::string Endpoint::publicBase64() const
@@ -628,16 +692,15 @@ bool Router::ready() const
     return impl_->transport->ready();
 }
 
-bool Router::waitReady(const std::chrono::seconds timeout)
+bool Router::waitReady(const std::chrono::seconds timeout, const std::stop_token& stop)
 {
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (ready()) {
-            return true;
-        }
-        std::this_thread::sleep_for(kRouterReadyPoll);
-    }
-    return ready();
+    return impl_->transport->waitReady(std::chrono::steady_clock::now() + timeout, stop);
+}
+
+bool backend::RouterBackend::waitReady(
+    const std::chrono::steady_clock::time_point deadline, const std::stop_token& stop)
+{
+    return stateSignal->waitUntil(deadline, stop, [this]() { return ready(); });
 }
 
 int Router::knownRouters() const

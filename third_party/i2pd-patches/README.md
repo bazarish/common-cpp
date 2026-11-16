@@ -76,3 +76,10 @@ file here.
   look again was to expire the cached copy, which the streams and datagram sessions to
   that destination share. A reply replaces the cached entry with a new object, so what
   those already hold is not touched. Upstreamable as is; drop this patch when merged.
+- `0007-libi2pd-readiness-events.patch` - adds
+  `LeaseSetDestination::SetLeaseSetChangedHandler`, called each time a destination
+  makes its own LeaseSet, and `Tunnels::SetPoolOutboundTunnelCreatedHandler`, called
+  once a pool (a destination's or the exploratory one) holds a new outbound tunnel.
+  A destination is ready when it has both, and nothing told an embedder when that
+  happened, so a wait for readiness could only ask again and again. Drop this patch
+  if/when such hooks are merged upstream.

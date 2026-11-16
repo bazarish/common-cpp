@@ -36,7 +36,6 @@ namespace {
 constexpr PresenceDay kDay = 20768;
 constexpr std::int64_t kScheduledDays = 2;
 constexpr std::int64_t kInOverlap = kPresenceHalfOverlapSeconds - kSecondsPerMinute;
-constexpr std::chrono::milliseconds kTick{20};
 constexpr std::chrono::milliseconds kWatchRetry{100};
 constexpr char kAccountLabel[] = "alice";
 
@@ -130,7 +129,6 @@ int main()
     contact.devices = {{deviceIdOf(bob.classical().publicDer(), bob.pq().publicDer()), bob.classical().publicDer()}};
     contact.schedule = presenceScheduleFrom(bobSeed, kDay, kScheduledDays);
     PresenceTimings timings;
-    timings.tick = kTick;
     timings.watchRetry = kWatchRetry;
     timings.utcNow = []() { return g_utc.load(); };
 

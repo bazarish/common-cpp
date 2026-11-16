@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -147,6 +148,10 @@ struct EndpointConfig {
     bool blinded = true;
 };
 
+namespace backend {
+class StateSignal;
+}
+
 class Endpoint {
 public:
     ~Endpoint();
@@ -154,7 +159,8 @@ public:
     Endpoint& operator=(const Endpoint&) = delete;
 
     bool ready() const;
-    bool waitReady(std::chrono::seconds timeout);
+    // Returns as the destination turns ready or lost, the network goes, or stop is requested.
+    bool waitReady(std::chrono::seconds timeout, const std::stop_token& stop = {});
     bool lost() const;
 
     std::string publicBase64() const;
@@ -181,6 +187,20 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     friend class Router;
+    friend class EndpointWatch;
+};
+
+// Calls its listener, on a backend thread, whenever the endpoint's ready() or lost() may have changed.
+class EndpointWatch {
+public:
+    EndpointWatch(const Endpoint& endpoint, std::function<void()> listener);
+    ~EndpointWatch();
+    EndpointWatch(const EndpointWatch&) = delete;
+    EndpointWatch& operator=(const EndpointWatch&) = delete;
+
+private:
+    const std::shared_ptr<backend::StateSignal> signal_;
+    const std::uint64_t id_;
 };
 
 enum class Backend { eEmbedded, eSam, eGateway };
@@ -368,7 +388,8 @@ public:
     bool running() const;
 
     bool ready() const;
-    bool waitReady(std::chrono::seconds timeout);
+    // Returns as the router turns ready or stop is requested.
+    bool waitReady(std::chrono::seconds timeout, const std::stop_token& stop = {});
 
     int knownRouters() const;
     int floodfills() const;

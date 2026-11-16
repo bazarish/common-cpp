@@ -427,7 +427,6 @@ bool serveFile(bazarish::i2p::Endpoint& endpoint, const fs::path& ciphertextPath
 constexpr int kOwnTunnelsSeconds = 180;
 constexpr int kDialSeconds = 90;
 constexpr int kSenderQuietSeconds = 120;
-constexpr int kReadyPollSeconds = 1;
 
 void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
     const std::string& announcedSha256, const FileTarget& target,
@@ -448,15 +447,13 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
               const std::shared_ptr<bazarish::i2p::Endpoint> endpoint
                   = router.createEndpoint(config);
               stop.watch(endpoint);
-              const auto tunnelsBy = std::chrono::steady_clock::now()
-                  + std::chrono::seconds(kOwnTunnelsSeconds);
-              while (!endpoint->waitReady(std::chrono::seconds(kReadyPollSeconds))) {
+              if (!endpoint->waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
                   if (stop.requested()) {
                       throw std::runtime_error("transfer cancelled");
                   }
-                  if (std::chrono::steady_clock::now() >= tunnelsBy) {
-                      throw std::runtime_error("this device could not build I2P tunnels");
-                  }
+                  throw std::runtime_error(bazarish::i2p::networkDown()
+                          ? "no network to build I2P tunnels on"
+                          : "this device could not build I2P tunnels");
               }
               const std::unique_ptr<bazarish::i2p::Stream> stream
                   = endpoint->connect(offer.host, std::chrono::seconds(kDialSeconds));

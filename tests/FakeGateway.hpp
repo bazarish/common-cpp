@@ -87,6 +87,30 @@ public:
         control->send(gateway::encodeJson(gateway::FrameType::eTickets, 0, {{"tickets", tickets}}));
     }
 
+    // A destination made from now on is reported building until reportReady().
+    void holdReadiness()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        holdingReadiness_ = true;
+    }
+
+    void reportReady()
+    {
+        std::shared_ptr<gateway::ChannelSocket> control;
+        std::vector<std::uint32_t> held;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            control = control_.lock();
+            held.swap(building_);
+        }
+        if (control == nullptr) {
+            throw std::logic_error("no control socket to report readiness on");
+        }
+        for (const std::uint32_t ref : held) {
+            control->send(endpointStatus(ref, true));
+        }
+    }
+
     std::size_t socketsOpened()
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -428,9 +452,15 @@ private:
             return;
         }
         if (frame.type == FrameType::eEndpointCreate) {
-            socket->send(gateway::encodeJson(FrameType::eEndpointStatus, frame.ref,
-                {{"ready", true}, {"host", kFakeGatewayHost}, {"tunnelsIn", 1}, {"tunnelsOut", 1},
-                    {"leaseSets", 0}, {"localRoute", false}}));
+            bool holding = false;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                holding = holdingReadiness_;
+                if (holding) {
+                    building_.push_back(frame.ref);
+                }
+            }
+            socket->send(endpointStatus(frame.ref, !holding));
             socket->send(gateway::encodeJson(
                 FrameType::eOk, frame.ref, {{"host", kFakeGatewayHost}, {"kind", "stream"}}));
             if (gateway::bodyJson(frame).contains("keys")) {
@@ -438,6 +468,13 @@ private:
                 keyedEndpoints_.push_back(frame.ref);
             }
         }
+    }
+
+    static Bytes endpointStatus(const std::uint32_t ref, const bool ready)
+    {
+        return gateway::encodeJson(gateway::FrameType::eEndpointStatus, ref,
+            {{"ready", ready}, {"host", kFakeGatewayHost}, {"tunnelsIn", ready ? 1 : 0},
+                {"tunnelsOut", ready ? 1 : 0}, {"leaseSets", 0}, {"localRoute", false}});
     }
 
     const Identity identity_;
@@ -452,6 +489,8 @@ private:
     i2p::LeaseSetRefresh lookupAnswer_;
     std::vector<nlohmann::json> lookups_;
     bool closeOnHello_ = false;
+    bool holdingReadiness_ = false;
+    std::vector<std::uint32_t> building_;
     bool issuingTickets_ = false;
     bool refusingJoins_ = false;
     std::map<std::string, SecretBytes> ticketSessions_;

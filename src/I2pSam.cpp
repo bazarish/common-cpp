@@ -135,6 +135,7 @@ public:
             stopped_.store(true);
         }
         ready_.notify_all();
+        stateSignal->changed();
     }
 
     std::unique_ptr<backend::StreamBackend> connect(
@@ -218,7 +219,8 @@ private:
             for (bool told = false;;) {
                 try {
                     auto session = std::make_shared<sam::Session>(router_,
-                        sessionConfigFor(config_, sam::Style::eStream), kDestinationReadyTimeout);
+                        sessionConfigFor(config_, sam::Style::eStream), kDestinationReadyTimeout,
+                        [signal = stateSignal]() { signal->changed(); });
                     const std::lock_guard<std::mutex> lock(mutex_);
                     streams_ = std::move(session);
                     break;
@@ -245,6 +247,7 @@ private:
                 tag_.named(), failure_);
         }
         ready_.notify_all();
+        stateSignal->changed();
     }
 
     std::shared_ptr<sam::Session> waitForStreams(const std::chrono::seconds timeout)
@@ -319,6 +322,13 @@ public:
     }
 
     bool running() const override { return running_; }
+
+    // Nothing tells when a SAM bridge starts answering: a probe answers now or the wait fails.
+    bool waitReady(
+        std::chrono::steady_clock::time_point, const std::stop_token&) override
+    {
+        return ready();
+    }
 
     bool ready() const override
     {
