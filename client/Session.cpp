@@ -5464,8 +5464,8 @@ void Session::announceCallTaken(const std::string& callId)
     }
 }
 
-void Session::sendCallSignal(
-    const std::string& peerFingerprint, const std::string& type, nlohmann::json extra)
+void Session::sendCallSignal(const std::string& peerFingerprint, const std::string& type,
+    nlohmann::json extra, const DeliveryWatch& watch)
 {
     nlohmann::json inner = envelope(type, newMessageId());
     for (const auto& field : extra.items()) {
@@ -5473,7 +5473,7 @@ void Session::sendCallSignal(
     }
     LetterTerms terms;
     terms.notAfterMs = inner.at("sentAt").get<std::int64_t>() + kCallAnswerWindowMs;
-    sendContent(peerFingerprint, std::move(inner), {}, false, terms);
+    sendContent(peerFingerprint, std::move(inner), watch, false, terms);
 }
 
 void Session::requireAudioBackend() const
@@ -6259,20 +6259,16 @@ void Session::syncAccountPrefsToSelf()
     }
 }
 
-void Session::declineCall(const std::string& callId)
+void Session::declineCall(const std::string& callId, const DeliveryWatch& watch)
 {
     if (call_.state != CallState::eIncoming || call_.callId != callId) {
         throw std::runtime_error("no matching incoming call");
     }
-    const std::string peer = call_.peerFingerprint;
+    sendCallSignal(
+        call_.peerFingerprint, "call.decline", {{"callId", callId}, {"reason", "declined"}}, watch);
     logCompletedCall(CallOutcome::eDeclined);
     clearCall();
     announceCallTaken(callId);
-    try {
-        sendCallSignal(peer, "call.decline", {{"callId", callId}, {"reason", "declined"}});
-    } catch (const std::exception& error) {
-        bazarish::log::warn("decline signal not delivered: {}", error.what());
-    }
 }
 
 void Session::endCall()

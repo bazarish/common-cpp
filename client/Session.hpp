@@ -770,7 +770,8 @@ public:
 
     void acceptCall(const std::string& callId);
 
-    void declineCall(const std::string& callId);
+    // The watch hears whether the caller's server took the decline.
+    void declineCall(const std::string& callId, const DeliveryWatch& watch);
 
     void endCall();
 
@@ -953,8 +954,8 @@ private:
     void startCallMedia();
     void clearCall();
     void announceCallTaken(const std::string& callId);
-    void sendCallSignal(
-        const std::string& peerFingerprint, const std::string& type, nlohmann::json extra);
+    void sendCallSignal(const std::string& peerFingerprint, const std::string& type,
+        nlohmann::json extra, const DeliveryWatch& watch = {});
     void handleCallSignal(const std::string& type, const std::string& from,
         const nlohmann::json& body, IncomingMessage& message);
     void logCompletedCall(CallOutcome outcome);

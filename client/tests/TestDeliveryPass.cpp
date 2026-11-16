@@ -109,6 +109,7 @@ http::Server::Options localOptions()
 
 constexpr int kServiceUnavailable = 503;
 constexpr std::size_t kSneakPassBytes = 32;
+constexpr std::size_t kB33LabelChars = 56;
 constexpr int kQuietPasses = 3;
 constexpr std::size_t kShortReaderBytes = 31;
 constexpr std::array<std::uint8_t, 3> kJpegOpening{0xFF, 0xD8, 0xFF};
@@ -1629,6 +1630,46 @@ int main()
                 }
                 return false;
             }));
+        }
+
+        {
+            const DeviceCredential bobIdentity = deviceOf(bDir);
+            nlohmann::json invite = {{"v", 1}, {"type", "call.invite"}, {"id", "declined-call"},
+                {"from", bob->fingerprint()}, {"sentAt", nowMillis()}, {"callId", "declined-call-id"},
+                {"dest", std::string(kB33LabelChars, 'm') + ".b32.i2p"},
+                {"key", toBase64(randomBytes(kAeadKeyBytes))}};
+            signAuthorship(invite, bobIdentity, /*withCert=*/false);
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[alice->fingerprint()].push_back({"declined-call", "content",
+                    sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({invite}))),
+                        alice->ownEpochs().front())});
+            }
+            (void)alice->sync();
+            CHECK(alice->currentCall().state == Session::CallState::eIncoming);
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.refuseWith = "STORAGE_FULL";
+            }
+            std::mutex outcomeMutex;
+            std::optional<DeliveryOutcome> declined;
+            DeliveryWatch watch;
+            watch.onOutcome = [&](const DeliveryOutcome& outcome) {
+                const std::lock_guard<std::mutex> lock(outcomeMutex);
+                declined = outcome;
+            };
+            alice->declineCall("declined-call-id", watch);
+            CHECK(alice->currentCall().state == Session::CallState::eIdle);
+            CHECK(testutil::waitFor([&]() {
+                const std::lock_guard<std::mutex> lock(outcomeMutex);
+                return declined.has_value();
+            }));
+            CHECK(!declined->stored);
+            CHECK(declined->errorCode == "STORAGE_FULL");
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.refuseWith.clear();
+            }
         }
 
         {
