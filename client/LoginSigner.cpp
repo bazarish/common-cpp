@@ -3,11 +3,13 @@
 
 #include "FederationFetch.hpp"
 #include "I2pRouter.hpp"
+#include "LinkFailure.hpp"
 
 #include <bazarish/Links.hpp>
 #include <bazarish/Log.hpp>
 
 #include <ctime>
+#include <exception>
 #include <stdexcept>
 #include <utility>
 
@@ -74,10 +76,18 @@ std::optional<std::string> LoginSigner::fetch(
     if (!sealed) {
         return std::nullopt;
     }
-    const std::string challenge = service::openLoginChallenge(*key, *sealed);
-    service::requireChallengeReturnsTo(challenge, address->host);
+    const std::string challenge = [&]() {
+        try {
+            std::string opened = service::openLoginChallenge(*key, *sealed);
+            service::requireChallengeReturnsTo(opened, address->host);
+            return opened;
+        } catch (const std::exception& error) {
+            throw LinkError(LinkFailure::eServerMalformed, error.what());
+        }
+    }();
     if (service::splitLoginKey(challenge).key.has_value()) {
-        throw std::runtime_error("the fetched challenge carries a key of its own");
+        throw LinkError(
+            LinkFailure::eServerMalformed, "the fetched challenge carries a key of its own");
     }
     return service::withLoginKey(challenge, *key);
 }

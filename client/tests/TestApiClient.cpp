@@ -23,6 +23,7 @@
 #include <ctime>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 
@@ -154,6 +155,20 @@ try {
         CHECK(api.get("/v1/messaging/storage-usage").status == 200);
         CHECK(usageAnswers == answeredBefore + 2);
         CHECK(stub.opened() == 4);
+
+        stub.answerNextMalformed();
+        std::optional<LinkFailure> unreadable;
+        try {
+            (void)api.get("/v1/messaging/storage-usage");
+        } catch (const ApiError& error) {
+            CHECK(error.httpStatus == 0);
+            CHECK(!error.code.has_value());
+            unreadable = error.failure;
+        }
+        CHECK(unreadable == LinkFailure::eServerMalformed);
+        CHECK(api.linkFailure() == LinkFailure::eServerMalformed);
+        CHECK(api.get("/v1/messaging/storage-usage").status == 200);
+        CHECK(stub.opened() == 4);
     }
 
     {
@@ -166,6 +181,7 @@ try {
             CHECK(error.httpStatus == 404);
             CHECK(error.code.has_value());
             CHECK(error.code.value() == ErrorCode::eClientUnregistered);
+            CHECK(error.failure == LinkFailure::eNone);
         }
         CHECK(threw);
     }
@@ -179,6 +195,7 @@ try {
             threw = true;
             CHECK(error.httpStatus == 500);
             CHECK(!error.code.has_value());
+            CHECK(error.failure == LinkFailure::eNone);
         }
         CHECK(threw);
     }
@@ -202,14 +219,44 @@ try {
                 (void)api.get("/v1/messaging/storage-usage");
             } catch (const ApiError&) {
                 return false;
-            } catch (const std::runtime_error&) {
-                return true;
+            } catch (const LinkError& error) {
+                return error.failure == LinkFailure::eServerMalformed;
             }
             return false;
         };
         CHECK(ownCheckFailed());
-        CHECK(api.linkFailure() == LinkFailure::eServerRefused);
+        CHECK(api.linkFailure() == LinkFailure::eServerMalformed);
         CHECK(ownCheckFailed());
+    }
+
+    {
+        http::Server garbled(localOptions());
+        std::atomic<int> cardAsks{0};
+        garbled.get(std::string(tunnel::kServerCardPath), [&cardAsks](const http::Request&) {
+            ++cardAsks;
+            http::Response response;
+            response.contentType = "application/octet-stream";
+            response.body = "not a server card";
+            return response;
+        });
+        ServerEndpoint unreadableCard = endpoint;
+        unreadableCard.facades[0].port = garbled.start();
+        ApiClient api(alice, unreadableCard);
+        const auto malformed = [&api]() {
+            try {
+                (void)api.get("/v1/messaging/storage-usage");
+            } catch (const ApiError&) {
+                return false;
+            } catch (const LinkError& error) {
+                return error.failure == LinkFailure::eServerMalformed;
+            }
+            return false;
+        };
+        CHECK(malformed());
+        CHECK(api.linkFailure() == LinkFailure::eServerMalformed);
+        CHECK(malformed());
+        CHECK(cardAsks.load() == 2);
+        garbled.stop();
     }
 
     {
@@ -247,7 +294,8 @@ try {
                 try {
                     (void)api.get("/v1/messaging/storage-usage");
                 } catch (const ApiError& error) {
-                    return error.httpStatus == 0 && !error.code.has_value();
+                    return error.httpStatus == 0 && !error.code.has_value()
+                        && error.failure == LinkFailure::eServerRefused;
                 }
                 return false;
             };
@@ -329,6 +377,7 @@ try {
             threw = true;
             CHECK(error.httpStatus == 0);
             CHECK(!error.code.has_value());
+            CHECK(error.failure == LinkFailure::eServerUnreachable);
         }
         CHECK(threw);
     }
@@ -354,10 +403,12 @@ try {
         ServerEndpoint behind = endpoint;
         behind.facades[0].port = upstreamless.start();
         ApiClient api(alice, behind);
-        const auto refused = [&api]() {
+        LinkFailure carried = LinkFailure::eNone;
+        const auto refused = [&api, &carried]() {
             try {
                 (void)api.get("/v1/messaging/storage-usage");
-            } catch (const ApiError&) {
+            } catch (const ApiError& error) {
+                carried = error.failure;
                 return true;
             }
             return false;
@@ -367,6 +418,7 @@ try {
         CHECK(hellos.load() == 1);
         CHECK(api.serverBehindFacadeDown());
         CHECK(api.linkFailure() == LinkFailure::eServerDown);
+        CHECK(carried == LinkFailure::eServerDown);
         CHECK(refused());
         CHECK(hellos.load() == 2);
         CHECK(api.serverBehindFacadeDown());
@@ -375,6 +427,7 @@ try {
         CHECK(refused());
         CHECK(hellos.load() == 2);
         CHECK(api.linkFailure() == LinkFailure::eNoNetwork);
+        CHECK(carried == LinkFailure::eNoNetwork);
         CHECK(!api.serverBehindFacadeDown());
         bazarish::i2p::networkChanged();
         CHECK(refused());
@@ -385,6 +438,7 @@ try {
         CHECK(refused());
         CHECK(!api.serverBehindFacadeDown());
         CHECK(api.linkFailure() == LinkFailure::eServerUnreachable);
+        CHECK(carried == LinkFailure::eServerUnreachable);
 
         http::Server::Options samePort = localOptions();
         samePort.port = behind.facades[0].port;
@@ -398,6 +452,7 @@ try {
         });
         CHECK(returned.start() == samePort.port);
         CHECK(refused());
+        CHECK(carried == LinkFailure::eServerUnreachable);
         CHECK(returnedStub.opened() == 0);
         bazarish::i2p::backend::noteCarryReturned();
         CHECK(api.get("/v1/messaging/storage-usage").status == 200);

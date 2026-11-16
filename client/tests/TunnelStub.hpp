@@ -66,6 +66,8 @@ public:
 
     void answerNextWithTheLastAnswer() { replayAnswer_ = true; }
 
+    void answerNextMalformed() { malformNext_ = true; }
+
 private:
     void serve(bazarish::http::Server& server, const bazarish::http::Request& request,
         bazarish::http::Responder respond)
@@ -128,6 +130,13 @@ private:
         if (refuseOpaquely_) {
             refuseOpaquely_ = false;
             sealed(randomBytes(kOpaqueRefusalBytes));
+            return;
+        }
+        if (malformNext_) {
+            malformNext_ = false;
+            const std::string unreadable = "not an encoded response";
+            sealed(bazarish::tunnel::carry(handle, key, bazarish::tunnel::Direction::eAnswer,
+                SecretBytes(Bytes(unreadable.begin(), unreadable.end()))));
             return;
         }
         if (replayAnswer_) {
@@ -202,6 +211,7 @@ private:
     std::atomic<bool> refuseNext_{false};
     std::atomic<bool> refuseOpaquely_{false};
     std::atomic<bool> replayAnswer_{false};
+    std::atomic<bool> malformNext_{false};
     Bytes lastAnswer_;
 };
 

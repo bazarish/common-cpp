@@ -144,6 +144,17 @@ try {
     }
 
     {
+        FdStream stream = streamFrom("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nnot-f");
+        std::string said;
+        try {
+            (void)readI2pHttpResponse(stream, kSomeBodyBound);
+        } catch (const std::exception& error) {
+            said = error.what();
+        }
+        CHECK(said.find("closed after 5 of 9 response body bytes") != std::string::npos);
+    }
+
+    {
         FdStream stream = streamFrom("HTTP/1.1 200 OK\r\n\r\n");
         const I2pHttpResponse response = readI2pHttpResponse(stream, kSomeBodyBound);
         CHECK(response.status == 200);

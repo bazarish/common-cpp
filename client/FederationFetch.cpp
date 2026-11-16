@@ -2,13 +2,16 @@
 #include "FederationFetch.hpp"
 
 #include "I2pRouter.hpp"
+#include "LinkFailure.hpp"
 #include "ResolverAsk.hpp"
+#include "WatchedStream.hpp"
 
 #include <bazarish/Address.hpp>
 #include <bazarish/FederationFrame.hpp>
 #include <bazarish/I2pHttp.hpp>
 #include <bazarish/JsonRead.hpp>
 #include <bazarish/Limits.hpp>
+#include <bazarish/Log.hpp>
 #include <bazarish/Resolve.hpp>
 #include <bazarish/ResolverChannel.hpp>
 
@@ -18,7 +21,9 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
+#include <type_traits>
 
 namespace bazarish::client {
 
@@ -87,41 +92,6 @@ std::unique_ptr<bazarish::i2p::Stream> dialI2pHttp(bazarish::i2p::Endpoint& endp
     }
     return stream;
 }
-
-// Tells a stream that failed under an exchange from an answer that does not read.
-class WatchedStream {
-public:
-    explicit WatchedStream(bazarish::i2p::Stream& stream) : stream_(stream) {}
-
-    std::size_t readSome(const ByteBuffer buffer)
-    {
-        try {
-            const std::size_t got = stream_.readSome(buffer);
-            ended_ = ended_ || got == 0;
-            return got;
-        } catch (const std::exception&) {
-            broke_ = true;
-            throw;
-        }
-    }
-
-    void writeAll(const ByteView data)
-    {
-        try {
-            stream_.writeAll(data);
-        } catch (const std::exception&) {
-            broke_ = true;
-            throw;
-        }
-    }
-
-    bool failed() const { return ended_ || broke_; }
-
-private:
-    bazarish::i2p::Stream& stream_;
-    bool ended_ = false;
-    bool broke_ = false;
-};
 
 FetchOutcome askResolverHttp(WatchedStream& stream, const std::string& host,
     const std::string& op, const Bytes& body)
@@ -208,6 +178,25 @@ FetchOutcome fetchOver(bazarish::i2p::Endpoint& endpoint, const std::string& des
     }
 }
 
+// Empty when the stream failed under the exchange: the site gave no answer.
+template <class Exchange>
+auto siteAnswer(bazarish::i2p::Stream& stream, const std::string& host, Exchange exchange)
+    -> std::optional<std::invoke_result_t<Exchange, WatchedStream&>>
+{
+    WatchedStream watched(stream);
+    try {
+        return exchange(watched);
+    } catch (const std::exception& error) {
+        if (watched.failed()) {
+            log::info("{} gave no whole answer: {}", log::redact(host), error.what());
+            return std::nullopt;
+        }
+        std::string reason = "the site's answer does not read: ";
+        reason += error.what();
+        throw LinkError(LinkFailure::eServerMalformed, reason);
+    }
+}
+
 }  // namespace
 
 void tellFetchStages(std::function<void(FetchStage)> tell)
@@ -244,10 +233,12 @@ std::optional<int> postLoginOverI2p(bazarish::i2p::Router& router,
     if (!stream) {
         return std::nullopt;
     }
-    sendI2pHttpRequest(*stream, "POST", callback.host, callback.path,
-        {{"Content-Type", "application/json"}}, sealedAnswer);
-    sayStage(FetchStage::eWaiting);
-    return readI2pHttpHead(*stream).status;
+    return siteAnswer(*stream, callback.host, [&](WatchedStream& watched) {
+        sendI2pHttpRequest(watched, "POST", callback.host, callback.path,
+            {{"Content-Type", "application/json"}}, sealedAnswer);
+        sayStage(FetchStage::eWaiting);
+        return readI2pHttpHead(watched).status;
+    });
 }
 
 std::optional<Bytes> getLoginChallengeOverI2p(bazarish::i2p::Router& router,
@@ -264,14 +255,22 @@ std::optional<Bytes> getLoginChallengeOverI2p(bazarish::i2p::Router& router,
     if (!stream || cancelled.load()) {
         return std::nullopt;
     }
-    sendI2pHttpRequest(*stream, "GET", address.host, address.path, {}, {});
-    sayStage(FetchStage::eWaiting);
-    const I2pHttpResponse response
-        = readI2pHttpResponse(*stream, service::kLoginChallengeMax + kAeadNonceBytes + kAeadTagBytes);
-    if (response.status != kI2pHttpOk) {
-        throw std::runtime_error("the site answered HTTP " + std::to_string(response.status));
+    const std::optional<I2pHttpResponse> response
+        = siteAnswer(*stream, address.host, [&](WatchedStream& watched) {
+              sendI2pHttpRequest(watched, "GET", address.host, address.path, {}, {});
+              sayStage(FetchStage::eWaiting);
+              return readI2pHttpResponse(
+                  watched, service::kLoginChallengeMax + kAeadNonceBytes + kAeadTagBytes);
+          });
+    if (!response) {
+        return std::nullopt;
     }
-    return Bytes(response.body.begin(), response.body.end());
+    if (response->status != kI2pHttpOk) {
+        std::string reason = "the site answered HTTP ";
+        reason += std::to_string(response->status);
+        throw LinkError(LinkFailure::eServerRefused, reason);
+    }
+    return Bytes(response->body.begin(), response->body.end());
 }
 
 FetchTransport resolverHeldDest(bazarish::i2p::Router& router, const bazarish::i2p::Privacy privacy,

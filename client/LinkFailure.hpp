@@ -3,6 +3,8 @@
 
 #include <bazarish/I2pHttp.hpp>
 
+#include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace bazarish::client {
@@ -17,6 +19,7 @@ enum class LinkFailure {
     eServerUnreachable,
     eServerDown,
     eServerRefused,
+    eServerMalformed,
 };
 
 enum class LinkStage {
@@ -32,7 +35,20 @@ struct LinkAttempt {
     bool viaGateway = false;
     bool gatewayReady = false;
     bool gatewayRefused = false;
+    bool malformed = false;
     int status = 0;
+};
+
+// eNone: the request got through and the error is the answer's own word.
+class LinkError : public std::runtime_error {
+public:
+    LinkError(const LinkFailure failure, const std::string& message)
+        : std::runtime_error(message)
+        , failure(failure)
+    {
+    }
+
+    LinkFailure failure = LinkFailure::eNone;
 };
 
 inline bool answeredWell(const int status)
@@ -49,6 +65,9 @@ inline LinkFailure classifyLinkFailure(const bool networkDown, const LinkAttempt
     }
     if (attempt.gatewayRefused) {
         return LinkFailure::eGatewayRefused;
+    }
+    if (attempt.malformed) {
+        return LinkFailure::eServerMalformed;
     }
     if (attempt.status == bazarish::kI2pHttpBadGateway) {
         return LinkFailure::eServerDown;
@@ -83,6 +102,7 @@ inline std::string_view linkFailureName(const LinkFailure failure)
         case LinkFailure::eServerUnreachable: return "the facade did not answer";
         case LinkFailure::eServerDown: return "the facade has no server behind it";
         case LinkFailure::eServerRefused: return "the server refused";
+        case LinkFailure::eServerMalformed: return "the server answered malformed";
     }
     return "unknown";
 }

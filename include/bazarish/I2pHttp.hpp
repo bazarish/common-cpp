@@ -142,6 +142,14 @@ I2pHttpResponse readI2pHttpResponse(Stream& stream, const std::size_t maxBodyByt
         response.body.append(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(got));
         refuseOversized(response.body.size());
     }
+    if (framed && response.body.size() < expected) {
+        std::string cut = "i2p stream closed after ";
+        cut += std::to_string(response.body.size());
+        cut += " of ";
+        cut += std::to_string(expected);
+        cut += " response body bytes";
+        throw std::runtime_error(cut);
+    }
     if (framed && response.body.size() > expected) {
         response.body.resize(expected);
     }

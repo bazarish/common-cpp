@@ -78,14 +78,14 @@ const char* serviceName(const ServerCard::Service service)
     return service == ServerCard::Service::eServiceNode ? "service node" : "messaging server";
 }
 
-[[noreturn]] void raiseFromResponse(const int status, const Bytes& body)
+[[noreturn]] void raiseFromResponse(const int status, const Bytes& body, const LinkFailure failure)
 {
     const std::string text(body.begin(), body.end());
     try {
         const nlohmann::json document = parseJson(text);
         const std::optional<ParsedError> parsed = parseErrorEnvelope(document);
         if (parsed.has_value()) {
-            throw ApiError(parsed->code, status,
+            throw ApiError(parsed->code, status, failure,
                 parsed->message.empty()
                     ? ("server refused with status " + std::to_string(status))
                     : parsed->message);
@@ -93,7 +93,7 @@ const char* serviceName(const ServerCard::Service service)
     } catch (const nlohmann::json::exception&) {
         // error-hiding: allowed - not an error envelope; the ApiError below carries status and text.
     }
-    throw ApiError(std::nullopt, status,
+    throw ApiError(std::nullopt, status, failure,
         text.empty() ? ("server answered status " + std::to_string(status) + " with no body")
                      : text);
 }
@@ -137,9 +137,9 @@ nlohmann::json ApiResponse::json() const
     return parseJson(body);
 }
 
-ApiError::ApiError(
-    const std::optional<ErrorCode> code, const int httpStatus, const std::string& message)
-    : std::runtime_error(message)
+ApiError::ApiError(const std::optional<ErrorCode> code, const int httpStatus,
+    const LinkFailure failure, const std::string& message)
+    : LinkError(failure, message)
     , code(code)
     , httpStatus(httpStatus)
 {
@@ -206,14 +206,15 @@ void ApiClient::ensureSealingKeyLocked(Tunnel& tunnel)
     const ServerCard card = [&]() {
         try {
             return ServerCard::verify(response.body, tunnel.service);
-        } catch (const std::exception&) {
-            linkFailure_.store(LinkFailure::eServerRefused);
-            throw;
+        } catch (const std::exception& error) {
+            linkFailure_.store(LinkFailure::eServerMalformed);
+            throw LinkError(LinkFailure::eServerMalformed, error.what());
         }
     }();
     if (card.server != endpoint_.serverFingerprint) {
-        linkFailure_.store(LinkFailure::eServerRefused);
-        throw std::runtime_error("the server card names another server than the one we joined");
+        linkFailure_.store(LinkFailure::eServerMalformed);
+        throw LinkError(LinkFailure::eServerMalformed,
+            "the server card names another server than the one we joined");
     }
     tunnel.sealingKeyDer = card.sealingPublicKeyDer;
 }
@@ -251,6 +252,7 @@ bool ApiClient::ensureSessionLocked(Tunnel& tunnel)
             // A server refuses a hello with noise, so nothing tells why.
             linkFailure_.store(LinkFailure::eServerRefused);
             tunnel.lastError = "the server refused the tunnel";
+            tunnel.lastFailure = LinkFailure::eServerRefused;
             bazarish::log::info("no tunnel to the {}: {}", serviceName(tunnel.service),
                 tunnel.lastError);
             return false;
@@ -267,15 +269,17 @@ bool ApiClient::ensureSessionLocked(Tunnel& tunnel)
             tunnel.sessionUntil - now);
         return true;
     } catch (const ApiError& error) {
-        // An answered status is the facade's or the server's word, which the next ask hears too.
-        if (error.httpStatus == 0) {
+        // Any answer, a status or one that does not read, is what the next ask hears too.
+        if (error.httpStatus == 0 && error.failure != LinkFailure::eServerMalformed) {
             standOffAfterSilenceLocked(tunnel);
         }
         tunnel.lastError = error.what();
+        tunnel.lastFailure = error.failure;
         bazarish::log::info("no tunnel to the {}: {}", serviceName(tunnel.service), error.what());
         return false;
     } catch (const bazarish::i2p::GatewayRefusal& error) {
         tunnel.lastError = error.what();
+        tunnel.lastFailure = LinkFailure::eGatewayRefused;
         bazarish::log::warn("no tunnel to the {}: {}", serviceName(tunnel.service), error.what());
         return false;
     }
@@ -320,13 +324,15 @@ LinkFailure ApiClient::linkFailure() const
     return linkFailure_.load();
 }
 
-void ApiClient::noteLinkFailure(LinkAttempt attempt)
+LinkFailure ApiClient::noteLinkFailure(LinkAttempt attempt)
 {
     if (attempt.viaGateway) {
         const auto running = sharedI2pRouterIfRunning();
         attempt.gatewayReady = running.has_value() && running->get().ready();
     }
-    linkFailure_.store(classifyLinkFailure(bazarish::i2p::networkDown(), attempt));
+    const LinkFailure failure = classifyLinkFailure(bazarish::i2p::networkDown(), attempt);
+    linkFailure_.store(failure);
+    return failure;
 }
 
 bool ApiClient::facadePublishedAnew()
@@ -372,7 +378,7 @@ std::string ApiClient::activeFacadeAddress() const
 
 std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const std::string& method,
     const std::string& path, const std::map<std::string, std::string>& headers,
-    const std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody,
+    const std::size_t bodyLen, const std::function<void(WatchedStream&)>& writeBody,
     const int readTimeoutSeconds, LinkAttempt& tried)
 {
     tried.reached = LinkStage::eRouter;
@@ -443,15 +449,16 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
         i2pStream_->setReadTimeout(std::chrono::seconds(readTimeoutSeconds));
         const auto askedAt = std::chrono::steady_clock::now();
         i2pStreamUsedAt_ = askedAt;
+        WatchedStream watched(*i2pStream_);
         try {
             const std::string head = buildI2pHttpRequest(
                 method, facade.host, path, headers, bodyLen, /*keepAlive=*/true);
-            i2pStream_->writeAll(viewOf(head));
+            watched.writeAll(viewOf(head));
             if (bodyLen > 0 && writeBody) {
-                writeBody(*i2pStream_);
+                writeBody(watched);
             }
             const bazarish::I2pHttpResponse parsed
-                = readI2pHttpResponse(*i2pStream_, bazarish::kMaxFacadeAnswerBytes);
+                = readI2pHttpResponse(watched, bazarish::kMaxFacadeAnswerBytes);
             if (const auto it = parsed.headers.find("connection");
                 it != parsed.headers.end() && it->second.find("close") != std::string::npos) {
                 i2pStream_.reset();
@@ -475,9 +482,15 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
                     shortHost(facade.host), readTimeoutSeconds, error.what());
                 return std::nullopt;
             }
-            bazarish::log::warn("i2p facade {} answered unframed: {}",
+            if (watched.failed()) {
+                bazarish::log::warn("i2p facade {} gave no whole answer: {}",
+                    shortHost(facade.host), error.what());
+                return std::nullopt;
+            }
+            bazarish::log::warn("i2p facade {} answered malformed: {}",
                 shortHost(facade.host), error.what());
-            throw ApiError(std::nullopt, 0, error.what());
+            tried.malformed = true;
+            throw ApiError(std::nullopt, 0, LinkFailure::eServerMalformed, error.what());
         }
     }
     return std::nullopt;
@@ -557,15 +570,24 @@ ApiResponse ApiClient::tunnelledLocked(Tunnel& tunnel, const std::string& method
         bazarish::tunnel::Direction::eRequest, bazarish::tunnel::encodeRequest(inner));
     const ApiResponse carried = transmitLocked("POST", tunnelPathOf(tunnel.service), frame,
         "application/octet-stream", readTimeoutSeconds);
+    SecretBytes opened;
+    try {
+        opened = bazarish::tunnel::open(
+            carried.body, tunnel.tunnelKey, bazarish::tunnel::Direction::eAnswer, handle);
+    } catch (const std::exception&) {
+        // A server answers a tunnel it does not hold with noise.
+        linkFailure_.store(LinkFailure::eServerRefused);
+        throw ApiError(ErrorCode::eSessionInvalid, carried.status, LinkFailure::eServerRefused,
+            "the tunnel did not answer under the key it was opened with");
+    }
     bazarish::tunnel::Response answered;
     try {
-        answered = bazarish::tunnel::decodeResponse(
-            bazarish::tunnel::open(carried.body, tunnel.tunnelKey,
-                bazarish::tunnel::Direction::eAnswer, handle));
-    } catch (const std::exception&) {
-        linkFailure_.store(LinkFailure::eServerRefused);
-        throw ApiError(ErrorCode::eSessionInvalid, carried.status,
-            "the tunnel did not answer under the key it was opened with");
+        answered = bazarish::tunnel::decodeResponse(opened);
+    } catch (const std::exception& error) {
+        linkFailure_.store(LinkFailure::eServerMalformed);
+        std::string reason = "the tunnel's answer does not read: ";
+        reason += error.what();
+        throw ApiError(std::nullopt, 0, LinkFailure::eServerMalformed, reason);
     }
     ApiResponse response;
     response.status = answered.status;
@@ -580,7 +602,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     if (bazarish::i2p::networkDown()) {
         linkFailure_.store(LinkFailure::eNoNetwork);
         noteWire(method, path, note, "failed: no network", 0, 0);
-        throw ApiError(std::nullopt, 0, "no network");
+        throw ApiError(std::nullopt, 0, LinkFailure::eNoNetwork, "no network");
     }
     const std::lock_guard<std::mutex> lock(netMutex_);
     Tunnel& tunnel = tunnelFor(path);
@@ -607,7 +629,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
                 ? std::string("no tunnel to the server")
                 : "no tunnel to the server: " + tunnel.lastError;
             failed(reason);
-            throw ApiError(std::nullopt, 0, reason);
+            throw ApiError(std::nullopt, 0, tunnel.lastFailure, reason);
         }
     };
     openTunnel();
@@ -622,7 +644,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     const auto accept = [&](const ApiResponse& response) {
         if (!answeredWell(response.status)) {
             linkFailure_.store(LinkFailure::eServerRefused);
-            raiseFromResponse(response.status, response.body);
+            raiseFromResponse(response.status, response.body, LinkFailure::eNone);
         }
         if (!quietOnSuccess) {
             noteWire(method, path, note, std::to_string(response.status), response.body.size(),
@@ -673,6 +695,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
     const std::vector<Facade>& facades = endpoint_.facades;
     const std::vector<std::size_t> attempts = facadeOrder();
     std::string lastError = "no facade configured";
+    LinkFailure lastFailure = LinkFailure::eServerUnreachable;
     for (const std::size_t index : attempts) {
         const Facade& facade = facades[index];
 
@@ -686,7 +709,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
             std::optional<ApiResponse> response;
             try {
                 response = i2pExchange(facade, method, path, i2pHeaders, body.size(),
-                    [&body](bazarish::i2p::Stream& stream) {
+                    [&body](WatchedStream& stream) {
                         stream.writeAll(body);
                     },
                     readTimeoutSeconds, attempt);
@@ -699,15 +722,15 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
                 throw;
             }
             if (!response) {
-                noteLinkFailure(attempt);
+                lastFailure = noteLinkFailure(attempt);
                 lastError = "i2p facade unreachable: " + shortHost(facade.host);
                 continue;
             }
             activeFacade_ = index;
             attempt.status = response->status;
-            noteLinkFailure(attempt);
+            const LinkFailure answered = noteLinkFailure(attempt);
             if (response->status < 200 || response->status >= 300) {
-                raiseFromResponse(response->status, response->body);
+                raiseFromResponse(response->status, response->body, answered);
             }
             return *response;
         }
@@ -716,8 +739,9 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
         LinkAttempt attempt;
         attempt.reached = LinkStage::eExchange;
         attempt.status = result.status;
-        noteLinkFailure(attempt);
+        const LinkFailure answered = noteLinkFailure(attempt);
         if (result.status == 0) {
+            lastFailure = answered;
             lastError = result.readTimedOut
                 ? "no response within " + std::to_string(readTimeoutSeconds)
                     + "s: " + facade.host
@@ -730,11 +754,11 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
         response.status = result.status;
         response.body = Bytes(result.body.begin(), result.body.end());
         if (response.status < 200 || response.status >= 300) {
-            raiseFromResponse(response.status, response.body);
+            raiseFromResponse(response.status, response.body, answered);
         }
         return response;
     }
-    throw ApiError(std::nullopt, 0, "no facade answered: " + lastError);
+    throw ApiError(std::nullopt, 0, lastFailure, "no facade answered: " + lastError);
 }
 
 }  // namespace bazarish::client

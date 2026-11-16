@@ -68,6 +68,15 @@ try {
         CHECK(classifyLinkFailure(false, refused) == LinkFailure::eGatewayRefused);
     }
 
+    {
+        LinkAttempt unreadable = reaching(LinkStage::eExchange);
+        unreadable.malformed = true;
+        CHECK(classifyLinkFailure(false, unreadable) == LinkFailure::eServerMalformed);
+        CHECK(classifyLinkFailure(true, unreadable) == LinkFailure::eNoNetwork);
+        unreadable.gatewayRefused = true;
+        CHECK(classifyLinkFailure(false, unreadable) == LinkFailure::eGatewayRefused);
+    }
+
     CHECK(classifyLinkFailure(true, answered(bazarish::kI2pHttpBadGateway))
         == LinkFailure::eNoNetwork);
     CHECK(classifyLinkFailure(true, reaching(LinkStage::eTunnels)) == LinkFailure::eNoNetwork);

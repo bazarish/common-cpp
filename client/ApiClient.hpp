@@ -2,6 +2,7 @@
 #pragma once
 
 #include "LinkFailure.hpp"
+#include "WatchedStream.hpp"
 #include "WireLog.hpp"
 
 #include <bazarish/Bytes.hpp>
@@ -61,9 +62,10 @@ struct ApiResponse {
     nlohmann::json json() const;
 };
 
-class ApiError : public std::runtime_error {
+class ApiError : public LinkError {
 public:
-    ApiError(std::optional<ErrorCode> code, int httpStatus, const std::string& message);
+    ApiError(std::optional<ErrorCode> code, int httpStatus, LinkFailure failure,
+        const std::string& message);
 
     std::optional<ErrorCode> code;
     int httpStatus = 0;
@@ -115,9 +117,9 @@ private:
     std::vector<std::size_t> facadeOrder() const;
     std::optional<ApiResponse> i2pExchange(const Facade& facade, const std::string& method,
         const std::string& path, const std::map<std::string, std::string>& headers,
-        std::size_t bodyLen, const std::function<void(bazarish::i2p::Stream&)>& writeBody,
+        std::size_t bodyLen, const std::function<void(WatchedStream&)>& writeBody,
         int readTimeoutSeconds, LinkAttempt& tried);
-    void noteLinkFailure(LinkAttempt attempt);
+    LinkFailure noteLinkFailure(LinkAttempt attempt);
 
     const DeviceCredential& credential_;
     const ServerEndpoint endpoint_;
@@ -141,6 +143,7 @@ private:
         std::int64_t blockedUntil = 0;
         std::uint64_t blockedAtCarry = 0;
         std::string lastError;
+        LinkFailure lastFailure = LinkFailure::eNone;
     };
     Tunnel& tunnelFor(const std::string& path);
     bool ensureSessionLocked(Tunnel& tunnel);
