@@ -18,8 +18,7 @@ enum class FetchStage {
     eTakingDest,
     eBuildingDest,
     eReaching,
-    eWaiting,
-    eAskingAgain
+    eWaiting
 };
 
 void tellFetchStages(std::function<void(FetchStage)> tell);
