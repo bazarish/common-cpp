@@ -40,7 +40,7 @@ std::uint64_t be64(const bazarish::Bytes& b, const std::size_t at)
 }  // namespace
 
 int main()
-{
+try {
     using namespace bazarish;
 
     std::vector<Bytes> routers;
@@ -97,4 +97,6 @@ int main()
     std::fprintf(stderr, "TestReseedSu3 passed (%zu bytes for %zu routers)\n", su3.size(),
         routers.size());
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

@@ -140,8 +140,9 @@ std::unique_ptr<Presence> openPresence(const Person& person, const bool shown,
 }  // namespace
 
 int main()
-{
-    const std::filesystem::path dataDir = testutil::freshDir("presence-dests");
+try {
+    const testutil::ScratchDir scratch("presence-dests");
+    const std::filesystem::path& dataDir = scratch.path();
     setReseedFile(dataDir / "no-reseed.su3");
     i2p::Router& router = sharedI2pRouter(dataDir);
     CHECK(router.capabilities().lateReaderKey);
@@ -241,6 +242,7 @@ int main()
     }
 
     retireI2pRouter();
-    std::filesystem::remove_all(dataDir);
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

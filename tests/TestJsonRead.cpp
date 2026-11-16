@@ -39,7 +39,7 @@ bool refusedAsParseError(const auto& parse)
 }  // namespace
 
 int main()
-{
+try {
     const nlohmann::json sample = {{"type", "text"}, {"items", {1, 2, {{"k", "v"}}}}};
     const std::string text = sample.dump();
     CHECK(parseJson(text) == sample);
@@ -92,4 +92,6 @@ int main()
     }
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

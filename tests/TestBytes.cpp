@@ -11,7 +11,7 @@
 using namespace bazarish;
 
 int main()
-{
+try {
     constexpr std::uint64_t kSides = 6;
     constexpr int kThrows = 6000;
     std::array<int, kSides> seen{};
@@ -78,4 +78,6 @@ int main()
     CHECK(percentDecode(percentEncode(every)) == every);
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

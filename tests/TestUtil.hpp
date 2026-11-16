@@ -9,7 +9,9 @@
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 
 #define CHECK(condition)                                                            \
@@ -17,7 +19,7 @@
         if (!(condition)) {                                                         \
             std::fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, \
                 #condition);                                                        \
-            std::exit(1);                                                           \
+            throw testutil::CheckFailure{};                                         \
         }                                                                           \
     } while (false)
 
@@ -32,25 +34,65 @@
         if (!thrown) {                                                                  \
             std::fprintf(stderr, "CHECK_THROWS failed at %s:%d: %s did not throw\n",    \
                 __FILE__, __LINE__, #expression);                                       \
-            std::exit(1);                                                               \
+            throw testutil::CheckFailure{};                                             \
         }                                                                               \
     } while (false)
 
 namespace testutil {
+
+// Not a std::exception, so no catch meant for the code under test takes it.
+struct CheckFailure {};
 
 inline constexpr std::size_t kDirSuffixBytes = 8;
 inline constexpr std::chrono::milliseconds kPollStep{10};
 // Only a failing wait spends it whole.
 inline constexpr std::chrono::milliseconds kWaitLimit{30000};
 
-// Empty and named apart, so test trees that run at once never share it.
-inline std::filesystem::path freshDir(const std::string& tag)
+inline int failed()
 {
-    const std::filesystem::path dir = std::filesystem::temp_directory_path()
-        / ("bazarish-" + tag + "-" + bazarish::toHex(bazarish::randomBytes(kDirSuffixBytes)));
-    std::filesystem::create_directories(dir);
-    return dir;
+    try {
+        throw;
+    } catch (const CheckFailure&) {
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "uncaught exception: %s\n", error.what());
+    } catch (...) {
+        std::fprintf(stderr, "uncaught exception of an unknown type\n");
+    }
+    return EXIT_FAILURE;
 }
+
+// Empty and named apart, so test trees that run at once never share it.
+class ScratchDir {
+public:
+    explicit ScratchDir(const std::string& tag)
+        : path_(std::filesystem::temp_directory_path()
+              / ("bazarish-" + tag + "-" + bazarish::toHex(bazarish::randomBytes(kDirSuffixBytes))))
+    {
+        if (!std::filesystem::create_directories(path_)) {
+            throw std::runtime_error("scratch directory exists: " + path_.string());
+        }
+    }
+
+    ScratchDir(const ScratchDir&) = delete;
+    ScratchDir& operator=(const ScratchDir&) = delete;
+
+    ~ScratchDir()
+    {
+        std::error_code error;
+        std::filesystem::remove_all(path_, error);
+        if (error) {
+            std::fprintf(stderr, "scratch %s stays: %s\n", path_.string().c_str(), error.message().c_str());
+        }
+    }
+
+    const std::filesystem::path& path() const
+    {
+        return path_;
+    }
+
+private:
+    const std::filesystem::path path_;
+};
 
 inline bool waitFor(
     const std::function<bool()>& condition, const std::chrono::milliseconds limit = kWaitLimit)

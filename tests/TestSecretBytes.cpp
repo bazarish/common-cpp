@@ -23,7 +23,7 @@ bool allZero(const Bytes& bytes)
 }  // namespace
 
 int main()
-{
+try {
     const Bytes value = randomBytes(kSecretBytes);
     CHECK(!allZero(value));
 
@@ -88,4 +88,6 @@ int main()
 
     std::printf("TestSecretBytes OK\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

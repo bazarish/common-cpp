@@ -260,10 +260,12 @@ void checkDeadLinkEnds()
 }  // namespace
 
 int main()
-{
+try {
     checkPingsOnlyAfterSilence();
     checkEachSilenceDrawn();
     checkDeadLinkEnds();
     std::printf("TestSocketKeepalive ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

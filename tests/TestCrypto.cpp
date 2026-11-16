@@ -10,7 +10,7 @@
 using namespace bazarish;
 
 int main()
-{
+try {
     const Key signing = Key::generateSigning();
     const Bytes message = {'b', 'a', 'z', 'a', 'r', 'i', 's', 'h'};
     const Bytes signature = sign(signing, message);
@@ -110,7 +110,8 @@ int main()
         for (int i = 0; i < 200000; ++i) {
             blob.push_back(static_cast<unsigned char>(i * 7 + 3));
         }
-        const std::filesystem::path dir = testutil::freshDir("sha256file");
+        const testutil::ScratchDir scratch("sha256file");
+        const std::filesystem::path& dir = scratch.path();
         const std::filesystem::path tmp = dir / "blob.bin";
         {
             std::ofstream out(tmp, std::ios::binary);
@@ -118,8 +119,7 @@ int main()
                 static_cast<std::streamsize>(blob.size()));
         }
         CHECK(sha256File(tmp) == sha256(blob));
-        std::filesystem::remove_all(dir);
-        CHECK_THROWS(sha256File(std::filesystem::temp_directory_path() / "bz-no-such-file.bin"));
+        CHECK_THROWS(sha256File(dir / "no-such-file.bin"));
     }
 
     {
@@ -166,4 +166,6 @@ int main()
     }
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

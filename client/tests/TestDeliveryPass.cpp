@@ -339,7 +339,7 @@ void addByInvite(Session& session, const std::string& invite, const std::string&
 }  // namespace
 
 int main()
-{
+try {
     bazarish::setSelfHostedFacadeOnLoopback(true);
     http::Server gatewayServer(http::Server::Options{});
     test::FakeGateway gateway;
@@ -601,7 +601,8 @@ int main()
         resolverDelegated, static_cast<std::int64_t>(std::time(nullptr)) - 60,
         static_cast<std::int64_t>(std::time(nullptr)) + 30 * 24 * 3600);
 
-    const fs::path scratch = testutil::freshDir("pass");
+    const testutil::ScratchDir passScratch("pass");
+    const fs::path& scratch = passScratch.path();
     const fs::path aDir = scratch / "a.db";
     const fs::path bDir = scratch / "b.db";
 
@@ -3584,8 +3585,9 @@ int main()
 
     server.stop();
     gatewayServer.stop();
-    fs::remove_all(scratch);
 
     std::fprintf(stderr, "TestDeliveryPass passed (bob sent %d, alice sent %d)\n", bobSent, aliceSent);
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

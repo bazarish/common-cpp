@@ -50,7 +50,7 @@ private:
 }  // namespace
 
 int main()
-{
+try {
     Heard heard;
     log::setTap([&heard](const log::Level level, const std::string_view,
                     const std::string_view message) {
@@ -113,4 +113,6 @@ int main()
     log::setTap({});
     std::printf("TestGatewayHelloClose ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

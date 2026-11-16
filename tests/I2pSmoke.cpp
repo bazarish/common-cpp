@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <exception>
 #include <string>
 #include <thread>
@@ -21,7 +22,9 @@ constexpr int kDelegationDays = 2;
 
 int main(int argc, char** argv)
 {
-    const std::string dataDir = argc > 1 ? argv[1] : "/tmp/baz-i2p-smoke";
+    const std::string dataDir = argc > 1
+        ? argv[1]
+        : (std::filesystem::temp_directory_path() / "baz-i2p-smoke").string();
 
     bazarish::i2p::RouterConfig config;
     config.dataDir = dataDir;

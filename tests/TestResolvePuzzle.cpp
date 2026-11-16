@@ -17,7 +17,7 @@ constexpr std::uint64_t kAttempts = 64;
 }  // namespace
 
 int main()
-{
+try {
     const Bytes stamp(kStampBytes, 0x21);
     const Bytes otherStamp(kStampBytes, 0x22);
 
@@ -35,4 +35,6 @@ int main()
     // A wrong answer passes with odds of 2^-bits, so most of these fail.
     CHECK(failures > kAttempts / 2);
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

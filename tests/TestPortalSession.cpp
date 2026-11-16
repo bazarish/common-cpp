@@ -16,7 +16,7 @@ constexpr std::int64_t kNow = 1000;
 }  // namespace
 
 int main()
-{
+try {
     PortalSession sessions("secret", kTtl);
     const std::string first = sessions.issue("alice", kNow);
     const std::string second = sessions.issue("alice", kNow + 1);
@@ -30,4 +30,6 @@ int main()
     sessions.revoke(second, kNow + kTtl + 1);
     CHECK(sessions.verify(second, kNow + 1) == "alice");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

@@ -556,7 +556,7 @@ constexpr PresenceState kTyping{true, true};
 }  // namespace
 
 int main()
-{
+try {
     FakeNet net;
     const Person alice;
     const Person bob;
@@ -1040,4 +1040,6 @@ int main()
 
     std::fprintf(stderr, "TestPresence passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

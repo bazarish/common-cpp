@@ -115,7 +115,7 @@ Dialled dial(asio::io_context& io, const int port, const std::string& path,
 }  // namespace
 
 int main()
-{
+try {
     Seen seen;
     Server::Options options;
     options.port = 0;
@@ -216,4 +216,6 @@ int main()
     server.stop();
     std::printf("TestWebSocket ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

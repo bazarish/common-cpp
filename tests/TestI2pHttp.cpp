@@ -80,7 +80,7 @@ constexpr std::size_t kSomeBodyBound = 64 * 1024;
 }  // namespace
 
 int main()
-{
+try {
     // A feeder outlives its case; writing into a closed pair must not signal the process.
     ::signal(SIGPIPE, SIG_IGN);
     {
@@ -231,4 +231,6 @@ int main()
 
     std::printf("TestI2pHttp: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

@@ -9,7 +9,7 @@
 using namespace bazarish;
 
 int main()
-{
+try {
     const Bytes key = newLinkKey();
     const std::string text = linkKeyText(key);
     CHECK(linkKeyFromText(text) == key);
@@ -34,4 +34,6 @@ int main()
 
     std::printf("TestKeyedSeal: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

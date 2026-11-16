@@ -90,7 +90,7 @@ int secondsTaken(const std::function<void()>& work)
 }  // namespace
 
 int main()
-{
+try {
     {
         MuteListener mute;
         KeptAnswer asked;
@@ -214,4 +214,6 @@ int main()
 
     std::printf("TestWebSocketClient ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

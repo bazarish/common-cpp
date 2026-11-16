@@ -32,10 +32,10 @@ constexpr std::int64_t kKeptExpires = 1900000000;
 }  // namespace
 
 int main()
-{
+try {
     namespace fs = std::filesystem;
-    const fs::path root
-        = testutil::freshDir("accounts");
+    const testutil::ScratchDir rootScratch("accounts");
+    const fs::path& root = rootScratch.path();
 
     AccountManager manager(root);
     CHECK(manager.list().empty());
@@ -142,8 +142,8 @@ int main()
             }
         };
 
-        const fs::path scratch
-            = testutil::freshDir("export");
+        const testutil::ScratchDir exportScratch("export");
+        const fs::path& scratch = exportScratch.path();
         const fs::path bundle = scratch / "acetone.bundle";
         const Bytes face = {'P', 'N', 'G', 0x01, 0x02, 0x03};
         sa->setAvatar(face, "image/png");
@@ -163,8 +163,8 @@ int main()
             const std::unique_ptr<Session> importedPlain = Session::open(scratch / "imported-plain.db");
             CHECK(importedPlain->fingerprint() == a.fingerprint);
 
-            const fs::path root2
-                = testutil::freshDir("accounts");
+            const testutil::ScratchDir root2Scratch("accounts");
+            const fs::path& root2 = root2Scratch.path();
             AccountManager manager2(root2);
             const AccountInfo imp1 = manager2.import("", bundle, "bundle-pw");
             CHECK(imp1.id != "Acetone");
@@ -228,7 +228,6 @@ int main()
             CHECK_THROWS(manager2.import("", sealedHeaderOnly, "bundle-pw"));
             CHECK(manager2.list().size() == 5);
             noImportLeft();
-            fs::remove_all(root2);
 
             const auto copyOfPlainAccount = [&scratch](const std::string& name) {
                 const fs::path database = scratch / (name + ".db");
@@ -262,8 +261,6 @@ int main()
             }
             CHECK(costRefused);
         }
-
-        fs::remove_all(scratch);
 
         manager.remove(b.id);
         CHECK(!manager.exists(b.id));
@@ -341,8 +338,6 @@ int main()
         CHECK_THROWS(Session::open(kinds / "user.db"));
     }
 
-    fs::remove_all(root);
-
 #ifndef _WIN32
     if (const char* const home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
         CHECK(::setenv("XDG_DATA_HOME", "/tmp/bazarish-not-this-one", 1) == 0);
@@ -353,4 +348,6 @@ int main()
 
     std::fprintf(stderr, "TestAccount passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

@@ -28,7 +28,7 @@ tunnel::Request sampleRequest()
 }  // namespace
 
 int main()
-{
+try {
     const Key serverSealing = Key::generateSealing();
     const Identity user = Identity::generate();
 
@@ -139,4 +139,6 @@ int main()
     }
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

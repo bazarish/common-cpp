@@ -429,8 +429,9 @@ void checkDeletedMessagesLeaveNoTrace(const fs::path& dir)
 }  // namespace
 
 int main()
-{
-    const fs::path dir = testutil::freshDir("account-key");
+try {
+    const testutil::ScratchDir scratch("account-key");
+    const fs::path& dir = scratch.path();
     checkBackup();
     checkLargeRekey(dir);
     checkRefusedWhileOpen(dir);
@@ -440,6 +441,7 @@ int main()
     checkEndedEpochErased(dir);
     checkBundleHoldsActiveKeysOnly(dir);
     checkDeletedMessagesLeaveNoTrace(dir);
-    fs::remove_all(dir);
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

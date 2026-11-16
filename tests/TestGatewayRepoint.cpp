@@ -23,7 +23,7 @@ i2p::GatewayTarget targetOf(const test::FakeGateway& fake, const int port)
 }  // namespace
 
 int main()
-{
+try {
     http::Server first(http::Server::Options{});
     test::FakeGateway was;
     const int firstPort = was.start(first);
@@ -64,4 +64,6 @@ int main()
     router.stop();
     second.stop();
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

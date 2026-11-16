@@ -62,7 +62,7 @@ http::Handler echo(std::vector<std::string>& into)
 }  // namespace
 
 int main()
-{
+try {
     http::Server server(http::Server::Options{});
     std::vector<std::string> captured;
     server.get("/healthz", echo(captured));
@@ -203,4 +203,6 @@ int main()
         kept(http::Response{});
     }
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

@@ -12,8 +12,9 @@
 namespace fs = std::filesystem;
 
 int main()
-{
-    const fs::path dir = testutil::freshDir("i2p-proxy");
+try {
+    const testutil::ScratchDir scratch("i2p-proxy");
+    const fs::path& dir = scratch.path();
 
     bazarish::i2p::setI2pLogLevel(bazarish::i2p::I2pLogLevel::eWarn);
     bazarish::i2p::RouterConfig config = bazarish::i2p::offlineRouter(dir);
@@ -63,7 +64,8 @@ int main()
         CHECK(state.ssu2Enabled);
     }
 
-    fs::remove_all(dir);
     std::fprintf(stderr, "TestI2pProxy passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

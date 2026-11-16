@@ -112,7 +112,7 @@ constexpr std::int64_t kX25519OfflineExpires = 1796245690;
 const std::string kX25519Host = "hxt2gnncntx3bmw4phabl44ml67r2ekts366xzex3f63iff6ttya.b32.i2p";
 
 int main()
-{
+try {
     const i2p::Keys x25519 = i2p::Keys::fromBlob(bazarish::fromHex(kX25519OfflineBlob));
     CHECK(x25519.isOffline());
     CHECK(x25519.transientExpires() == kX25519OfflineExpires);
@@ -175,4 +175,6 @@ int main()
 
     std::printf("TestI2pKeyBlob ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

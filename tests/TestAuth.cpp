@@ -15,7 +15,7 @@ constexpr std::int64_t kNow = 1780000000;
 }  // namespace
 
 int main()
-{
+try {
     const Identity identity = Identity::generate();
     const Bytes body = {'{', '}'};
 
@@ -215,4 +215,6 @@ int main()
     }
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

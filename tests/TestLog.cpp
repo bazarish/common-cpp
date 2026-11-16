@@ -13,7 +13,7 @@
 using namespace bazarish::log;
 
 int main()
-{
+try {
     CHECK(levelFromString("error") == Level::eError);
     CHECK(levelFromString("warn") == Level::eWarn);
     CHECK(levelFromString("info") == Level::eInfo);
@@ -52,7 +52,8 @@ int main()
     CHECK(redact("short") == "short");
     CHECK(redact("0123456789abcdef") == "01234567...");
 
-    const std::filesystem::path dir = testutil::freshDir("testlog");
+    const testutil::ScratchDir scratch("testlog");
+    const std::filesystem::path& dir = scratch.path();
     const std::string path = (dir / "log.txt").string();
     setComponent("unit");
     setLevel(Level::eDebug);
@@ -85,7 +86,6 @@ int main()
         std::printf("FAIL: could not close the captured stderr\n");
         return 1;
     }
-    std::filesystem::remove_all(dir);
 
     const bool ok = captured.find("unit: listening on 127.0.0.1:8080\n") != std::string::npos
         && captured.find("unit: bind failed 13\n") != std::string::npos
@@ -96,4 +96,6 @@ int main()
         return 1;
     }
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

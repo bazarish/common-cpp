@@ -78,7 +78,7 @@ void expectFailure(const std::string& what, const std::function<void(test::FakeG
 }  // namespace
 
 int main()
-{
+try {
     expectFailure("no lease set", [](test::FakeGateway& fake) { fake.refuseStreams(); },
         FetchFailure::eLeaseSetNotFound);
     expectFailure("never answered",
@@ -98,4 +98,6 @@ int main()
         FetchFailure::eProtocol);
     std::fprintf(stderr, "TestFederationFetch passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

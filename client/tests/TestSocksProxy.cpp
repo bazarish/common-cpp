@@ -65,7 +65,7 @@ int closedPort()
 }  // namespace
 
 int main()
-{
+try {
     {
         OneAnswer proxy(std::string{kSocks5, kNoAuthentication});
         const SocksCheck check = checkSocksProxy(kLoopback, proxy.port());
@@ -95,4 +95,6 @@ int main()
 
     std::printf("TestSocksProxy ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

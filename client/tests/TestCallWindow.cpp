@@ -42,10 +42,12 @@ void aClockBehindTheCallerDoesNotLengthenTheRing()
 }  // namespace
 
 int main()
-{
+try {
     inTimeRingsForWhatIsLeft();
     lateOrUndatedIsDropped();
     aClockBehindTheCallerDoesNotLengthenTheRing();
     std::printf("TestCallWindow: ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

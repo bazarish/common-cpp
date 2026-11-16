@@ -22,7 +22,7 @@ std::optional<GatewayAddress> parsed(const std::string& base)
 }  // namespace
 
 int main()
-{
+try {
     const std::optional<GatewayAddress> full = parsed("https://gate.example:8443/f3a9c2e1b7d4");
     CHECK(full.has_value());
     CHECK(full->host == "gate.example");
@@ -90,4 +90,6 @@ int main()
 
     std::printf("TestGatewayAddress ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

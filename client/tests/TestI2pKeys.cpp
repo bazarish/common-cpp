@@ -90,7 +90,8 @@ void testLoadMaster()
 void testSessionLoadsDat()
 {
     namespace fs = std::filesystem;
-    const fs::path dir = testutil::freshDir("i2pload");
+    const testutil::ScratchDir scratch("i2pload");
+    const fs::path& dir = scratch.path();
     const fs::path profile = dir / "account.db";
     const I2pMasterKey existing = generateI2pMaster();
 
@@ -113,13 +114,13 @@ void testSessionLoadsDat()
         const std::unique_ptr<Session> session = Session::open(profile, "pw");
         CHECK(session->i2pAddress() == existing.host);
     }
-    fs::remove_all(dir);
 }
 
 void testSessionPersistsAndDelegates()
 {
     namespace fs = std::filesystem;
-    const fs::path dir = testutil::freshDir("i2p");
+    const testutil::ScratchDir scratch("i2p");
+    const fs::path& dir = scratch.path();
     const fs::path profile = dir / "account.db";
 
     std::string address;
@@ -141,13 +142,12 @@ void testSessionPersistsAndDelegates()
         CHECK(session->i2pAddress() == address);
         CHECK(i2pRoutingHost(fromBase64(session->i2pTransientBase64())) == address);
     }
-    fs::remove_all(dir);
 }
 
 }  // namespace
 
 int main()
-{
+try {
     testMasterRoundTrip();
     testMastersDiffer();
     testOfflineKeepsAddress();
@@ -157,4 +157,6 @@ int main()
     testSessionPersistsAndDelegates();
     std::printf("TestI2pKeys: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

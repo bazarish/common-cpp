@@ -14,7 +14,7 @@
 using namespace bazarish;
 
 int main()
-{
+try {
     const Descriptor descriptor{
         "dlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq",
         "elkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gq.b32.i2p",
@@ -147,4 +147,6 @@ int main()
 
     std::printf("TestResolve: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

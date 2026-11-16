@@ -729,7 +729,7 @@ void testRefusesAnEndlessReply()
 }  // namespace
 
 int main()
-{
+try {
     // On the BSDs a write to a hung-up socket signals rather than fails.
     ::signal(SIGPIPE, SIG_IGN);
     testProbe();
@@ -748,4 +748,6 @@ int main()
     testRefusesAnEndlessReply();
     std::printf("TestSam ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

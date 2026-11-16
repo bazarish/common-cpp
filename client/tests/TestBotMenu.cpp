@@ -31,7 +31,7 @@ nlohmann::json oneItem(const std::string& title, const std::string& command)
 }  // namespace
 
 int main()
-{
+try {
     const BotMenu menu = botMenuFromJson(envelopeOf(7, oneItem("Баланс", "balance")));
     CHECK(menu.id == 7 && menu.items.size() == 1);
     CHECK(menu.items.front().title == "Баланс" && menu.items.front().command == "balance");
@@ -106,4 +106,6 @@ int main()
 
     std::printf("TestBotMenu: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

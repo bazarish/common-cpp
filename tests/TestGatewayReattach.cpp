@@ -47,7 +47,7 @@ i2p::EndpointConfig bulk()
 }  // namespace
 
 int main()
-{
+try {
     {
         http::Server server(http::Server::Options{});
         test::FakeGateway fake;
@@ -100,4 +100,6 @@ int main()
     }
     std::fprintf(stderr, "TestGatewayReattach passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

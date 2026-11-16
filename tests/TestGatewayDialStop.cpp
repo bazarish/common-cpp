@@ -23,7 +23,7 @@ const std::string kNobody = std::string(52, 'n') + ".b32.i2p";
 }  // namespace
 
 int main()
-{
+try {
     http::Server server(http::Server::Options{});
     test::FakeGateway fake;
     const int port = fake.start(server);
@@ -60,4 +60,6 @@ int main()
     server.stop();
     std::printf("TestGatewayDialStop ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

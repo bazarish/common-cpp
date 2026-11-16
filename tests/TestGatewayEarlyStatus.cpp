@@ -18,7 +18,7 @@ constexpr std::chrono::seconds kReadyWithin{10};
 }  // namespace
 
 int main()
-{
+try {
     http::Server server(http::Server::Options{});
     test::FakeGateway fake;
     const int port = fake.start(server);
@@ -44,4 +44,6 @@ int main()
     router.stop();
     server.stop();
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

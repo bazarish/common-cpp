@@ -276,7 +276,7 @@ void checkBurstPlan()
 }  // namespace
 
 int main()
-{
+try {
     checkLogNormal();
     checkPareto();
     checkMixture();
@@ -285,4 +285,6 @@ int main()
     checkBurstPlan();
     std::printf("TestTrafficShape ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

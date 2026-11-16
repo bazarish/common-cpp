@@ -23,17 +23,18 @@ namespace {
 
 namespace fs = std::filesystem;
 
-fs::path uniqueAccountFile(const std::string& tag)
+fs::path uniqueAccountFile(const testutil::ScratchDir& scratch, const std::string& tag)
 {
-    const fs::path dir
-        = testutil::freshDir("test-" + tag);
+    const fs::path dir = scratch.path() / tag;
+    CHECK(fs::create_directories(dir));
     return dir / "account.db";
 }
 
 }  // namespace
 
 int main()
-{
+try {
+    const testutil::ScratchDir scratch("invite");
 
     const Identity serverIdentity = Identity::generate();
     const std::string serverFp = serverIdentity.fingerprint();
@@ -57,7 +58,7 @@ int main()
     endpoint.serverFingerprint = serverFp;
     endpoint.facades = {Facade{"127.0.0.1", 9}};
 
-    const fs::path fileA = uniqueAccountFile("a");
+    const fs::path fileA = uniqueAccountFile(scratch, "a");
     const std::string passphrase = "at-rest secret";
     const std::string fingerprintA = Session::create(fileA, AccountKind::eUser, endpoint, passphrase)->fingerprint();
 
@@ -65,27 +66,24 @@ int main()
     CHECK_THROWS(Session::open(fileA, "wrong"));
     CHECK(Session::open(fileA, passphrase)->fingerprint() == fingerprintA);
 
-    const fs::path bundle = uniqueAccountFile("bundle").parent_path() / "session.baz";
+    const fs::path bundle = uniqueAccountFile(scratch, "bundle").parent_path() / "session.baz";
     const std::string exportPw = "export password";
     Session::open(fileA, passphrase)->exportAccount(bundle, exportPw);
 
-    const fs::path fileB = uniqueAccountFile("b");
+    const fs::path fileB = uniqueAccountFile(scratch, "b");
     CHECK_THROWS(Session::importAccount(bundle, fileB, "bad password"));
     Session::importAccount(bundle, fileB, exportPw);
     CHECK(Session::open(fileB)->fingerprint() == fingerprintA);
     CHECK(Session::open(fileB)->deliveryIdFor("some-message", "some-mailbox")
         == Session::open(fileA, passphrase)->deliveryIdFor("some-message", "some-mailbox"));
 
-    const fs::path fileC = uniqueAccountFile("c");
+    const fs::path fileC = uniqueAccountFile(scratch, "c");
     Session::importAccount(bundle, fileC, exportPw, "new at-rest");
     CHECK_THROWS(Session::open(fileC));
     CHECK(Session::open(fileC, "new at-rest")->fingerprint() == fingerprintA);
 
-    fs::remove_all(fileA.parent_path());
-    fs::remove_all(fileB.parent_path());
-    fs::remove_all(fileC.parent_path());
-    fs::remove_all(bundle.parent_path());
-
     std::fprintf(stderr, "TestInvite passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

@@ -172,7 +172,7 @@ void testWhatTheBlockCosts()
 }  // namespace
 
 int main()
-{
+try {
     testSignedContentNamesItsAuthor();
     testTamperedContentIsRefused();
     testAnotherAuthorsBlockIsRefused();
@@ -183,4 +183,6 @@ int main()
     testWhatTheBlockCosts();
     std::printf("TestAuthorship: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

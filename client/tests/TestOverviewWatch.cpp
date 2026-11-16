@@ -224,7 +224,7 @@ void testStopEndsAHeldAsk()
 }  // namespace
 
 int main()
-{
+try {
     testNothingAskedWhileClosed();
     testOpenDrawsAtOnceThenHolds();
     testCloseReleasesTheHold();
@@ -232,4 +232,6 @@ int main()
     testStopEndsAHeldAsk();
     std::printf("TestOverviewWatch OK\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

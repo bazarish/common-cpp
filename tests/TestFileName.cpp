@@ -17,7 +17,7 @@ constexpr std::size_t kWideLetterBytes = 2;
 }  // namespace
 
 int main()
-{
+try {
     CHECK(safeFileName("../x") == "x");
     CHECK(safeFileName("/etc/x") == "x");
     CHECK(safeFileName("C:\\x") == "x");
@@ -51,4 +51,6 @@ int main()
     CHECK(cutWide.size() <= kMaxFileNameBytes);
     CHECK(cutWide.size() % kWideLetterBytes == 0);
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

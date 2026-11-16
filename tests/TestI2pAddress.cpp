@@ -12,7 +12,7 @@
 using namespace bazarish;
 
 int main()
-{
+try {
     const std::string destination
         = "GmVBArK-6asEg1BTOKbZ9O7c9VFbbm6g4TVPBrmuNyIcD0t-2kEJy39~dawKvPQsNJyTLK5eJi1S8jadM~z"
           "TNEpb5KHKLw6dXxgnWHw2rOVl5MXT7a96ovHhfkiaiSQQc4HIwQJhOg6hwbbhwNNs-QBLA47l5g9008tq1m"
@@ -69,4 +69,6 @@ int main()
 
     std::printf("TestI2pAddress: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

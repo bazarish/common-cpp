@@ -99,7 +99,7 @@ bool carriesText(const Bytes& haystack, const std::string& needle)
 }  // namespace
 
 int main()
-{
+try {
     http::Server server(http::Server::Options{});
     test::FakeGateway gateway;
     const int port = gateway.start(server);
@@ -108,7 +108,8 @@ int main()
         + std::to_string(port) + test::kFakeGatewayPath + "#" + gateway.fingerprint());
     CHECK(gatewayAt.has_value());
     CHECK(applyI2pTransport([&gatewayAt]() { setGatewayTransport(*gatewayAt); }));
-    const std::filesystem::path dataDir = testutil::freshDir("presence-gateway");
+    const testutil::ScratchDir scratch("presence-gateway");
+    const std::filesystem::path& dataDir = scratch.path();
 
     const Identity alice = Identity::generate();
     const std::shared_ptr<EpochRing> aliceRing = epochtest::ringAround(g_utc.load(), "aaaaaaaaaa");
@@ -191,7 +192,8 @@ int main()
     }
 
     retireI2pRouter();
-    std::filesystem::remove_all(dataDir);
     std::fprintf(stderr, "TestPresenceGateway passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

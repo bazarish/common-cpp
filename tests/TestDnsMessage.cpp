@@ -227,10 +227,12 @@ void checkHttpsQuery()
 }  // namespace
 
 int main()
-{
+try {
     checkParse();
     checkAddressesOf();
     checkHttpsQuery();
     std::puts("TestDnsMessage ok");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

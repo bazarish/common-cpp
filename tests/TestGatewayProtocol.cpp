@@ -34,7 +34,7 @@ Frame roundTrip(const Bytes& wire)
 }  // namespace
 
 int main()
-{
+try {
     std::set<std::string> names;
     for (const FrameType type : kAllTypes) {
         const std::string name(frameTypeName(type));
@@ -165,4 +165,6 @@ int main()
 
     std::printf("TestGatewayProtocol ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

@@ -56,7 +56,7 @@ Key weakerPair()
 }  // namespace
 
 int main()
-{
+try {
     {
         const Key weaker = weakerPair();
         CHECK(weaker.hasKem());
@@ -222,4 +222,6 @@ int main()
     CHECK(hybrid::unseal(hybrid::seal(large, sealingPublic, kid), sealing).bytes() == large);
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

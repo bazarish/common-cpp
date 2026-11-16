@@ -32,9 +32,10 @@ bool knownState(const bazarish::i2p::TunnelState state)
 }  // namespace
 
 int main()
-{
+try {
     namespace i2p = bazarish::i2p;
-    const fs::path dir = testutil::freshDir("destination-detail");
+    const testutil::ScratchDir scratch("destination-detail");
+    const fs::path& dir = scratch.path();
     {
         i2p::Router router(i2p::offlineRouter(dir));
         CHECK(router.capabilities().destinationDetail);
@@ -75,6 +76,7 @@ int main()
         CHECK(endpoint->connect(stranger, kDialWindow) == nullptr);
         CHECK(std::chrono::steady_clock::now() - dialed < kOneLookupWithin);
     }
-    fs::remove_all(dir);
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

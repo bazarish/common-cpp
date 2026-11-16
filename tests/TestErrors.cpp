@@ -6,7 +6,7 @@
 using namespace bazarish;
 
 int main()
-{
+try {
     const ErrorCode codes[] = {
         ErrorCode::eStorageFull,
         ErrorCode::eDeliveryRejected,
@@ -56,4 +56,6 @@ int main()
     CHECK(!parseErrorEnvelope(unknownCode).has_value());
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

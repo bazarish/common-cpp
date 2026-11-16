@@ -29,7 +29,7 @@ std::int64_t inside(const EpochNumber n)
 }  // namespace
 
 int main()
-{
+try {
     CHECK(epochAt(kEpochOriginSeconds) == 0);
     CHECK(epochAt(kEpochOriginSeconds - 1) == -1);
     CHECK(epochAt(epochEnd(kEpoch) - 1) == kEpoch);
@@ -147,4 +147,6 @@ int main()
     CHECK(ring.open(sealToEpoch(plain, ring.inUse(kEpoch + 1).front())).bytes() == plain);
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

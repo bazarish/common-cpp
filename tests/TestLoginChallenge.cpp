@@ -236,7 +236,7 @@ void testLayoutControlsRefused()
 }  // namespace
 
 int main()
-{
+try {
     testHappyPathAndReplay();
     testRejections();
     testRelabelling();
@@ -247,4 +247,6 @@ int main()
     testLayoutControlsRefused();
     std::printf("TestLoginChallenge: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

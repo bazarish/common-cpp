@@ -33,7 +33,7 @@ bool throws(const std::function<void()>& what)
 }  // namespace
 
 int main()
-{
+try {
     const Bytes secret = randomBytes(kDeliverySecretSize);
     const Bytes other = randomBytes(kDeliverySecretSize);
 
@@ -57,4 +57,6 @@ int main()
 
     std::printf("TestPass: ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

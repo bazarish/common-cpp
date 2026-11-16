@@ -199,7 +199,7 @@ void checkNetworkChangeEmptiesTheProcessCache()
 }  // namespace
 
 int main()
-{
+try {
     checkTtl();
     checkFailureNotKept();
     checkSharedInFlight();
@@ -207,4 +207,6 @@ int main()
     checkNetworkChangeEmptiesTheProcessCache();
     std::puts("TestHostCache ok");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

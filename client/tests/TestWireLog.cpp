@@ -87,10 +87,12 @@ void testListenerHearsEachEntry()
 }  // namespace
 
 int main()
-{
+try {
     testRingKeepsTheNewest();
     testConcurrentRecordAndSnapshot();
     testListenerHearsEachEntry();
     std::printf("TestWireLog: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

@@ -8,7 +8,7 @@
 #include <memory>
 
 int main()
-{
+try {
     int first = 0;
     int second = 0;
     const std::uint64_t before = bazarish::i2p::carryReturns();
@@ -27,4 +27,6 @@ int main()
 
     std::printf("TestCarryReturn: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

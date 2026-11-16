@@ -51,7 +51,7 @@ i2p::EndpointConfig unpublished()
 }  // namespace
 
 int main()
-{
+try {
     {
         http::Server server(http::Server::Options{});
         test::FakeGateway fake;
@@ -162,4 +162,6 @@ int main()
         server.stop();
     }
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

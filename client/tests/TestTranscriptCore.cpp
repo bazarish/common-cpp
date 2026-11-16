@@ -189,8 +189,9 @@ void checkExpiryStamps(const fs::path& root)
 }  // namespace
 
 int main()
-{
-    const fs::path root = testutil::freshDir("transcript");
+try {
+    const testutil::ScratchDir scratch("transcript");
+    const fs::path& root = scratch.path();
     const fs::path file = root / "account.db";
 
     {
@@ -268,7 +269,8 @@ int main()
     checkWritesGoOnDuringCompaction(root);
     checkChatList(root);
     checkExpiryStamps(root);
-    fs::remove_all(root);
     std::fprintf(stderr, "TestTranscriptCore passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

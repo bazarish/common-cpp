@@ -79,7 +79,7 @@ void testI2pOnly()
 }  // namespace
 
 int main()
-{
+try {
     testParse();
     testFormatRoundTrip();
     testInvalid();
@@ -87,4 +87,6 @@ int main()
     testI2pOnly();
     std::fprintf(stderr, "TestFacade passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

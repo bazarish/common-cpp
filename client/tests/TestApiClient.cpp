@@ -47,7 +47,7 @@ static_assert(std::is_same_v<decltype(&ApiClient::postSecret),
     ApiResponse (ApiClient::*)(const std::string&, const SecretBytes&)>);
 
 int main()
-{
+try {
     bazarish::setSelfHostedFacadeOnLoopback(true);
     const devicetest::Account aliceAccount;
     const DeviceCredential& alice = aliceAccount.device;
@@ -407,4 +407,6 @@ int main()
 
     std::fprintf(stderr, "TestApiClient passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

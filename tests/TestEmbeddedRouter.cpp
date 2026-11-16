@@ -19,15 +19,13 @@ namespace {
 
 constexpr auto kSnapshotPatience = std::chrono::seconds(2);
 constexpr auto kTransportBusy = kSnapshotPatience * 2;
-constexpr std::size_t kDirSuffixBytes = 8;
 
 }  // namespace
 
 int main()
-{
-    const fs::path dir = fs::temp_directory_path()
-        / ("bazarish-embedded-router-" + bazarish::toHex(bazarish::randomBytes(kDirSuffixBytes)));
-    fs::create_directories(dir);
+try {
+    const testutil::ScratchDir scratch("embedded-router");
+    const fs::path& dir = scratch.path();
     {
         bazarish::i2p::Router router(bazarish::i2p::offlineRouter(dir));
         CHECK(router.running());
@@ -52,6 +50,7 @@ int main()
         CHECK(!router.running());
         CHECK_THROWS(router.createEndpoint(bazarish::i2p::EndpointConfig{}));
     }
-    fs::remove_all(dir);
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

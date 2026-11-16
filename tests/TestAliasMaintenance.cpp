@@ -29,7 +29,7 @@ bool throws(const std::function<void()>& fn)
 }  // namespace
 
 int main()
-{
+try {
     const std::int64_t now = 1'700'000'000;
     const std::int64_t week = 7 * 24 * 3600;
 
@@ -150,4 +150,6 @@ int main()
 
     std::printf("TestAliasMaintenance: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

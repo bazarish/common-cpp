@@ -53,8 +53,9 @@ IncomingMessage incoming(const std::string& type, const std::string& e2eId, cons
 }  // namespace
 
 int main()
-{
-    const fs::path root = testutil::freshDir("ingest");
+try {
+    const testutil::ScratchDir scratch("ingest");
+    const fs::path& root = scratch.path();
     const fs::path file = root / "account.db";
     {
         AccountDb account(file, "secret");
@@ -102,7 +103,8 @@ int main()
         CHECK(echoed.device == kOtherOwnDevice);
         store.close();
     }
-    fs::remove_all(root);
     std::fprintf(stderr, "TestTranscriptIngest passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

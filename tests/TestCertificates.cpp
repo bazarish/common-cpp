@@ -19,7 +19,7 @@ constexpr std::size_t kB32Label = 52;
 }  // namespace
 
 int main()
-{
+try {
     const Identity user = Identity::generate();
     const DeviceKeys phone = DeviceKeys::generate();
     const DeviceKeys tablet = DeviceKeys::generate();
@@ -290,4 +290,6 @@ int main()
     CHECK_THROWS(ContactCard::verify(futureDer));
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

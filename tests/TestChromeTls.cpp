@@ -455,12 +455,13 @@ bool openSslAsks(SSL_CTX* const context, const int port)
 }  // namespace
 
 int main()
-{
+try {
 #ifndef _WIN32
     // The server below writes tickets to clients that may already have hung up.
     CHECK(std::signal(SIGPIPE, SIG_IGN) != SIG_ERR);
 #endif
-    const std::filesystem::path root = testutil::freshDir("chrome-tls-test");
+    const testutil::ScratchDir scratch("chrome-tls-test");
+    const std::filesystem::path& root = scratch.path();
     const tls::Credential credential = testutil::webCredential(root);
 
     {
@@ -558,7 +559,8 @@ int main()
         CHECK(answered.load() == 2 * kMixedThreads * kMixedRounds);
     }
 
-    std::filesystem::remove_all(root);
     std::puts("TestChromeTls ok");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

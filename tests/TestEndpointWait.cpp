@@ -46,7 +46,7 @@ std::chrono::steady_clock::duration waitedFor(
 }  // namespace
 
 int main()
-{
+try {
     http::Server server(http::Server::Options{});
     test::FakeGateway fake;
     const int port = fake.start(server);
@@ -96,4 +96,6 @@ int main()
     server.stop();
     std::printf("TestEndpointWait ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

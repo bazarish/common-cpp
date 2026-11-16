@@ -230,7 +230,7 @@ constexpr int kPollMs = 10;
 }  // namespace
 
 int main()
-{
+try {
     testVoiceNormalization();
     {
         SineAudioSource source(440.0);
@@ -457,4 +457,6 @@ int main()
 
     std::printf("TestCallMedia OK\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

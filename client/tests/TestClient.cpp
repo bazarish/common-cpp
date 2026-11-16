@@ -81,7 +81,7 @@ void respondJson(http::Response& response, const nlohmann::json& body)
 }  // namespace
 
 int main()
-{
+try {
     bazarish::setSelfHostedFacadeOnLoopback(true);
     const std::int64_t now = nowSeconds();
 
@@ -471,4 +471,6 @@ int main()
     }
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

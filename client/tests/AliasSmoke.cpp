@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <ctime>
 #include <exception>
+#include <filesystem>
 #include <string>
 #include <thread>
 
@@ -42,7 +43,9 @@ int main(const int argc, const char** argv)
     std::printf("[alias] root=%s\n[alias] dest=%s\n", resolver.rootFingerprint.c_str(),
         resolver.dest.c_str());
 
-    const std::string dataDir = argc > 2 ? argv[2] : "/tmp/baz-alias-smoke";
+    const std::string dataDir = argc > 2
+        ? argv[2]
+        : (std::filesystem::temp_directory_path() / "baz-alias-smoke").string();
     bazarish::i2p::RouterConfig routerConfig;
     routerConfig.dataDir = dataDir;
     routerConfig.role = bazarish::i2p::Role::eClient;

@@ -211,7 +211,7 @@ int cannedInto(FakeEndpoint& endpoint, const std::string& answer, const bool eof
 }  // namespace
 
 int main()
-{
+try {
     ::signal(SIGPIPE, SIG_IGN);
     const std::string code = "4071";
     std::atomic<int> refusals{0};
@@ -497,8 +497,8 @@ int main()
     }
 
     {
-        const std::filesystem::path dir
-            = testutil::freshDir("pair-reseed");
+        const testutil::ScratchDir scratch("pair-reseed");
+        const std::filesystem::path& dir = scratch.path();
         std::filesystem::create_directories(dir);
 
         CHECK(!applyLinkReseed(dir, {}));
@@ -516,7 +516,6 @@ int main()
         CHECK(!applyLinkReseed(dir, {"https://other.example/"}));
         CHECK(reseedUrls()[0] == "https://seed.example/");
 
-        std::filesystem::remove_all(dir);
     }
 
     for (const int fd : g_peerFds) {
@@ -525,4 +524,6 @@ int main()
 
     std::puts("TestDevicePairing passed");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

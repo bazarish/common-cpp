@@ -38,9 +38,9 @@ http::Request asking(const std::string& ifNoneMatch)
 }  // namespace
 
 int main()
-{
-    const std::filesystem::path dir
-        = testutil::freshDir("web-assets-test");
+try {
+    const testutil::ScratchDir scratch("web-assets-test");
+    const std::filesystem::path& dir = scratch.path();
     std::filesystem::create_directories(dir);
     write(dir / "page.html", "<p>{{note}}</p>");
     write(dir / "style.css", "body { color: #d7dbd8; }");
@@ -85,7 +85,8 @@ int main()
     CHECK(bazarish::htmlEscape("{{note}}") == "&#123;&#123;note&#125;&#125;");
     CHECK_THROWS(assets.file("secrets.json"));
 
-    std::filesystem::remove_all(dir);
     std::printf("TestWebAssets: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

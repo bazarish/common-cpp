@@ -51,7 +51,7 @@ http::Server::Options serverOptions()
 }  // namespace
 
 int main()
-{
+try {
     http::Server server(serverOptions());
     server.get("/hello", [](const http::Request& request) {
         http::Response answer;
@@ -230,4 +230,6 @@ int main()
 
     std::printf("TestHttpClient: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

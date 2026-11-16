@@ -11,8 +11,9 @@
 namespace fs = std::filesystem;
 
 int main()
-{
-    const fs::path dir = testutil::freshDir("i2p-reseed");
+try {
+    const testutil::ScratchDir scratch("i2p-reseed");
+    const fs::path& dir = scratch.path();
     const std::string archive = (dir / "no-reseed.su3").string();
 
     bazarish::i2p::setI2pLogLevel(bazarish::i2p::I2pLogLevel::eWarn);
@@ -55,7 +56,8 @@ int main()
     CHECK_THROWS(router.setReseedUrls({"https://one.example/", "http://two.example/"}));
     CHECK(router.reseedState().urls == builtIn);
 
-    fs::remove_all(dir);
     std::puts("TestI2pReseed passed");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

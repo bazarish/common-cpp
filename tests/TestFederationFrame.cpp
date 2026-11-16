@@ -60,7 +60,7 @@ constexpr std::size_t kPayloadBytes = 4096;
 }  // namespace
 
 int main()
-{
+try {
     {
         const Bytes sealed{1, 2, 3, 4};
         const nlohmann::json header
@@ -160,4 +160,6 @@ int main()
 
     std::printf("TestFederationFrame ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

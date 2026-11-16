@@ -11,7 +11,7 @@
 using namespace bazarish;
 
 int main()
-{
+try {
     const std::string b33
         = "kkhioqbaxoc5zj6itqgc6pokwtphydax6utj7l6vm5ihklun56lqabcd.b32.i2p";
     const std::string seedA = "https://seed.example.org:8443/s/9f3c";
@@ -64,4 +64,6 @@ int main()
 
     std::puts("TestPairLink passed");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

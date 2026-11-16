@@ -65,7 +65,7 @@ private:
 }  // namespace
 
 int main()
-{
+try {
     using bazarish::log::Level;
 
     CHECK(bazarish::i2p::i2pLogLevelFromString("none") == I2pLogLevel::eNone);
@@ -78,7 +78,8 @@ int main()
     Heard heard;
     bazarish::log::setTap([&heard](const Level level, const std::string_view,
                               const std::string_view message) { heard.add(level, message); });
-    const std::filesystem::path dir = testutil::freshDir("i2p-logging");
+    const testutil::ScratchDir scratch("i2p-logging");
+    const std::filesystem::path& dir = scratch.path();
     {
         setI2pLogLevel(I2pLogLevel::eNone);
         bazarish::i2p::Router router(bazarish::i2p::offlineRouter(dir));
@@ -124,6 +125,7 @@ int main()
         router.stop();
     }
     bazarish::log::setTap({});
-    std::filesystem::remove_all(dir);
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

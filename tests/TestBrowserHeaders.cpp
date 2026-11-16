@@ -132,7 +132,7 @@ SocketDial dialTo(const int port)
 }  // namespace
 
 int main()
-{
+try {
     int upgradePort = 0;
     const std::string upgrade = capture([&upgradePort](const int port) {
         upgradePort = port;
@@ -183,4 +183,6 @@ int main()
 
     std::puts("TestBrowserHeaders ok");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

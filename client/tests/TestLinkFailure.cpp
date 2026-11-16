@@ -34,7 +34,7 @@ LinkAttempt answered(const int status)
 }  // namespace
 
 int main()
-{
+try {
     CHECK(classifyLinkFailure(false, reaching(LinkStage::eRouter)) == LinkFailure::eI2pUnreachable);
     CHECK(classifyLinkFailure(false, reaching(LinkStage::eLink)) == LinkFailure::eI2pUnreachable);
     CHECK(classifyLinkFailure(false, reaching(LinkStage::eTunnels))
@@ -74,4 +74,6 @@ int main()
 
     std::printf("TestLinkFailure ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

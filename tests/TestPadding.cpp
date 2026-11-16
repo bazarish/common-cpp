@@ -12,7 +12,7 @@
 using namespace bazarish;
 
 int main()
-{
+try {
     std::set<std::size_t> sizes;
     for (std::size_t length = 0; length <= kPaddingLadder[0] - kLengthPrefixBytes; ++length) {
         const Bytes padded = padToLadder(Bytes(length, 0x41));
@@ -71,4 +71,6 @@ int main()
     }
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

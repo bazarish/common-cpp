@@ -882,7 +882,7 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
 }  // namespace
 
 int main()
-{
+try {
     bazarish::setSelfHostedFacadeOnLoopback(true);
     http::Server gatewayServer(http::Server::Options{});
     test::FakeGateway gateway;
@@ -1183,7 +1183,8 @@ int main()
         return made;
     };
 
-    const fs::path scratch = testutil::freshDir("longrestore");
+    const testutil::ScratchDir restoreScratch("longrestore");
+    const fs::path& scratch = restoreScratch.path();
     restoreAfter({"long", kLongAbsenceDays, true, true, 0, false, true, true}, m, endpoint, dial, links, scratch,
         [](const Verdict& v) {
             for (const std::string sender : {"C1", "C2", "C3", "B"}) {
@@ -1237,7 +1238,8 @@ int main()
 
     server.stop();
     gatewayServer.stop();
-    fs::remove_all(scratch);
     std::fprintf(stderr, "TestLongRestore passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

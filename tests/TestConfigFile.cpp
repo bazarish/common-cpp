@@ -137,7 +137,8 @@ void testReadingSettings()
 
 void testSettingKeepsTheFileMode()
 {
-    const std::filesystem::path dir = testutil::freshDir("config-mode");
+    const testutil::ScratchDir scratch("config-mode");
+    const std::filesystem::path& dir = scratch.path();
     const std::filesystem::path path = dir / "config.json";
     for (const std::filesystem::perms mode :
         {std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
@@ -150,13 +151,12 @@ void testSettingKeepsTheFileMode()
         CHECK(std::filesystem::status(path).permissions() == recorded);
         CHECK(ConfigFile(path).read().at("registration").at("requireApproval") == true);
     }
-    std::filesystem::remove_all(dir);
 }
 
 }  // namespace
 
 int main()
-{
+try {
     testPatchKeepsEverythingElse();
     testPatchesAtTheTopLevel();
     testStringsAreEscaped();
@@ -166,4 +166,6 @@ int main()
     testSettingKeepsTheFileMode();
     std::printf("TestConfigFile: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

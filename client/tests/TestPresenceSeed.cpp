@@ -31,7 +31,7 @@ const std::string kKnownReader = "199452f7ccdd6b016965c6bd8f5e30781254167fbd43f6
 }  // namespace
 
 int main()
-{
+try {
     CHECK(presenceDayOf(kMidnight) == kToday);
     CHECK(presenceDayOf(kMidnight - 1) == kToday - 1);
     CHECK(presenceDayOf(kNoon) == kToday);
@@ -142,4 +142,6 @@ int main()
 
     std::fprintf(stderr, "TestPresenceSeed passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

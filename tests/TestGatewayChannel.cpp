@@ -215,7 +215,7 @@ std::size_t widest(const Bytes& sent, const Bytes& paddedBody)
 }  // namespace
 
 int main()
-{
+try {
     checkIdleKeepalive();
     const Identity gatewayIdentity = Identity::generate();
     const Key gatewaySealing = Key::generateSealing();
@@ -304,4 +304,6 @@ int main()
     checkRecordPadding(welcome.sessionKey, welcome.salt);
     std::printf("TestGatewayChannel ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

@@ -24,7 +24,7 @@ const std::string kRecipient = "recipient.b32.i2p";
 }  // namespace
 
 int main()
-{
+try {
     {
         i2p::LeaseSetRefresh refresh;
         refresh.before = i2p::LeaseSetSeen{kOldPublished, kOldPublished + kLeaseSeconds};
@@ -74,4 +74,6 @@ int main()
     router.stop();
     server.stop();
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

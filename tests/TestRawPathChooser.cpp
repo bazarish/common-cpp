@@ -182,7 +182,7 @@ void onlyItsOwnTimelyEchoesCount()
 }  // namespace
 
 int main()
-{
+try {
     nothingOfferedNothingProbed();
     everyPathIsProbedBeforeAnyRepeats();
     theFastestPathIsChosen();
@@ -193,4 +193,6 @@ int main()
     theChosenPathGetsEveryOtherProbe();
     onlyItsOwnTimelyEchoesCount();
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

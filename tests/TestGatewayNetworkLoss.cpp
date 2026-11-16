@@ -63,7 +63,7 @@ bool reachesState(const i2p::TransportState wanted)
 }  // namespace
 
 int main()
-{
+try {
     http::Server server(http::Server::Options{});
     test::FakeGateway fake;
     const int port = fake.start(server);
@@ -151,4 +151,6 @@ int main()
     server.stop();
     std::printf("TestGatewayNetworkLoss ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

@@ -13,8 +13,9 @@
 using namespace bazarish::client;
 
 int main()
-{
-    const std::filesystem::path dataDir = testutil::freshDir("transport-choice");
+try {
+    const testutil::ScratchDir scratch("transport-choice");
+    const std::filesystem::path& dataDir = scratch.path();
 
     CHECK(applyI2pTransport([]() { refuseI2pTransport("the saved gateway is not usable"); }));
     CHECK_THROWS((void)sharedI2pRouter(dataDir));
@@ -34,6 +35,7 @@ int main()
     CHECK_THROWS((void)sharedI2pRouter(dataDir));
     CHECK(!applyI2pTransport([]() {}));
 
-    std::filesystem::remove_all(dataDir);
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

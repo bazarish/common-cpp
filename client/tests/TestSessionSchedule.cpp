@@ -121,13 +121,15 @@ void checkFailedAttemptWaitsTheCadence()
 }  // namespace
 
 int main()
-{
+try {
     checkSoonestDutyWins();
     checkFailedAttemptWaitsTheCadence();
-    const fs::path dir = testutil::freshDir("session-schedule");
+    const testutil::ScratchDir scratch("session-schedule");
+    const fs::path& dir = scratch.path();
     checkWaitsForTheEarliestDeadline(dir);
     checkSwitchedOffWaitsOnlyForKeyErasure(dir);
-    fs::remove_all(dir);
     std::printf("TestSessionSchedule: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

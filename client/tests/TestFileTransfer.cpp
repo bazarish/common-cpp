@@ -55,10 +55,10 @@ FetchAttemptFn servingFrom(const Bytes& ciphertext, const std::size_t limit)
 }  // namespace
 
 int main()
-{
+try {
     TransferStop going;
-    const fs::path root = fs::temp_directory_path() / ("bazarish-xfer-" + toHex(randomBytes(8)));
-    fs::create_directories(root);
+    const testutil::ScratchDir scratch("xfer");
+    const fs::path& root = scratch.path();
 
     const Bytes original = randomBytes(300 * 1024);
     const fs::path source = root / "source.bin";
@@ -263,7 +263,8 @@ int main()
         CHECK(utf8OfPath(fileTargetAt(named).part) == location + ".part");
     }
 
-    fs::remove_all(root);
     std::printf("TestFileTransfer: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

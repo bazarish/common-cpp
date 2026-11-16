@@ -209,9 +209,9 @@ void framesFillRecords(const tls::Credential& credential, const int port)
 }  // namespace
 
 int main()
-{
-    const std::filesystem::path root
-        = testutil::freshDir("ws-tls-duplex-test");
+try {
+    const testutil::ScratchDir scratch("ws-tls-duplex-test");
+    const std::filesystem::path& root = scratch.path();
     std::filesystem::create_directories(root);
     const tls::Credential credential = testutil::webCredential(root);
 
@@ -285,7 +285,8 @@ int main()
         CHECK(lost);
     }
     server.stop();
-    std::filesystem::remove_all(root);
     std::printf("TestWebSocketTlsDuplex ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

@@ -31,7 +31,7 @@ i2p::Keys todayOnly(const i2p::Keys& master)
 }  // namespace
 
 int main()
-{
+try {
     const i2p::Keys master = i2p::Keys::generate();
     CHECK(!master.isOffline());
     CHECK(master.transientExpires() == 0);
@@ -67,4 +67,6 @@ int main()
 
     std::printf("TestI2pDelegation ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

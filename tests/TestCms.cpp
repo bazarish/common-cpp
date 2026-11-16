@@ -50,7 +50,7 @@ constexpr int kCostlierThanOurs = 4096;
 }  // namespace
 
 int main()
-{
+try {
     const std::string password = "open sesame";
 
     {
@@ -59,7 +59,8 @@ int main()
         for (int i = 0; i < 100000; ++i) {
             bigPlain.push_back(static_cast<unsigned char>(i * 11 + 5));
         }
-        const std::filesystem::path dir = testutil::freshDir("seal");
+        const testutil::ScratchDir scratch("seal");
+        const std::filesystem::path& dir = scratch.path();
         const std::filesystem::path plainPath = dir / "seal.in";
         const std::filesystem::path contentPath = dir / "seal.content";
         {
@@ -98,8 +99,9 @@ int main()
         CHECK_THROWS(unsealed(header, password));
 
         CHECK_THROWS(sealed(""));
-        std::filesystem::remove_all(dir);
     }
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

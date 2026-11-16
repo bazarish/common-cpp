@@ -210,9 +210,10 @@ void testKeyedLinks()
 }  // namespace
 
 int main()
-{
+try {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / ("bazarish-login-" + toHex(randomBytes(8)));
+    const testutil::ScratchDir scratch("login");
+    const fs::path dir = scratch.path() / "account.db";
 
     testKeyedLinks();
 
@@ -277,7 +278,8 @@ int main()
         testChallengeLinks();
     }
 
-    fs::remove_all(dir);
     std::printf("TestLogin: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

@@ -336,7 +336,7 @@ std::int64_t utcMillisIn(const std::chrono::seconds from)
 }  // namespace
 
 int main()
-{
+try {
     const TestKeys keys;
     const std::string dest = "recipient.b32.i2p";
     const std::string other = "another.b32.i2p";
@@ -711,4 +711,6 @@ int main()
 
     std::printf("TestOutboundCourier ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

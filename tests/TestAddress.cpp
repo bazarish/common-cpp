@@ -9,7 +9,7 @@
 using namespace bazarish;
 
 int main()
-{
+try {
     const std::string fingerprint = toBase32(Bytes(32, 0x42));
     CHECK(isFingerprint(fingerprint));
     CHECK(!isFingerprint("alice"));
@@ -63,4 +63,6 @@ int main()
     CHECK(normalizeAliasWord("WoRd") == "word");
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

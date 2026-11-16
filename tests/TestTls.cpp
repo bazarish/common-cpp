@@ -36,8 +36,9 @@ http::ClientOptions pinned(const std::string& pin)
 }  // namespace
 
 int main()
-{
-    const fs::path root = testutil::freshDir("tls");
+try {
+    const testutil::ScratchDir scratch("tls");
+    const fs::path& root = scratch.path();
 
     const tls::Credential made = tls::selfSigned(root);
     CHECK(fs::exists(made.certificate));
@@ -107,7 +108,8 @@ int main()
         server.stop();
     }
 
-    fs::remove_all(root);
     std::printf("TestTls: all checks passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

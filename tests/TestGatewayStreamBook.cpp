@@ -23,7 +23,7 @@ std::string text(const Bytes& bytes)
 }  // namespace
 
 int main()
-{
+try {
     StreamBook book;
     CHECK(book.room() == kStreamWindowBytes);
     CHECK(book.sent() == 0);
@@ -94,4 +94,6 @@ int main()
 
     std::printf("TestGatewayStreamBook ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

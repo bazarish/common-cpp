@@ -628,7 +628,7 @@ void checkSocket()
 }  // namespace
 
 int main()
-{
+try {
     checkBounds();
     checkRecordsAndHosts();
     checkOverflow();
@@ -636,4 +636,6 @@ int main()
     checkSocket();
     std::printf("TestMediaPacing ok\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

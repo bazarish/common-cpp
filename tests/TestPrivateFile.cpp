@@ -30,8 +30,9 @@ fs::perms permsOf(const fs::path& file)
 }  // namespace
 
 int main()
-{
-    const fs::path root = testutil::freshDir("test-private-file");
+try {
+    const testutil::ScratchDir scratch("test-private-file");
+    const fs::path& root = scratch.path();
     fs::create_directories(root);
 
     const fs::path key = root / "key.pem";
@@ -96,7 +97,8 @@ int main()
     }
     CHECK(named);
 
-    fs::remove_all(root);
     std::fprintf(stderr, "TestPrivateFile passed\n");
     return 0;
+} catch (...) {
+    return testutil::failed();
 }

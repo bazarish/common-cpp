@@ -19,7 +19,7 @@ constexpr std::int64_t kNow = 1780000000;
 }  // namespace
 
 int main()
-{
+try {
     const Identity root = Identity::generate();
     const DeviceKeys phone = DeviceKeys::generate();
     const DeviceKeys tablet = DeviceKeys::generate();
@@ -155,4 +155,6 @@ int main()
     }
 
     return 0;
+} catch (...) {
+    return testutil::failed();
 }
