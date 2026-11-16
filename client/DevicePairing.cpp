@@ -134,10 +134,19 @@ std::string pairRequest(
 
 Bytes completePairBundle(const Bytes& key, const Bytes& sealed, const DeviceKeys& made)
 {
-    SecretJson bundle(parseJson(openPairBundle(key, sealed).bytes()));
-    nlohmann::json& device = bundle.value.at(kBundleDeviceField);
-    device[kBundleDeviceSigningField] = made.signingPem();
-    device[kBundleDeviceSealingField] = made.sealingPem();
+    SecretJson bundle;
+    try {
+        bundle.value = parseJson(openPairBundle(key, sealed).bytes());
+        nlohmann::json& device = bundle.value.at(kBundleDeviceField);
+        device[kBundleDeviceSigningField] = made.signingPem();
+        device[kBundleDeviceSealingField] = made.sealingPem();
+    } catch (const LinkError&) {
+        throw;
+    } catch (const std::exception& error) {
+        std::string reason = "the account from the other device does not read: ";
+        reason += error.what();
+        throw LinkError(LinkFailure::eServerMalformed, reason);
+    }
     std::string text = bundle.value.dump();
     const SecretBytes plain(Bytes(text.begin(), text.end()));
     OPENSSL_cleanse(text.data(), text.size());
@@ -153,7 +162,8 @@ SecretBytes openPairBundle(const Bytes& key, const Bytes& sealed)
 {
     const std::optional<SecretBytes> bundle = KeyedSeal(key, kPairBundleLabel).open(sealed);
     if (!bundle.has_value()) {
-        throw std::runtime_error("the account came sealed under another key than the link's");
+        throw LinkError(LinkFailure::eServerMalformed,
+            "the account came sealed under another key than the link's");
     }
     return *bundle;
 }
@@ -176,7 +186,7 @@ int pairTriesLeft(const std::map<std::string, std::string>& headers)
 {
     const auto left = headers.find(kPairTriesLeftHeaderKey);
     if (left == headers.end()) {
-        throw std::runtime_error(
+        throw LinkError(LinkFailure::eServerMalformed,
             "the other device refused without saying how many tries are left");
     }
     return std::stoi(left->second);

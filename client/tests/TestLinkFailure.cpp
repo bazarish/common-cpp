@@ -1,11 +1,15 @@
 // Bazarish project (c) 2026
+#include "Client.hpp"
+#include "FailureCause.hpp"
 #include "LinkFailure.hpp"
 
 #include "TestUtil.hpp"
 
+#include <bazarish/I2p.hpp>
 #include <bazarish/I2pHttp.hpp>
 
 #include <cstdio>
+#include <stdexcept>
 
 using namespace bazarish::client;
 
@@ -35,6 +39,19 @@ LinkAttempt answered(const int status)
 
 int main()
 try {
+    CHECK(causeOf(FetchFailed(FetchFailure::eLeaseSetNotFound, "no lease set"))
+        == linkCause(LinkFailure::eServerUnreachable));
+    CHECK(causeOf(FetchFailed(FetchFailure::eProtocol, "does not read"))
+        == linkCause(LinkFailure::eServerMalformed));
+    CHECK(causeOf(LinkError(LinkFailure::eTunnelsBuilding, "building"))
+        == linkCause(LinkFailure::eTunnelsBuilding));
+    CHECK(causeOf(LinkError(LinkFailure::eNone, "the answer's own word"))
+        == linkCause(LinkFailure::eServerRefused));
+    CHECK(!carriedCause(LinkError(LinkFailure::eNone, "the answer's own word")).has_value());
+    CHECK(causeOf(bazarish::i2p::GatewayRefusal("no")) == linkCause(LinkFailure::eGatewayRefused));
+    CHECK(causeOf(LocalError(LocalFailure::eFileGone, "gone")) == localCause(LocalFailure::eFileGone));
+    CHECK(causeOf(std::runtime_error("anything else")) == localCause(LocalFailure::eInternal));
+    CHECK(!carriedCause(std::runtime_error("anything else")).has_value());
     CHECK(classifyLinkFailure(false, reaching(LinkStage::eRouter)) == LinkFailure::eI2pUnreachable);
     CHECK(classifyLinkFailure(false, reaching(LinkStage::eLink)) == LinkFailure::eI2pUnreachable);
     CHECK(classifyLinkFailure(false, reaching(LinkStage::eTunnels))

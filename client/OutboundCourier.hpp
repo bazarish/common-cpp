@@ -67,11 +67,14 @@ struct CourierTimings {
     UtcClock utcNow = systemUtcSeconds;
 };
 
+enum class NotStored { eRefused, eWithdrawn, eExpired, eNotSealed };
+
 struct DeliveryOutcome {
     bool stored = false;
     std::string errorCode;
     std::string errorMessage;
     bool carriedRouting = false;
+    NotStored reason = NotStored::eRefused;
 };
 
 struct DeliveryWatch {

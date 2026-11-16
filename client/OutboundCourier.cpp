@@ -268,6 +268,7 @@ void OutboundCourier::withdraw(const std::string& mailbox)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         Outcome withdrawn;
+        withdrawn.reason = NotStored::eWithdrawn;
         withdrawn.errorMessage = kWithdrawnMessage;
         for (auto held = letters_.begin(); held != letters_.end();) {
             const auto next = std::next(held);
@@ -300,6 +301,7 @@ bool OutboundCourier::withdrawLetter(const std::uint64_t seq)
         }
         held->second.watches.clear();
         Outcome withdrawn;
+        withdrawn.reason = NotStored::eWithdrawn;
         withdrawn.errorMessage = kWithdrawnMessage;
         withdrawn_.push_back(settleLocked(held, withdrawn));
     }
@@ -340,6 +342,7 @@ void OutboundCourier::openDueLocked(const std::chrono::steady_clock::time_point 
 void OutboundCourier::expireLocked(const std::int64_t nowMs, std::vector<Settled>& out)
 {
     Outcome expired;
+    expired.reason = NotStored::eExpired;
     expired.errorMessage = kExpiredMessage;
     for (auto held = letters_.begin(); held != letters_.end();) {
         const auto next = std::next(held);
@@ -564,6 +567,7 @@ void OutboundCourier::runAttempt(const Job& job)
                 settled.push_back(settleLocked(held, outcome));
             } else if (held->second.withdrawn) {
                 Outcome withdrawn;
+                withdrawn.reason = NotStored::eWithdrawn;
                 withdrawn.errorMessage = kWithdrawnMessage;
                 settled.push_back(settleLocked(held, withdrawn));
             } else if (answer == Answer::eKeyless) {
@@ -635,6 +639,7 @@ OutboundCourier::Answer OutboundCourier::attempt(const Letter& plainLetter, Outc
             letter.payload = hybrid::seal(
                 letter.plain, Key::fromPublicDer(letter.deviceSealingDer), deviceKid(letter.toDevice));
         } catch (const std::exception& error) {
+            outcome.reason = NotStored::eNotSealed;
             outcome.errorMessage = std::string("the device's key does not seal: ") + error.what();
             return Answer::eAnswered;
         }
@@ -649,6 +654,7 @@ OutboundCourier::Answer OutboundCourier::attempt(const Letter& plainLetter, Outc
         try {
             letter.payload = sealToEpoch(outcome.carriedRouting ? letter.plainWithRouting : letter.plain, *epoch);
         } catch (const std::exception& error) {
+            outcome.reason = NotStored::eNotSealed;
             outcome.errorMessage
                 = std::string("the recipient's epoch key does not seal: ") + error.what();
             return Answer::eAnswered;
@@ -682,6 +688,7 @@ OutboundCourier::Answer OutboundCourier::attemptFederation(const Letter& letter,
                 letter.pass.empty() ? std::nullopt : std::optional<Bytes>(letter.pass)},
             Key::fromPublicDer(letter.servingSealingDer));
     } catch (const std::exception& error) {
+        outcome.reason = NotStored::eNotSealed;
         outcome.errorMessage
             = std::string("the recipient's address key does not seal: ") + error.what();
         return Answer::eAnswered;

@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "Client.hpp"
+#include "LinkFailure.hpp"
 
 #include "ResolverAsk.hpp"
 
@@ -342,21 +343,31 @@ ContactInfo Client::fetchCard(const Descriptor& descriptor, const FetchTransport
         KeyedSeal(descriptor.cardKey, kCardRequestLabel)
             .seal(cardQueryBytes(CardFetchQuery{descriptor.fingerprint})));
     if (!outcome.ok) {
-        throw std::runtime_error("that invite is out of date - ask for a new one");
+        std::string reason = "the contact's server refused the card: ";
+        reason += outcome.errorCode;
+        throw LinkError(LinkFailure::eServerRefused, reason);
     }
     const std::optional<SecretBytes> cardDer
         = KeyedSeal(descriptor.cardKey, kCardReplyLabel).open(outcome.sealed);
     if (!cardDer.has_value()) {
-        throw std::runtime_error("the card came back sealed under another key");
+        throw LinkError(
+            LinkFailure::eServerMalformed, "the card came back sealed under another key");
     }
 
     ContactInfo info;
-    info.card = ContactCard::verify(cardDer->bytes());
+    try {
+        info.card = ContactCard::verify(cardDer->bytes());
+        validateB33I2pHost(info.card.dest);
+    } catch (const std::exception& error) {
+        std::string reason = "the fetched card does not read: ";
+        reason += error.what();
+        throw LinkError(LinkFailure::eServerMalformed, reason);
+    }
     info.cardKey = descriptor.cardKey;
     if (info.card.fingerprint() != descriptor.fingerprint) {
-        throw std::runtime_error("fetched card is for a different fingerprint");
+        throw LinkError(
+            LinkFailure::eServerMalformed, "fetched card is for a different fingerprint");
     }
-    validateB33I2pHost(info.card.dest);
     return info;
 }
 
@@ -371,9 +382,16 @@ Descriptor Client::resolveAlias(const AliasQuery& alias, const ResolverCoordinat
     };
     FetchOutcome outcome = ask(query);
     if (!outcome.ok && outcome.errorCode == kProofRequiredCode) {
-        const nlohmann::json challenge = parseJson(outcome.refusal);
-        const std::uint32_t bits = challenge.at("bits").get<std::uint32_t>();
-        query.stamp = challenge.at("stamp").get<std::string>();
+        std::uint32_t bits = 0;
+        try {
+            const nlohmann::json challenge = parseJson(outcome.refusal);
+            bits = challenge.at("bits").get<std::uint32_t>();
+            query.stamp = challenge.at("stamp").get<std::string>();
+        } catch (const std::exception& error) {
+            std::string reason = "the alias registry's puzzle does not read: ";
+            reason += error.what();
+            throw LinkError(LinkFailure::eServerMalformed, reason);
+        }
         log::info(
             "the alias registry asks for {} bits of work before naming {}", bits, alias.name);
         if (solving) {
@@ -391,18 +409,25 @@ Descriptor Client::resolveAlias(const AliasQuery& alias, const ResolverCoordinat
         if (known == ErrorCode::eAliasUnknown) {
             throw AliasUnknown(std::string(readable(*known)));
         }
-        throw std::runtime_error(known ? std::string(readable(*known))
-                                       : "The alias registry refused to answer.");
+        std::string reason = "the alias registry refused the lookup: ";
+        reason += code;
+        throw LinkError(LinkFailure::eServerRefused, reason);
     }
-    const ResolveResponse fetched
-        = resolveResponseFromJson(parseJson(outcome.sealed));
-
-    const ResolveRecord record = verifyResolveRecord(fetched.recordDer, fetched.delegationDer,
-        fetched.aliasCertDer, resolver.rootFingerprint, now);
-    if (record.alias != alias.name) {
-        throw std::runtime_error("resolver returned a record for a different alias");
+    std::optional<ResolveRecord> record;
+    try {
+        const ResolveResponse fetched = resolveResponseFromJson(parseJson(outcome.sealed));
+        record = verifyResolveRecord(fetched.recordDer, fetched.delegationDer,
+            fetched.aliasCertDer, resolver.rootFingerprint, now);
+    } catch (const std::exception& error) {
+        std::string reason = "the alias registry's record does not read: ";
+        reason += error.what();
+        throw LinkError(LinkFailure::eServerMalformed, reason);
     }
-    return record.descriptor;
+    if (record->alias != alias.name) {
+        throw LinkError(
+            LinkFailure::eServerMalformed, "resolver returned a record for a different alias");
+    }
+    return record->descriptor;
 }
 
 DestinationInfo Client::myDestination()

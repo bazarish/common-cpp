@@ -227,6 +227,7 @@ if(BAZARISH_WITH_CLIENT)
         client/LoginSigner.cpp
         client/CallMedia.cpp
         client/Client.cpp
+        client/FailureCause.cpp
         client/FederationFetch.cpp
         client/ResolverAsk.cpp
         client/FileTransfer.cpp

@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "ResolverAsk.hpp"
 
+#include "LinkFailure.hpp"
+
 #include <bazarish/JsonRead.hpp>
 #include <bazarish/ResolverChannel.hpp>
 
@@ -40,12 +42,22 @@ Key fetchChannelKey(const ResolverCoordinate& resolver, const FetchTransport& tr
 {
     const FetchOutcome answer = transport(resolver.dest, kChannelOp, {});
     if (!answer.ok) {
-        throw std::runtime_error("the alias registry did not give its channel key: "
-            + (answer.errorCode.empty() ? std::string("no answer") : answer.errorCode));
+        std::string reason = "the alias registry did not give its channel key: ";
+        reason += answer.errorCode;
+        throw LinkError(LinkFailure::eServerRefused, reason);
     }
-    const nlohmann::json held = parseJson(std::string(answer.sealed.begin(), answer.sealed.end()));
-    Key key = verifyChannelKey(fromBase64(held.at("key").get<std::string>()),
-        fromBase64(held.at("delegation").get<std::string>()), resolver.rootFingerprint, now);
+    std::optional<Key> checked;
+    try {
+        const nlohmann::json held
+            = parseJson(std::string(answer.sealed.begin(), answer.sealed.end()));
+        checked = verifyChannelKey(fromBase64(held.at("key").get<std::string>()),
+            fromBase64(held.at("delegation").get<std::string>()), resolver.rootFingerprint, now);
+    } catch (const std::exception& error) {
+        std::string reason = "the alias registry's channel key does not read: ";
+        reason += error.what();
+        throw LinkError(LinkFailure::eServerMalformed, reason);
+    }
+    Key key = std::move(*checked);
     const std::lock_guard<std::mutex> lock(heldKeysMutex());
     heldKeys().insert_or_assign(keyIndex(resolver), key.publicDer());
     return key;
@@ -101,7 +113,7 @@ FetchOutcome askResolver(const ResolverCoordinate& resolver, const FetchTranspor
     }
     const std::optional<ChannelReply> reply = openChannelReply(answer.sealed, sealed.replyKey);
     if (!reply.has_value()) {
-        throw std::runtime_error("the alias registry's answer does not open");
+        throw LinkError(LinkFailure::eServerMalformed, "the alias registry's answer does not open");
     }
     return outcomeOf(*reply);
 }

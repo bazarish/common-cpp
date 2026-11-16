@@ -62,7 +62,8 @@ std::shared_ptr<bazarish::i2p::Endpoint> takeThrowawayDest(bazarish::i2p::Router
     config.target = target;
     endpoint = router.createEndpoint(config);
     if (!endpoint->waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
-        throw std::runtime_error("federation fetch: this device has no I2P tunnels yet");
+        throw LinkError(
+            LinkFailure::eTunnelsBuilding, "federation fetch: this device has no I2P tunnels yet");
     }
     return endpoint;
 }

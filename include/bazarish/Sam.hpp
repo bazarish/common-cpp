@@ -64,6 +64,17 @@ struct SessionConfig {
     bool blinded = true;
 };
 
+enum class ProbeFailure { eBadAddress, eNoRouter, eRefused, eMalformed };
+
+class ProbeFailed : public std::runtime_error {
+public:
+    ProbeFailed(ProbeFailure failure, const std::string& message);
+    ProbeFailure failure() const;
+
+private:
+    ProbeFailure failure_;
+};
+
 std::string probe(const RouterAddress& router);
 
 using Socket = std::intptr_t;

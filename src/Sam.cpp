@@ -42,6 +42,9 @@ constexpr int kLeaseSetAuthTypeDh = 1;
 
 constexpr std::size_t kMaxReplyLineBytes = 8192;
 
+constexpr char kHelloCommand[] = "HELLO VERSION MIN=3.1 MAX=3.3\n";
+constexpr char kHelloReply[] = "HELLO REPLY";
+
 constexpr int kControlIoTimeoutSeconds = 240;
 
 // i2pd drops anything larger rather than fragmenting it.
@@ -364,6 +367,11 @@ void writeAllSocket(const Socket socket, const void* data, const std::size_t siz
     }
 }
 
+class ReplyTooLong : public Error {
+public:
+    using Error::Error;
+};
+
 std::string readLineSocket(const Socket socket)
 {
     std::string line;
@@ -380,7 +388,7 @@ std::string readLineSocket(const Socket socket)
             line.push_back(c);
         }
         if (line.size() > kMaxReplyLineBytes) {
-            throw Error(Result::eI2pError, "SAM: reply line over "
+            throw ReplyTooLong(Result::eI2pError, "SAM: reply line over "
                     + std::to_string(kMaxReplyLineBytes) + " bytes");
         }
     }
@@ -488,7 +496,7 @@ std::map<std::string, std::string> commandSocket(
 std::string handshake(const Socket socket)
 {
     const std::map<std::string, std::string> reply
-        = commandSocket(socket, "HELLO VERSION MIN=3.1 MAX=3.3\n", "HELLO REPLY");
+        = commandSocket(socket, kHelloCommand, kHelloReply);
     const auto version = reply.find("VERSION");
     if (version == reply.end()) {
         throw Error(Result::eUnknown, "SAM: the handshake named no version");
@@ -584,10 +592,55 @@ Result Error::result() const
     return result_;
 }
 
+ProbeFailed::ProbeFailed(const ProbeFailure failure, const std::string& message)
+    : std::runtime_error(message)
+    , failure_(failure)
+{
+}
+
+ProbeFailure ProbeFailed::failure() const
+{
+    return failure_;
+}
+
 std::string probe(const RouterAddress& router)
 {
-    const Held control(openControlSocket(router.host, router.controlPort));
-    return handshake(control.get());
+    try {
+        (void)loopbackAddress(router.host, router.controlPort);
+    } catch (const Error& error) {
+        throw ProbeFailed(ProbeFailure::eBadAddress, error.what());
+    }
+    Held control;
+    try {
+        control.reset(openControlSocket(router.host, router.controlPort));
+    } catch (const Error& error) {
+        throw ProbeFailed(ProbeFailure::eNoRouter, error.what());
+    }
+    std::string reply;
+    try {
+        const std::string hello = kHelloCommand;
+        writeAllSocket(control.get(), hello.data(), hello.size());
+        reply = readLineSocket(control.get());
+    } catch (const ReplyTooLong& error) {
+        throw ProbeFailed(ProbeFailure::eMalformed, error.what());
+    } catch (const Error& error) {
+        throw ProbeFailed(ProbeFailure::eNoRouter, error.what());
+    }
+    std::string said = "SAM: ";
+    said += reply;
+    if (!hasReplyPrefix(reply, kHelloReply)) {
+        throw ProbeFailed(ProbeFailure::eMalformed, said);
+    }
+    const std::map<std::string, std::string> values = parseReply(reply);
+    const auto result = values.find("RESULT");
+    if (result != values.end() && resultFromString(result->second) != Result::eOk) {
+        throw ProbeFailed(ProbeFailure::eRefused, said);
+    }
+    const auto version = values.find("VERSION");
+    if (version == values.end()) {
+        throw ProbeFailed(ProbeFailure::eMalformed, said);
+    }
+    return version->second;
 }
 
 Stream::Stream(const Socket socket)

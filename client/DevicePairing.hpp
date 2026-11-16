@@ -7,8 +7,10 @@
 #include <bazarish/I2pHttp.hpp>
 #include <bazarish/PairLink.hpp>
 
+#include "FailureCause.hpp"
 #include "I2pRouter.hpp"
 #include "PacedSend.hpp"
+#include "WatchedStream.hpp"
 
 #include <algorithm>
 #include <array>
@@ -203,12 +205,16 @@ Bytes readPairBundle(Stream& stream, const I2pHttpHead& head, const PairProgress
 {
     const auto length = head.headers.find("content-length");
     if (length == head.headers.end()) {
-        throw std::runtime_error("the other device did not say how long the account is");
+        throw LinkError(
+            LinkFailure::eServerMalformed, "the other device did not say how long the account is");
     }
     const std::uint64_t total = std::stoull(length->second);
     if (total == 0 || total > kMaxPairBundleBytes) {
-        throw std::runtime_error("the other device offered " + std::to_string(total)
-            + " bytes, and the limit is " + std::to_string(kMaxPairBundleBytes));
+        std::string reason = "the other device offered ";
+        reason += std::to_string(total);
+        reason += " bytes, and the limit is ";
+        reason += std::to_string(kMaxPairBundleBytes);
+        throw LinkError(LinkFailure::eServerMalformed, reason);
     }
     Bytes bundle;
     bundle.reserve(static_cast<std::size_t>(total));
@@ -219,12 +225,16 @@ Bytes readPairBundle(Stream& stream, const I2pHttpHead& head, const PairProgress
     std::vector<unsigned char> buffer(kPacedChunkBytes);
     while (bundle.size() < total) {
         if (cancel.load()) {
-            throw std::runtime_error("pairing stopped");
+            throw LocalError(LocalFailure::eStopped, "pairing stopped");
         }
         const std::size_t got = stream.readSome(buffer);
         if (got == 0) {
-            throw std::runtime_error("the other device closed after "
-                + std::to_string(bundle.size()) + " of " + std::to_string(total) + " bytes");
+            std::string reason = "the other device closed after ";
+            reason += std::to_string(bundle.size());
+            reason += " of ";
+            reason += std::to_string(total);
+            reason += " bytes";
+            throw LinkError(LinkFailure::eServerUnreachable, reason);
         }
         bundle.insert(bundle.end(), buffer.data(), buffer.data() + got);
         if (onProgress) {
@@ -241,29 +251,40 @@ PairFetchResult fetchPairBundle(Endpoint& endpoint, const std::string& dest,
     const PairProgressFn& onProgress, const std::atomic<bool>& cancel)
 {
     if (!endpoint.waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
-        throw std::runtime_error("this device could not build I2P tunnels");
+        throw LinkError(LinkFailure::eTunnelsBuilding, "this device could not build I2P tunnels");
     }
     const auto stream = endpoint.connect(dest, std::chrono::seconds(kDialSeconds));
     if (!stream) {
-        throw std::runtime_error("cannot reach the other device");
+        throw LinkError(LinkFailure::eServerUnreachable, "cannot reach the other device");
     }
     stream->setReadTimeout(std::chrono::seconds(kPairPeerQuietSeconds));
-    const std::string request = pairRequest(dest, code, key, device);
-    stream->writeAll(viewOf(request));
-    const I2pHttpHead head = readI2pHttpHead(*stream);
-    if (head.status == kI2pHttpForbidden) {
-        PairFetchResult refused;
-        refused.wrongCode = true;
-        refused.triesLeft = pairTriesLeft(head.headers);
-        stream->close();
-        return refused;
-    }
-    if (head.status != kI2pHttpOk) {
-        throw std::runtime_error(
-            "the other device answered " + std::to_string(head.status));
-    }
+    BasicWatchedStream watched(*stream);
     PairFetchResult got;
-    got.bundle = readPairBundle(*stream, head, onProgress, cancel);
+    try {
+        const std::string request = pairRequest(dest, code, key, device);
+        watched.writeAll(viewOf(request));
+        const I2pHttpHead head = readI2pHttpHead(watched);
+        if (head.status == kI2pHttpForbidden) {
+            got.wrongCode = true;
+            got.triesLeft = pairTriesLeft(head.headers);
+        } else if (head.status != kI2pHttpOk) {
+            std::string reason = "the other device answered ";
+            reason += std::to_string(head.status);
+            throw LinkError(LinkFailure::eServerRefused, reason);
+        } else {
+            got.bundle = readPairBundle(watched, head, onProgress, cancel);
+        }
+    } catch (const LinkError&) {
+        throw;
+    } catch (const LocalError&) {
+        throw;
+    } catch (const std::exception& error) {
+        std::string reason = "the other device's answer: ";
+        reason += error.what();
+        throw LinkError(
+            watched.failed() ? LinkFailure::eServerUnreachable : LinkFailure::eServerMalformed,
+            reason);
+    }
     stream->close();
     return got;
 }

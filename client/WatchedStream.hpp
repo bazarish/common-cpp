@@ -10,9 +10,10 @@
 namespace bazarish::client {
 
 // Tells a stream that failed under an exchange from an answer that does not read.
-class WatchedStream {
+template <class Stream>
+class BasicWatchedStream {
 public:
-    explicit WatchedStream(bazarish::i2p::Stream& stream) : stream_(stream) {}
+    explicit BasicWatchedStream(Stream& stream) : stream_(stream) {}
 
     std::size_t readSome(const ByteBuffer buffer)
     {
@@ -39,9 +40,11 @@ public:
     bool failed() const { return ended_ || broke_; }
 
 private:
-    bazarish::i2p::Stream& stream_;
+    Stream& stream_;
     bool ended_ = false;
     bool broke_ = false;
 };
+
+using WatchedStream = BasicWatchedStream<bazarish::i2p::Stream>;
 
 }  // namespace bazarish::client

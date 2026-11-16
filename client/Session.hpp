@@ -9,6 +9,7 @@
 #include "Authorship.hpp"
 #include "BotMenu.hpp"
 #include "Client.hpp"
+#include "FailureCause.hpp"
 #include "EpochRing.hpp"
 #include "FileTransfer.hpp"
 #include "KeptMail.hpp"
@@ -254,6 +255,7 @@ struct TransferEvent {
     std::uint64_t total = 0;
     std::string error;
     TransferStage stage = TransferStage::eNone;
+    FailureCause cause = {};
 };
 
 using TransferEventFn = std::function<void(const TransferEvent&)>;
@@ -342,6 +344,7 @@ public:
         std::uint64_t total = 0;
         int wrongCodes = 0;
         std::string error;
+        FailureCause cause = {};
     };
 
     using PairingEventFn = std::function<void(const PairingEvent&)>;
@@ -562,6 +565,7 @@ public:
     struct AliasErrandResult {
         bool ok = false;
         std::string error;
+        FailureCause cause = {};
         bool haveStatus = false;
         AliasStatusAnswer answer;
         bool pointed = false;
@@ -582,10 +586,13 @@ public:
     std::vector<PendingContactAdd> pendingContactAdds() const;
     void notePendingContactAdd(const PendingContactAdd& pending);
     void forgetPendingContactAdd(const std::string& opId);
+    enum class CardStep { eLookingUpAlias, eSolvingPuzzle, eFetchingCard };
     struct ContactCardResolved {
         bool ok = false;
         bool aliasUnknown = false;
         std::string error;
+        FailureCause cause = {};
+        CardStep failedAt = CardStep::eFetchingCard;
         std::string fingerprint;
         ContactInfo info;
         std::string displayName;
@@ -599,7 +606,6 @@ public:
     static std::vector<PendingEntry> waitForMail(
         Client& waiter, Client::MailWait wait, const KeptMail& kept);
 
-    enum class CardStep { eLookingUpAlias, eSolvingPuzzle, eFetchingCard };
     static ContactCardResolved resolveContactCard(const ContactFetchContext& context,
         const ContactCardRequest& request, const std::function<void(CardStep)>& onStep);
     std::string commitContactAdd(const ContactCardResolved& resolved, const DeliveryWatch& watch);

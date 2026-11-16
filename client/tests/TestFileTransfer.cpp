@@ -1,4 +1,5 @@
 // Bazarish project (c) 2026
+#include "FailureCause.hpp"
 #include "FileTransfer.hpp"
 
 #include <bazarish/Bytes.hpp>
@@ -129,8 +130,9 @@ try {
             receiveFile(
                 servingFrom(tampered, tampered.size()), offer, announced, fileTargetAt(dest),
                 going);
-        } catch (const std::exception&) {
+        } catch (const std::exception& error) {
             threw = true;
+            CHECK(causeOf(error) == linkCause(LinkFailure::eServerMalformed));
         }
         CHECK(threw);
         CHECK(!fs::exists(dest));
@@ -147,8 +149,9 @@ try {
                     sink.append(ciphertext);
                 },
                 offer, announced, fileTargetAt(dest), going);
-        } catch (const std::exception&) {
+        } catch (const std::exception& error) {
             threw = true;
+            CHECK(causeOf(error) == linkCause(LinkFailure::eServerMalformed));
         }
         CHECK(threw);
         CHECK(!fs::exists(dest));
@@ -163,8 +166,9 @@ try {
                 ++attempts;
                 sink.total(ciphertext.size());
             }, offer, announced, fileTargetAt(dest), going);
-        } catch (const std::exception&) {
+        } catch (const std::exception& error) {
             threw = true;
+            CHECK(causeOf(error) == linkCause(LinkFailure::eServerUnreachable));
         }
         CHECK(threw);
         CHECK(attempts > 0 && attempts < 100);
@@ -180,8 +184,9 @@ try {
                 ++attempts;
                 sink.total(0);
             }, offer, announced, fileTargetAt(dest), going);
-        } catch (const std::exception&) {
+        } catch (const std::exception& error) {
             threw = true;
+            CHECK(causeOf(error) == linkCause(LinkFailure::eServerMalformed));
         }
         CHECK(threw);
         CHECK(attempts == 1);
@@ -222,8 +227,9 @@ try {
         try {
             receiveFile(
                 servingFrom(ciphertext, 1024), offer, announced, fileTargetAt(dest), cancel);
-        } catch (const std::exception&) {
+        } catch (const std::exception& error) {
             threw = true;
+            CHECK(causeOf(error) == localCause(LocalFailure::eStopped));
         }
         CHECK(threw);
         CHECK(!fs::exists(dest));
@@ -236,8 +242,9 @@ try {
         try {
             receiveFile(servingFrom(ciphertext, ciphertext.size()), offer,
                 toHex(sha256(Bytes{1, 2, 3})), fileTargetAt(dest), going);
-        } catch (const std::exception&) {
+        } catch (const std::exception& error) {
             threw = true;
+            CHECK(causeOf(error) == linkCause(LinkFailure::eServerMalformed));
         }
         CHECK(threw);
         CHECK(!fs::exists(dest));

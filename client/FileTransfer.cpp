@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "FileTransfer.hpp"
 
+#include "FailureCause.hpp"
 #include "PacedSend.hpp"
 
 #include <bazarish/Cms.hpp>
@@ -31,7 +32,7 @@ public:
         , out_(path_, std::ios::binary | std::ios::trunc)
     {
         if (!out_) {
-            throw std::runtime_error("failed to open " + utf8OfPath(path_));
+            throw LocalError(LocalFailure::eFileUnwritable, "failed to open " + utf8OfPath(path_));
         }
     }
 
@@ -43,7 +44,7 @@ public:
         out_.write(
             reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
         if (!out_) {
-            throw std::runtime_error("failed to write " + utf8OfPath(path_));
+            throw LocalError(LocalFailure::eFileUnwritable, "failed to write " + utf8OfPath(path_));
         }
         size_ += data.size();
     }
@@ -54,7 +55,7 @@ public:
     {
         out_.flush();
         if (!out_) {
-            throw std::runtime_error("failed to flush " + utf8OfPath(path_));
+            throw LocalError(LocalFailure::eFileUnwritable, "failed to flush " + utf8OfPath(path_));
         }
         out_.close();
     }
@@ -74,9 +75,13 @@ PreparedFile prepareFile(FileInput& input, const fs::path& ciphertextPath, Trans
     prepared.header = cms::sealWithPasswordDetached(
         [&input, &stop](const ByteBuffer buffer) {
             if (stop.requested()) {
-                throw std::runtime_error("transfer cancelled");
+                throw LocalError(LocalFailure::eStopped, "transfer cancelled");
             }
-            return input.read(buffer);
+            try {
+                return input.read(buffer);
+            } catch (const std::exception& error) {
+                throw LocalError(LocalFailure::eFileUnreadable, error.what());
+            }
         },
         ciphertextPath, prepared.key);
     prepared.ciphertextPath = ciphertextPath;
@@ -112,9 +117,12 @@ FileOffer fileOfferFromJson(const nlohmann::json& json)
 
 namespace {
 
-class OfferBroken : public std::runtime_error {
+class OfferBroken : public LinkError {
 public:
-    using std::runtime_error::runtime_error;
+    explicit OfferBroken(const std::string& message)
+        : LinkError(LinkFailure::eServerMalformed, message)
+    {
+    }
 };
 
 class PartialSink : public TransferSink {
@@ -293,7 +301,7 @@ void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer,
         int stalled = 0;
         while (part.size() < offer.size) {
             if (stop.requested()) {
-                throw std::runtime_error("transfer cancelled");
+                throw LocalError(LocalFailure::eStopped, "transfer cancelled");
             }
             const std::uint64_t before = part.size();
             PartialSink sink(part, offer.size, onProgress);
@@ -310,7 +318,7 @@ void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer,
             }
             if (part.size() == before) {
                 if (++stalled >= kMaxStalledAttempts) {
-                    throw std::runtime_error("transfer stalled");
+                    throw LinkError(LinkFailure::eServerUnreachable, "transfer stalled");
                 }
             } else {
                 stalled = 0;
@@ -319,19 +327,41 @@ void receiveFile(const FetchAttemptFn& fetch, const FileOffer& offer,
         part.finish();
 
         if (toHex(sha256File(partPath)) != offer.sha256) {
-            throw std::runtime_error("file digest mismatch");
+            throw LinkError(LinkFailure::eServerMalformed, "file digest mismatch");
         }
-        const std::unique_ptr<FileOutput> out = target.open();
+        std::unique_ptr<FileOutput> out;
+        try {
+            out = target.open();
+        } catch (const std::exception& error) {
+            throw LocalError(LocalFailure::eFileUnwritable, error.what());
+        }
         try {
             Sha256 plain;
-            cms::unsealWithPasswordDetached(offer.header, partPath, offer.key,
-                [&out, &plain](const ByteView data) {
-                    plain.update(data);
-                    out->write(data);
-                });
-            out->finish();
+            try {
+                cms::unsealWithPasswordDetached(offer.header, partPath, offer.key,
+                    [&out, &plain](const ByteView data) {
+                        plain.update(data);
+                        try {
+                            out->write(data);
+                        } catch (const std::exception& error) {
+                            throw LocalError(LocalFailure::eFileUnwritable, error.what());
+                        }
+                    });
+            } catch (const LocalError&) {
+                throw;
+            } catch (const std::exception& error) {
+                std::string reason = "the file does not open: ";
+                reason += error.what();
+                throw LinkError(LinkFailure::eServerMalformed, reason);
+            }
+            try {
+                out->finish();
+            } catch (const std::exception& error) {
+                throw LocalError(LocalFailure::eFileUnwritable, error.what());
+            }
             if (toHex(plain.digest()) != announcedSha256) {
-                throw std::runtime_error("the file differs from the one announced");
+                throw LinkError(
+                    LinkFailure::eServerMalformed, "the file differs from the one announced");
             }
         } catch (...) {
             out->discard();
@@ -449,35 +479,48 @@ void fetchFileOverI2p(bazarish::i2p::Router& router, const FileOffer& offer,
               stop.watch(endpoint);
               if (!endpoint->waitReady(std::chrono::seconds(kOwnTunnelsSeconds))) {
                   if (stop.requested()) {
-                      throw std::runtime_error("transfer cancelled");
+                      throw LocalError(LocalFailure::eStopped, "transfer cancelled");
                   }
-                  throw std::runtime_error(bazarish::i2p::networkDown()
-                          ? "no network to build I2P tunnels on"
-                          : "this device could not build I2P tunnels");
+                  if (bazarish::i2p::networkDown()) {
+                      throw LinkError(
+                          LinkFailure::eNoNetwork, "no network to build I2P tunnels on");
+                  }
+                  throw LinkError(
+                      LinkFailure::eTunnelsBuilding, "this device could not build I2P tunnels");
               }
               const std::unique_ptr<bazarish::i2p::Stream> stream
                   = endpoint->connect(offer.host, std::chrono::seconds(kDialSeconds));
               if (!stream) {
-                  throw std::runtime_error("cannot reach the sender");
+                  throw LinkError(LinkFailure::eServerUnreachable, "cannot reach the sender");
               }
 
               stream->setReadTimeout(std::chrono::seconds(kSenderQuietSeconds));
-              std::array<std::uint8_t, sizeof(std::uint64_t)> header{};
-              putBigEndian(header, offset);
-              stream->writeAll(header);
-              stream->readExact(header);
-              const std::uint64_t declared = getBigEndian(header);
-              sink.total(declared);
+              try {
+                  std::array<std::uint8_t, sizeof(std::uint64_t)> header{};
+                  putBigEndian(header, offset);
+                  stream->writeAll(header);
+                  stream->readExact(header);
+                  const std::uint64_t declared = getBigEndian(header);
+                  sink.total(declared);
 
-              std::vector<std::uint8_t> buffer(kPacedChunkBytes);
-              std::uint64_t received = offset;
-              while (declared == 0 || received < declared) {
-                  const std::size_t got = stream->readSome(buffer);
-                  if (got == 0) {
-                      break;
+                  std::vector<std::uint8_t> buffer(kPacedChunkBytes);
+                  std::uint64_t received = offset;
+                  while (declared == 0 || received < declared) {
+                      const std::size_t got = stream->readSome(buffer);
+                      if (got == 0) {
+                          break;
+                      }
+                      sink.append(ByteView(buffer).first(got));
+                      received += got;
                   }
-                  sink.append(ByteView(buffer).first(got));
-                  received += got;
+              } catch (const LinkError&) {
+                  throw;
+              } catch (const LocalError&) {
+                  throw;
+              } catch (const std::exception& error) {
+                  std::string reason = "the sender's stream broke: ";
+                  reason += error.what();
+                  throw LinkError(LinkFailure::eServerUnreachable, reason);
               }
               stream->close();
           };

@@ -11,6 +11,7 @@
 #include "KeyedDatabase.hpp"
 #include "Authorship.hpp"
 #include "PresenceSeed.hpp"
+#include "FailureCause.hpp"
 #include "Session.hpp"
 #include "WireLog.hpp"
 
@@ -816,6 +817,71 @@ try {
         runErrand(*alice);
         CHECK(alice->aliasNames().size() == 1);
         CHECK(alice->aliasNames().front().alias == "alice");
+
+        {
+            const FetchTransport silent
+                = [](const std::string&, const std::string&, const Bytes&) -> FetchOutcome {
+                throw FetchFailed(FetchFailure::eNotConnected, "nothing answered in the test");
+            };
+            const FetchTransport refusing
+                = [](const std::string&, const std::string&, const Bytes&) -> FetchOutcome {
+                FetchOutcome refused;
+                refused.errorCode = "UNAVAILABLE";
+                return refused;
+            };
+            const FetchTransport garbled
+                = [](const std::string&, const std::string&, const Bytes&) -> FetchOutcome {
+                FetchOutcome answered;
+                answered.ok = true;
+                answered.sealed = Bytes{1, 2, 3};
+                return answered;
+            };
+            const auto cardFrom = [&alice, &bob](const FetchTransport& transport,
+                                      const std::string& invite) {
+                Session::ContactFetchContext context = alice->contactFetchContext();
+                context.transport = transport;
+                Session::ContactCardRequest request;
+                request.uriOrAlias = invite.empty() ? bob->inviteUri() : invite;
+                return Session::resolveContactCard(context, request, [](Session::CardStep) {});
+            };
+            const Session::ContactCardResolved unanswered = cardFrom(silent, {});
+            CHECK(!unanswered.ok);
+            CHECK(unanswered.cause == linkCause(LinkFailure::eServerUnreachable));
+            CHECK(unanswered.failedAt == Session::CardStep::eFetchingCard);
+            CHECK(cardFrom(refusing, {}).cause == linkCause(LinkFailure::eServerRefused));
+            CHECK(cardFrom(garbled, {}).cause == linkCause(LinkFailure::eServerMalformed));
+            CHECK(cardFrom(silent, "not an invite").cause
+                == localCause(LocalFailure::eInvalidInvite));
+
+            Session::AliasErrandContext errand = alice->aliasErrandContext();
+            errand.transport = silent;
+            const Session::AliasErrandResult lost = Session::runAliasErrand(errand);
+            CHECK(!lost.ok);
+            CHECK(lost.cause == linkCause(LinkFailure::eServerUnreachable));
+            errand.transport = refusing;
+            CHECK(Session::runAliasErrand(errand).cause == linkCause(LinkFailure::eServerRefused));
+            errand.resolver = ResolverCoordinate{};
+            CHECK(Session::runAliasErrand(errand).cause == localCause(LocalFailure::eNoRegistry));
+
+            const FetchTransport kept = alice->contactFetchContext().transport;
+            alice->setFetchTransport(refusing);
+            FailureCause bindingRefused;
+            try {
+                alice->setAliasBinding("alice", true);
+            } catch (const std::exception& error) {
+                bindingRefused = causeOf(error);
+            }
+            CHECK(bindingRefused == linkCause(LinkFailure::eServerRefused));
+            FailureCause wordRefused;
+            try {
+                alice->setAliasWord("alice", "secret");
+            } catch (const std::exception& error) {
+                wordRefused = causeOf(error);
+            }
+            CHECK(wordRefused == linkCause(LinkFailure::eServerRefused));
+            alice->setFetchTransport(kept);
+            CHECK(!alice->aliasNames().front().bindingWanted);
+        }
 
         CHECK(!alice->aliasNames().front().bindingWanted);
         CHECK(!alice->aliasUpdatePending());

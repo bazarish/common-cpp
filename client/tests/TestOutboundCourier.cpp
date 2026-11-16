@@ -615,6 +615,8 @@ try {
         courier.withdraw("mailbox-" + other);
         CHECK(settles(record, 2));
         CHECK(record.outcome(2)->errorMessage == kWithdrawnMessage);
+        CHECK(record.outcome(2)->reason == NotStored::eWithdrawn);
+        CHECK(record.outcome(3)->reason == NotStored::eExpired);
         CHECK(record.reportedOn[2] != std::this_thread::get_id());
         CHECK(testutil::waitFor([&record]() { return record.settledCount() == 3; }));
     }

@@ -16,6 +16,7 @@
 #include <functional>
 #include <cstdio>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <csignal>
 #include <thread>
@@ -375,6 +376,16 @@ constexpr std::chrono::seconds kReady{30};
 constexpr std::chrono::seconds kDial{5};
 constexpr std::chrono::milliseconds kAcceptWait{5000};
 
+std::optional<sam::ProbeFailure> probeFailure(const sam::RouterAddress& router)
+{
+    try {
+        (void)sam::probe(router);
+    } catch (const sam::ProbeFailed& failed) {
+        return failed.failure();
+    }
+    return std::nullopt;
+}
+
 void testProbe()
 {
     FakeRouter router;
@@ -383,13 +394,7 @@ void testProbe()
 
     sam::RouterAddress nobody = router.address();
     nobody.controlPort = 1;
-    bool refused = false;
-    try {
-        (void)sam::probe(nobody);
-    } catch (const sam::Error&) {
-        refused = true;
-    }
-    CHECK(refused);
+    CHECK(probeFailure(nobody) == sam::ProbeFailure::eNoRouter);
 }
 
 void readFully(sam::Stream& stream, const bazarish::ByteBuffer buffer)
@@ -673,13 +678,10 @@ void testRefusesWhatIsNotLoopback()
 {
     sam::RouterAddress elsewhere;
     elsewhere.host = "10.0.0.1";
-    bool refused = false;
-    try {
-        (void)sam::probe(elsewhere);
-    } catch (const sam::Error&) {
-        refused = true;
-    }
-    CHECK(refused);
+    CHECK(probeFailure(elsewhere) == sam::ProbeFailure::eBadAddress);
+    sam::RouterAddress unnamed;
+    unnamed.host = "localhost";
+    CHECK(probeFailure(unnamed) == sam::ProbeFailure::eBadAddress);
 }
 
 void testRefusesAnEndlessReply()
@@ -714,16 +716,53 @@ void testRefusesAnEndlessReply()
 
     sam::RouterAddress flooding;
     flooding.controlPort = port;
-    bool refused = false;
-    try {
-        (void)sam::probe(flooding);
-    } catch (const sam::Error&) {
-        refused = true;
-    }
+    const std::optional<sam::ProbeFailure> failure = probeFailure(flooding);
     stop = true;
     flooder.join();
     ::close(listener);
-    CHECK(refused);
+    CHECK(failure == sam::ProbeFailure::eMalformed);
+}
+
+std::optional<sam::ProbeFailure> probeAnsweredWith(const std::string& line)
+{
+    const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(listener >= 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    CHECK(::bind(listener, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0);
+    CHECK(::listen(listener, 1) == 0);
+    sockaddr_in bound{};
+    socklen_t length = sizeof(bound);
+    CHECK(::getsockname(listener, reinterpret_cast<sockaddr*>(&bound), &length) == 0);
+
+    std::thread answerer([listener, &line]() {
+        const int fd = ::accept(listener, nullptr, nullptr);
+        if (fd < 0) {
+            return;
+        }
+        char hello = 0;
+        while (::read(fd, &hello, 1) == 1 && hello != '\n') {
+        }
+        const ssize_t written = ::write(fd, line.data(), line.size());
+        CHECK(written == static_cast<ssize_t>(line.size()));
+        ::close(fd);
+    });
+    sam::RouterAddress asked;
+    asked.controlPort = ntohs(bound.sin_port);
+    const std::optional<sam::ProbeFailure> failure = probeFailure(asked);
+    answerer.join();
+    ::close(listener);
+    return failure;
+}
+
+void testProbeTellsARefusalFromAStrangeAnswer()
+{
+    CHECK(!probeAnsweredWith("HELLO REPLY RESULT=OK VERSION=3.3\n").has_value());
+    CHECK(probeAnsweredWith("HELLO REPLY RESULT=NOVERSION\n") == sam::ProbeFailure::eRefused);
+    CHECK(probeAnsweredWith("HELLO REPLY RESULT=OK\n") == sam::ProbeFailure::eMalformed);
+    CHECK(probeAnsweredWith("SESSION STATUS RESULT=OK\n") == sam::ProbeFailure::eMalformed);
+    CHECK(probeAnsweredWith("") == sam::ProbeFailure::eNoRouter);
 }
 
 }  // namespace
@@ -746,6 +785,7 @@ try {
     testWaitsForAHeldDestination();
     testRefusesWhatIsNotLoopback();
     testRefusesAnEndlessReply();
+    testProbeTellsARefusalFromAStrangeAnswer();
     std::printf("TestSam ok\n");
     return 0;
 } catch (...) {

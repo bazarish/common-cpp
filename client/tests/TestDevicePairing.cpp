@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "DevicePairing.hpp"
+#include "FailureCause.hpp"
 #include "I2pRouter.hpp"
 
 #include "TestUtil.hpp"
@@ -112,6 +113,17 @@ private:
     std::atomic<bool>* stopWhenEmpty_;
     std::string dialled_;
 };
+
+template <class Attempt>
+FailureCause failureOf(const Attempt& attempt)
+{
+    try {
+        (void)attempt();
+    } catch (const std::exception& error) {
+        return causeOf(error);
+    }
+    return {};
+}
 
 std::vector<int> g_peerFds;
 
@@ -274,7 +286,8 @@ try {
                   completed.at(kBundleDeviceField).at(kBundleDeviceSealingField))
                   .id()
             == kNewDevice.id());
-        CHECK_THROWS(openPairBundle(newLinkKey(), sealPairBundle(kKey, plain)));
+        CHECK(failureOf([&]() { return openPairBundle(newLinkKey(), sealPairBundle(kKey, plain)); })
+            == linkCause(LinkFailure::eServerMalformed));
     }
 
     {
@@ -425,7 +438,9 @@ try {
         std::atomic<bool> cancel{false};
         FakeEndpoint endpoint(nullptr);
         (void)cannedInto(endpoint, buildI2pHttpResponse(kI2pHttpForbidden, {}, 0), false);
-        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", "0000", kKey, kDevice, nullptr, cancel));
+        CHECK(failureOf([&]() {
+            return fetchPairBundle(endpoint, "pair.b32.i2p", "0000", kKey, kDevice, nullptr, cancel);
+        }) == linkCause(LinkFailure::eServerMalformed));
     }
 
     {
@@ -458,16 +473,22 @@ try {
         std::atomic<bool> cancel{false};
         FakeEndpoint endpoint(nullptr);
         (void)cannedInto(endpoint, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nxyz", true);
-        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel));
+        CHECK(failureOf([&]() {
+            return fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel);
+        }) == linkCause(LinkFailure::eServerMalformed));
     }
 
     {
         std::atomic<bool> cancel{false};
         FakeEndpoint endpoint(nullptr);
         (void)cannedInto(endpoint, pairBundleHead(kMaxPairBundleBytes + 1), false);
-        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel));
+        CHECK(failureOf([&]() {
+            return fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel);
+        }) == linkCause(LinkFailure::eServerMalformed));
         (void)cannedInto(endpoint, pairBundleHead(0), false);
-        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel));
+        CHECK(failureOf([&]() {
+            return fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel);
+        }) == linkCause(LinkFailure::eServerMalformed));
     }
 
     {
@@ -479,6 +500,7 @@ try {
             (void)fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel);
         } catch (const std::exception& error) {
             said = error.what();
+            CHECK(causeOf(error) == linkCause(LinkFailure::eServerUnreachable));
         }
         CHECK(said.find("closed after 10 of 1000 bytes") != std::string::npos);
     }
@@ -486,14 +508,27 @@ try {
     {
         std::atomic<bool> cancel{false};
         FakeEndpoint endpoint(nullptr);
-        endpoint.ready = false;
-        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel));
+        (void)cannedInto(endpoint, buildI2pHttpResponse(kI2pHttpNotFound, {}, 0), false);
+        CHECK(failureOf([&]() {
+            return fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel);
+        }) == linkCause(LinkFailure::eServerRefused));
     }
 
     {
         std::atomic<bool> cancel{false};
         FakeEndpoint endpoint(nullptr);
-        CHECK_THROWS(fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel));
+        endpoint.ready = false;
+        CHECK(failureOf([&]() {
+            return fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel);
+        }) == linkCause(LinkFailure::eTunnelsBuilding));
+    }
+
+    {
+        std::atomic<bool> cancel{false};
+        FakeEndpoint endpoint(nullptr);
+        CHECK(failureOf([&]() {
+            return fetchPairBundle(endpoint, "pair.b32.i2p", code, kKey, kDevice, nullptr, cancel);
+        }) == linkCause(LinkFailure::eServerUnreachable));
     }
 
     {

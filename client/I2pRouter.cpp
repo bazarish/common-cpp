@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "I2pRouter.hpp"
+#include "LinkFailure.hpp"
 
 #include <bazarish/Log.hpp>
 
@@ -429,7 +430,7 @@ bazarish::i2p::Router& readySharedI2pRouter()
 {
     const auto running = sharedI2pRouterIfRunning();
     if (!running.has_value() || !running->get().ready()) {
-        throw std::runtime_error("the I2P router is still building tunnels");
+        throw LinkError(LinkFailure::eTunnelsBuilding, "the I2P router is still building tunnels");
     }
     return running->get();
 }

@@ -2816,6 +2816,7 @@ void Session::withdrawDeliveries(const std::string& peerFingerprint)
         }
     }
     DeliveryOutcome outcome;
+    outcome.reason = NotStored::eWithdrawn;
     outcome.errorMessage = kWithdrawnMessage;
     for (const std::uint64_t seq : withdrawn) {
         for (const DeliveryWatch& watch : heldWatches_[seq]) {
@@ -2952,6 +2953,7 @@ void Session::withdrawSelfDeliveriesTo(const std::string& device)
         }
     }
     DeliveryOutcome outcome;
+    outcome.reason = NotStored::eWithdrawn;
     outcome.errorMessage = kWithdrawnMessage;
     for (const std::uint64_t seq : withdrawn) {
         tellCourier([seq](OutboundCourier& courier) { courier.forget(seq); });
@@ -3137,6 +3139,26 @@ Session::ContactCardResolved Session::resolveContactCard(const ContactFetchConte
     };
     bazarish::log::info(
         "contact-add: resolving card off-thread (byAlias={})...", request.byAlias);
+    std::optional<AliasQuery> alias;
+    std::optional<Descriptor> invite;
+    try {
+        if (request.byAlias) {
+            alias = parseAliasQuery(request.uriOrAlias);
+        } else {
+            invite = parseDescriptor(request.uriOrAlias);
+        }
+    } catch (const std::exception& error) {
+        out.error = error.what();
+        out.cause = localCause(
+            request.byAlias ? LocalFailure::eInvalidAlias : LocalFailure::eInvalidInvite);
+        bazarish::log::info("contact-add: the request does not read: {}", error.what());
+        return out;
+    }
+    out.failedAt = request.byAlias ? CardStep::eLookingUpAlias : CardStep::eFetchingCard;
+    const auto step = [&onStep, &out](const CardStep reached) {
+        out.failedAt = reached;
+        onStep(reached);
+    };
     try {
         Client fetchClient(
             DeviceCredential(Identity::fromPrivatePem(context.deviceSigningPem), context.deviceCert),
@@ -3156,21 +3178,19 @@ Session::ContactCardResolved Session::resolveContactCard(const ContactFetchConte
                 context.accountLabel);
         };
 
-        if (request.byAlias) {
-            const AliasQuery alias = parseAliasQuery(request.uriOrAlias);
-            onStep(CardStep::eLookingUpAlias);
-            const Descriptor descriptor = fetchClient.resolveAlias(alias, context.resolver,
-                nowSeconds(), toRegistry, [&onStep]() { onStep(CardStep::eSolvingPuzzle); });
-            onStep(CardStep::eFetchingCard);
+        if (alias.has_value()) {
+            step(CardStep::eLookingUpAlias);
+            const Descriptor descriptor = fetchClient.resolveAlias(*alias, context.resolver,
+                nowSeconds(), toRegistry, [&step]() { step(CardStep::eSolvingPuzzle); });
+            step(CardStep::eFetchingCard);
             out.info = fetchClient.fetchCard(descriptor, transport);
             out.fingerprint = descriptor.fingerprint;
-            out.displayName = safeContactName(alias.name);
+            out.displayName = safeContactName(alias->name);
         } else {
-            const Descriptor descriptor = parseDescriptor(request.uriOrAlias);
-            onStep(CardStep::eFetchingCard);
-            out.info = fetchClient.fetchCard(descriptor, transport);
-            out.fingerprint = descriptor.fingerprint;
-            out.displayName = safeContactName(descriptor.name);
+            step(CardStep::eFetchingCard);
+            out.info = fetchClient.fetchCard(*invite, transport);
+            out.fingerprint = invite->fingerprint;
+            out.displayName = safeContactName(invite->name);
         }
         out.ok = true;
         bazarish::log::info("contact-add: card resolved off-thread in {} ms", elapsedMs());
@@ -3180,6 +3200,7 @@ Session::ContactCardResolved Session::resolveContactCard(const ContactFetchConte
         bazarish::log::info("contact-add: no such alias after {} ms", elapsedMs());
     } catch (const std::exception& error) {
         out.error = error.what();
+        out.cause = causeOf(error);
         out.ok = false;
         bazarish::log::warn(
             "contact-add: resolve failed off-thread after {} ms: {}", elapsedMs(), error.what());
@@ -3839,6 +3860,22 @@ void Session::setTransferHandler(TransferEventFn handler)
     const std::lock_guard<std::mutex> waited(transfers_->calling);
 }
 
+namespace {
+
+TransferEvent transferFailed(const std::string& fileId, const std::string& peer,
+    const FailureCause& cause, const std::string& detail)
+{
+    TransferEvent event;
+    event.e2eId = fileId;
+    event.peer = peer;
+    event.state = TransferState::eFailed;
+    event.error = detail;
+    event.cause = cause;
+    return event;
+}
+
+}  // namespace
+
 void Session::emitTransfer(const std::string& e2eId, const TransferState state,
     const std::uint64_t bytes, const std::uint64_t total, const std::string& error,
     const TransferStage stage, const std::string& peer)
@@ -3940,8 +3977,8 @@ void Session::sendTransferMail()
         } catch (const std::exception& error) {
             item.stop->request();
             dropServe(*transfers_, item.serveId, item.stop);
-            emitTransfer(item.fileId, TransferState::eFailed, 0, 0, error.what(),
-                TransferStage::eNone, item.peer);
+            emitTransferTo(*transfers_,
+                transferFailed(item.fileId, item.peer, causeOf(error), error.what()));
         }
     }
 }
@@ -3984,8 +4021,9 @@ void Session::expireFileRequests(const std::int64_t nowMs)
         }
     }
     for (const auto& [fileId, request] : lapsed) {
-        emitTransfer(fileId, TransferState::eFailed, 0, 0, "the sender did not answer",
-            TransferStage::eNone, request.peer);
+        emitTransferTo(*transfers_,
+            transferFailed(fileId, request.peer, linkCause(LinkFailure::eServerUnreachable),
+                "the sender did not answer"));
         try {
             sendContent(request.peer,
                 envelope("file.cancel", newMessageId(),
@@ -4036,10 +4074,10 @@ std::vector<Session::StoppedHalf> Session::stopTransfer(
         }
     }
     for (const StoppedHalf& half : stopped) {
-        emitTransfer(fileId, TransferState::eFailed, 0, 0,
-            fromPeer.empty() ? "you stopped this transfer" : "the transfer was stopped",
-            TransferStage::eNone,
-            half.peer);
+        emitTransferTo(*transfers_,
+            transferFailed(fileId, half.peer,
+                localCause(fromPeer.empty() ? LocalFailure::eStopped : LocalFailure::eStoppedThere),
+                fromPeer.empty() ? "you stopped this transfer" : "the transfer was stopped"));
     }
     return stopped;
 }
@@ -4141,8 +4179,13 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
         };
         try {
             emit(TransferState::eRequested, 0, 0, {}, TransferStage::eEncrypting);
-            const PreparedFile prepared
-                = prepareFile(*files->open(source), ciphertextPath, *stop);
+            std::unique_ptr<FileInput> input;
+            try {
+                input = files->open(source);
+            } catch (const std::exception& error) {
+                throw LocalError(LocalFailure::eFileUnreadable, error.what());
+            }
+            const PreparedFile prepared = prepareFile(*input, ciphertextPath, *stop);
             emit(TransferState::eRequested, 0, 0, {}, TransferStage::eMakingAddress);
             setReseedUrls(reseeds);
             bazarish::i2p::EndpointConfig config;
@@ -4157,11 +4200,14 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
             emit(TransferState::eRequested, 0, 0, {}, TransferStage::ePublishing);
             if (!endpoint->waitReady(std::chrono::seconds(kPublishWaitSeconds))) {
                 if (stop->requested()) {
-                    throw std::runtime_error("transfer stopped");
+                    throw LocalError(LocalFailure::eStopped, "transfer stopped");
                 }
-                throw std::runtime_error(bazarish::i2p::networkDown()
-                        ? "no network to publish a one-time destination on"
-                        : "could not publish a one-time destination");
+                if (bazarish::i2p::networkDown()) {
+                    throw LinkError(LinkFailure::eNoNetwork,
+                        "no network to publish a one-time destination on");
+                }
+                throw LinkError(
+                    LinkFailure::eI2pUnreachable, "could not publish a one-time destination");
             }
 
             FileOffer offer;
@@ -4185,8 +4231,10 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                         emit(TransferState::eRunning, sent, total, {}, TransferStage::eSending);
                     });
             if (!served) {
-                throw std::runtime_error(
-                    stop->requested() ? "transfer stopped" : "your contact never connected");
+                if (stop->requested()) {
+                    throw LocalError(LocalFailure::eStopped, "transfer stopped");
+                }
+                throw LinkError(LinkFailure::eServerUnreachable, "your contact never connected");
             }
             emit(TransferState::eDone, 0, 0, {}, TransferStage::eNone);
             dropServe(*registry, serveId, stop);
@@ -4196,7 +4244,8 @@ void Session::serveRequestedFile(const std::string& peerFingerprint, const std::
                 fs::remove(ciphertextPath, stoppedEc);
                 return;
             }
-            emit(TransferState::eFailed, 0, 0, error.what(), TransferStage::eNone);
+            emitTransferTo(*registry,
+                transferFailed(fileId, peerFingerprint, causeOf(error), error.what()));
             dropServe(*registry, serveId, stop);
             {
                 const std::lock_guard<std::mutex> lock(registry->mutex);
@@ -4256,9 +4305,8 @@ void Session::startAnnouncedFetch(
                                           offer.size, offer.size, {}, TransferStage::eNone});
         } catch (const std::exception& error) {
             if (!stop->requested()) {
-                emitTransferTo(*registry, TransferEvent{offer.fileId, peer,
-                                              TransferState::eFailed, 0, 0, error.what(),
-                                              TransferStage::eNone});
+                emitTransferTo(
+                    *registry, transferFailed(offer.fileId, peer, causeOf(error), error.what()));
             }
         }
         const std::lock_guard<std::mutex> lock(registry->mutex);
@@ -4788,8 +4836,10 @@ std::vector<IncomingMessage> Session::takeIn(
                             }
                         }
                         if (asked) {
-                            emitTransfer(fileId, TransferState::eFailed, 0, 0,
-                                "the sender could not send this file", {}, message.fromFingerprint);
+                            emitTransferTo(*transfers_,
+                                transferFailed(fileId, message.fromFingerprint,
+                                    localCause(LocalFailure::eFileGone),
+                                    "the sender could not send this file"));
                         }
                     } else if (type == "bot.command") {
                         message.contentType = type;
@@ -7009,16 +7059,24 @@ Session::AliasStatusAnswer askAliasStatus(const Session::AliasErrandContext& con
     if (!outcome.ok) {
         log::info("the alias registry refused a status ask: {}",
             outcome.errorCode.empty() ? std::string("no answer") : outcome.errorCode);
-        const std::optional<ErrorCode> known = errorCodeFromString(outcome.errorCode);
-        throw std::runtime_error(known ? std::string(readable(*known))
-                                       : "The alias registry did not answer.");
+        std::string reason = "the alias registry refused a status ask: ";
+        reason += outcome.errorCode;
+        throw LinkError(LinkFailure::eServerRefused, reason);
     }
-    const ResolveResponse answer = resolveResponseFromJson(parseJson(outcome.sealed));
     Session::AliasStatusAnswer out;
-    out.status = verifyAliasStatus(
-        answer.recordDer, answer.delegationDer, context.resolver.rootFingerprint, now);
+    ResolveResponse answer;
+    try {
+        answer = resolveResponseFromJson(parseJson(outcome.sealed));
+        out.status = verifyAliasStatus(
+            answer.recordDer, answer.delegationDer, context.resolver.rootFingerprint, now);
+    } catch (const std::exception& error) {
+        std::string reason = "the alias registry's status does not read: ";
+        reason += error.what();
+        throw LinkError(LinkFailure::eServerMalformed, reason);
+    }
     if (out.status.owner != context.fingerprint) {
-        throw std::runtime_error("the name service answered about another account");
+        throw LinkError(
+            LinkFailure::eServerMalformed, "the name service answered about another account");
     }
     out.recordDer = answer.recordDer;
     out.delegationDer = answer.delegationDer;
@@ -7084,7 +7142,7 @@ void Session::setAliasBinding(const std::string& alias, const bool on)
 {
     requirePrimary("change an alias");
     if (!resolverCoordinate_.configured()) {
-        throw std::runtime_error("This build has no alias registry configured.");
+        throw LocalError(LocalFailure::eNoRegistry, "this build has no alias registry configured");
     }
     const auto held = std::find_if(aliasNames_.begin(), aliasNames_.end(),
         [&alias](const AliasHolding& holding) { return holding.alias == alias; });
@@ -7100,9 +7158,9 @@ void Session::setAliasBinding(const std::string& alias, const bool on)
     const FetchOutcome outcome
         = askResolver(resolverCoordinate_, heldTransport(), kAliasBindingOp, request, nowSeconds());
     if (!outcome.ok) {
-        const std::optional<ErrorCode> known = errorCodeFromString(outcome.errorCode);
-        throw std::runtime_error(known ? std::string(readable(*known))
-                                       : "The alias registry did not answer.");
+        std::string reason = "the alias registry refused the binding: ";
+        reason += outcome.errorCode;
+        throw LinkError(LinkFailure::eServerRefused, reason);
     }
     held->bindingWanted = on;
     held->bound = false;
@@ -7116,7 +7174,7 @@ void Session::setAliasWord(const std::string& alias, const std::string& word)
 {
     requirePrimary("change an alias");
     if (!resolverCoordinate_.configured()) {
-        throw std::runtime_error("This build has no alias registry configured.");
+        throw LocalError(LocalFailure::eNoRegistry, "this build has no alias registry configured");
     }
     const auto held = std::find_if(aliasNames_.begin(), aliasNames_.end(),
         [&alias](const AliasHolding& holding) { return holding.alias == alias; });
@@ -7131,9 +7189,9 @@ void Session::setAliasWord(const std::string& alias, const std::string& word)
     const Bytes request = signAliasMaintenanceRequest(asking, *root_);
     const FetchOutcome outcome = askResolver(resolverCoordinate_, heldTransport(), kAliasWordOp, request, nowSeconds());
     if (!outcome.ok) {
-        const std::optional<ErrorCode> known = errorCodeFromString(outcome.errorCode);
-        throw std::runtime_error(known ? std::string(readable(*known))
-                                       : "The alias registry did not answer.");
+        std::string reason = "the alias registry refused the word: ";
+        reason += outcome.errorCode;
+        throw LinkError(LinkFailure::eServerRefused, reason);
     }
     held->word = asking.word;
     persistMeta();
@@ -7203,7 +7261,8 @@ Session::AliasErrandResult Session::runAliasErrand(const AliasErrandContext& con
 {
     AliasErrandResult out;
     if (!context.resolver.configured()) {
-        out.error = "This build has no alias registry configured.";
+        out.error = "this build has no alias registry configured";
+        out.cause = localCause(LocalFailure::eNoRegistry);
         return out;
     }
     try {
@@ -7235,6 +7294,7 @@ Session::AliasErrandResult Session::runAliasErrand(const AliasErrandContext& con
         out.ok = true;
     } catch (const std::exception& error) {
         out.error = error.what();
+        out.cause = causeOf(error);
     }
     return out;
 }
@@ -7286,8 +7346,11 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent, const Device
     PairBundleFn makeBundle = pairingBundle(role, key);
     const std::size_t size = makeBundle(DevicePublic::of(DeviceKeys::generate())).size();
     if (size > kMaxPairBundleBytes) {
-        throw std::runtime_error("this account takes " + std::to_string(size)
-            + " bytes, and pairing carries at most " + std::to_string(kMaxPairBundleBytes));
+        std::string reason = "this account takes ";
+        reason += std::to_string(size);
+        reason += " bytes, and pairing carries at most ";
+        reason += std::to_string(kMaxPairBundleBytes);
+        throw LocalError(LocalFailure::eAccountTooLarge, reason);
     }
 
     const std::shared_ptr<PairingRegistry> registry = pairing_;
@@ -7295,7 +7358,8 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent, const Device
     {
         const std::lock_guard<std::mutex> lock(registry->mutex);
         if (registry->cancel) {
-            throw std::runtime_error("this account is already waiting for a device");
+            throw LocalError(
+                LocalFailure::ePairingBusy, "this account is already waiting for a device");
         }
     }
     if (registry->worker.joinable()) {
@@ -7339,9 +7403,12 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent, const Device
             const bool published
                 = endpoint->waitReady(std::chrono::seconds(kPublishWaitSeconds));
             if (!published && !cancel->load()) {
-                throw std::runtime_error(bazarish::i2p::networkDown()
-                        ? "no network to publish the pairing address on"
-                        : "could not publish the pairing address");
+                if (bazarish::i2p::networkDown()) {
+                    throw LinkError(
+                        LinkFailure::eNoNetwork, "no network to publish the pairing address on");
+                }
+                throw LinkError(
+                    LinkFailure::eI2pUnreachable, "could not publish the pairing address");
             }
             if (published) {
                 PairingEvent waiting;
@@ -7377,6 +7444,7 @@ Session::PairingOffer Session::startPairing(PairingEventFn onEvent, const Device
             PairingEvent failed;
             failed.stage = PairingStage::eFailed;
             failed.error = error.what();
+            failed.cause = causeOf(error);
             say(failed);
         }
         endpoint->stop();
