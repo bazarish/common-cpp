@@ -30,6 +30,7 @@ constexpr std::size_t kSerialBytes = 16;
 
 using ossl::BioPtr;
 using ossl::BlockPtr;
+using ossl::X509NamePtr;
 using ossl::X509Ptr;
 
 std::string pinOfSpki(X509* const certificate)
@@ -79,13 +80,15 @@ X509Ptr issueSelfSigned(const Key& key)
         || X509_gmtime_adj(X509_getm_notAfter(certificate.get()), kValiditySeconds) == nullptr) {
         throw std::runtime_error("tls: cannot set the certificate validity");
     }
-    X509_NAME* const name = X509_get_subject_name(certificate.get());
-    if (X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-            reinterpret_cast<const unsigned char*>(kSubject), -1, -1, 0)
-        != 1) {
+    const X509NamePtr name(X509_NAME_new());
+    if (!name
+        || X509_NAME_add_entry_by_txt(name.get(), "CN", MBSTRING_ASC,
+               reinterpret_cast<const unsigned char*>(kSubject), -1, -1, 0)
+            != 1
+        || X509_set_subject_name(certificate.get(), name.get()) != 1) {
         throw std::runtime_error("tls: cannot name the certificate");
     }
-    if (X509_set_issuer_name(certificate.get(), name) != 1
+    if (X509_set_issuer_name(certificate.get(), name.get()) != 1
         || X509_set_pubkey(certificate.get(), key.raw()) != 1) {
         throw std::runtime_error("tls: cannot fill the certificate");
     }

@@ -10,7 +10,6 @@
 #include <bazarish/PlainText.hpp>
 
 #include <nlohmann/json.hpp>
-#include <openssl/asn1.h>
 
 #include <algorithm>
 #include <cctype>
@@ -34,19 +33,16 @@ void requireField(const std::string& value, const std::size_t limit, const std::
     if (value.size() > limit) {
         throw std::runtime_error("the consumer's " + what + " is too long");
     }
-    const auto* cursor = reinterpret_cast<const unsigned char*>(value.data());
-    std::size_t left = value.size();
-    while (left > 0) {
-        unsigned long codePoint = 0;
-        const int length = UTF8_getc(cursor, static_cast<int>(left), &codePoint);
-        if (length <= 0) {
+    std::string_view left = value;
+    while (!left.empty()) {
+        const std::optional<Utf8CodePoint> codePoint = nextUtf8CodePoint(left);
+        if (!codePoint) {
             throw std::runtime_error("the consumer's " + what + " is not UTF-8");
         }
-        if (isForbiddenCodePoint(codePoint)) {
+        if (isForbiddenCodePoint(codePoint->value)) {
             throw std::runtime_error("the consumer's " + what + " carries control characters");
         }
-        cursor += length;
-        left -= static_cast<std::size_t>(length);
+        left.remove_prefix(codePoint->length);
     }
 }
 

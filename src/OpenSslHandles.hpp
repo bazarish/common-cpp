@@ -38,5 +38,6 @@ using Pbkdf2ParamPtr = std::unique_ptr<PBKDF2PARAM, Freer<&PBKDF2PARAM_free>>;
 using MdCtxPtr = std::unique_ptr<EVP_MD_CTX, Freer<&EVP_MD_CTX_free>>;
 using PkeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, Freer<&EVP_PKEY_CTX_free>>;
 using X509Ptr = std::unique_ptr<X509, Freer<&X509_free>>;
+using X509NamePtr = std::unique_ptr<X509_NAME, Freer<&X509_NAME_free>>;
 
 }  // namespace bazarish::ossl

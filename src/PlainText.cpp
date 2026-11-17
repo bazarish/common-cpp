@@ -1,8 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/PlainText.hpp"
 
-#include <openssl/asn1.h>
-
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -38,6 +36,25 @@ constexpr std::array<std::string_view, 2> kNumberedWindowsDevices = {"COM", "LPT
 // RFC 3629: a continuation byte is 10xxxxxx.
 constexpr unsigned char kUtf8ContinuationMask = 0xC0;
 constexpr unsigned char kUtf8ContinuationBits = 0x80;
+constexpr unsigned char kUtf8PayloadMask = 0x3F;
+constexpr unsigned kUtf8PayloadBits = 6;
+constexpr unsigned long kMaxCodePoint = 0x10FFFF;
+constexpr unsigned long kFirstSurrogate = 0xD800;
+constexpr unsigned long kLastSurrogate = 0xDFFF;
+
+struct Utf8Lead {
+    unsigned char mask;
+    unsigned char bits;
+    std::size_t length;
+    unsigned long smallest;
+};
+
+constexpr std::array<Utf8Lead, 4> kUtf8Leads = {{
+    {0x80, 0x00, 1, 0x0},
+    {0xE0, 0xC0, 2, 0x80},
+    {0xF0, 0xE0, 3, 0x800},
+    {0xF8, 0xF0, 4, 0x10000},
+}};
 
 bool isUtf8Continuation(const char c)
 {
@@ -86,19 +103,40 @@ bool isForbiddenCodePoint(const unsigned long codePoint)
         });
 }
 
-std::optional<std::size_t> plainCodePoints(const std::string_view text)
+std::optional<Utf8CodePoint> nextUtf8CodePoint(const std::string_view text)
 {
-    const auto* cursor = reinterpret_cast<const unsigned char*>(text.data());
-    std::size_t left = text.size();
-    std::size_t count = 0;
-    while (left > 0) {
-        unsigned long codePoint = 0;
-        const int length = UTF8_getc(cursor, static_cast<int>(left), &codePoint);
-        if (length <= 0 || isForbiddenCodePoint(codePoint)) {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    const auto first = static_cast<unsigned char>(text.front());
+    const auto lead = std::find_if(kUtf8Leads.begin(), kUtf8Leads.end(),
+        [first](const Utf8Lead& candidate) { return (first & candidate.mask) == candidate.bits; });
+    if (lead == kUtf8Leads.end() || text.size() < lead->length) {
+        return std::nullopt;
+    }
+    unsigned long value = first & static_cast<unsigned char>(~lead->mask);
+    for (std::size_t i = 1; i < lead->length; ++i) {
+        if (!isUtf8Continuation(text[i])) {
             return std::nullopt;
         }
-        cursor += length;
-        left -= static_cast<std::size_t>(length);
+        value = (value << kUtf8PayloadBits) | (static_cast<unsigned char>(text[i]) & kUtf8PayloadMask);
+    }
+    if (value < lead->smallest || value > kMaxCodePoint
+        || (value >= kFirstSurrogate && value <= kLastSurrogate)) {
+        return std::nullopt;
+    }
+    return Utf8CodePoint{value, lead->length};
+}
+
+std::optional<std::size_t> plainCodePoints(std::string_view text)
+{
+    std::size_t count = 0;
+    while (!text.empty()) {
+        const std::optional<Utf8CodePoint> codePoint = nextUtf8CodePoint(text);
+        if (!codePoint || isForbiddenCodePoint(codePoint->value)) {
+            return std::nullopt;
+        }
+        text.remove_prefix(codePoint->length);
         ++count;
     }
     return count;
@@ -111,22 +149,17 @@ std::string safeFileName(const std::string_view offered)
         = lastSeparator == std::string_view::npos ? offered : offered.substr(lastSeparator + 1);
 
     std::string name;
-    const auto* cursor = reinterpret_cast<const unsigned char*>(last.data());
-    std::size_t left = last.size();
-    while (left > 0) {
-        unsigned long codePoint = 0;
-        const int length = UTF8_getc(cursor, static_cast<int>(left), &codePoint);
-        if (length <= 0) {
-            ++cursor;
-            --left;
+    std::string_view left = last;
+    while (!left.empty()) {
+        const std::optional<Utf8CodePoint> codePoint = nextUtf8CodePoint(left);
+        if (!codePoint) {
+            left.remove_prefix(1);
             continue;
         }
-        if (!isForbiddenCodePoint(codePoint)) {
-            const char* const at = reinterpret_cast<const char*>(cursor);
-            name.append(at, static_cast<std::size_t>(length));
+        if (!isForbiddenCodePoint(codePoint->value)) {
+            name.append(left.substr(0, codePoint->length));
         }
-        cursor += length;
-        left -= static_cast<std::size_t>(length);
+        left.remove_prefix(codePoint->length);
     }
     std::replace_if(name.begin(), name.end(),
         [](const char c) { return kNotInWindowsNames.find(c) != std::string_view::npos; },
