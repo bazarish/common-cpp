@@ -32,6 +32,8 @@ public:
     virtual std::size_t readSome(ByteBuffer buffer) = 0;
     virtual void writeAll(ByteView data) = 0;
     virtual void close() = 0;
+    // The far side has answered on this stream: its lease set is live.
+    virtual bool answered() const = 0;
 };
 
 inline constexpr int kDeliveryDialSeconds = 15;
@@ -198,7 +200,7 @@ private:
         bool releaseOwn = false;
     };
 
-    enum class Answer { eAnswered, eUnanswered, eKeyless };
+    enum class Answer { eAnswered, eUnanswered, eBroken, eKeyless };
 
     void workerLoop();
     std::optional<Job> pickLocked();

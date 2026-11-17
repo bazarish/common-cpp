@@ -578,6 +578,9 @@ void OutboundCourier::runAttempt(const Job& job)
                 }
                 bazarish::log::warn("a {} to {} waits: this device holds no current key of its"
                                     " recipient", job.letter.kind, routeName(job.route));
+            } else if (answer == Answer::eBroken) {
+                bazarish::log::info("{} answered and the stream broke: sending again",
+                    routeName(job.route));
             } else if (held->second.letter.route == job.route) {
                 waiting = closeGateLocked(job.route);
                 bazarish::log::warn("{} did not answer: what waits for it goes {} or in {} s",
@@ -727,7 +730,7 @@ OutboundCourier::Answer OutboundCourier::attemptFederation(const Letter& letter,
             std::chrono::steady_clock::now() - wroteAt);
         bazarish::log::warn("delivery to {} did not complete after {} ms: {}", routeName(toDest),
             waited.count(), error.what());
-        return Answer::eUnanswered;
+        return stream->answered() ? Answer::eBroken : Answer::eUnanswered;
     }
     unwatch(stream);
     if (reply.delivered && !signedForUs(reply, letter.deliveryId)) {

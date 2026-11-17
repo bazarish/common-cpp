@@ -194,6 +194,8 @@ public:
         return from.size();
     }
 
+    bool answered() const override { return true; }
+
     void close() override {}
 
 private:
@@ -293,6 +295,8 @@ public:
         closed_.wait(lock, [this]() { return shut_; });
         throw std::runtime_error("closed before an answer");
     }
+
+    bool answered() const override { return false; }
 
     void close() override
     {
@@ -2180,19 +2184,6 @@ try {
             };
             alice->sendMessage(bob->fingerprint(), "delivered once", id, watch);
             CHECK(testutil::waitFor([&]() {
-                const std::lock_guard<std::mutex> lock(m.mu);
-                return m.offers[deliveryId] == 1;
-            }));
-            CHECK(heldFor(bob->fingerprint()) == before + 1);
-            CHECK(!testutil::waitFor([&]() {
-                const std::lock_guard<std::mutex> lock(outcomeMutex);
-                return told.has_value();
-            }, std::chrono::milliseconds(1000)));
-            MailWaitGate aliceWait;
-            alice->openOutboxWhenAnswered(aliceWait);
-            i2p::networkChanged();
-            aliceWait.answered();
-            CHECK(testutil::waitFor([&]() {
                 const std::lock_guard<std::mutex> lock(outcomeMutex);
                 return told.has_value();
             }));
@@ -2216,8 +2207,8 @@ try {
                 seen += item.text == "delivered once" ? 1 : 0;
             }
             CHECK(seen == 1);
-            std::printf("TestDeliveryPass: a delivery whose reply was lost went again and was"
-                        " stored once\n");
+            std::printf("TestDeliveryPass: a delivery whose reply was lost on an answered stream"
+                        " went again at once and was stored once\n");
         }
 
         {

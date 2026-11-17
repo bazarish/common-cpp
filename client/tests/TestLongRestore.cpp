@@ -223,6 +223,8 @@ public:
         return from.size();
     }
 
+    bool answered() const override { return true; }
+
     void close() override {}
 
 private:

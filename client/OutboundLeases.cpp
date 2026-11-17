@@ -37,6 +37,8 @@ public:
 
     void close() override { stream_->close(); }
 
+    bool answered() const override { return stream_->answered(); }
+
 private:
     const std::shared_ptr<bazarish::i2p::Endpoint> endpoint_;
     const std::unique_ptr<bazarish::i2p::Stream> stream_;

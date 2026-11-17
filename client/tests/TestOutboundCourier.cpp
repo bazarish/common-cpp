@@ -65,6 +65,8 @@ public:
         return from.size();
     }
 
+    bool answered() const override { return true; }
+
     void close() override {}
 
 private:
@@ -99,6 +101,8 @@ public:
         return from.size();
     }
 
+    bool answered() const override { return true; }
+
     void close() override {}
 
 private:
@@ -121,6 +125,8 @@ public:
         throw std::runtime_error("closed before an answer");
     }
 
+    bool answered() const override { return false; }
+
     void close() override
     {
         {
@@ -134,6 +140,18 @@ private:
     std::mutex mutex_;
     std::condition_variable closedCv_;
     bool closed_ = false;
+};
+
+// What a stream to a live recipient that lost it on the way does: answered, then ended.
+class BrokenStream final : public DeliveryStream {
+public:
+    void writeAll(ByteView) override {}
+
+    std::size_t readSome(ByteBuffer) override { return 0; }
+
+    bool answered() const override { return true; }
+
+    void close() override {}
 };
 
 struct TestKeys {
@@ -411,6 +429,26 @@ try {
         CHECK(!record.outcome(1)->stored);
         CHECK(record.outcome(1)->errorCode == "DELIVERY_REJECTED");
         CHECK(dials.load() == 1);
+    }
+
+    {
+        Record record;
+        std::atomic<int> dials{0};
+        OutboundCourier courier(
+            dialling([&](const std::string&) -> std::shared_ptr<DeliveryStream> {
+            if (++dials == 1) {
+                return std::make_shared<BrokenStream>();
+            }
+            return std::make_shared<ServerStream>(keys.signing, keys.serving);
+        }),
+            {}, quick(kFarBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(settles(record, 1));
+        CHECK(record.outcome(1)->stored);
+        CHECK(!record.saw(1, kPhaseWaiting));
+        CHECK(dials.load() == 2);
+        std::printf("TestOutboundCourier: a stream the recipient answered and lost is sent again"
+                    " at once\n");
     }
 
     {
