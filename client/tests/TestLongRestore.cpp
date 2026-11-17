@@ -310,6 +310,7 @@ struct Verdict {
     std::int64_t nextDayHour = 0;
     std::map<std::string, std::shared_ptr<Track>> byLabel;
     std::map<std::string, bool> sealsToLostDevice;
+    std::set<std::string> outOfReach;
     std::function<std::optional<std::int64_t>(const std::shared_ptr<Track>&)> readHour;
 
     std::shared_ptr<Track> track(const std::string& what) const { return byLabel.at(tag + ": " + what); }
@@ -523,12 +524,15 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
                             }
                         }});
     };
+    std::map<Session*, std::int64_t> movedAt;
     const std::int64_t firstDay = run.livedOnDays + kFirstLettersDay;
     plan.push_back({firstDay, [&]() {
+                        movedAt[c3.get()] = m.utc.load();
                         c3->replaceOwnAddress();
                     }});
     letters(firstDay, {c1.get(), c2.get(), c3.get(), bot.get()});
     plan.push_back({kSecondNewKeyDay, [&]() {
+                        movedAt[c2.get()] = m.utc.load();
                         c2->replaceOwnAddress();
                     }});
     letters(kSecondLettersDay, {c1.get(), c2.get(), c3.get()});
@@ -571,6 +575,15 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
         return account == m.accounts.end() ? std::size_t{0} : account->second.mailbox.size();
     }();
     std::printf("%s: U's server holds %zu item(s) for U at the restore\n", run.tag.c_str(), heldForU);
+    std::set<Session*> outOfReach;
+    for (const auto& [mover, when] : movedAt) {
+        const bool lacking = epochAt(when) > backupEpochs.back().n;
+        std::printf("%s: %s told U of its new address in epoch %lld, which the backup %s\n", run.tag.c_str(),
+            nameOf[mover->fingerprint()].c_str(), static_cast<long long>(epochAt(when)), lacking ? "lacks" : "holds");
+        if (lacking && !run.reachesEveryContact) {
+            outOfReach.insert(mover);
+        }
+    }
 
     std::int64_t restoreAt = dayAt(run.absenceDays) / kSecondsPerDay * kSecondsPerDay + kRestoreHourOfDay * kSecondsPerHour;
     while (restoreAt < m.utc.load()) {
@@ -793,6 +806,9 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
     verdict.t0 = t0;
     verdict.backupLast = backupEpochs.back().n;
     verdict.nextDayHour = nextDayHour;
+    for (Session* contact : outOfReach) {
+        verdict.outOfReach.insert(nameOf[contact->fingerprint()]);
+    }
     verdict.readHour = readHour;
     for (const std::shared_ptr<Track>& track : tracks) {
         verdict.byLabel.emplace(track->label, track);
@@ -865,7 +881,7 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
             [&](const ContactDevice& d) { return d.id == lostDevice && d.revoked; });
         std::printf("%s: after the revocation %s lists the lost device as %s\n", run.tag.c_str(),
             nameOf[contact->fingerprint()].c_str(), revokedThere ? "revoked" : "active");
-        CHECK(revokedThere || (!run.reachesEveryContact && contact == c3.get()));
+        CHECK(revokedThere || outOfReach.contains(contact));
         send(*contact, uFp, run.tag + ": " + nameOf[contact->fingerprint()] + " after the revocation");
     }
     for (std::int64_t hour = 0; hour < kPromptHours; ++hour) {
@@ -875,7 +891,7 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
         const std::string text = run.tag + ": " + nameOf[contact->fingerprint()] + " after the revocation";
         const bool read = heardText(uFp, text);
         std::printf("  %s %s\n", text.c_str(), read ? "read" : "not read");
-        CHECK(read || (!run.reachesEveryContact && contact == c3.get()));
+        CHECK(read || outOfReach.contains(contact));
     }
 }
 
@@ -1225,11 +1241,16 @@ try {
                 CHECK(v.stored(what));
                 CHECK(v.read(what).has_value() != lacking);
             }
-            CHECK(v.readBy("restored U to C2", kPromptHours));
             CHECK(v.readBy("restored U to C1 again", kPromptHours));
             CHECK(v.readBy("restored U to C1", kPromptHours));
             CHECK(v.readBy("restored U to B", v.nextDayHour + kPromptHours));
-            CHECK(v.waiting("restored U to C3"));
+            for (const std::string mover : {"C2", "C3"}) {
+                if (v.outOfReach.contains(mover)) {
+                    CHECK(v.waiting("restored U to " + mover));
+                } else {
+                    CHECK(v.readBy("restored U to " + mover, kPromptHours));
+                }
+            }
             for (const auto& [sender, toLost] : v.sealsToLostDevice) {
                 CHECK(v.stored(sender + " after the restore"));
                 CHECK(v.read(sender + " after the restore").has_value() != toLost);
