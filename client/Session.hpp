@@ -481,6 +481,7 @@ public:
     void issueAddressKeys();
     bool hasI2pDestination() const;
     std::string i2pAddress() const;
+    std::string servedDestination() const;
 
     void disableI2pDest();
     I2pDestStatus i2pDestStatus();

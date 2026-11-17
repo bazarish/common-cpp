@@ -1735,6 +1735,11 @@ std::string Session::i2pAddress() const
     return i2pAddress_;
 }
 
+std::string Session::servedDestination() const
+{
+    return myDest_;
+}
+
 std::int64_t Session::renewI2pTransient(const int days)
 {
     if (i2pMaster_.empty()) {
