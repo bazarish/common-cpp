@@ -28,6 +28,8 @@ constexpr double kSameDistribution = 0.06;
 constexpr std::size_t kMailWaitBytes = 1300;
 constexpr std::size_t kAnswerBytes = 500;
 constexpr std::size_t kDistinctLengths = 200;
+// Half the lengths a ping can take, met over the drawn pings.
+constexpr std::size_t kDistinctPingLengths = kMaxPingPayloadBytes / 2;
 constexpr std::uint32_t kAnyRef = 7;
 constexpr std::uint64_t kAnyCredit = 123456;
 constexpr std::size_t kVoiceBytes = 160;
@@ -151,9 +153,17 @@ void checkRecordPadding(const SecretBytes& sessionKey, const Bytes& salt)
     std::fill_n(lying.begin() + kRecordFlagsBytes, kRecordLengthBytes,
         std::numeric_limits<std::uint8_t>::max());
     CHECK(!unpadRecord(lying).has_value());
-    CHECK(flagsOfPing(pingCarrying(kRecordActive)) == kRecordActive);
-    CHECK(flagsOfPing(pingCarrying(0)) == 0);
+    std::set<std::size_t> pingLengths;
+    for (int i = 0; i < kRecords; ++i) {
+        const std::string ping = pingCarrying(kRecordActive, random);
+        CHECK(ping.size() >= kRecordFlagsBytes && ping.size() <= kMaxPingPayloadBytes);
+        CHECK(flagsOfPing(ping) == kRecordActive);
+        pingLengths.insert(ping.size());
+    }
+    CHECK(pingLengths.size() > kDistinctPingLengths);
+    CHECK(flagsOfPing(pingCarrying(0, random)) == 0);
     CHECK(!flagsOfPing(std::string()).has_value());
+    CHECK(!flagsOfPing(std::string(kMaxPingPayloadBytes + 1, '\0')).has_value());
 
     const std::shared_ptr<Captured> captured = std::make_shared<Captured>();
     std::size_t told = 0;
@@ -181,18 +191,20 @@ void checkRecordPadding(const SecretBytes& sessionKey, const Bytes& salt)
     }
 }
 
-void checkIdleKeepalive()
+void checkIdleKeepalive(const bool foreground)
 {
-    CHECK(kIdleKeepaliveMin < kIdleKeepaliveMax);
-    CHECK(kIdleKeepaliveMax + kPongTimeout < kSilenceLimit);
+    CHECK(kForegroundKeepaliveMax < kBackgroundKeepaliveMin);
+    CHECK(kBackgroundKeepaliveMax + kPongTimeout < kSilenceLimit);
     SeededRandom random(kSeed);
-    const std::chrono::milliseconds least = kIdleKeepaliveMin;
-    const std::chrono::milliseconds most = kIdleKeepaliveMax;
+    const std::chrono::milliseconds least
+        = foreground ? kForegroundKeepaliveMin : kBackgroundKeepaliveMin;
+    const std::chrono::milliseconds most
+        = foreground ? kForegroundKeepaliveMax : kBackgroundKeepaliveMax;
     const double binWidth = static_cast<double>((most - least).count()) / kKeepaliveBins;
     std::vector<int> bins(kKeepaliveBins, 0);
     std::set<std::chrono::milliseconds::rep> distinct;
     for (int i = 0; i < kRecords; ++i) {
-        const std::chrono::milliseconds wait = drawIdleKeepalive(random);
+        const std::chrono::milliseconds wait = drawIdleKeepalive(random, foreground);
         CHECK(wait >= least);
         CHECK(wait <= most);
         CHECK(wait + kPongTimeout + kSilenceMargin <= kSilenceLimit);
@@ -216,7 +228,8 @@ std::size_t widest(const Bytes& sent, const Bytes& paddedBody)
 
 int main()
 try {
-    checkIdleKeepalive();
+    checkIdleKeepalive(true);
+    checkIdleKeepalive(false);
     const Identity gatewayIdentity = Identity::generate();
     const Key gatewaySealing = Key::generateSealing();
     const std::string fingerprint = gatewayIdentity.fingerprint();

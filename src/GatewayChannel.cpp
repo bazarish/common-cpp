@@ -214,10 +214,13 @@ shape::LogNormal bulkPad()
     return {kBulkPadMedian, kBulkPadSigma, 0, static_cast<double>(kBulkPadMax)};
 }
 
-std::chrono::milliseconds drawIdleKeepalive(shape::RandomSource& random)
+std::chrono::milliseconds drawIdleKeepalive(shape::RandomSource& random, const bool foreground)
 {
-    const std::chrono::milliseconds least = kIdleKeepaliveMin;
-    const std::chrono::milliseconds span = kIdleKeepaliveMax - kIdleKeepaliveMin;
+    const std::chrono::milliseconds least
+        = foreground ? kForegroundKeepaliveMin : kBackgroundKeepaliveMin;
+    const std::chrono::milliseconds most
+        = foreground ? kForegroundKeepaliveMax : kBackgroundKeepaliveMax;
+    const std::chrono::milliseconds span = most - least;
     return least
         + std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(
             std::floor(shape::uniformOpen(random) * static_cast<double>(span.count()))));
@@ -373,14 +376,19 @@ std::optional<Bytes> HostElision::restore(const Bytes& frame)
     return withHost(frame, {}, last_);
 }
 
-std::string pingCarrying(const std::uint8_t flags)
+std::string pingCarrying(const std::uint8_t flags, shape::RandomSource& random)
 {
-    return std::string(kRecordFlagsBytes, static_cast<char>(flags));
+    const std::size_t room = kMaxPingPayloadBytes - kRecordFlagsBytes;
+    const auto padding = static_cast<std::size_t>(
+        std::floor(shape::uniformOpen(random) * static_cast<double>(room + 1)));
+    std::string payload(kRecordFlagsBytes, static_cast<char>(flags));
+    payload.append(std::min(padding, room), '\0');
+    return payload;
 }
 
 std::optional<std::uint8_t> flagsOfPing(const std::string& payload)
 {
-    if (payload.size() != kRecordFlagsBytes) {
+    if (payload.size() < kRecordFlagsBytes || payload.size() > kMaxPingPayloadBytes) {
         return std::nullopt;
     }
     return static_cast<std::uint8_t>(payload.front());
@@ -643,6 +651,11 @@ void ChannelSocket::closeWhenSent()
 {
     stopPacing();
     raw_->closeWhenSent();
+}
+
+void ChannelSocket::redrawKeepalive()
+{
+    raw_->redrawKeepalive();
 }
 
 bool ChannelSocket::open() const

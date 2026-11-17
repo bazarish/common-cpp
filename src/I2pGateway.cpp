@@ -535,6 +535,7 @@ private:
     gateway::ChannelHooks hooks() const;
     bool quiet() const;
     bool hasControl() const;
+    void foregroundMoved();
     void abandon();
 
     RouterConfig config_;
@@ -552,6 +553,7 @@ private:
     std::atomic<bool> live_{false};
     std::atomic<bool> stopping_{false};
     std::atomic<bool> openFailing_{false};
+    std::atomic<bool> foreground_{false};
     std::unique_ptr<LossWatch> loss_;
     std::unique_ptr<CarryWatch> carry_;
     std::unique_ptr<ActivityWatch> activity_;
@@ -943,11 +945,13 @@ http::SocketDial GatewayRouter::dialLocked() const
     dial.maxMessageBytes = gateway::kMaxRecordBytes;
     dial.silenceBeforePing = []() {
         shape::SystemRandom random;
-        return gateway::drawIdleKeepalive(random);
+        return gateway::drawIdleKeepalive(random, backend::appForeground());
     };
     dial.pongTimeout = gateway::kPongTimeout;
+    dial.unacknowledgedLimit = gateway::kUnacknowledgedLimit;
     dial.pingPayload = [traffic = traffic_]() {
-        return gateway::pingCarrying(recordFlags(*traffic));
+        shape::SystemRandom random;
+        return gateway::pingCarrying(recordFlags(*traffic), random);
     };
     return dial;
 }
@@ -1044,7 +1048,11 @@ void GatewayRouter::start()
     live_.store(true);
     loss_ = std::make_unique<LossWatch>([this]() { networkLost(); });
     carry_ = std::make_unique<CarryWatch>([link = link_]() { link->wake(); });
-    activity_ = std::make_unique<ActivityWatch>([link = link_]() { link->wake(); });
+    foreground_.store(backend::appForeground());
+    activity_ = std::make_unique<ActivityWatch>([this]() {
+        link_->wake();
+        foregroundMoved();
+    });
     cover_ = std::thread([this]() { coverLoop(); });
     stateSignal->changed();
 }
@@ -1137,6 +1145,7 @@ void GatewayRouter::openControl()
                 if (link->control == gone) {
                     link->control.reset();
                     link->aloneSince.store(millisNow());
+                    noteLinkLost();
                 }
             }
             // Taken so the hello's waiter cannot miss the close between its check and its wait.
@@ -1339,6 +1348,29 @@ void GatewayRouter::abandon()
         "i2p: the gateway has been out of reach longer than a session lasts; "
         "{} stream(s) given up",
         stranded.size());
+}
+
+// The wait before the next ping follows whether the app is in front.
+void GatewayRouter::foregroundMoved()
+{
+    const bool now = backend::appForeground();
+    if (foreground_.exchange(now) == now) {
+        return;
+    }
+    std::vector<http::SocketPtr> sockets;
+    {
+        const std::lock_guard<std::mutex> lock(link_->mutex);
+        if (link_->control) {
+            sockets.push_back(link_->control);
+        }
+        for (const auto& [flow, socket] : link_->flows) {
+            (void)flow;
+            sockets.push_back(socket);
+        }
+    }
+    for (const http::SocketPtr& socket : sockets) {
+        socket->redrawKeepalive();
+    }
 }
 
 bool GatewayRouter::hasControl() const

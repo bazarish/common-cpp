@@ -340,6 +340,8 @@ std::uint64_t carryReturns();
 void networkChanged();
 // Grows only when the device moves network.
 std::uint64_t networkChanges();
+// Grows when this device's own link is lost: the network goes, or the gateway's socket drops.
+std::uint64_t linkLosses();
 // Until the next networkChanged(): gateway calls fail at once and no stream is dialled.
 void networkLost();
 bool networkDown();

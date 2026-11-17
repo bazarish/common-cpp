@@ -23,6 +23,8 @@ public:
     // Closes once every message sent before it is written.
     virtual void closeWhenSent() = 0;
     virtual bool open() const = 0;
+    // A socket that pings draws the silence before its next ping afresh.
+    virtual void redrawKeepalive() {}
 };
 
 using SocketPtr = std::shared_ptr<Socket>;

@@ -167,6 +167,7 @@ public:
 
 void noteCarryReturned();
 void noteGatewayReach(bool reachable);
+void noteLinkLost();
 
 // Calls its listener on the thread that calls networkLost(), for as long as it lives.
 class LossWatch {
@@ -193,6 +194,7 @@ private:
 };
 
 shape::Activity activityNow(bool exchanging);
+bool appForeground();
 std::uint64_t userActions();
 
 std::unique_ptr<RouterBackend> makeSamRouter(const RouterConfig& config);

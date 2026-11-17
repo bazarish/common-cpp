@@ -84,6 +84,7 @@ std::mutex g_carryCalling;
 std::map<std::uint64_t, std::function<void()>> g_carryListeners;
 std::uint64_t g_nextCarryWatch = 0;
 std::atomic<std::uint64_t> g_networkChanges{0};
+std::atomic<std::uint64_t> g_linkLosses{0};
 std::atomic<bool> g_networkDown{false};
 std::atomic<bool> g_gatewayUnreachable{false};
 
@@ -355,8 +356,19 @@ std::uint64_t networkChanges()
     return g_networkChanges.load();
 }
 
+std::uint64_t linkLosses()
+{
+    return g_linkLosses.load();
+}
+
+void backend::noteLinkLost()
+{
+    ++g_linkLosses;
+}
+
 void networkLost()
 {
+    ++g_linkLosses;
     dns::hostCache().invalidate();
     const bool wasDown = g_networkDown.exchange(true);
     g_lossListeners.call();
@@ -430,6 +442,12 @@ shape::Activity backend::activityNow(const bool exchanging)
 {
     const std::lock_guard<std::mutex> lock(g_activityMutex);
     return g_activity.state(shape::Clock::now(), exchanging);
+}
+
+bool backend::appForeground()
+{
+    const std::lock_guard<std::mutex> lock(g_activityMutex);
+    return g_activity.foreground();
 }
 
 std::uint64_t backend::userActions()

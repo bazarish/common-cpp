@@ -27,6 +27,8 @@ struct SocketDial {
     std::function<std::chrono::milliseconds()> silenceBeforePing;
     std::chrono::seconds pongTimeout{0};
     std::function<std::string()> pingPayload;
+    // Nonzero: the system drops the connection once sent bytes stay unacknowledged this long.
+    std::chrono::seconds unacknowledgedLimit{0};
 };
 
 struct SocketDialResult {

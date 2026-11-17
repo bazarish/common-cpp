@@ -92,6 +92,7 @@ public:
     void windowActive(bool active) { windowActive_ = active; }
     void screenOn(bool on) { screenOn_ = on; }
     void userActed(Clock::time_point at);
+    bool foreground() const { return windowActive_ && screenOn_; }
 
     Activity state(Clock::time_point now, bool exchanging) const;
     std::uint64_t actions() const { return actions_; }

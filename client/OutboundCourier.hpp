@@ -51,6 +51,8 @@ inline constexpr char kPhasePreparing[] = "preparing";
 inline constexpr char kPhaseDialing[] = "dialing";
 inline constexpr char kPhaseSending[] = "sending";
 inline constexpr char kPhaseWaiting[] = "waiting";
+// Waits for this device's own link, not for the recipient.
+inline constexpr char kPhaseOffline[] = "offline";
 
 inline constexpr char kWithdrawnMessage[] = "its recipient was removed before it was delivered";
 
@@ -170,7 +172,7 @@ private:
         bool busy = false;
         bool closed = false;
         bool lookupDue = false;
-        // Closed when the link came back: opens once our server has answered.
+        // Opens once our server has answered: our own link failed, or it came back.
         bool awaitsServer = false;
         bool failedSeenKnown = false;
         std::optional<i2p::LeaseSetSeen> failedSeen;
@@ -214,7 +216,8 @@ private:
     void runLookup(const Job& job);
     Answer attempt(const Letter& letter, Outcome& outcome);
     Answer attemptFederation(const Letter& letter, Outcome& outcome);
-    std::vector<std::pair<DeliveryWatch, std::string>> closeGateLocked(const std::string& route);
+    std::vector<std::pair<DeliveryWatch, std::string>> closeGateLocked(
+        const std::string& route, bool ownLink);
     void phase(std::uint64_t seq, const std::string& phase);
     void carryReturned();
     void watch(const std::shared_ptr<DeliveryStream>& stream,

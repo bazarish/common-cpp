@@ -165,11 +165,14 @@ private:
     std::string last_;
 };
 
-// Uniform in [kIdleKeepaliveMin, kIdleKeepaliveMax].
-std::chrono::milliseconds drawIdleKeepalive(shape::RandomSource& random);
+// Uniform in the foreground or the background keepalive range.
+std::chrono::milliseconds drawIdleKeepalive(shape::RandomSource& random, bool foreground);
 
-// A keepalive ping carries the same flags a record does.
-std::string pingCarrying(std::uint8_t flags);
+// RFC 6455 5.5: a control frame carries at most 125 bytes.
+inline constexpr std::size_t kMaxPingPayloadBytes = 125;
+
+// A keepalive ping carries the same flags a record does, padded to a drawn length.
+std::string pingCarrying(std::uint8_t flags, shape::RandomSource& random);
 std::optional<std::uint8_t> flagsOfPing(const std::string& payload);
 
 struct Welcome {
@@ -234,6 +237,7 @@ public:
     void close() override;
     void closeWhenSent() override;
     bool open() const override;
+    void redrawKeepalive() override;
 
     const http::SocketPtr& raw() const { return raw_; }
     std::optional<RecordBody> openRecord(const Bytes& record);

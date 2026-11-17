@@ -610,6 +610,44 @@ try {
 
     {
         Record record;
+        std::atomic<bool> linkUp{false};
+        std::atomic<int> dials{0};
+        std::atomic<int> lookups{0};
+        OutboundCourier::Links links = dialling([&](const std::string&) -> std::shared_ptr<DeliveryStream> {
+            ++dials;
+            if (!linkUp.load()) {
+                i2p::networkLost();
+                return std::make_shared<BrokenStream>();
+            }
+            return std::make_shared<ServerStream>(keys.signing, keys.serving);
+        });
+        links.lookup = [&lookups](const std::string&) -> std::optional<i2p::LeaseSetRefresh> {
+            ++lookups;
+            return std::nullopt;
+        };
+        OutboundCourier courier(links, {}, quick(kFarBound));
+        MailWaitGate mailGate;
+        mailGate.onAnswered([&courier]() { courier.heard(kOwnMailboxRoute); });
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(testutil::waitFor([&record]() { return record.saw(1, kPhaseOffline); }));
+        CHECK(!record.saw(1, kPhaseWaiting));
+        CHECK(staysUnsettled(record, 1));
+        CHECK(dials.load() == 1);
+        CHECK(lookups.load() == 0);
+        linkUp = true;
+        i2p::networkChanged();
+        mailGate.asking();
+        mailGate.answered();
+        CHECK(settles(record, 1));
+        CHECK(record.outcome(1)->stored);
+        CHECK(dials.load() == 2);
+        CHECK(lookups.load() == 0);
+        std::printf("TestOutboundCourier: a delivery our own lost link broke waited without blaming"
+                    " the recipient and went once our server answered\n");
+    }
+
+    {
+        Record record;
         std::atomic<bool> answers{false};
         OutboundCourier::Links links;
         links.ownMailbox = [&answers](const Letter&) -> std::optional<DeliveryOutcome> {

@@ -26,14 +26,19 @@ inline constexpr std::size_t kStreamWindowBytes = 256 * 1024;
 inline constexpr std::chrono::seconds kDialRetryDelay{2};
 inline constexpr std::size_t kInboundQueue = 8;
 inline constexpr std::size_t kDatagramQueue = 64;
-// Idle waits are drawn in here, under the five minutes a carrier's NAT keeps a silent TCP flow.
-inline constexpr std::chrono::seconds kIdleKeepaliveMin{180};
-inline constexpr std::chrono::seconds kIdleKeepaliveMax{260};
+// Idle waits are drawn in here; the background ones stay under the five minutes a carrier's
+// NAT keeps a silent TCP flow.
+inline constexpr std::chrono::seconds kForegroundKeepaliveMin{30};
+inline constexpr std::chrono::seconds kForegroundKeepaliveMax{70};
+inline constexpr std::chrono::seconds kBackgroundKeepaliveMin{120};
+inline constexpr std::chrono::seconds kBackgroundKeepaliveMax{240};
 inline constexpr std::chrono::seconds kPongTimeout{15};
+// Under the client's wait for a delivery's answer, so a lost link ends the socket first.
+inline constexpr std::chrono::seconds kUnacknowledgedLimit{20};
 // Room for a ping drawn at the longest to reach the gateway.
 inline constexpr std::chrono::seconds kSilenceMargin{10};
 inline constexpr std::chrono::seconds kSilenceLimit
-    = kIdleKeepaliveMax + kPongTimeout + kSilenceMargin;
+    = kBackgroundKeepaliveMax + kPongTimeout + kSilenceMargin;
 inline constexpr std::chrono::milliseconds kStatusPeriod{250};
 inline constexpr std::size_t kMaxSocketsPerSession = 16;
 inline constexpr std::chrono::seconds kMaxDialDeadline{90};

@@ -311,6 +311,16 @@ public:
 
     bool open() const override { return open_.load(); }
 
+    void redrawKeepalive() override
+    {
+        asio::post(*loop_, [self = this->shared_from_this()]() {
+            self->drawnFor_ = SteadyClock::time_point::max();
+            if (self->drawSilence_ && self->open_.load() && !self->pingOut_) {
+                self->armKeepalive();
+            }
+        });
+    }
+
     void run(std::function<void(const SocketPtr&, const std::vector<unsigned char>&)> message,
         std::function<void(const SocketPtr&)> closed)
     {
@@ -559,6 +569,30 @@ boost::system::error_code awaited(asio::io_context& loop, Start&& start)
     return result;
 }
 
+// A link lost without a word from the system shows as bytes nobody acknowledges.
+boost::system::error_code boundUnacknowledged(
+    tcp::socket& socket, const std::chrono::seconds limit)
+{
+    boost::system::error_code error;
+    if (limit.count() == 0) {
+        return error;
+    }
+#if defined(TCP_USER_TIMEOUT)
+    using Option = asio::detail::socket_option::integer<IPPROTO_TCP, TCP_USER_TIMEOUT>;
+    socket.set_option(Option(static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(limit).count())), error);
+#elif defined(TCP_MAXRT)
+    using Option = asio::detail::socket_option::integer<IPPROTO_TCP, TCP_MAXRT>;
+    socket.set_option(Option(static_cast<int>(limit.count())), error);
+#elif defined(TCP_RXT_CONNDROPTIME)
+    using Option = asio::detail::socket_option::integer<IPPROTO_TCP, TCP_RXT_CONNDROPTIME>;
+    socket.set_option(Option(static_cast<int>(limit.count())), error);
+#else
+#error "no socket option bounds unacknowledged data on this system"
+#endif
+    return error;
+}
+
 // Every connection to a host, a socket's or a plain request's, is made here.
 Connected connect(const SocketDial& dial, const TlsProfile profile)
 {
@@ -594,6 +628,10 @@ Connected connect(const SocketDial& dial, const TlsProfile profile)
         out.plain->expires_never();
         boost::system::error_code ignoredOption;
         out.plain->socket().set_option(tcp::no_delay(true), ignoredOption);
+        if (const boost::system::error_code bounded
+            = boundUnacknowledged(out.plain->socket(), dial.unacknowledgedLimit)) {
+            out.error = "cannot bound unacknowledged data: " + bounded.message();
+        }
         return out;
     }
 
@@ -626,6 +664,10 @@ Connected connect(const SocketDial& dial, const TlsProfile profile)
     boost::system::error_code ignoredOption;
     beast::get_lowest_layer(*out.secure).socket().set_option(
         tcp::no_delay(true), ignoredOption);
+    if (const boost::system::error_code bounded = boundUnacknowledged(
+            beast::get_lowest_layer(*out.secure).socket(), dial.unacknowledgedLimit)) {
+        out.error = "cannot bound unacknowledged data: " + bounded.message();
+    }
     return out;
 }
 

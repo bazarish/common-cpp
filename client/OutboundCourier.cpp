@@ -126,7 +126,7 @@ void OutboundCourier::submit(Letter letter, DeliveryWatch watch)
         Held held;
         held.letter = std::move(letter);
         if (gate != gates_.end() && gate->second.closed) {
-            held.phase = kPhaseWaiting;
+            held.phase = gate->second.awaitsServer ? kPhaseOffline : kPhaseWaiting;
             if (watch.onPhase) {
                 notices_.push_back(Notice{watch, held.phase, std::nullopt});
             }
@@ -215,7 +215,7 @@ void OutboundCourier::unreachable(const std::string& route)
         if (route == kOwnMailboxRoute || (gate != gates_.end() && gate->second.closed)) {
             return;
         }
-        for (const auto& [watch, phase] : closeGateLocked(route)) {
+        for (const auto& [watch, phase] : closeGateLocked(route, false)) {
             if (watch.onPhase) {
                 notices_.push_back(Notice{watch, phase, std::nullopt});
             }
@@ -525,14 +525,15 @@ void OutboundCourier::phase(const std::uint64_t seq, const std::string& phase)
     }
 }
 
+// A failure of our own link says nothing of the recipient: the gate opens once our server answers.
 std::vector<std::pair<DeliveryWatch, std::string>> OutboundCourier::closeGateLocked(
-    const std::string& route)
+    const std::string& route, const bool ownLink)
 {
     Gate& gate = gates_[route];
     gate.closed = true;
     gate.opensAt = std::chrono::steady_clock::now() + timings_.staleBound;
-    gate.lookupDue = route != kOwnMailboxRoute && static_cast<bool>(links_.lookup);
-    gate.awaitsServer = false;
+    gate.lookupDue = !ownLink && route != kOwnMailboxRoute && static_cast<bool>(links_.lookup);
+    gate.awaitsServer = ownLink;
     gate.failedSeenKnown = false;
     gate.failedSeen.reset();
     std::vector<std::pair<DeliveryWatch, std::string>> told;
@@ -540,7 +541,7 @@ std::vector<std::pair<DeliveryWatch, std::string>> OutboundCourier::closeGateLoc
         if (held.letter.route != route) {
             continue;
         }
-        held.phase = kPhaseWaiting;
+        held.phase = ownLink ? kPhaseOffline : kPhaseWaiting;
         for (const DeliveryWatch& watch : held.watches) {
             told.emplace_back(watch, held.phase);
         }
@@ -554,7 +555,10 @@ void OutboundCourier::runAttempt(const Job& job)
         links_.keepOwn(job.route);
     }
     Outcome outcome;
+    const std::uint64_t lossesBefore = i2p::linkLosses();
     const Answer answer = attempt(job.letter, outcome);
+    const bool ownLink = i2p::linkLosses() != lossesBefore
+        || i2p::transportState() != i2p::TransportState::eUp;
     std::vector<Settled> settled;
     std::vector<std::pair<DeliveryWatch, std::string>> waiting;
     {
@@ -578,11 +582,16 @@ void OutboundCourier::runAttempt(const Job& job)
                 }
                 bazarish::log::warn("a {} to {} waits: this device holds no current key of its"
                                     " recipient", job.letter.kind, routeName(job.route));
+            } else if (held->second.letter.route == job.route && ownLink) {
+                waiting = closeGateLocked(job.route, true);
+                bazarish::log::warn("{} was not reached: this device lost its own link; what"
+                                    " waits for it goes when our server answers",
+                    routeName(job.route));
             } else if (answer == Answer::eBroken) {
                 bazarish::log::info("{} answered and the stream broke: sending again",
                     routeName(job.route));
             } else if (held->second.letter.route == job.route) {
-                waiting = closeGateLocked(job.route);
+                waiting = closeGateLocked(job.route, false);
                 bazarish::log::warn("{} did not answer: what waits for it goes {} or in {} s",
                     routeName(job.route),
                     job.route == kOwnMailboxRoute ? "when our server answers"
