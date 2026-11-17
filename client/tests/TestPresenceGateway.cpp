@@ -192,6 +192,7 @@ try {
     }
 
     retireI2pRouter();
+    server.stop();
     std::fprintf(stderr, "TestPresenceGateway passed\n");
     return 0;
 } catch (...) {
