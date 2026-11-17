@@ -42,7 +42,7 @@ namespace {
 std::string canonicalFromDigest(const std::int64_t timestamp, const std::string& method,
     const std::string& target, const std::string& bodySha256Hex)
 {
-    return "v2\n" + std::to_string(timestamp) + "\n" + method + "\n" + target + "\n"
+    return "v1\n" + std::to_string(timestamp) + "\n" + method + "\n" + target + "\n"
         + bodySha256Hex + "\n";
 }
 
