@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -19,6 +20,7 @@
 #include <optional>
 #include <string>
 #include <csignal>
+#include <future>
 #include <thread>
 #include <vector>
 
@@ -375,6 +377,9 @@ sam::SessionConfig streamConfig()
 constexpr std::chrono::seconds kReady{30};
 constexpr std::chrono::seconds kDial{5};
 constexpr std::chrono::milliseconds kAcceptWait{5000};
+constexpr std::size_t kHeldReadBytes = 64;
+constexpr std::chrono::milliseconds kStillHeld{500};
+constexpr std::chrono::milliseconds kWokenWithin{2000};
 
 std::optional<sam::ProbeFailure> probeFailure(const sam::RouterAddress& router)
 {
@@ -653,6 +658,36 @@ void testEndpointTellsADeadSession()
     }
 }
 
+void testStopWakesAHeldRead()
+{
+    FakeRouter router;
+    i2p::Router over(samAt(router));
+    over.start();
+    i2p::EndpointConfig wanted;
+    wanted.keys = i2p::Keys::generate();
+    const std::shared_ptr<i2p::Endpoint> endpoint = over.createEndpoint(wanted);
+    CHECK(waitUntil([&endpoint]() { return endpoint->ready(); }));
+    const std::unique_ptr<i2p::Stream> stream
+        = endpoint->connect(kB33, std::chrono::duration_cast<std::chrono::seconds>(kDial));
+    CHECK(stream != nullptr);
+    std::future<bool> held = std::async(std::launch::async, [&stream]() {
+        std::array<unsigned char, kHeldReadBytes> chunk{};
+        try {
+            return stream->readSome(bazarish::ByteBuffer(chunk)) == 0;
+        } catch (const std::exception&) {
+            return true;
+        }
+    });
+    CHECK(held.wait_for(kStillHeld) == std::future_status::timeout);
+    endpoint->stop();
+    const bool woken = held.wait_for(kWokenWithin) == std::future_status::ready;
+    if (!woken) {
+        router.dropConnections();
+    }
+    CHECK(woken);
+    CHECK(held.get());
+}
+
 void testWaitsForAHeldDestination()
 {
     FakeRouter router;
@@ -782,6 +817,7 @@ try {
     testRepliableDatagrams();
     testSessionIsLostWhenTheRouterDropsIt();
     testEndpointTellsADeadSession();
+    testStopWakesAHeldRead();
     testWaitsForAHeldDestination();
     testRefusesWhatIsNotLoopback();
     testRefusesAnEndlessReply();

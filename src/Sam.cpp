@@ -102,6 +102,8 @@ bool nothingToTake()
 
 void closeSocket(const Socket socket) { ::closesocket(static_cast<SOCKET>(socket)); }
 
+void interruptSocket(const Socket socket) { ::shutdown(static_cast<SOCKET>(socket), SD_BOTH); }
+
 std::ptrdiff_t socketRead(const Socket socket, void* const buffer, const std::size_t size)
 {
     return ::recv(static_cast<SOCKET>(socket), static_cast<char*>(buffer),
@@ -146,6 +148,8 @@ constexpr Socket kInvalidSocket = -1;
 using NativeSocket = int;
 
 void closeSocket(const Socket socket) { ::close(static_cast<int>(socket)); }
+
+void interruptSocket(const Socket socket) { ::shutdown(static_cast<int>(socket), SHUT_RDWR); }
 
 // A gone peer must not raise SIGPIPE: Linux carries the flag on the call, the BSDs on the socket.
 #ifdef MSG_NOSIGNAL
@@ -693,9 +697,18 @@ std::size_t Stream::pendingBytes() const
 
 void Stream::close()
 {
+    const std::lock_guard<std::mutex> lock(socketMutex_);
     if (socket_ != kInvalidSocket) {
         closeSocket(socket_);
         socket_ = kInvalidSocket;
+    }
+}
+
+void Stream::interrupt()
+{
+    const std::lock_guard<std::mutex> lock(socketMutex_);
+    if (socket_ != kInvalidSocket) {
+        interruptSocket(socket_);
     }
 }
 

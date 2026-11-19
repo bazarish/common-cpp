@@ -92,8 +92,11 @@ public:
     void writeAll(ByteView data);
     std::size_t pendingBytes() const;
     void close();
+    // From another thread: a read or write in progress returns at once.
+    void interrupt();
 
 private:
+    std::mutex socketMutex_;
     Socket socket_;
     int readTimeoutSeconds_ = 0;
 };

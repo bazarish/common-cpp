@@ -8,9 +8,11 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 namespace bazarish::i2p {
 
@@ -57,7 +59,7 @@ sam::SessionConfig sessionConfigFor(const EndpointConfig& config, const sam::Sty
 
 class SamStream final : public backend::StreamBackend {
 public:
-    explicit SamStream(std::unique_ptr<sam::Stream> stream) : stream_(std::move(stream)) {}
+    explicit SamStream(std::shared_ptr<sam::Stream> stream) : stream_(std::move(stream)) {}
 
     void setReadTimeout(const std::chrono::seconds timeout) override
     {
@@ -77,7 +79,7 @@ public:
     bool answered() const override { return answered_.load(); }
 
 private:
-    std::unique_ptr<sam::Stream> stream_;
+    std::shared_ptr<sam::Stream> stream_;
     std::atomic<bool> answered_{false};
 };
 
@@ -128,11 +130,22 @@ public:
         notWithAnExternalRouter("a lease-set reader key after the session is made");
     }
 
+    // A stopped destination wakes its streams: a held read has no deadline of its own.
     void stop() override
     {
+        std::vector<std::shared_ptr<sam::Stream>> open;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             stopped_.store(true);
+            for (const std::weak_ptr<sam::Stream>& held : open_) {
+                if (std::shared_ptr<sam::Stream> stream = held.lock()) {
+                    open.push_back(std::move(stream));
+                }
+            }
+            open_.clear();
+        }
+        for (const std::shared_ptr<sam::Stream>& stream : open) {
+            stream->interrupt();
         }
         ready_.notify_all();
         stateSignal->changed();
@@ -152,7 +165,16 @@ public:
             return nullptr;
         }
         try {
-            return std::make_unique<SamStream>(session->connect(host, remaining));
+            std::shared_ptr<sam::Stream> stream = session->connect(host, remaining);
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (stopped_) {
+                    return nullptr;
+                }
+                std::erase_if(open_, [](const std::weak_ptr<sam::Stream>& held) { return held.expired(); });
+                open_.push_back(stream);
+            }
+            return std::make_unique<SamStream>(std::move(stream));
         } catch (const sam::Error& error) {
             bazarish::log::warn("i2p: no stream to {}: {}", host, error.what());
             return nullptr;
@@ -284,6 +306,7 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable ready_;
     std::shared_ptr<sam::Session> streams_;
+    std::vector<std::weak_ptr<sam::Stream>> open_;
     std::string failure_;
     DestTag tag_;
     std::thread builder_;
