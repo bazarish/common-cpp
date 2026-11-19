@@ -85,6 +85,28 @@ std::int64_t TranscriptIngest::appendNote(
     return store_.append(note);
 }
 
+bool TranscriptIngest::appendCallRecord(const IncomingMessage& message)
+{
+    if (!message.sentByUs) {
+        return true;
+    }
+    StoredMessage note;
+    note.peer = message.fromFingerprint;
+    note.outgoing = true;
+    note.e2eId = message.e2eId;
+    note.type = kTypeSystem;
+    note.text = notes_.callRecord(message.text);
+    note.ts = message.sentAt > 0 ? message.sentAt : nowMillis();
+    note.orderKey = note.ts;
+    note.status = kReceived;
+    const std::int64_t id = store_.append(note);
+    if (id == 0) {
+        return false;
+    }
+    listener_.rowAdded(note.peer, id, true);
+    return true;
+}
+
 bool TranscriptIngest::takeIn(const IncomingMessage& message)
 {
     const std::string& peer = message.fromFingerprint;
@@ -93,6 +115,9 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
 
     if (!incomingId.empty() && store_.idForKey(peer, incomingId, message.sentByUs) != 0) {
         return true;
+    }
+    if (type == kTypeCallRecord) {
+        return appendCallRecord(message);
     }
     if (type.starts_with(kTypeCallPrefix)) {
         return true;

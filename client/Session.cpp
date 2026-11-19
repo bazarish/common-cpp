@@ -427,6 +427,36 @@ nlohmann::json audioBody(const std::int64_t durationMs, const Bytes& opus)
     };
 }
 
+const char* callMark(const Session::CallOutcome outcome)
+{
+    switch (outcome) {
+    case Session::CallOutcome::eAnswered:
+        return kCallMarkAnswered;
+    case Session::CallOutcome::eDeclined:
+    case Session::CallOutcome::eBusy:
+    case Session::CallOutcome::eRefused:
+    case Session::CallOutcome::eRefusedHere:
+        return kCallMarkDeclined;
+    case Session::CallOutcome::eNoAnswer:
+    case Session::CallOutcome::eMissed:
+    case Session::CallOutcome::eCancelled:
+        return kCallMarkMissed;
+    }
+    throw std::logic_error("a call outcome without a mark");
+}
+
+bool isCallMark(const std::string& mark)
+{
+    return mark == kCallMarkAnswered || mark == kCallMarkDeclined || mark == kCallMarkMissed;
+}
+
+// Every device of an account names one call's record alike, so the copies of it collapse into one row.
+std::string callRecordId(const std::string& callId)
+{
+    const std::string seed = std::string(kTypeCallRecord) + ":" + callId;
+    return toHex(sha256(Bytes(seed.begin(), seed.end()))).substr(0, 2 * kMessageIdBytes);
+}
+
 // DeviceSync.md: what carries its own bytes is echoed; a transferred file's stay on this device.
 bool echoesToOwnDevices(const nlohmann::json& inner)
 {
@@ -4886,6 +4916,15 @@ std::vector<IncomingMessage> Session::takeIn(
                     } else if (type == "call.invite" || type == "call.accept" || type == "call.decline"
                         || type == "call.end" || type == "call.ring" || type == "call.taken") {
                         handleCallSignal(type, message.fromFingerprint, body, message);
+                    } else if (type == kTypeCallRecord) {
+                        const std::string mark = body.value("outcome", std::string());
+                        if (!message.sentByUs || !isCallMark(mark)) {
+                            noteWire(false, "call record", "dropped", {});
+                            continue;
+                        }
+                        message.contentType = type;
+                        message.callId = body.value("callId", std::string());
+                        message.text = mark;
                     } else if (type.starts_with("device.")
                         && message.fromFingerprint != fingerprint()) {
                         bazarish::log::warn("sync: dropping a device message from {}",
@@ -5787,6 +5826,7 @@ std::shared_ptr<bazarish::i2p::Endpoint> Session::openCallMediaSession()
 
 void Session::startCallMedia()
 {
+    call_.lastPacketAtMs = nowMillis();
     call_.transport = std::make_unique<I2pCallTransport>(*call_.dgram, call_.peerMediaDest);
     call_.media = std::make_unique<CallMedia>(*call_.transport, audioSourceFactory_(),
         audioSinkFactory_(), call_.mediaKey.bytes(),
@@ -5821,6 +5861,7 @@ void Session::clearCall()
     call_.initiator = false;
     call_.muted = false;
     call_.startedAtMs = 0;
+    call_.invitedAtMs = 0;
     call_.answerByMs = 0;
     call_.peerRingingAtMs = 0;
     call_.lastPacketsReceived = 0;
@@ -5887,6 +5928,7 @@ void Session::startCall(const std::string& peerFingerprint)
     call_.initiator = true;
     call_.muted = false;
     call_.startedAtMs = nowMillis();
+    call_.invitedAtMs = invitedAt;
     call_.answerByMs = invitedAt + kCallAnswerWindowMs;
     call_.dgram = std::move(dgram);
     call_.stage = CallStage::eDelivering;
@@ -6761,7 +6803,7 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
             } catch (const std::exception& error) {
                 bazarish::log::warn("refusal not delivered: {}", error.what());
             }
-            pendingCallLog_.push_back({from, true, CallOutcome::eRefusedHere, 0});
+            recordCall(from, message.callId, true, sentAt, CallOutcome::eRefusedHere, 0);
             message.text = "refused";
             return;
         }
@@ -6772,7 +6814,7 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
             } catch (const std::exception& error) {
                 bazarish::log::warn("busy signal not delivered: {}", error.what());
             }
-            pendingCallLog_.push_back({from, true, CallOutcome::eMissed, 0});
+            recordCall(from, message.callId, true, sentAt, CallOutcome::eMissed, 0);
             message.text = "busy";
             return;
         }
@@ -6798,6 +6840,7 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
         call_.initiator = false;
         call_.muted = false;
         call_.startedAtMs = arrivedAt;
+        call_.invitedAtMs = sentAt;
         call_.answerByMs = *answerBy;
         try {
             sendCallSignal(from, "call.ring", {{"callId", message.callId}});
@@ -6867,8 +6910,17 @@ void Session::handleCallSignal(const std::string& type, const std::string& from,
         } else {
             outcome = CallOutcome::eDeclined;
         }
+        const bool refusedOutgoing = type == "call.decline";
+        const std::string peer = call_.peerFingerprint;
         logCompletedCall(outcome);
         clearCall();
+        if (refusedOutgoing) {
+            try {
+                sendCallSignal(peer, "call.end", {{"callId", message.callId}});
+            } catch (const std::exception& error) {
+                bazarish::log::warn("end signal not delivered: {}", error.what());
+            }
+        }
     }
 }
 
@@ -6881,8 +6933,36 @@ void Session::logCompletedCall(const CallOutcome outcome)
     const std::int64_t durationSec = (outcome == CallOutcome::eAnswered && connectedAtMs > 0)
         ? (nowMillis() - connectedAtMs) / 1000
         : 0;
-    pendingCallLog_.push_back(
-        CompletedCall{call_.peerFingerprint, !call_.initiator, outcome, durationSec});
+    recordCall(call_.peerFingerprint, call_.callId, !call_.initiator, call_.invitedAtMs, outcome,
+        durationSec);
+}
+
+void Session::recordCall(const std::string& peer, const std::string& callId, const bool incoming,
+    const std::int64_t invitedAtMs, const CallOutcome outcome, const std::int64_t durationSec)
+{
+    CompletedCall completed{peer, incoming, outcome, durationSec, std::nullopt};
+    if (!callId.empty()) {
+        nlohmann::json inner = envelope(kTypeCallRecord, callRecordId(callId),
+            {{"callId", callId}, {"outcome", callMark(outcome)}});
+        if (invitedAtMs > 0) {
+            inner["sentAt"] = invitedAtMs;
+        }
+        IncomingMessage record;
+        record.fromFingerprint = peer;
+        record.sentByUs = true;
+        record.contentType = kTypeCallRecord;
+        record.e2eId = inner.at("id").get<std::string>();
+        record.sentAt = inner.at("sentAt").get<std::int64_t>();
+        record.callId = callId;
+        record.text = inner.at("outcome").get<std::string>();
+        completed.record = std::move(record);
+        try {
+            echoSentToSelf(peer, inner);
+        } catch (const std::exception& error) {
+            bazarish::log::warn("the call was not recorded on our other devices: {}", error.what());
+        }
+    }
+    pendingCallLog_.push_back(std::move(completed));
 }
 
 std::vector<Session::CompletedCall> Session::takeCallLog()

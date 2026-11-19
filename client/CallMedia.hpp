@@ -82,6 +82,7 @@ private:
     SecretBytes mediaKey_;
     std::uint8_t sendRole_;
     std::uint8_t recvRole_;
+    bool speaksFirst_;
 
     std::atomic<bool> running_;
     std::atomic<bool> muted_;

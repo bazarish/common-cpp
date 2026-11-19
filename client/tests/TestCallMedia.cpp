@@ -424,6 +424,7 @@ try {
         CHECK(caller.packetsSent() >= kWantedFrames);
         CHECK(calleeSinkRaw->frameCount() == 0);
         CHECK(callee.packetsReceived() == 0);
+        CHECK(callee.packetsSent() == 0);
     }
 
     {

@@ -28,6 +28,10 @@ inline constexpr char kTypeGroupReactions[] = "group.reactions";
 inline constexpr char kTypeGroupMembers[] = "group.members";
 inline constexpr char kTypeGroupMembersAsk[] = "group.members.ask";
 inline constexpr char kTypeCallPrefix[] = "call.";
+inline constexpr char kTypeCallRecord[] = "call.record";
+inline constexpr char kCallMarkAnswered[] = "answered";
+inline constexpr char kCallMarkDeclined[] = "declined";
+inline constexpr char kCallMarkMissed[] = "missed";
 
 inline constexpr char kTypeDeviceChatClear[] = "device.chat-clear";
 inline constexpr char kTypeDeviceAccountName[] = "device.account-name";

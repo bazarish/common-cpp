@@ -21,6 +21,7 @@ public:
     virtual std::string contactAccepted(const std::string& peer) const = 0;
     virtual std::string unsupported(const std::string& rawType, const Bytes& rawBody) const = 0;
     virtual std::string unreadable() const = 0;
+    virtual std::string callRecord(const std::string& outcome) const = 0;
 };
 
 class IngestListener {
@@ -69,6 +70,7 @@ private:
     bool mentionsMe(const std::string& peer, const std::string& text, const std::string& replyTo) const;
     bool markOutgoingRead(const std::string& peer, std::int64_t uptoId);
     void noteReceiptAhead(const std::string& peer, const std::string& refId);
+    bool appendCallRecord(const IncomingMessage& message);
     std::int64_t appendNote(const IncomingMessage& message, const std::string& text, bool placed);
     std::int64_t orderFloor(const IncomingMessage& message) const;
     std::int64_t localIdOf(const IncomingMessage& message) const;

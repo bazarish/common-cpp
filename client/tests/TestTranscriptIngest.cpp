@@ -34,6 +34,7 @@ public:
     std::string contactAccepted(const std::string&) const override { return "accepted"; }
     std::string unsupported(const std::string&, const Bytes&) const override { return "unsupported"; }
     std::string unreadable() const override { return "unreadable"; }
+    std::string callRecord(const std::string& outcome) const override { return "call " + outcome; }
 };
 
 std::int64_t millisNow()
@@ -331,6 +332,28 @@ try {
         const StoredMessage echoed = store.messageById(store.idForKey(kPeer, "echo", true));
         CHECK(echoed.outgoing);
         CHECK(echoed.device == kOtherOwnDevice);
+
+        IncomingMessage record = incoming(kTypeCallRecord, "call-record", composedAt + 4);
+        record.sentByUs = true;
+        record.text = kCallMarkMissed;
+        CHECK(ingest.takeIn(record));
+        IncomingMessage otherDevicesRecord = record;
+        otherDevicesRecord.text = kCallMarkAnswered;
+        CHECK(ingest.takeIn(otherDevicesRecord));
+        const StoredMessage recorded
+            = store.messageById(store.idForKey(kPeer, "call-record", true));
+        CHECK(recorded.type == kTypeSystem);
+        CHECK(recorded.text == std::string("call ") + kCallMarkMissed);
+        CHECK(recorded.ts == composedAt + 4);
+        int recordRows = 0;
+        for (const StoredMessage& row : store.latestMessages(kPeer, 20)) {
+            recordRows += row.e2eId == "call-record" ? 1 : 0;
+        }
+        CHECK(recordRows == 1);
+        IncomingMessage forged = incoming(kTypeCallRecord, "forged-record", composedAt + 5);
+        forged.text = kCallMarkAnswered;
+        CHECK(ingest.takeIn(forged));
+        CHECK(store.idForKey(kPeer, "forged-record", false) == 0);
         store.close();
     }
     checkMentionRules();

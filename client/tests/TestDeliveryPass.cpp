@@ -1734,8 +1734,9 @@ try {
 
         {
             const DeviceCredential bobIdentity = deviceOf(bDir);
+            const std::int64_t invitedAt = nowMillis();
             nlohmann::json invite = {{"v", 1}, {"type", "call.invite"}, {"id", "declined-call"},
-                {"from", bob->fingerprint()}, {"sentAt", nowMillis()}, {"callId", "declined-call-id"},
+                {"from", bob->fingerprint()}, {"sentAt", invitedAt}, {"callId", "declined-call-id"},
                 {"dest", std::string(kB33LabelChars, 'm') + ".b32.i2p"},
                 {"key", toBase64(randomBytes(kAeadKeyBytes))}};
             signAuthorship(invite, bobIdentity, /*withCert=*/false);
@@ -1769,6 +1770,31 @@ try {
             {
                 std::lock_guard<std::mutex> lock(m.mu);
                 m.refuseWith.clear();
+            }
+            const std::vector<Session::CompletedCall> logged = alice->takeCallLog();
+            CHECK(logged.size() == 1);
+            CHECK(logged[0].record.has_value());
+            const IncomingMessage& record = *logged[0].record;
+            CHECK(record.contentType == kTypeCallRecord);
+            CHECK(record.text == kCallMarkDeclined);
+            CHECK(record.sentByUs);
+            CHECK(record.fromFingerprint == bob->fingerprint());
+            CHECK(record.sentAt == invitedAt);
+            CHECK(record.e2eId.size() == 2 * kMessageIdBytes);
+
+            nlohmann::json forgedRecord = {{"v", 1}, {"type", kTypeCallRecord}, {"id", record.e2eId},
+                {"from", bob->fingerprint()}, {"sentAt", invitedAt}, {"callId", "declined-call-id"},
+                {"outcome", kCallMarkAnswered}};
+            signAuthorship(forgedRecord, bobIdentity, /*withCert=*/false);
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.mailbox[alice->fingerprint()].push_back({"forged-record", "content",
+                    sealToEpoch(
+                        padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({forgedRecord}))),
+                        alice->ownEpochs().front())});
+            }
+            for (const IncomingMessage& item : alice->sync()) {
+                CHECK(item.contentType != kTypeCallRecord);
             }
         }
 

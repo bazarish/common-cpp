@@ -85,6 +85,7 @@ CallMedia::CallMedia(CallTransport& transport, std::unique_ptr<AudioSource> audi
     , mediaKey_(mediaKey)
     , sendRole_(role == CallRole::eCaller ? 1 : 2)
     , recvRole_(role == CallRole::eCaller ? 2 : 1)
+    , speaksFirst_(role == CallRole::eCaller)
     , running_(false)
     , muted_(false)
     , sendSeqAudio_(0)
@@ -232,6 +233,13 @@ void CallMedia::audioCaptureLoop()
             = frame.size() == static_cast<std::size_t>(kCallSamplesPerFrame) && !muted_.load();
         if (frame.size() == static_cast<std::size_t>(kCallSamplesPerFrame)) {
             inputLevel_.store(frameLevel(frame));
+        }
+        // Calls.md: the callee sends nothing until the caller's media has reached it.
+        if (!speaksFirst_ && !heardPeer_.load()) {
+            if (frame.empty()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(kIdlePollMs));
+            }
+            continue;
         }
         if (haveAudio) {
             const Bytes opus = encoder_.encode(frame);

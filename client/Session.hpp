@@ -789,6 +789,7 @@ public:
         bool incoming = false;
         CallOutcome outcome = CallOutcome::eMissed;
         std::int64_t durationSec = 0;
+        std::optional<IncomingMessage> record;
     };
 
     struct CallInfo {
@@ -1021,6 +1022,8 @@ private:
     void handleCallSignal(const std::string& type, const std::string& from,
         const nlohmann::json& body, IncomingMessage& message);
     void logCompletedCall(CallOutcome outcome);
+    void recordCall(const std::string& peer, const std::string& callId, bool incoming,
+        std::int64_t invitedAtMs, CallOutcome outcome, std::int64_t durationSec);
 
     struct OutboxEntry {
         std::string peer;
@@ -1150,6 +1153,7 @@ private:
         bool initiator = false;
         bool muted = false;
         std::int64_t startedAtMs = 0;
+        std::int64_t invitedAtMs = 0;
         std::int64_t answerByMs = 0;
         CallStage stage = CallStage::eNone;
         std::int64_t peerRingingAtMs = 0;
