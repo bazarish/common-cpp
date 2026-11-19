@@ -74,6 +74,7 @@ private:
 
     void sealAndSend(std::uint8_t track, std::atomic<std::uint64_t>& counter, const Bytes& payload);
     void playoutLoop();
+    std::vector<std::int16_t> decodeNext(const PlayoutBuffer::Next& next);
 
     CallTransport& transport_;
     std::unique_ptr<AudioSource> audioSource_;
@@ -101,6 +102,8 @@ private:
     std::thread playoutThread_;
     PlayoutBuffer playout_;
     GapHistogram arrivalGaps_;
+    std::uint64_t trimmedFrames_ = 0;
+    std::uint64_t stretchedFrames_ = 0;
     AudioEncoder encoder_;
     AudioDecoder decoder_;
 };

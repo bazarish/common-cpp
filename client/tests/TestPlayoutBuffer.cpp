@@ -35,8 +35,10 @@ void waitsForTheTargetBeforePlaying()
     buffer.put(10, frameOf(10));
     buffer.put(11, frameOf(11));
     CHECK(buffer.take().kind == PlayoutBuffer::Kind::eNothing);
+    CHECK(buffer.depth() == 0);
     buffer.put(12, frameOf(12));
     CHECK(plays(buffer, 10));
+    CHECK(buffer.depth() == kTarget - 1);
     CHECK(plays(buffer, 11));
     CHECK(plays(buffer, 12));
 }

@@ -66,6 +66,12 @@ PlayoutBuffer::Next PlayoutBuffer::take()
     return {Kind::eLost, {}};
 }
 
+std::size_t PlayoutBuffer::depth() const
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return filling_ ? 0 : frames_.size();
+}
+
 PlayoutBuffer::Counts PlayoutBuffer::counts() const
 {
     const std::lock_guard<std::mutex> lock(mutex_);

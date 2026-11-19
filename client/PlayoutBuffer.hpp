@@ -33,6 +33,7 @@ public:
     // Called once per frame period; a frame that is not there in time is played as lost.
     Next take();
     Counts counts() const;
+    std::size_t depth() const;
 
 private:
     mutable std::mutex mutex_;

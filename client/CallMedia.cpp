@@ -30,6 +30,9 @@ constexpr std::chrono::milliseconds kPlayoutDelay
 constexpr std::size_t kPlayoutTargetFrames
     = static_cast<std::size_t>((kPlayoutDelay + kFrame - std::chrono::milliseconds(1)) / kFrame);
 constexpr std::size_t kPlayoutLimitFactor = 2;
+// Two phones' audio clocks drift apart; the buffer is held at its depth in the pauses of speech.
+constexpr std::size_t kDriftSlack = 1;
+constexpr double kQuietRms = 0.01;
 
 constexpr int kReceivePollMs = 200;
 
@@ -143,9 +146,10 @@ void CallMedia::stop()
     const GapHistogram::Summary gaps = arrivalGaps_.summary();
     const PlayoutBuffer::Counts counts = playout_.counts();
     bazarish::log::info("call media: {} arrival gaps, median {} ms, p99 {} ms, longest {} ms; "
-                        "playout buffer {} ms ran dry {} times, {} frames late, {} dropped",
+                        "playout buffer {} ms ran dry {} times, {} frames late, {} dropped, "
+                        "{} quiet frames skipped, {} silent frames added",
         gaps.samples, gaps.medianMs, gaps.p99Ms, gaps.maxMs, kPlayoutTargetFrames * kCallFrameMs,
-        counts.underruns, counts.late, counts.dropped);
+        counts.underruns, counts.late, counts.dropped, trimmedFrames_, stretchedFrames_);
 }
 
 void CallMedia::setMuted(const bool muted)
@@ -281,26 +285,48 @@ void CallMedia::receiveLoop()
     }
 }
 
+std::vector<std::int16_t> CallMedia::decodeNext(const PlayoutBuffer::Next& next)
+{
+    try {
+        return decoder_.decode(next.opus);
+    } catch (const std::exception& error) {
+        bazarish::log::debug("call media: a packet that does not decode counts as lost: {}",
+            error.what());
+        return decoder_.decode(Bytes{});
+    }
+}
+
 void CallMedia::playoutLoop()
 {
+    const std::vector<std::int16_t> silence(static_cast<std::size_t>(kCallSamplesPerFrame), 0);
+    bool lastQuiet = false;
     auto due = std::chrono::steady_clock::now();
     while (running_.load()) {
         due += kFrame;
         std::this_thread::sleep_until(due);
+        const bool audible = reportedConnected_.load();
+        const std::size_t depth = playout_.depth();
+        if (lastQuiet && depth > 0 && depth + kDriftSlack < kPlayoutTargetFrames) {
+            ++stretchedFrames_;
+            if (audible) {
+                audioSink_->writeFrame(silence);
+            }
+            continue;
+        }
         PlayoutBuffer::Next next = playout_.take();
         if (next.kind == PlayoutBuffer::Kind::eNothing) {
             continue;
         }
-        std::vector<std::int16_t> decoded;
-        try {
-            decoded = decoder_.decode(next.opus);
-        } catch (const std::exception& error) {
-            bazarish::log::debug("call media: a packet that does not decode counts as lost: {}",
-                error.what());
-            decoded = decoder_.decode(Bytes{});
+        std::vector<std::int16_t> decoded = decodeNext(next);
+        bool quiet = frameLevel(decoded) < kQuietRms;
+        while (quiet && playout_.depth() > kPlayoutTargetFrames + kDriftSlack) {
+            ++trimmedFrames_;
+            decoded = decodeNext(playout_.take());
+            quiet = frameLevel(decoded) < kQuietRms;
         }
+        lastQuiet = quiet;
         outputLevel_.store(frameLevel(decoded));
-        if (reportedConnected_.load()) {
+        if (audible) {
             audioSink_->writeFrame(decoded);
         }
     }
