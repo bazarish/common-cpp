@@ -346,10 +346,12 @@ try {
         const std::vector<std::int16_t> tone = source.readFrame();
         source.stop();
         toCallee.push(callPacket(key, 1, encoder.encode(tone)));
-        for (int waited = 0; waited < kWaitMs && callee.packetsReceived() < 1; waited += kPollMs) {
+        constexpr std::uint64_t kSentPackets = 2;
+        for (int waited = 0; waited < kWaitMs && callee.packetsReceived() < kSentPackets;
+             waited += kPollMs) {
             std::this_thread::sleep_for(std::chrono::milliseconds(kPollMs));
         }
-        CHECK(callee.packetsReceived() == 1);
+        CHECK(callee.packetsReceived() == kSentPackets);
         CHECK(!callee.broken());
         callee.stop();
     }
