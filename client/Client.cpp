@@ -5,6 +5,7 @@
 #include "ResolverAsk.hpp"
 
 #include <bazarish/Clock.hpp>
+#include <bazarish/Devices.hpp>
 #include <bazarish/Errors.hpp>
 #include <bazarish/Hmac.hpp>
 #include <bazarish/I2pAddress.hpp>
@@ -20,6 +21,7 @@
 
 #include <algorithm>
 #include <ctime>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -451,6 +453,14 @@ DestinationInfo Client::myDestination()
 void Client::registerThisDevice(const std::string& install)
 {
     api_.postJson("/v1/messaging/clients", {{"install", install}});
+}
+
+void Client::forgetDeviceMail(const std::string& device)
+{
+    if (!isDeviceId(device)) {
+        throw std::invalid_argument("not a device id: " + device);
+    }
+    api_.del("/v1/messaging/clients/" + device);
 }
 
 void Client::registerPasses(const std::vector<Bytes>& handles)

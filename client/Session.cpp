@@ -6518,6 +6518,17 @@ void Session::takeContactDevices(const std::string& peerFingerprint, const nlohm
     setPresenceOrder(presenceOrder_);
 }
 
+void Session::forgetDeviceMail(const std::string& device)
+{
+    requirePrimary("forget a device's mail");
+    requireSwitchedOn();
+    if (device == deviceId()) {
+        throw std::invalid_argument("a device does not forget its own mail");
+    }
+    client_->forgetDeviceMail(device);
+    withdrawSelfDeliveriesTo(device);
+}
+
 void Session::revokeDevice(const std::string& device)
 {
     requirePrimary("revoke a device");

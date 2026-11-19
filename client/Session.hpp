@@ -381,6 +381,7 @@ public:
     std::vector<OwnDevice> ownDevices() const;
     // A new revocation list, card and key for the current epoch; only the devices left get the key.
     void revokeDevice(const std::string& deviceId);
+    void forgetDeviceMail(const std::string& deviceId);
     // After a restore from a backup: the account's other active devices, until the user answers.
     std::vector<OwnDevice> devicesToReview() const;
     // Revokes the chosen ones, none for keeping them all, and the question is settled.
