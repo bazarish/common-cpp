@@ -60,6 +60,18 @@ bool reachesState(const i2p::TransportState wanted)
     return false;
 }
 
+bool opensAnother(test::FakeGateway& fake, const std::size_t opened)
+{
+    const auto until = Clock::now() + kReadyWithin;
+    while (Clock::now() < until) {
+        if (fake.socketsOpened() > opened) {
+            return true;
+        }
+        std::this_thread::sleep_for(kStatePoll);
+    }
+    return false;
+}
+
 }  // namespace
 
 int main()
@@ -146,6 +158,17 @@ try {
     CHECK(reachesState(i2p::TransportState::eUp));
     CHECK(router.createEndpoint(i2p::EndpointConfig{})->waitReady(kReadyWithin));
     CHECK(createsHeard(fake) == 4);
+
+    fake.holdReading(true);
+    fake.dropSockets();
+    std::this_thread::sleep_for(kCallUnderWay);
+    i2p::networkChanged();
+    const std::size_t opened = fake.socketsOpened();
+    fake.closeOnHello();
+    fake.holdReading(false);
+    CHECK(opensAnother(fake, opened));
+    fake.acceptHellos();
+    CHECK(reachesState(i2p::TransportState::eUp));
 
     router.stop();
     server.stop();

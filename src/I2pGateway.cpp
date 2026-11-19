@@ -1532,6 +1532,7 @@ void GatewayRouter::coverLoop()
             if (openFailing_.exchange(false)) {
                 link_->unreachable.store(false);
                 stateSignal->changed();
+                noteGatewayReach(true);
             }
             openAt = now;
             backoff = kFirstRetry;
