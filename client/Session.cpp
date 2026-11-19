@@ -67,6 +67,7 @@ constexpr std::size_t kPassPrefixChars = 12;
 
 constexpr std::size_t kTransferAskBytes = 8;
 constexpr char kStateClockKey[] = "state-clock";
+constexpr char kDeviceRevokedRow[] = "device-revoked";
 
 std::string offeredName(const std::string& offered)
 {
@@ -1067,6 +1068,8 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     session->client_->setAccountLabel(session->accountLabel());
     session->loadSentFiles();
     session->loadOutbox();
+    session->deviceRevoked_ = session->db_->has(kDeviceRevokedRow);
+    session->switchedOff_ = session->deviceRevoked_;
 
     const auto loadBlob = [&session](const std::string& name) -> Bytes {
         return session->db_->get(name).value_or(Bytes{});
@@ -3117,10 +3120,26 @@ void Session::setOutboundLinks(OutboundCourier::Links links, const CourierTiming
 
 void Session::setSwitchedOff(const bool off)
 {
-    switchedOff_ = off;
-    if (off) {
+    switchedOff_ = off || deviceRevoked_;
+    if (switchedOff_) {
         stopCourier();
     }
+}
+
+void Session::noteDeviceRevoked()
+{
+    if (deviceRevoked_) {
+        return;
+    }
+    deviceRevoked_ = true;
+    db_->putText(kDeviceRevokedRow, "revoked");
+    bazarish::log::warn("the server refused this device as revoked: the account stays off here");
+    setSwitchedOff(true);
+}
+
+void Session::onDeviceRevoked(std::function<void()> tell)
+{
+    client_->onDeviceRevoked(std::move(tell));
 }
 
 void Session::setFetchTransport(FetchTransport transport)

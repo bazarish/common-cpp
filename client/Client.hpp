@@ -179,6 +179,7 @@ public:
     // `install` tells this copy of the device from any other copy of its keys.
     void registerThisDevice(const std::string& install);
     void forgetDeviceMail(const std::string& device);
+    void onDeviceRevoked(std::function<void()> tell) { api_.onDeviceRevoked(std::move(tell)); }
     void registerPasses(const std::vector<Bytes>& handles);
     std::size_t revokePasses(const std::vector<Bytes>& handles);
     std::vector<PendingEntry> listPending();

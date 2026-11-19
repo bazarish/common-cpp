@@ -3638,6 +3638,8 @@ try {
             CHECK(ann->ownEpochs().front().g == kFirstRevocationNumber + 1);
             CHECK(ann->ownEpochs().front().by == ann->deviceId());
 
+            std::atomic<bool> toldRevoked{false};
+            tab->onDeviceRevoked([&toldRevoked]() { toldRevoked.store(true); });
             bool tabletRefused = false;
             try {
                 (void)tab->sync();
@@ -3645,6 +3647,14 @@ try {
                 tabletRefused = error.code == ErrorCode::eDeviceRevoked;
             }
             CHECK(tabletRefused);
+            CHECK(toldRevoked.load());
+            CHECK(!tab->deviceRevoked());
+            tab->noteDeviceRevoked();
+            CHECK(tab->deviceRevoked());
+            CHECK(tab->switchedOff());
+            tab->setSwitchedOff(false);
+            CHECK(tab->switchedOff());
+            CHECK(AccountDb(scratch / "bz-devices-tab", std::string{}).has("device-revoked"));
 
             CHECK(testutil::waitFor([&]() {
                 ann->flushPendingEchoes();

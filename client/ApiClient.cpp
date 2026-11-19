@@ -101,6 +101,31 @@ const char* serviceName(const ServerCard::Service service)
 
 }  // namespace
 
+void ApiClient::raiseAnswered(const int status, const Bytes& body, const LinkFailure failure)
+{
+    try {
+        raiseFromResponse(status, body, failure);
+    } catch (const ApiError& error) {
+        if (error.code == ErrorCode::eDeviceRevoked && !deviceRevoked_.exchange(true)) {
+            std::function<void()> tell;
+            {
+                const std::lock_guard<std::mutex> lock(revokedMutex_);
+                tell = tellRevoked_;
+            }
+            if (tell) {
+                tell();
+            }
+        }
+        throw;
+    }
+}
+
+void ApiClient::onDeviceRevoked(std::function<void()> tell)
+{
+    const std::lock_guard<std::mutex> lock(revokedMutex_);
+    tellRevoked_ = std::move(tell);
+}
+
 Facade parseFacadeAddress(const std::string& address)
 {
     if (address.empty()) {
@@ -672,7 +697,7 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     const auto accept = [&](const ApiResponse& response) {
         if (!answeredWell(response.status)) {
             linkFailure_.store(LinkFailure::eServerRefused);
-            raiseFromResponse(response.status, response.body, LinkFailure::eNone);
+            raiseAnswered(response.status, response.body, LinkFailure::eNone);
         }
         if (!quietOnSuccess) {
             noteWire(method, path, note, std::to_string(response.status), response.body.size(),
@@ -758,7 +783,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
             attempt.status = response->status;
             const LinkFailure answered = noteLinkFailure(attempt);
             if (response->status < 200 || response->status >= 300) {
-                raiseFromResponse(response->status, response->body, answered);
+                raiseAnswered(response->status, response->body, answered);
             }
             return *response;
         }
@@ -782,7 +807,7 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
         response.status = result.status;
         response.body = Bytes(result.body.begin(), result.body.end());
         if (response.status < 200 || response.status >= 300) {
-            raiseFromResponse(response.status, response.body, answered);
+            raiseAnswered(response.status, response.body, answered);
         }
         return response;
     }

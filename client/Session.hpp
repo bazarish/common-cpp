@@ -837,6 +837,9 @@ public:
     static constexpr std::size_t kPendingItemsPerPass = 5;
     void setSwitchedOff(bool off);
     bool switchedOff() const { return switchedOff_; }
+    bool deviceRevoked() const { return deviceRevoked_; }
+    void noteDeviceRevoked();
+    void onDeviceRevoked(std::function<void()> tell);
     void requireSwitchedOn() const;
     void flushPendingEchoes();
     // How long until flushPendingEchoes or expireFileRequests has work; none while nothing waits.
@@ -1141,6 +1144,7 @@ private:
     void tellRoutingTo(const std::string& peerFingerprint);
     void noteRegistryTold();
     bool switchedOff_ = false;
+    bool deviceRevoked_ = false;
     bazarish::i2p::Router& i2pRouter() const;
 
     AudioSourceFactory audioSourceFactory_;
