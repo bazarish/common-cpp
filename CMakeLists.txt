@@ -226,6 +226,7 @@ if(BAZARISH_WITH_CLIENT)
         client/BotMenu.cpp
         client/LoginSigner.cpp
         client/CallMedia.cpp
+        client/PlayoutBuffer.cpp
         client/Client.cpp
         client/FailureCause.cpp
         client/FederationFetch.cpp
@@ -289,6 +290,7 @@ endif()
     bazarish_client_add_test(TestApiClient)
     bazarish_client_add_test(TestLinkFailure)
     bazarish_client_add_test(TestCallMedia)
+    bazarish_client_add_test(TestPlayoutBuffer)
     target_sources(TestCallMedia PRIVATE client/tests/AudioDoubles.cpp)
     bazarish_client_add_test(TestCallWindow)
     bazarish_client_add_test(TestClient)

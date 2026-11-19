@@ -3,6 +3,7 @@
 
 #include "AudioCodec.hpp"
 #include "AudioIo.hpp"
+#include "PlayoutBuffer.hpp"
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/I2p.hpp>
@@ -72,8 +73,7 @@ private:
     void runGuarded(std::string_view loop, const std::function<void()>& body);
 
     void sealAndSend(std::uint8_t track, std::atomic<std::uint64_t>& counter, const Bytes& payload);
-    void handleAudioPacket(
-        std::uint64_t sequence, const Bytes& opus, bool& havePlayed, std::uint64_t& lastPlayed);
+    void playoutLoop();
 
     CallTransport& transport_;
     std::unique_ptr<AudioSource> audioSource_;
@@ -98,6 +98,9 @@ private:
 
     std::thread audioCaptureThread_;
     std::thread receiveThread_;
+    std::thread playoutThread_;
+    PlayoutBuffer playout_;
+    GapHistogram arrivalGaps_;
     AudioEncoder encoder_;
     AudioDecoder decoder_;
 };

@@ -3,6 +3,7 @@
 
 #include <bazarish/Clock.hpp>
 #include <bazarish/Crypto.hpp>
+#include <bazarish/GatewayChannel.hpp>
 #include <bazarish/Log.hpp>
 
 #include <algorithm>
@@ -21,6 +22,14 @@ constexpr std::size_t kNonceSize = kAeadNonceBytes;
 constexpr std::uint8_t kTrackAudio = 0;
 
 constexpr std::uint64_t kMaxPlcGap = 5;
+
+constexpr std::chrono::milliseconds kFrame{kCallFrameMs};
+// A frame crosses two paced gateway sockets, and each may hold it up to its gap ceiling.
+constexpr std::chrono::milliseconds kPlayoutDelay
+    = 2 * std::chrono::ceil<std::chrono::milliseconds>(gateway::kMediaGapCeiling) + kFrame;
+constexpr std::size_t kPlayoutTargetFrames
+    = static_cast<std::size_t>((kPlayoutDelay + kFrame - std::chrono::milliseconds(1)) / kFrame);
+constexpr std::size_t kPlayoutLimitFactor = 2;
 
 constexpr int kReceivePollMs = 200;
 
@@ -84,6 +93,7 @@ CallMedia::CallMedia(CallTransport& transport, std::unique_ptr<AudioSource> audi
     , broken_(false)
     , inputLevel_(0.0F)
     , outputLevel_(0.0F)
+    , playout_(kPlayoutTargetFrames, kPlayoutLimitFactor * kPlayoutTargetFrames, kMaxPlcGap)
 {
     if (mediaKey_.size() != kAeadKeyBytes) {
         throw std::invalid_argument("CallMedia: media key must be 32 bytes");
@@ -109,12 +119,14 @@ void CallMedia::start()
     audioCaptureThread_
         = std::thread([this]() { runGuarded("capture", [this]() { audioCaptureLoop(); }); });
     receiveThread_ = std::thread([this]() { runGuarded("receive", [this]() { receiveLoop(); }); });
+    playoutThread_ = std::thread([this]() { runGuarded("playout", [this]() { playoutLoop(); }); });
 }
 
 void CallMedia::stop()
 {
     running_.store(false);
-    if (!audioCaptureThread_.joinable() && !receiveThread_.joinable()) {
+    if (!audioCaptureThread_.joinable() && !receiveThread_.joinable()
+        && !playoutThread_.joinable()) {
         return;
     }
     audioSource_->stop();
@@ -124,7 +136,16 @@ void CallMedia::stop()
     if (receiveThread_.joinable()) {
         receiveThread_.join();
     }
+    if (playoutThread_.joinable()) {
+        playoutThread_.join();
+    }
     audioSink_->stop();
+    const GapHistogram::Summary gaps = arrivalGaps_.summary();
+    const PlayoutBuffer::Counts counts = playout_.counts();
+    bazarish::log::info("call media: {} arrival gaps, median {} ms, p99 {} ms, longest {} ms; "
+                        "playout buffer {} ms ran dry {} times, {} frames late, {} dropped",
+        gaps.samples, gaps.medianMs, gaps.p99Ms, gaps.maxMs, kPlayoutTargetFrames * kCallFrameMs,
+        counts.underruns, counts.late, counts.dropped);
 }
 
 void CallMedia::setMuted(const bool muted)
@@ -226,8 +247,7 @@ void CallMedia::audioCaptureLoop()
 
 void CallMedia::receiveLoop()
 {
-    bool audioHavePlayed = false;
-    std::uint64_t audioLastPlayed = 0;
+    std::optional<std::chrono::steady_clock::time_point> lastArrival;
     while (running_.load()) {
         const std::vector<std::uint8_t> packet = transport_.receiveDatagram(kReceivePollMs);
         if (packet.size() <= kNonceSize) {
@@ -244,8 +264,15 @@ void CallMedia::receiveLoop()
             continue;
         }
         if (track == kTrackAudio) {
-            handleAudioPacket(
-                sequenceFromNonce(nonce), opened->bytes(), audioHavePlayed, audioLastPlayed);
+            const auto now = std::chrono::steady_clock::now();
+            if (lastArrival.has_value()) {
+                arrivalGaps_.add(static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastArrival)
+                        .count()));
+            }
+            lastArrival = now;
+            playout_.put(sequenceFromNonce(nonce), opened->bytes());
+            packetsReceived_.fetch_add(1, std::memory_order_relaxed);
         }
         heardPeer_.store(true);
         if (nonce[kHeardFlagOffset] != 0 && !reportedConnected_.exchange(true)) {
@@ -254,37 +281,29 @@ void CallMedia::receiveLoop()
     }
 }
 
-void CallMedia::handleAudioPacket(const std::uint64_t sequence, const Bytes& opus,
-    bool& havePlayed, std::uint64_t& lastPlayed)
+void CallMedia::playoutLoop()
 {
-    if (havePlayed && sequence <= lastPlayed) {
-        return;
-    }
-    const bool audible = reportedConnected_.load();
-    if (havePlayed && sequence > lastPlayed + 1) {
-        const std::uint64_t missing = std::min(sequence - lastPlayed - 1, kMaxPlcGap);
-        for (std::uint64_t i = 0; i < missing; ++i) {
-            const std::vector<std::int16_t> concealed = decoder_.decode(Bytes{});
-            if (audible) {
-                audioSink_->writeFrame(concealed);
-            }
+    auto due = std::chrono::steady_clock::now();
+    while (running_.load()) {
+        due += kFrame;
+        std::this_thread::sleep_until(due);
+        PlayoutBuffer::Next next = playout_.take();
+        if (next.kind == PlayoutBuffer::Kind::eNothing) {
+            continue;
+        }
+        std::vector<std::int16_t> decoded;
+        try {
+            decoded = decoder_.decode(next.opus);
+        } catch (const std::exception& error) {
+            bazarish::log::debug("call media: a packet that does not decode counts as lost: {}",
+                error.what());
+            decoded = decoder_.decode(Bytes{});
+        }
+        outputLevel_.store(frameLevel(decoded));
+        if (reportedConnected_.load()) {
+            audioSink_->writeFrame(decoded);
         }
     }
-    std::vector<std::int16_t> decoded;
-    try {
-        decoded = decoder_.decode(opus);
-    } catch (const std::exception& error) {
-        bazarish::log::debug("call media: a packet that does not decode counts as lost: {}",
-            error.what());
-        return;
-    }
-    outputLevel_.store(frameLevel(decoded));
-    if (audible) {
-        audioSink_->writeFrame(decoded);
-    }
-    lastPlayed = sequence;
-    havePlayed = true;
-    packetsReceived_.fetch_add(1, std::memory_order_relaxed);
 }
 
 }  // namespace bazarish
