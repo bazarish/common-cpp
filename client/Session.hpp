@@ -983,7 +983,7 @@ private:
     void forgetEndedKeys();
     bool createsEpochs() const;
     void ensureOwnEpochs();
-    void republishCardIfStale();
+    bool republishCardIfStale();
     void keepEpochs();
     bool sendsEpochsTo(const std::string& peerFingerprint) const;
     bool epochsQueued(const std::string& peerFingerprint) const;
@@ -1231,6 +1231,7 @@ private:
     // UTC second each missing epoch of ours is made at, unless another device's key comes first.
     std::map<EpochNumber, std::int64_t> epochsMakeAt_;
     std::optional<PresenceDay> epochsCheckedDay_;
+    bool cardMayBeStale_ = false;
     struct CardTries {
         std::optional<PresenceDay> came;
         std::optional<PresenceDay> tried;

@@ -3515,6 +3515,14 @@ try {
                 std::lock_guard<std::mutex> lock(m.mu);
                 CHECK(m.certFor[ann->fingerprint()] == cardBeforeTablet);
             }
+            CHECK(testutil::waitFor([&]() {
+                (void)ann->sync();
+                ann->flushPendingEchoes();
+                std::lock_guard<std::mutex> lock(m.mu);
+                return ContactCard::verify(fromBase64(m.certFor[ann->fingerprint()]))
+                    .devices.active(tab->deviceId())
+                    .has_value();
+            }));
             CHECK(refusedForRole([&]() { tab->disableI2pDest(); }));
             CHECK(refusedForRole([&]() { tab->setDelegationDays(kMaxDelegationDays, true); }));
             CHECK(refusedForRole([&]() { (void)tab->refreshOwnCard(); }));

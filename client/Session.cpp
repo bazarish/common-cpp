@@ -6202,24 +6202,29 @@ void Session::ensureOwnEpochs()
     sendRingToDevices(made, siblingDevices());
 }
 
-void Session::republishCardIfStale()
+bool Session::republishCardIfStale()
 {
-    if (!isPrimary() || cardB64_.empty() || !hasOwnRouting() || approval_.pending) {
-        return;
+    if (!isPrimary()) {
+        return true;
+    }
+    if (cardB64_.empty() || !hasOwnRouting() || approval_.pending) {
+        return false;
     }
     const std::vector<EpochPublic> epochs = cardEpochs();
     if (epochs.size() != kCardEpochs) {
-        return;
+        return false;
     }
     const ContactCard held = ContactCard::verify(fromBase64(cardB64_));
     if (held.epochs == epochs && held.devices == ownBook_) {
-        return;
+        return true;
     }
     try {
         refreshOwnCard();
-        bazarish::log::info("the card names this month's keys now");
+        bazarish::log::info("the card names this account's current keys and devices now");
+        return true;
     } catch (const std::exception& error) {
-        bazarish::log::warn("the card was not republished with this month's keys: {}", error.what());
+        bazarish::log::warn("the card was not republished: {}", error.what());
+        return false;
     }
 }
 
@@ -6277,7 +6282,11 @@ void Session::keepEpochs()
         for (const std::string& peerFingerprint : keyless) {
             refreshContactEpochs(peerFingerprint, CardAsk::eMaintenance);
         }
-        republishCardIfStale();
+        cardMayBeStale_ = true;
+    }
+    // The server lets a device write to another only once the card names both.
+    if (cardMayBeStale_) {
+        cardMayBeStale_ = !republishCardIfStale();
     }
     std::vector<std::string> ready;
     for (const auto& [peerFingerprint, dueAt] : epochsDue_) {
@@ -6456,6 +6465,7 @@ void Session::takeOwnDevices(const nlohmann::json& body)
         bazarish::log::warn("this device was revoked from its account");
     }
     ownBook_ = std::move(next);
+    cardMayBeStale_ = true;
     for (auto& [device, key] : sealing) {
         if (ownBook_.active(device).has_value()) {
             ownSealing_.insert_or_assign(device, std::move(key));
