@@ -34,7 +34,10 @@ public:
     std::string contactAccepted(const std::string&) const override { return "accepted"; }
     std::string unsupported(const std::string&, const Bytes&) const override { return "unsupported"; }
     std::string unreadable() const override { return "unreadable"; }
-    std::string callRecord(const std::string& outcome) const override { return "call " + outcome; }
+    std::string callRecord(const bool incoming, const std::string& outcome) const override
+    {
+        return std::string(incoming ? "incoming call " : "outgoing call ") + outcome;
+    }
 };
 
 std::int64_t millisNow()
@@ -335,6 +338,7 @@ try {
 
         IncomingMessage record = incoming(kTypeCallRecord, "call-record", composedAt + 4);
         record.sentByUs = true;
+        record.callIncoming = true;
         record.text = kCallMarkMissed;
         CHECK(ingest.takeIn(record));
         IncomingMessage otherDevicesRecord = record;
@@ -343,7 +347,7 @@ try {
         const StoredMessage recorded
             = store.messageById(store.idForKey(kPeer, "call-record", true));
         CHECK(recorded.type == kTypeSystem);
-        CHECK(recorded.text == std::string("call ") + kCallMarkMissed);
+        CHECK(recorded.text == std::string("incoming call ") + kCallMarkMissed);
         CHECK(recorded.ts == composedAt + 4);
         int recordRows = 0;
         for (const StoredMessage& row : store.latestMessages(kPeer, 20)) {

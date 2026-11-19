@@ -4924,6 +4924,7 @@ std::vector<IncomingMessage> Session::takeIn(
                         }
                         message.contentType = type;
                         message.callId = body.value("callId", std::string());
+                        message.callIncoming = body.value("incoming", false);
                         message.text = mark;
                     } else if (type.starts_with("device.")
                         && message.fromFingerprint != fingerprint()) {
@@ -6943,7 +6944,7 @@ void Session::recordCall(const std::string& peer, const std::string& callId, con
     CompletedCall completed{peer, incoming, outcome, durationSec, std::nullopt};
     if (!callId.empty()) {
         nlohmann::json inner = envelope(kTypeCallRecord, callRecordId(callId),
-            {{"callId", callId}, {"outcome", callMark(outcome)}});
+            {{"callId", callId}, {"incoming", incoming}, {"outcome", callMark(outcome)}});
         if (invitedAtMs > 0) {
             inner["sentAt"] = invitedAtMs;
         }
@@ -6954,6 +6955,7 @@ void Session::recordCall(const std::string& peer, const std::string& callId, con
         record.e2eId = inner.at("id").get<std::string>();
         record.sentAt = inner.at("sentAt").get<std::int64_t>();
         record.callId = callId;
+        record.callIncoming = incoming;
         record.text = inner.at("outcome").get<std::string>();
         completed.record = std::move(record);
         try {

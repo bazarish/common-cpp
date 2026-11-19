@@ -1777,6 +1777,7 @@ try {
             const IncomingMessage& record = *logged[0].record;
             CHECK(record.contentType == kTypeCallRecord);
             CHECK(record.text == kCallMarkDeclined);
+            CHECK(record.callIncoming);
             CHECK(record.sentByUs);
             CHECK(record.fromFingerprint == bob->fingerprint());
             CHECK(record.sentAt == invitedAt);

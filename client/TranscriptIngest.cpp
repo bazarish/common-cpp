@@ -95,7 +95,7 @@ bool TranscriptIngest::appendCallRecord(const IncomingMessage& message)
     note.outgoing = true;
     note.e2eId = message.e2eId;
     note.type = kTypeSystem;
-    note.text = notes_.callRecord(message.text);
+    note.text = notes_.callRecord(message.callIncoming, message.text);
     note.ts = message.sentAt > 0 ? message.sentAt : nowMillis();
     note.orderKey = note.ts;
     note.status = kReceived;

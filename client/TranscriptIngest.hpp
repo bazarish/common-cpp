@@ -21,7 +21,7 @@ public:
     virtual std::string contactAccepted(const std::string& peer) const = 0;
     virtual std::string unsupported(const std::string& rawType, const Bytes& rawBody) const = 0;
     virtual std::string unreadable() const = 0;
-    virtual std::string callRecord(const std::string& outcome) const = 0;
+    virtual std::string callRecord(bool incoming, const std::string& outcome) const = 0;
 };
 
 class IngestListener {

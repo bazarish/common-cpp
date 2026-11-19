@@ -195,6 +195,7 @@ struct IncomingMessage {
     std::string replyTo;
 
     std::string callId;
+    bool callIncoming = false;
 
     std::string keyboardJson;
     std::optional<std::int64_t> menuId;
