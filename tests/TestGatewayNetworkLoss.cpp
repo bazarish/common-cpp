@@ -141,9 +141,11 @@ try {
     }
     fake.acceptHellos();
     i2p::networkChanged();
+    // The failed create may or may not reach the fake before its sockets drop.
+    const std::size_t beforeLast = createsHeard(fake);
     const std::shared_ptr<i2p::Endpoint> last = router.createEndpoint(i2p::EndpointConfig{});
     CHECK(last->waitReady(kReadyWithin));
-    CHECK(createsHeard(fake) == 3);
+    CHECK(createsHeard(fake) == beforeLast + 1);
 
     fake.closeOnHello();
     fake.dropSockets();
@@ -156,8 +158,9 @@ try {
     }
     fake.acceptHellos();
     CHECK(reachesState(i2p::TransportState::eUp));
+    const std::size_t beforeRecovered = createsHeard(fake);
     CHECK(router.createEndpoint(i2p::EndpointConfig{})->waitReady(kReadyWithin));
-    CHECK(createsHeard(fake) == 4);
+    CHECK(createsHeard(fake) == beforeRecovered + 1);
 
     fake.holdReading(true);
     fake.dropSockets();
