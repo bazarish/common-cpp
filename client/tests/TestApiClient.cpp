@@ -383,6 +383,22 @@ try {
     }
 
     {
+        ServerEndpoint dead = endpoint;
+        dead.facades[0].port = 1;
+        ApiClient api(alice, dead);
+        api.close();
+        bool threw = false;
+        try {
+            (void)api.get("/v1/messaging/storage-usage");
+        } catch (const ApiError& error) {
+            threw = true;
+            CHECK(error.httpStatus == 0);
+            CHECK(error.failure == LinkFailure::eNone);
+        }
+        CHECK(threw);
+    }
+
+    {
         http::Server upstreamless(localOptions());
         const Bytes card = ServerCard::issue(serverIdentity, ServerCard::Service::eMessaging,
             Key::fromPublicDer(serverSealing.publicDer()), static_cast<std::int64_t>(std::time(nullptr)));

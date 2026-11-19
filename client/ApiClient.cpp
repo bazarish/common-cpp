@@ -60,6 +60,7 @@ constexpr std::size_t kSessionIdChars = 32;
 constexpr std::int64_t kSilenceStandOffSeconds = 60;
 
 constexpr const char* kServiceNodePrefix = "/v1/account/";
+constexpr const char* kClosedClient = "the client is closed";
 
 const char* tunnelPathOf(const ServerCard::Service service)
 {
@@ -308,6 +309,12 @@ void ApiClient::releaseI2pLink()
     }
 }
 
+void ApiClient::close()
+{
+    closed_.store(true);
+    releaseI2pLink();
+}
+
 std::string ApiClient::gatewayRefusal() const
 {
     const std::lock_guard<std::mutex> lock(netMutex_);
@@ -470,6 +477,9 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
             return response;
         } catch (const std::exception& error) {
             i2pStream_.reset();
+            if (closed_.load()) {
+                throw ApiError(std::nullopt, 0, LinkFailure::eNone, kClosedClient);
+            }
             const bool timedOut = readTimeoutSeconds != kNoReadDeadline
                 && std::chrono::steady_clock::now() - askedAt
                     >= std::chrono::seconds(readTimeoutSeconds);
@@ -599,6 +609,9 @@ ApiResponse ApiClient::send(const std::string& method, const std::string& path,
     const std::string& query, const SecretBytes& body, const std::string& contentType,
     const int readTimeoutSeconds, const std::string& note)
 {
+    if (closed_.load()) {
+        throw ApiError(std::nullopt, 0, LinkFailure::eNone, kClosedClient);
+    }
     if (bazarish::i2p::networkDown()) {
         linkFailure_.store(LinkFailure::eNoNetwork);
         noteWire(method, path, note, "failed: no network", 0, 0);

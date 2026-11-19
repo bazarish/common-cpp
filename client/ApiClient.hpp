@@ -98,6 +98,8 @@ public:
     LinkFailure linkFailure() const;
     void setAccountLabel(std::string accountLabel);
     void releaseI2pLink();
+    // A closed client never dials again, so a held request it carries ends for good.
+    void close();
     // Asks the netDb for the facade's lease set past the link's cache; true when it is newer.
     bool facadePublishedAnew();
     void liftStandOff();
@@ -158,6 +160,7 @@ private:
     Tunnel serviceNode_{ServerCard::Service::eServiceNode};
     std::string gatewayRefusal_;
     std::atomic<LinkFailure> linkFailure_{LinkFailure::eNone};
+    std::atomic<bool> closed_{false};
 
     std::shared_ptr<WireLog> wireLog_;
     std::shared_ptr<bazarish::i2p::Endpoint> i2pOut_;

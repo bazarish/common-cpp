@@ -152,6 +152,7 @@ public:
 
     void setAccountLabel(std::string accountLabel);
     void releaseI2pLink();
+    void close();
     bool facadePublishedAnew();
     void liftStandOff();
 

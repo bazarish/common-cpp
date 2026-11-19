@@ -241,6 +241,11 @@ void Client::releaseI2pLink()
     api_.releaseI2pLink();
 }
 
+void Client::close()
+{
+    api_.close();
+}
+
 PublishResult Client::publishCard(const ContactCard& content, const Bytes& cardKey,
     const DestinationInfo& serving, const std::int64_t notBefore)
 {
