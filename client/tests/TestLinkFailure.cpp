@@ -58,6 +58,13 @@ try {
         == LinkFailure::eTunnelsBuilding);
     CHECK(classifyLinkFailure(false, reaching(LinkStage::eDial))
         == LinkFailure::eServerUnreachable);
+    LinkAttempt notFound = reaching(LinkStage::eDial);
+    notFound.dialEndedEarly = true;
+    CHECK(classifyLinkFailure(false, notFound) == LinkFailure::eAddressNotFound);
+    CHECK(classifyLinkFailure(true, notFound) == LinkFailure::eNoNetwork);
+    LinkAttempt brokeLate = reaching(LinkStage::eExchange);
+    brokeLate.dialEndedEarly = true;
+    CHECK(classifyLinkFailure(false, brokeLate) == LinkFailure::eServerUnreachable);
     CHECK(classifyLinkFailure(false, reaching(LinkStage::eExchange))
         == LinkFailure::eServerUnreachable);
 

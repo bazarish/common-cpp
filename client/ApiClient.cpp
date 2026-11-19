@@ -432,11 +432,16 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
         && std::chrono::steady_clock::now() - i2pStreamUsedAt_ >= kKeptStreamIdleSeconds) {
         i2pStream_.reset();
     }
+    std::chrono::steady_clock::time_point dialedAt;
+    const auto dial = [&]() {
+        dialedAt = std::chrono::steady_clock::now();
+        i2pStream_ = i2pOut_->connect(facade.host, std::chrono::seconds(kFacadeDialSeconds));
+    };
     for (int attempt = 0; attempt < kKeepAliveAttempts; ++attempt) {
         const bool reused = static_cast<bool>(i2pStream_);
         if (!reused) {
             reportConnectProgress(credential_.account(), ConnectMilestone::eServerLookup);
-            i2pStream_ = i2pOut_->connect(facade.host, std::chrono::seconds(kFacadeDialSeconds));
+            dial();
             // A gateway that replaced its session under the dial lost the link; no facade refused.
             if (!i2pStream_ && i2pOut_->lost()) {
                 if (!buildLink()
@@ -444,10 +449,20 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
                     return std::nullopt;
                 }
                 tried.reached = LinkStage::eDial;
-                i2pStream_
-                    = i2pOut_->connect(facade.host, std::chrono::seconds(kFacadeDialSeconds));
+                dial();
             }
             if (!i2pStream_) {
+                const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - dialedAt);
+                // The router gives up a lease set lookup on its own; only a timed-out dial waited.
+                tried.dialEndedEarly = spent < std::chrono::seconds(kFacadeDialSeconds);
+                if (tried.dialEndedEarly) {
+                    bazarish::log::info("facade {}: its address was not found, after {} ms",
+                        shortHost(facade.host), spent.count());
+                } else {
+                    bazarish::log::info("facade {}: no answer in {} s", shortHost(facade.host),
+                        kFacadeDialSeconds);
+                }
                 return std::nullopt;
             }
         }

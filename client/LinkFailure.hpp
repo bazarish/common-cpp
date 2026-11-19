@@ -20,6 +20,7 @@ enum class LinkFailure {
     eServerDown,
     eServerRefused,
     eServerMalformed,
+    eAddressNotFound,
 };
 
 enum class LinkStage {
@@ -36,6 +37,7 @@ struct LinkAttempt {
     bool gatewayReady = false;
     bool gatewayRefused = false;
     bool malformed = false;
+    bool dialEndedEarly = false;
     int status = 0;
 };
 
@@ -85,6 +87,8 @@ inline LinkFailure classifyLinkFailure(const bool networkDown, const LinkAttempt
                                       : LinkFailure::eI2pUnreachable;
         case LinkStage::eTunnels: return LinkFailure::eTunnelsBuilding;
         case LinkStage::eDial:
+            return attempt.dialEndedEarly ? LinkFailure::eAddressNotFound
+                                          : LinkFailure::eServerUnreachable;
         case LinkStage::eExchange: return LinkFailure::eServerUnreachable;
     }
     return LinkFailure::eServerUnreachable;
@@ -103,6 +107,7 @@ inline std::string_view linkFailureName(const LinkFailure failure)
         case LinkFailure::eServerDown: return "the facade has no server behind it";
         case LinkFailure::eServerRefused: return "the server refused";
         case LinkFailure::eServerMalformed: return "the server answered malformed";
+        case LinkFailure::eAddressNotFound: return "the facade's address was not found";
     }
     return "unknown";
 }
