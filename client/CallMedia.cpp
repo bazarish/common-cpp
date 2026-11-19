@@ -29,7 +29,7 @@ constexpr std::chrono::milliseconds kPlayoutDelay
     = 2 * std::chrono::ceil<std::chrono::milliseconds>(gateway::kMediaGapCeiling) + kFrame;
 constexpr std::size_t kPlayoutTargetFrames
     = static_cast<std::size_t>((kPlayoutDelay + kFrame - std::chrono::milliseconds(1)) / kFrame);
-constexpr std::size_t kPlayoutLimitFactor = 2;
+constexpr std::size_t kPlayoutLimitFactor = 3;
 // Two phones' audio clocks drift apart; the buffer is held at its depth in the pauses of speech.
 constexpr std::size_t kDriftSlack = 1;
 constexpr double kQuietRms = 0.01;
