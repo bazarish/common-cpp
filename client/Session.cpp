@@ -2598,7 +2598,7 @@ Bytes Session::outboxEntryBytes(const OutboxEntry& entry)
 
 Session::OutboxEntry Session::outboxEntryFrom(const Bytes& stored)
 {
-    const nlohmann::json held = nlohmann::json::from_cbor(stored);
+    const nlohmann::json held = parseCbor(stored);
     OutboxEntry entry;
     entry.peer = held.at("peer").get<std::string>();
     entry.own = held.at("own").get<bool>();

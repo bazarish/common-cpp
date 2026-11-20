@@ -2293,6 +2293,9 @@ try {
             rita->setOutboundLinks(samAway);
             const std::string keptId = "kept-across-a-restart";
             rita->sendMessage(sam->fingerprint(), "kept across a restart", keptId);
+            const std::string keyboardId = "a-keyboard-across-a-restart";
+            rita->sendInteractive(sam->fingerprint(), "pick one after a restart",
+                InlineKeyboard{{{"Yes", "yes", {}}}}, keyboardId);
             rita->sendReceipt(sam->fingerprint(), "a-read-message");
             CHECK(!testutil::waitFor([&]() { return heldForSam() > 0; },
                 std::chrono::milliseconds(2000)));
@@ -2300,6 +2303,7 @@ try {
             rita.reset();
 
             rita = Session::open(ritaDir, std::string{});
+            CHECK(rita->watchDelivery(sam->fingerprint(), keyboardId, DeliveryWatch{}));
             rita->setFetchTransport(directDial);
             rita->setOutboundLinks(courierFor());
             std::mutex outcomeMutex;
