@@ -68,6 +68,8 @@ constexpr std::size_t kPassPrefixChars = 12;
 constexpr std::size_t kTransferAskBytes = 8;
 constexpr char kStateClockKey[] = "state-clock";
 constexpr char kDeviceRevokedRow[] = "device-revoked";
+constexpr char kRevokedSeenRow[] = "revoked-seen";
+constexpr std::int64_t kRevokedShownDays = 30;
 
 std::string offeredName(const std::string& offered)
 {
@@ -1070,6 +1072,9 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     session->loadOutbox();
     session->deviceRevoked_ = session->db_->has(kDeviceRevokedRow);
     session->switchedOff_ = session->deviceRevoked_;
+    session->revokedSeen_ = session->db_->document(kRevokedSeenRow)
+                                .get<std::map<std::string, std::int64_t>>();
+    session->noteRevokedSeen();
 
     const auto loadBlob = [&session](const std::string& name) -> Bytes {
         return session->db_->get(name).value_or(Bytes{});
@@ -1139,7 +1144,12 @@ std::vector<OwnDevice> Session::ownDevices() const
     for (const DeviceCertificate& cert : ownBook_.activeDevices()) {
         devices.push_back(OwnDevice{cert.device, cert.role, cert.issuedAt, false, cert.device == deviceId()});
     }
+    const std::int64_t hiddenBefore = epochClock_() - kRevokedShownDays * kSecondsPerDay;
     for (const std::string& revoked : ownBook_.revokedIds()) {
+        const auto seen = revokedSeen_.find(revoked);
+        if (seen != revokedSeen_.end() && seen->second <= hiddenBefore) {
+            continue;
+        }
         devices.push_back(OwnDevice{revoked, DeviceRole::eSecondary, 0, true, revoked == deviceId()});
     }
     return devices;
@@ -1196,6 +1206,18 @@ void Session::persistOwnDevices() const
     db_->putText(kOwnDevicesRow, ownDevicesJson(ownBook_, ownSealing_).dump());
     if (ownDevicesChanged_) {
         ownDevicesChanged_();
+    }
+}
+
+void Session::noteRevokedSeen()
+{
+    const std::int64_t now = epochClock_();
+    bool learned = false;
+    for (const std::string& device : ownBook_.revokedIds()) {
+        learned = revokedSeen_.try_emplace(device, now).second || learned;
+    }
+    if (learned) {
+        db_->putDocument(kRevokedSeenRow, nlohmann::json(revokedSeen_));
     }
 }
 
@@ -6501,6 +6523,7 @@ void Session::takeOwnDevices(const nlohmann::json& body)
         withdrawSelfDeliveriesTo(device);
     }
     persistOwnDevices();
+    noteRevokedSeen();
     bazarish::log::info("this account has {} active device(s) now", ownBook_.activeDevices().size());
 }
 
@@ -6565,6 +6588,7 @@ void Session::revokeDevice(const std::string& device)
     ownBook_.take({}, RevocationList::issue(*root_, number, std::move(revoked), now));
     ownSealing_.erase(device);
     persistOwnDevices();
+    noteRevokedSeen();
     withdrawSelfDeliveriesTo(device);
 
     const EpochNumber current = currentEpoch();

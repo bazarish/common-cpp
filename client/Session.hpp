@@ -932,6 +932,7 @@ private:
     SecretBytes openItem(const Bytes& sealed) const;
     std::vector<std::string> siblingDevices() const;
     void persistOwnDevices() const;
+    void noteRevokedSeen();
     nlohmann::json ownDevicesLetter() const;
     void sendOwnDevicesToDevices();
     void sendDevicesTo(const std::string& peerFingerprint);
@@ -1229,6 +1230,8 @@ private:
     std::optional<Identity> root_;
     std::string install_;
     DeviceBook ownBook_;
+    // When this device learned of each revocation in the account's list; display only.
+    std::map<std::string, std::int64_t> revokedSeen_;
     // The sealing key of each of the account's devices, this one too.
     std::map<std::string, Bytes> ownSealing_;
     UtcClock epochClock_ = systemUtcSeconds;

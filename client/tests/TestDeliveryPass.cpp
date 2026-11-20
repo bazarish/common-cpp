@@ -3635,6 +3635,18 @@ try {
             const std::vector<OwnDevice> afterRevoke = ann->ownDevices();
             CHECK(afterRevoke.back().id == tab->deviceId());
             CHECK(afterRevoke.back().revoked);
+            const auto lists = [&ann, &tab](const std::int64_t daysLater) {
+                const std::int64_t at = systemUtcSeconds() + daysLater * kSecondsPerDay;
+                ann->setEpochClock([at]() { return at; });
+                const std::vector<OwnDevice> shown = ann->ownDevices();
+                return std::any_of(shown.begin(), shown.end(),
+                    [&tab](const OwnDevice& device) { return device.id == tab->deviceId(); });
+            };
+            constexpr std::int64_t kStillShownDays = 29;
+            constexpr std::int64_t kHiddenDays = 30;
+            CHECK(lists(kStillShownDays));
+            CHECK(!lists(kHiddenDays));
+            ann->setEpochClock(systemUtcSeconds);
             CHECK(ann->ownEpochs().front().g == kFirstRevocationNumber + 1);
             CHECK(ann->ownEpochs().front().by == ann->deviceId());
 
