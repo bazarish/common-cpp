@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -31,6 +32,15 @@ Bytes fromHex(const std::string& text);
 std::string toBase32(const Bytes& data);
 
 // Standard alphabet with padding.
+// RFC 4648: three bytes become four characters.
+inline constexpr std::size_t kBase64GroupBytes = 3;
+inline constexpr std::size_t kBase64GroupChars = 4;
+// OpenSSL takes base64 lengths as int and aborts on one whose encoding does not fit in an int.
+inline constexpr std::size_t kMaxBase64InputBytes
+    = static_cast<std::size_t>(std::numeric_limits<int>::max()) / kBase64GroupChars * kBase64GroupBytes;
+inline constexpr std::size_t kMaxBase64TextBytes
+    = static_cast<std::size_t>(std::numeric_limits<int>::max());
+
 std::string toBase64(const Bytes& data);
 Bytes fromBase64(const std::string& text);
 

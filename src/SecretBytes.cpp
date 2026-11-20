@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/SecretBytes.hpp"
+#include "bazarish/Log.hpp"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -16,9 +17,6 @@ constexpr char kHexDigits[] = "0123456789abcdef";
 constexpr std::size_t kHexPerByte = 2;
 constexpr unsigned kNibbleBits = 4;
 constexpr unsigned char kNibbleMask = 0x0f;
-// RFC 4648: three bytes become four characters.
-constexpr std::size_t kBase64GroupBytes = 3;
-constexpr std::size_t kBase64GroupChars = 4;
 
 }  // namespace
 
@@ -134,6 +132,11 @@ SecretBytes secretBase64(const ByteView data)
 {
     if (data.empty()) {
         return {};
+    }
+    if (data.size() > kMaxBase64InputBytes) {
+        log::warn("base64: {} secret bytes refused, over the {} OpenSSL encodes", data.size(),
+            kMaxBase64InputBytes);
+        throw std::runtime_error("base64 encoding refused: the input is too long");
     }
     SecretBytes encoded((data.size() + kBase64GroupBytes - 1) / kBase64GroupBytes * kBase64GroupChars + 1);
     const int written = EVP_EncodeBlock(encoded.data(), data.data(), static_cast<int>(data.size()));

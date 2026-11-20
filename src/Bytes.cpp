@@ -1,5 +1,6 @@
 // Bazarish project (c) 2026
 #include "bazarish/Bytes.hpp"
+#include "bazarish/Log.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -74,6 +75,11 @@ std::string toBase64(const Bytes& data)
     if (data.empty()) {
         return {};
     }
+    if (data.size() > kMaxBase64InputBytes) {
+        log::warn("base64: {} bytes refused, over the {} OpenSSL encodes", data.size(),
+            kMaxBase64InputBytes);
+        throw std::runtime_error("base64 encoding refused: the input is too long");
+    }
     std::string out;
     out.resize(((data.size() + 2) / 3) * 4);
     const int written = EVP_EncodeBlock(
@@ -91,6 +97,11 @@ Bytes fromBase64(const std::string& text)
     }
     if (text.size() % 4 != 0) {
         throw std::invalid_argument("base64 string length is not a multiple of 4");
+    }
+    if (text.size() > kMaxBase64TextBytes) {
+        log::warn("base64: {} characters refused, over the {} OpenSSL decodes", text.size(),
+            kMaxBase64TextBytes);
+        throw std::invalid_argument("base64 string is too long");
     }
     Bytes out(text.size() / 4 * 3);
     const int written = EVP_DecodeBlock(
