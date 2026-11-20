@@ -811,6 +811,12 @@ public:
     void setFetchTransport(FetchTransport transport);
     // The session's own mailbox link is always its own; the next send builds the courier.
     void setOutboundLinks(OutboundCourier::Links links, CourierTimings timings = {});
+    // Destinations this same process serves: their delivery never leaves the host.
+    struct LocalRoutes {
+        std::function<bool(const std::string& toDest)> serves;
+        std::function<std::shared_ptr<DeliveryStream>(const std::string& toDest)> open;
+    };
+    void setLocalRoutes(LocalRoutes routes);
     void setOutboundAddressing(OutboundAddressing addressing);
     void setDeliveryWorkers(std::size_t workers);
     void setDeviceSync(bool enabled);
@@ -1085,6 +1091,7 @@ private:
         std::unique_ptr<OutboundLeases> leases;
         std::unique_ptr<OutboundCourier> courier;
         std::optional<OutboundCourier::Links> links;
+        LocalRoutes local;
         CourierTimings timings;
         OutboundAddressing addressing = OutboundAddressing::eOnePerCorrespondent;
         std::size_t workers = kDeliveryWorkers;

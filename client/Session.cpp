@@ -2728,6 +2728,16 @@ void Session::buildCourierLocked()
         links.keepOwn = [&leases](const std::string& toDest) { leases.keepOwn(toDest); };
         links.release = [&leases](const std::string& toDest) { leases.release(toDest); };
     }
+    if (outbound_->local.serves && outbound_->local.open) {
+        links.prepare = [local = outbound_->local, overI2p = std::move(links.prepare)](
+                            const std::string& toDest, const std::string& peerName) {
+            return local.serves(toDest) || (overI2p && overI2p(toDest, peerName));
+        };
+        links.openStream = [local = outbound_->local, overI2p = std::move(links.openStream)](
+                               const std::string& toDest, const std::chrono::seconds timeout) {
+            return local.serves(toDest) ? local.open(toDest) : overI2p(toDest, timeout);
+        };
+    }
     links.newerLeaseSet = [found = newerLeaseSets_, news = courierNews_](
                               const std::string& toDest) {
         {
@@ -3138,6 +3148,13 @@ void Session::setOutboundLinks(OutboundCourier::Links links, const CourierTiming
     const std::lock_guard<std::mutex> lock(outbound_->mutex);
     outbound_->links = std::move(links);
     outbound_->timings = timings;
+}
+
+void Session::setLocalRoutes(LocalRoutes routes)
+{
+    stopCourier();
+    const std::lock_guard<std::mutex> lock(outbound_->mutex);
+    outbound_->local = std::move(routes);
 }
 
 void Session::setSwitchedOff(const bool off)
