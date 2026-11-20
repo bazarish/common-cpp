@@ -87,6 +87,8 @@ public:
     ApiResponse del(const std::string& path, const nlohmann::json& body = nlohmann::json());
     bool deviceRevoked() const { return deviceRevoked_.load(); }
     void onDeviceRevoked(std::function<void()> tell);
+    // Told each stage an I2P attempt reaches, on the calling thread.
+    void onLinkStage(std::function<void(LinkStage)> tell);
     // A JSON body the caller wrote into a wiped buffer, carried into the tunnel without a copy.
     ApiResponse postSecret(const std::string& path, const SecretBytes& jsonBody);
 
@@ -121,6 +123,7 @@ private:
     static bool facadeIsI2p(const Facade& facade);
     static bool facadeIsOwnLoopback(const Facade& facade);
     std::vector<std::size_t> facadeOrder() const;
+    void reach(LinkAttempt& tried, LinkStage stage);
     std::optional<ApiResponse> i2pExchange(const Facade& facade, const std::string& method,
         const std::string& path, const std::map<std::string, std::string>& headers,
         std::size_t bodyLen, const std::function<void(WatchedStream&)>& writeBody,
@@ -167,6 +170,8 @@ private:
     std::atomic<bool> deviceRevoked_{false};
     std::mutex revokedMutex_;
     std::function<void()> tellRevoked_;
+    std::mutex stageMutex_;
+    std::function<void(LinkStage)> tellStage_;
     std::atomic<bool> closed_{false};
 
     std::shared_ptr<WireLog> wireLog_;

@@ -126,6 +126,25 @@ void ApiClient::onDeviceRevoked(std::function<void()> tell)
     tellRevoked_ = std::move(tell);
 }
 
+void ApiClient::onLinkStage(std::function<void(LinkStage)> tell)
+{
+    const std::lock_guard<std::mutex> lock(stageMutex_);
+    tellStage_ = std::move(tell);
+}
+
+void ApiClient::reach(LinkAttempt& tried, const LinkStage stage)
+{
+    tried.reached = stage;
+    std::function<void(LinkStage)> tell;
+    {
+        const std::lock_guard<std::mutex> lock(stageMutex_);
+        tell = tellStage_;
+    }
+    if (tell) {
+        tell(stage);
+    }
+}
+
 Facade parseFacadeAddress(const std::string& address)
 {
     if (address.empty()) {
@@ -413,7 +432,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     const std::size_t bodyLen, const std::function<void(WatchedStream&)>& writeBody,
     const int readTimeoutSeconds, LinkAttempt& tried)
 {
-    tried.reached = LinkStage::eRouter;
+    reach(tried, LinkStage::eRouter);
     reportConnectProgress(credential_.account(), ConnectMilestone::eRouterStarting);
     setReseedUrls(endpoint_.reseeds);
     if (bootstrapI2pRouter(i2pDataDir_) == I2pBootstrap::eEmpty) {
@@ -421,7 +440,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     }
     gatewayRefusal_.clear();
     const auto buildLink = [&]() {
-        tried.reached = LinkStage::eLink;
+        reach(tried, LinkStage::eLink);
         reportConnectProgress(credential_.account(), ConnectMilestone::eTunnelsBuilding);
         i2pStream_.reset();
         try {
@@ -436,7 +455,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
             link_ = i2pOut_;
         }
         if (i2pOut_) {
-            tried.reached = LinkStage::eTunnels;
+            reach(tried, LinkStage::eTunnels);
         }
         return static_cast<bool>(i2pOut_);
     };
@@ -447,12 +466,12 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     if (!i2pOut_ && !buildLink()) {
         return std::nullopt;
     }
-    tried.reached = LinkStage::eTunnels;
+    reach(tried, LinkStage::eTunnels);
     if (!i2pOut_->waitReady(std::chrono::seconds(kOutboundReadySeconds))) {
         reportConnectProgress(credential_.account(), ConnectMilestone::eTunnelsStillBuilding);
         return std::nullopt;
     }
-    tried.reached = LinkStage::eDial;
+    reach(tried, LinkStage::eDial);
     if (i2pStream_
         && std::chrono::steady_clock::now() - i2pStreamUsedAt_ >= kKeptStreamIdleSeconds) {
         i2pStream_.reset();
@@ -473,7 +492,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
                     || !i2pOut_->waitReady(std::chrono::seconds(kOutboundReadySeconds))) {
                     return std::nullopt;
                 }
-                tried.reached = LinkStage::eDial;
+                reach(tried, LinkStage::eDial);
                 dial();
             }
             if (!i2pStream_) {
@@ -491,7 +510,7 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
                 return std::nullopt;
             }
         }
-        tried.reached = LinkStage::eExchange;
+        reach(tried, LinkStage::eExchange);
         reportConnectProgress(credential_.account(), ConnectMilestone::eServerReached);
         i2pStream_->setReadTimeout(std::chrono::seconds(readTimeoutSeconds));
         const auto askedAt = std::chrono::steady_clock::now();

@@ -15,6 +15,7 @@
 #include <bazarish/I2p.hpp>
 #include <bazarish/Portal.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
@@ -22,6 +23,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 using namespace bazarish;
 using namespace bazarish::client;
@@ -110,8 +112,16 @@ try {
     {
         gateway.replyToStreams(bytesOf(kRefusal), test::FakeGateway::StreamEnd::eClose);
         ApiClient api(account.device, endpoint, scratch.path());
+        std::vector<LinkStage> stages;
+        api.onLinkStage([&stages](const LinkStage stage) { stages.push_back(stage); });
         CHECK(failureOf(api) == LinkFailure::eServerRefused);
         CHECK(api.linkFailure() == LinkFailure::eServerRefused);
+        CHECK(!stages.empty());
+        CHECK(stages.front() == LinkStage::eRouter);
+        CHECK(stages.back() == LinkStage::eExchange);
+        CHECK(std::is_sorted(stages.begin(), stages.end()));
+        CHECK(std::count(stages.begin(), stages.end(), LinkStage::eLink) == 1);
+        CHECK(std::count(stages.begin(), stages.end(), LinkStage::eDial) == 1);
     }
 
     i2p::Router& router = readySharedI2pRouter();
