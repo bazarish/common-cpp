@@ -2,7 +2,7 @@
 function(bazarish_git_version sourceDir outName outCode)
     set(kUntaggedVersion "dev")
     execute_process(
-        COMMAND git -C "${sourceDir}" describe --tags --exact-match
+        COMMAND git -C "${sourceDir}" describe --tags --abbrev=0
         OUTPUT_VARIABLE tag
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET
@@ -21,7 +21,7 @@ function(bazarish_git_version sourceDir outName outCode)
         message(FATAL_ERROR "the version is read from git: ${sourceDir} has to be a git checkout")
     endif()
     if(tagStatus STREQUAL "0")
-        set(${outName} "${tag}" PARENT_SCOPE)
+        set(${outName} "${tag} (${commit})" PARENT_SCOPE)
     else()
         set(${outName} "${kUntaggedVersion} (${commit})" PARENT_SCOPE)
     endif()
