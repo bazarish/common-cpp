@@ -120,6 +120,7 @@ void checkWritesGoOnDuringCompaction(const fs::path& root)
     CHECK(compacted);
     CHECK(writes > 1);
     CHECK(longest < kLongestWriteWait);
+    account.dropOverwritten();
     const DatabaseFootprint after = store.footprint();
     CHECK(after.freeBytes == 0);
     CHECK(after.fileBytes + static_cast<std::int64_t>(kLooseMediaBytes) * kLooseMedia / 2
