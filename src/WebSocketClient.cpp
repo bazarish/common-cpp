@@ -36,7 +36,9 @@ namespace bhttp = boost::beast::http;
 namespace websocket = boost::beast::websocket;
 using asio::ip::tcp;
 
+#ifdef BAZARISH_CHROME_TLS
 using TlsStream = ChromeTlsStream;
+#endif
 using SteadyClock = std::chrono::steady_clock;
 using HeaderList = std::vector<std::pair<std::string, std::string>>;
 
@@ -553,7 +555,9 @@ private:
 
 struct Connected {
     std::unique_ptr<asio::io_context> loop;
+#ifdef BAZARISH_CHROME_TLS
     std::unique_ptr<TlsStream> secure;
+#endif
     std::unique_ptr<beast::tcp_stream> plain;
     std::string error;
 };
@@ -594,7 +598,7 @@ boost::system::error_code boundUnacknowledged(
 }
 
 // Every connection to a host, a socket's or a plain request's, is made here.
-Connected connect(const SocketDial& dial, const TlsProfile profile)
+Connected connect(const SocketDial& dial, [[maybe_unused]] const TlsProfile profile)
 {
     Connected out;
     out.loop = std::make_unique<asio::io_context>();
@@ -635,6 +639,10 @@ Connected connect(const SocketDial& dial, const TlsProfile profile)
         return out;
     }
 
+#ifndef BAZARISH_CHROME_TLS
+    out.error = "this build has no TLS for a gateway link";
+    return out;
+#else
     const std::string serverName = isAddressLiteral(dial.host) ? std::string() : dial.host;
     out.secure = std::make_unique<TlsStream>(*out.loop,
         std::make_unique<TlsEngine>(
@@ -669,6 +677,7 @@ Connected connect(const SocketDial& dial, const TlsProfile profile)
         out.error = "cannot bound unacknowledged data: " + bounded.message();
     }
     return out;
+#endif
 }
 
 template <class Stream>
@@ -729,6 +738,7 @@ SocketDialResult openSocket(const SocketDial& dial,
         return result;
     }
 
+#ifdef BAZARISH_CHROME_TLS
     auto stream = std::make_unique<websocket::stream<TlsStream>>(std::move(*connected.secure));
     result.error = upgrade(*connected.loop, *stream, dial);
     if (!result.error.empty()) {
@@ -738,6 +748,7 @@ SocketDialResult openSocket(const SocketDial& dial,
         std::move(connected.loop), std::move(stream), dial);
     socket->run(std::move(message), std::move(closed));
     result.socket = socket;
+#endif
     return result;
 }
 
@@ -826,9 +837,13 @@ KeptAnswer KeptConnection::get(
         return refused;
     }
     Connected& link = impl_->connected;
+#ifdef BAZARISH_CHROME_TLS
     const KeptAnswer answer = link.plain
         ? exchange(*link.loop, *link.plain, impl_->dial, target, kind, headers)
         : exchange(*link.loop, *link.secure, impl_->dial, target, kind, headers);
+#else
+    const KeptAnswer answer = exchange(*link.loop, *link.plain, impl_->dial, target, kind, headers);
+#endif
     impl_->broken = !answer.reached;
     return answer;
 }

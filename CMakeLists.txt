@@ -25,10 +25,13 @@ if(BAZARISH_SANITIZE)
 endif()
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/I2pdBazarish.cmake)
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/BoringSslBazarish.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersion.cmake)
 
 option(BAZARISH_WITH_CLIENT "Build the client core library" ON)
+option(BAZARISH_WITH_CHROME_TLS "Build the Chrome-like TLS of the link to a gateway" OFF)
+if(BAZARISH_WITH_CHROME_TLS)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/BoringSslBazarish.cmake)
+endif()
 
 add_library(bazarish_common STATIC
     src/Auth.cpp
@@ -101,7 +104,10 @@ target_include_directories(bazarish_common SYSTEM
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 target_link_libraries(bazarish_common PUBLIC OpenSSL::Crypto OpenSSL::SSL ZLIB::ZLIB)
-target_link_libraries(bazarish_common PRIVATE bazarish_gateway_tls)
+if(BAZARISH_WITH_CHROME_TLS)
+    target_link_libraries(bazarish_common PRIVATE bazarish_gateway_tls)
+    target_compile_definitions(bazarish_common PRIVATE BAZARISH_CHROME_TLS)
+endif()
 if(WIN32)
     target_link_libraries(bazarish_common PUBLIC ws2_32)
 endif()
@@ -198,14 +204,18 @@ bazarish_add_test(TestHostCache)
 bazarish_add_test(TestLoginChallenge)
 bazarish_add_test(TestConfigFile)
 bazarish_add_test(TestWebAssets)
-bazarish_add_test(TestChromeTls)
+if(BAZARISH_WITH_CHROME_TLS)
+    bazarish_add_test(TestChromeTls)
+endif()
 
 # These fake the far end over POSIX sockets; Windows is a client-only target.
 if(NOT WIN32)
     bazarish_add_test(TestFederationFrame)
     bazarish_add_test(TestSam)
     bazarish_add_test(TestI2pHttp)
-    bazarish_add_test(TestWebSocketTlsDuplex)
+    if(BAZARISH_WITH_CHROME_TLS)
+        bazarish_add_test(TestWebSocketTlsDuplex)
+    endif()
     bazarish_add_test(TestBrowserHeaders)
 endif()
 
