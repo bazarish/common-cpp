@@ -1617,9 +1617,10 @@ DatabaseFootprint TranscriptReader::footprint() const
     out.fileBytes = static_cast<std::int64_t>(sizeOrZero(path_) + sizeOrZero(wal));
     Query pageSize(db_);
     const std::int64_t bytesPerPage = pageSize.exec("PRAGMA page_size") ? pageSize.number(0) : 0;
+    Query allPages(db_);
     Query freePages(db_);
-    if (bytesPerPage > 0 && freePages.exec("PRAGMA freelist_count")) {
-        out.freeBytes = bytesPerPage * freePages.number(0);
+    if (bytesPerPage > 0 && allPages.exec("PRAGMA page_count") && freePages.exec("PRAGMA freelist_count")) {
+        out.freeBytes = out.fileBytes - bytesPerPage * (allPages.number(0) - freePages.number(0));
     }
     return out;
 }

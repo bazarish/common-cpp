@@ -40,6 +40,10 @@ constexpr int kLooseMedia = 96;
 // Well under the 5 s busy timeout; a whole-file VACUUM of this file holds a writer for seconds.
 constexpr std::chrono::milliseconds kLongestWriteWait{1000};
 constexpr std::chrono::milliseconds kBetweenWrites{5};
+constexpr std::size_t kLoggedMediaBytes = 64 * 1024;
+constexpr int kLoggedMedia = 96;
+// Pointer-map pages leave with the file's tail as well.
+constexpr std::int64_t kEstimateSlackDivisor = 100;
 
 StoredMessage line(const std::string& peer, const std::string& type, const std::string& e2eId)
 {
@@ -49,6 +53,31 @@ StoredMessage line(const std::string& peer, const std::string& type, const std::
     message.e2eId = e2eId;
     message.text = type == "text" ? "hello" : "";
     return message;
+}
+
+void checkEstimateMatchesCompaction(const fs::path& root)
+{
+    const fs::path file = root / "logged.db";
+    AccountDb account(file, "secret");
+    TranscriptStore store;
+    CHECK(store.open(file, "secret"));
+    for (int at = 0; at < kLoggedMedia; ++at) {
+        account.put(kPictureKeyPrefix + std::to_string(at), Bytes(kLoggedMediaBytes, 0x55));
+    }
+    for (int at = 0; at < kLoggedMedia; at += 2) {
+        account.erase(kPictureKeyPrefix + std::to_string(at));
+    }
+    fs::path wal = file;
+    wal += "-wal";
+    CHECK(fs::file_size(wal) > 0);
+    const DatabaseFootprint before = store.footprint();
+    std::string reason;
+    CHECK(store.compact(reason));
+    const DatabaseFootprint after = store.footprint();
+    const std::int64_t freed = before.fileBytes - after.fileBytes;
+    CHECK(before.freeBytes <= freed);
+    CHECK(freed - before.freeBytes <= freed / kEstimateSlackDivisor);
+    CHECK(after.freeBytes == 0);
 }
 
 void checkWritesGoOnDuringCompaction(const fs::path& root)
@@ -266,6 +295,7 @@ try {
         }
         store.close();
     }
+    checkEstimateMatchesCompaction(root);
     checkWritesGoOnDuringCompaction(root);
     checkChatList(root);
     checkExpiryStamps(root);
