@@ -55,10 +55,9 @@ struct ServerCard {
 
     std::string server;
     Bytes sealingPublicKeyDer;
-    std::int64_t issuedAt = 0;
 
     static Bytes issue(const Identity& serverRootIdentity, Service service,
-        const Key& sealingPublicKey, std::int64_t issuedAt);
+        const Key& sealingPublicKey);
     static ServerCard verify(const Bytes& der, Service service);
 
     Key sealingKey() const;

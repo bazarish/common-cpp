@@ -225,14 +225,13 @@ try {
     CHECK(alias.issuedAt == kNow);
 
     const Bytes cardDer
-        = ServerCard::issue(serverRoot, ServerCard::Service::eMessaging, sealing, kNow);
+        = ServerCard::issue(serverRoot, ServerCard::Service::eMessaging, sealing);
     const ServerCard card = ServerCard::verify(cardDer, ServerCard::Service::eMessaging);
     CHECK(card.server == serverRoot.fingerprint());
-    CHECK(card.issuedAt == kNow);
     CHECK(card.sealingKey().fingerprint() == sealing.fingerprint());
     CHECK_THROWS(ServerCard::verify(cardDer, ServerCard::Service::eServiceNode));
     const Bytes nodeCardDer
-        = ServerCard::issue(serverRoot, ServerCard::Service::eServiceNode, sealing, kNow);
+        = ServerCard::issue(serverRoot, ServerCard::Service::eServiceNode, sealing);
     CHECK(ServerCard::verify(nodeCardDer, ServerCard::Service::eServiceNode).server
         == serverRoot.fingerprint());
     CHECK_THROWS(ServerCard::verify(nodeCardDer, ServerCard::Service::eMessaging));

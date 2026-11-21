@@ -194,14 +194,13 @@ AliasCertificate AliasCertificate::verify(const Bytes& der)
 }
 
 Bytes ServerCard::issue(const Identity& serverRootIdentity, const Service service,
-    const Key& sealingPublicKey, const std::int64_t issuedAt)
+    const Key& sealingPublicKey)
 {
     const nlohmann::json body = {
         {"v", kCertificateFormatVersion},
         {"t", cardType(service)},
         {"server", serverRootIdentity.fingerprint()},
         {"sealingKey", toBase64(sealingPublicKey.publicDer())},
-        {"issuedAt", issuedAt},
     };
     return hybrid::signJson(body, serverRootIdentity);
 }
@@ -212,7 +211,6 @@ ServerCard ServerCard::verify(const Bytes& der, const Service service)
     ServerCard card;
     card.server = verified.body.at("server").get<std::string>();
     card.sealingPublicKeyDer = fromBase64(verified.body.at("sealingKey").get<std::string>());
-    card.issuedAt = verified.body.at("issuedAt").get<std::int64_t>();
     requireSigner(verified, card.server);
     if (!hybrid::isSealingKey(Key::fromPublicDer(card.sealingPublicKeyDer))) {
         throw std::runtime_error("a server card names a sealing key that is not X25519 and ML-KEM-768");

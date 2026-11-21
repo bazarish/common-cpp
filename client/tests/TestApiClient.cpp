@@ -261,7 +261,7 @@ try {
 
     {
         const Bytes card = ServerCard::issue(serverIdentity, ServerCard::Service::eMessaging,
-            Key::fromPublicDer(serverSealing.publicDer()), static_cast<std::int64_t>(std::time(nullptr)));
+            Key::fromPublicDer(serverSealing.publicDer()));
         const auto answeringHellos = [&card](http::Server& facade, std::atomic<int>& hellos,
                                          const http::Response answer) {
             facade.get(std::string(tunnel::kServerCardPath), [card](const http::Request&) {
@@ -401,7 +401,7 @@ try {
     {
         http::Server upstreamless(localOptions());
         const Bytes card = ServerCard::issue(serverIdentity, ServerCard::Service::eMessaging,
-            Key::fromPublicDer(serverSealing.publicDer()), static_cast<std::int64_t>(std::time(nullptr)));
+            Key::fromPublicDer(serverSealing.publicDer()));
         upstreamless.get(std::string(tunnel::kServerCardPath), [card](const http::Request&) {
             http::Response response;
             response.contentType = "application/octet-stream";

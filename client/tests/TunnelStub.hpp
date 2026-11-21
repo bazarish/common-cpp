@@ -30,7 +30,7 @@ public:
     {
         const bool node = service == ServerCard::Service::eServiceNode;
         const Bytes card = ServerCard::issue(serverIdentity, service,
-            Key::fromPublicDer(sealing.publicDer()), static_cast<std::int64_t>(std::time(nullptr)));
+            Key::fromPublicDer(sealing.publicDer()));
         server.get(node ? bazarish::tunnel::kNodeCardPath : bazarish::tunnel::kServerCardPath,
             [card](const bazarish::http::Request&) {
                 bazarish::http::Response response;
