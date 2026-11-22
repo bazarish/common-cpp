@@ -3,6 +3,7 @@
 #include "Session.hpp"
 
 #include <bazarish/Bytes.hpp>
+#include <bazarish/I2p.hpp>
 
 #include "TestUtil.hpp"
 
@@ -22,6 +23,27 @@ namespace {
 // A blinded b33 label is 56 base32 characters, plus ".b32.i2p".
 constexpr std::size_t kB33HostLen = 56 + 8;
 constexpr int kTermDays = 2;
+// An identity is 256 + 128 bytes of key fields, then a certificate naming the two key types.
+constexpr std::size_t kCertificateOffset = 384;
+constexpr std::uint8_t kKeyCertificate = 5;
+constexpr std::size_t kSigningTypeOffset = 387;
+constexpr std::size_t kCryptoTypeOffset = 389;
+constexpr std::uint16_t kEd25519SigningType = 7;
+
+std::uint16_t typeAt(const Bytes& blob, const std::size_t offset)
+{
+    return static_cast<std::uint16_t>(
+        static_cast<std::uint16_t>(blob[offset]) << 8 | blob[offset + 1]);
+}
+
+void testIdentityNamesModernKeys()
+{
+    const I2pMasterKey master = generateI2pMaster();
+    CHECK(master.privateKeys.size() > kCryptoTypeOffset + 1);
+    CHECK(master.privateKeys[kCertificateOffset] == kKeyCertificate);
+    CHECK(typeAt(master.privateKeys, kSigningTypeOffset) == kEd25519SigningType);
+    CHECK(typeAt(master.privateKeys, kCryptoTypeOffset) == i2p::kEciesX25519CryptoType);
+}
 
 void testMasterRoundTrip()
 {
@@ -150,6 +172,7 @@ int main()
 try {
     testMasterRoundTrip();
     testMastersDiffer();
+    testIdentityNamesModernKeys();
     testOfflineKeepsAddress();
     testMalformedRejected();
     testLoadMaster();

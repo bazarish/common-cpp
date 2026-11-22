@@ -48,6 +48,9 @@ inline constexpr int kServerTunnelQuantity = 5;
 inline constexpr int kMaxTunnelQuantity = 16;
 inline constexpr int kCallTunnelQuantity = 6;
 inline constexpr std::size_t kMaxLeaseSetReaders = 100;
+inline constexpr int kEciesX25519CryptoType = 4;
+// I2P proposal 169: ML-KEM768 with X25519 first, plain X25519 for a router without it.
+inline constexpr char kLeaseSetEncTypes[] = "6,4";
 
 enum class Role { eClient, eServer };
 
