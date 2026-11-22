@@ -69,7 +69,7 @@ using backend::DestTag;
 namespace {
 
 constexpr i2pd::data::SigningKeyType kSigType = i2pd::data::SIGNING_KEY_TYPE_EDDSA_SHA512_ED25519;
-constexpr i2pd::data::CryptoKeyType kSeededCryptoType
+constexpr i2pd::data::CryptoKeyType kCryptoType
     = i2pd::data::CRYPTO_KEY_TYPE_ECIES_X25519_AEAD;
 // RFC 8032 and RFC 7748: Ed25519 and X25519 raw keys are both 32 bytes.
 constexpr std::size_t kRawKeyBytes = 32;
@@ -1704,7 +1704,7 @@ std::shared_ptr<backend::EndpointBackend> EmbeddedRouter::createEndpoint(
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_TYPE,
         std::to_string(config.blinded ? i2pd::data::NETDB_STORE_TYPE_ENCRYPTED_LEASESET2
                                       : i2pd::data::NETDB_STORE_TYPE_STANDARD_LEASESET2));
-    params.Insert(i2pd::client::I2CP_PARAM_LEASESET_ENCRYPTION_TYPE, "4");
+    params.Insert(i2pd::client::I2CP_PARAM_LEASESET_ENCRYPTION_TYPE, kLeaseSetEncTypes);
     params.Insert(i2pd::client::I2CP_PARAM_LEASESET_PERSIST_KEYS, "false");
     if (!config.leaseSetReaders.empty()) {
         params.Insert(i2pd::client::I2CP_PARAM_LEASESET_AUTH_TYPE,
@@ -1831,7 +1831,8 @@ std::unique_ptr<RouterBackend> makeEmbeddedRouter(const RouterConfig& config)
 Bytes generateKeysBlob()
 {
     ensureCryptoInit();
-    return serializeKeys(i2pd::data::PrivateKeys::CreateRandomKeys(kSigType));
+    return serializeKeys(
+        i2pd::data::PrivateKeys::CreateRandomKeys(kSigType, kCryptoType, /*isDestination=*/true));
 }
 
 Bytes issueTransientBlob(const Bytes& master, const int days)
@@ -1856,7 +1857,7 @@ Bytes keysBlobFromSeeds(const Bytes& signingSeed, const Bytes& cryptoSeed)
     const Bytes signingPublic = rawPublicOf(EVP_PKEY_ED25519, signingSeed);
     const Bytes cryptoPublic = rawPublicOf(EVP_PKEY_X25519, cryptoSeed);
     const i2pd::data::IdentityEx identity(
-        cryptoPublic.data(), signingPublic.data(), kSigType, kSeededCryptoType);
+        cryptoPublic.data(), signingPublic.data(), kSigType, kCryptoType);
     Bytes blob(identity.GetFullLen());
     if (identity.ToBuffer(blob.data(), blob.size()) != blob.size())
     {

@@ -548,8 +548,10 @@ std::string sessionCreateLine(const std::string& id, const SessionConfig& config
          << " DESTINATION="
          << (config.privateKeys.empty() ? kTransientDestination : config.privateKeys)
          << " SIGNATURE_TYPE=" << kEd25519SignatureType
+         << " CRYPTO_TYPE=" << i2p::kEciesX25519CryptoType
          << " i2cp.leaseSetType="
-         << (config.blinded ? kEncryptedLeaseSetType : kStandardLeaseSetType);
+         << (config.blinded ? kEncryptedLeaseSetType : kStandardLeaseSetType)
+         << " i2cp.leaseSetEncType=" << i2p::kLeaseSetEncTypes;
     if (!config.published) {
         line << " i2cp.dontPublishLeaseSet=true";
     }
