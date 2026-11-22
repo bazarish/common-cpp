@@ -443,7 +443,6 @@ DestinationInfo Client::myDestination()
     const nlohmann::json body = response.json();
     DestinationInfo info;
     info.dest = body.at("dest").get<std::string>();
-    info.state = body.value("state", std::string());
     if (!info.dest.empty()) {
         validateB33I2pHost(info.dest);
     }
@@ -472,16 +471,13 @@ void Client::registerPasses(const std::vector<Bytes>& handles)
     api_.postJson("/v1/messaging/passes", {{"passes", encoded}});
 }
 
-std::size_t Client::revokePasses(const std::vector<Bytes>& handles)
+void Client::revokePasses(const std::vector<Bytes>& handles)
 {
     nlohmann::json encoded = nlohmann::json::array();
     for (const Bytes& handle : handles) {
         encoded.push_back(toBase64(handle));
     }
-    return api_.postJson("/v1/messaging/passes/revoke", {{"passes", encoded}})
-        .json()
-        .at("revoked")
-        .get<std::size_t>();
+    api_.postJson("/v1/messaging/passes/revoke", {{"passes", encoded}});
 }
 
 std::vector<PendingEntry> Client::waitForPending(

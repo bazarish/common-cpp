@@ -529,7 +529,6 @@ public:
     std::string inviteUri() const;
     std::string contactInviteUri(const std::string& peerFingerprint) const;
     bool hasOwnRouting() const;
-    DestinationInfo serverDestination();
     // True when contacts hold another routing than the one just published.
     bool refreshOwnCard();
     std::string accountLabel() const;

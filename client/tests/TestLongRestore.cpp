@@ -972,7 +972,7 @@ try {
             account.signedUp = true;
             account.approved = !m.moderated;
         }
-        respondJson(response, {{"ok", true}, {"requiresApproval", !account.approved}});
+        respondJson(response, {{"ok", true}});
     }));
     server.get("/v1/account/i2p-status", stub([&](const http::Request& request, http::Response& response) {
         const std::lock_guard<std::mutex> lock(m.mu);
@@ -1055,7 +1055,7 @@ try {
         for (const nlohmann::json& handle : passes) {
             account->passes.insert(handle.get<std::string>());
         }
-        respondJson(response, {{"ok", true}, {"held", account->passes.size()}});
+        respondJson(response, {{"ok", true}});
     }));
     server.post("/v1/messaging/passes/revoke", stub([&](const http::Request& request, http::Response& response) {
         const nlohmann::json passes = nlohmann::json::parse(request.body).at("passes");
@@ -1069,7 +1069,7 @@ try {
         for (const nlohmann::json& handle : passes) {
             dropped += account->passes.erase(handle.get<std::string>());
         }
-        respondJson(response, {{"revoked", dropped}});
+        respondJson(response, {{"ok", true}});
     }));
     server.get("/v1/messaging/pending", stub([&](const http::Request& request, http::Response& response) {
         const std::string device = requireDevice(request);

@@ -26,6 +26,7 @@
 #include <functional>
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -215,14 +216,16 @@ try {
             const nlohmann::json asked = nlohmann::json::parse(request.body).at("passes");
             CHECK(asked.size() == 2);
             CHECK(fromBase64(asked.at(0).get<std::string>()).size() == kDeliveryPassSize);
-            respondJson(response, {{"ok", true}, {"held", asked.size()}});
+            respondJson(response, {{"ok", true}});
         }));
 
+    std::atomic<int> revokesAsked{0};
     server.post("/v1/messaging/passes/revoke",
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
             CHECK(nlohmann::json::parse(request.body).at("passes").size() == 1);
-            respondJson(response, {{"revoked", 1}});
+            ++revokesAsked;
+            respondJson(response, {{"ok", true}});
         }));
 
     server.get("/v1/messaging/pending",
@@ -395,7 +398,8 @@ try {
     {
         client.registerThisDevice("install01");
         client.registerPasses({Bytes(kDeliveryPassSize, 0x44), Bytes(kDeliveryPassSize, 0x55)});
-        CHECK(client.revokePasses({Bytes(kDeliveryPassSize, 0x44)}) == 1);
+        client.revokePasses({Bytes(kDeliveryPassSize, 0x44)});
+        CHECK(revokesAsked == 1);
     }
 
     {

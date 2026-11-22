@@ -26,7 +26,6 @@ inline constexpr char kApprovalPending[] = "pending";
 struct DestinationInfo {
     std::string dest;
     Bytes servingSealingKeyDer;
-    std::string state;
 };
 
 struct AddressKeys {
@@ -182,7 +181,7 @@ public:
     void onDeviceRevoked(std::function<void()> tell) { api_.onDeviceRevoked(std::move(tell)); }
     void onLinkStage(std::function<void(LinkStage)> tell) { api_.onLinkStage(std::move(tell)); }
     void registerPasses(const std::vector<Bytes>& handles);
-    std::size_t revokePasses(const std::vector<Bytes>& handles);
+    void revokePasses(const std::vector<Bytes>& handles);
     std::vector<PendingEntry> listPending();
     // A held wait ends when mail arrives or the link breaks, and at no set time.
     enum class MailWait { eAtOnce, eHeld };

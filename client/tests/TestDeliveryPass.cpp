@@ -421,7 +421,7 @@ try {
             const std::string caller = requireCaller(request);
             std::lock_guard<std::mutex> lock(m.mu);
             m.signedUp.insert(caller);
-            respondJson(response, {{"ok", true}, {"requiresApproval", false}});
+            respondJson(response, {{"ok", true}});
         }));
 
     server.get("/v1/account/i2p-status",
@@ -505,7 +505,7 @@ try {
             for (const nlohmann::json& handle : passes) {
                 m.registered[caller].insert(handle.get<std::string>());
             }
-            respondJson(response, {{"ok", true}, {"held", m.registered[caller].size()}});
+            respondJson(response, {{"ok", true}});
         }));
 
     server.post("/v1/messaging/passes/revoke",
@@ -517,7 +517,7 @@ try {
             for (const nlohmann::json& handle : passes) {
                 dropped += m.registered[caller].erase(handle.get<std::string>());
             }
-            respondJson(response, {{"revoked", dropped}});
+            respondJson(response, {{"ok", true}});
         }));
 
     server.get("/v1/messaging/pending",
