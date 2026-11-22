@@ -104,7 +104,7 @@ std::string signingDevice(const bazarish::Bytes& classicalDer, const bazarish::B
 
 const char* cardType(const bazarish::ServerCard::Service service)
 {
-    return service == bazarish::ServerCard::Service::eServiceNode ? kNodeCardType
+    return service == bazarish::ServerCard::Service::eServerService ? kNodeCardType
                                                                   : kServerCardType;
 }
 

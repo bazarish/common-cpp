@@ -34,7 +34,7 @@ std::int64_t now()
 service::LoginConsumer portalConsumer()
 {
     return service::LoginConsumer{
-        "Bazarish service node", {"http://node.example"}, "Account owner"};
+        "Bazarish server service", {"http://node.example"}, "Account owner"};
 }
 
 nlohmann::json envelopeWith(const service::LoginConsumer& consumer)

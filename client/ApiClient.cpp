@@ -59,24 +59,24 @@ constexpr std::size_t kSessionIdChars = 32;
 // Until the link or the facade's lease set changes, asking again meets the same silence.
 constexpr std::int64_t kSilenceStandOffSeconds = 60;
 
-constexpr const char* kServiceNodePrefix = "/v1/account/";
+constexpr const char* kServerServicePrefix = "/v1/account/";
 constexpr const char* kClosedClient = "the client is closed";
 
 const char* tunnelPathOf(const ServerCard::Service service)
 {
-    return service == ServerCard::Service::eServiceNode ? bazarish::tunnel::kNodeTunnelPath
+    return service == ServerCard::Service::eServerService ? bazarish::tunnel::kNodeTunnelPath
                                                         : bazarish::tunnel::kTunnelPath;
 }
 
 const char* cardPathOf(const ServerCard::Service service)
 {
-    return service == ServerCard::Service::eServiceNode ? bazarish::tunnel::kNodeCardPath
+    return service == ServerCard::Service::eServerService ? bazarish::tunnel::kNodeCardPath
                                                         : bazarish::tunnel::kServerCardPath;
 }
 
 const char* serviceName(const ServerCard::Service service)
 {
-    return service == ServerCard::Service::eServiceNode ? "service node" : "messaging server";
+    return service == ServerCard::Service::eServerService ? "server service" : "messaging server";
 }
 
 [[noreturn]] void raiseFromResponse(const int status, const Bytes& body, const LinkFailure failure)
@@ -237,7 +237,7 @@ const ServerEndpoint& ApiClient::endpoint() const
 
 ApiClient::Tunnel& ApiClient::tunnelFor(const std::string& path)
 {
-    return path.starts_with(kServiceNodePrefix) ? serviceNode_ : messaging_;
+    return path.starts_with(kServerServicePrefix) ? serverService_ : messaging_;
 }
 
 void ApiClient::ensureSealingKeyLocked(Tunnel& tunnel)
@@ -407,7 +407,7 @@ bool ApiClient::facadePublishedAnew()
         return false;
     }
     messaging_.blockedUntil = 0;
-    serviceNode_.blockedUntil = 0;
+    serverService_.blockedUntil = 0;
     return true;
 }
 
@@ -415,7 +415,7 @@ void ApiClient::liftStandOff()
 {
     const std::lock_guard<std::mutex> lock(netMutex_);
     messaging_.blockedUntil = 0;
-    serviceNode_.blockedUntil = 0;
+    serverService_.blockedUntil = 0;
 }
 
 std::string ApiClient::activeFacadeAddress() const

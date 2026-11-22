@@ -229,10 +229,10 @@ try {
     const ServerCard card = ServerCard::verify(cardDer, ServerCard::Service::eMessaging);
     CHECK(card.server == serverRoot.fingerprint());
     CHECK(card.sealingKey().fingerprint() == sealing.fingerprint());
-    CHECK_THROWS(ServerCard::verify(cardDer, ServerCard::Service::eServiceNode));
+    CHECK_THROWS(ServerCard::verify(cardDer, ServerCard::Service::eServerService));
     const Bytes nodeCardDer
-        = ServerCard::issue(serverRoot, ServerCard::Service::eServiceNode, sealing);
-    CHECK(ServerCard::verify(nodeCardDer, ServerCard::Service::eServiceNode).server
+        = ServerCard::issue(serverRoot, ServerCard::Service::eServerService, sealing);
+    CHECK(ServerCard::verify(nodeCardDer, ServerCard::Service::eServerService).server
         == serverRoot.fingerprint());
     CHECK_THROWS(ServerCard::verify(nodeCardDer, ServerCard::Service::eMessaging));
 

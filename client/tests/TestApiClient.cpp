@@ -60,7 +60,7 @@ try {
     http::Server server(localOptions());
     teststub::Tunnel stub(server, serverIdentity, serverSealing, ServerCard::Service::eMessaging);
     teststub::Tunnel nodeStub(
-        server, serverIdentity, nodeSealing, ServerCard::Service::eServiceNode);
+        server, serverIdentity, nodeSealing, ServerCard::Service::eServerService);
 
     std::string sawMethod;
     std::string sawPath;

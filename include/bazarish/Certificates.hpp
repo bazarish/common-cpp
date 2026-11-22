@@ -51,7 +51,7 @@ struct AliasCertificate {
 };
 
 struct ServerCard {
-    enum class Service { eMessaging, eServiceNode };
+    enum class Service { eMessaging, eServerService };
 
     std::string server;
     Bytes sealingPublicKeyDer;

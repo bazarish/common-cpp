@@ -1140,7 +1140,7 @@ try {
     bazarish::teststub::Tunnel tunnelStub(
         server, stubServerIdentity, stubServerSealing, ServerCard::Service::eMessaging);
     bazarish::teststub::Tunnel nodeTunnelStub(
-        server, stubServerIdentity, stubNodeSealing, ServerCard::Service::eServiceNode);
+        server, stubServerIdentity, stubNodeSealing, ServerCard::Service::eServerService);
     const int port = server.start();
     CHECK(port > 0);
     ServerEndpoint endpoint;

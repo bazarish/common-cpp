@@ -28,7 +28,7 @@ public:
         : sealing_(Key::fromPrivatePem(sealing.privatePem()))
         , fingerprint_(serverIdentity.fingerprint())
     {
-        const bool node = service == ServerCard::Service::eServiceNode;
+        const bool node = service == ServerCard::Service::eServerService;
         const Bytes card = ServerCard::issue(serverIdentity, service,
             Key::fromPublicDer(sealing.publicDer()));
         server.get(node ? bazarish::tunnel::kNodeCardPath : bazarish::tunnel::kServerCardPath,

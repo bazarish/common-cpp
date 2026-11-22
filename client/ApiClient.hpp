@@ -164,7 +164,7 @@ private:
         int readTimeoutSeconds);
 
     Tunnel messaging_{ServerCard::Service::eMessaging};
-    Tunnel serviceNode_{ServerCard::Service::eServiceNode};
+    Tunnel serverService_{ServerCard::Service::eServerService};
     std::string gatewayRefusal_;
     std::atomic<LinkFailure> linkFailure_{LinkFailure::eNone};
     std::atomic<bool> deviceRevoked_{false};
