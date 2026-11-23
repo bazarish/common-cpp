@@ -1303,8 +1303,12 @@ void GatewayRouter::openControl()
         link_->lastUse.store(millisNow());
     }
     link_->dueToReattach();
-    bazarish::log::info("i2p: a gateway running i2pd {}, {}",
-        body.value("i2pd", std::string("?")), resumed ? "session rejoined" : "new session");
+    const std::string i2pd = body.value("i2pd", std::string("?"));
+    if (resumed) {
+        bazarish::log::debug("i2p: a gateway running i2pd {}, session rejoined", i2pd);
+    } else {
+        bazarish::log::info("i2p: a gateway running i2pd {}, new session", i2pd);
+    }
 }
 
 void GatewayRouter::closeControl()
