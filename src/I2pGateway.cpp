@@ -226,7 +226,7 @@ public:
     std::uint32_t nextId() { return ids_.next(); }
     void send(const Bytes& frame, const Pending* call = nullptr);
     http::SocketPtr socketFor(std::uint32_t flow) const;
-    std::optional<Frame> call(const Bytes& frame, std::uint32_t ref, std::chrono::seconds timeout);
+    Frame call(const Bytes& frame, std::uint32_t ref, std::chrono::seconds timeout);
     std::shared_ptr<Pending> expect(const Bytes& frame, std::uint32_t ref);
     std::optional<Frame> await(
         const std::shared_ptr<Pending>& pending, std::uint32_t ref, std::chrono::seconds timeout);
@@ -1735,12 +1735,21 @@ void GatewayRouter::reattachOrphans()
     }
 }
 
-std::optional<Frame> Link::call(
-    const Bytes& frame, const std::uint32_t ref, const std::chrono::seconds timeout)
+Frame Link::call(const Bytes& frame, const std::uint32_t ref, const std::chrono::seconds timeout)
 {
     const std::shared_ptr<Pending> pending = expect(frame, ref);
     send(frame, pending.get());
-    return await(pending, ref, timeout);
+    std::optional<Frame> answer = await(pending, ref, timeout);
+    if (answer) {
+        return std::move(*answer);
+    }
+    if (!pending->abandoned.load()) {
+        throw std::runtime_error("bazarish::i2p: the gateway did not answer in time");
+    }
+    if (networkDown()) {
+        throw std::runtime_error("bazarish::i2p: the device has no network");
+    }
+    throw std::runtime_error("bazarish::i2p: the gateway cannot be reached");
 }
 
 std::shared_ptr<Pending> Link::expect(const Bytes& frame, const std::uint32_t ref)
@@ -1891,21 +1900,26 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->creating[id] = std::nullopt;
     }
-    const std::optional<Frame> answer
-        = link_->call(gateway::encodeJson(FrameType::eEndpointCreate, id, ask), id,
-            kCallTimeout);
-    const std::string host = answer && answer->type == FrameType::eOk
-        ? gateway::bodyJson(*answer).value("host", std::string()) : std::string();
-    if (host.empty()) {
+    const auto forgetCreating = [this, id]() {
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->creating.erase(id);
+    };
+    Frame answer;
+    try {
+        answer = link_->call(
+            gateway::encodeJson(FrameType::eEndpointCreate, id, ask), id, kCallTimeout);
+    } catch (const std::exception&) {
+        forgetCreating();
+        throw;
     }
-    if (!answer) {
-        throw std::runtime_error("bazarish::i2p: the gateway did not answer in time");
+    const std::string host = answer.type == FrameType::eOk
+        ? gateway::bodyJson(answer).value("host", std::string()) : std::string();
+    if (host.empty()) {
+        forgetCreating();
     }
-    if (answer->type != FrameType::eOk) {
-        const nlohmann::json said = answer->type == FrameType::eError
-            ? gateway::bodyJson(*answer) : nlohmann::json::object();
+    if (answer.type != FrameType::eOk) {
+        const nlohmann::json said = answer.type == FrameType::eError
+            ? gateway::bodyJson(answer) : nlohmann::json::object();
         throw GatewayRefusal("bazarish::i2p: the gateway refused a destination: "
             + said.value("code", std::string()) + ": " + said.value("message", std::string()));
     }
@@ -1998,19 +2012,15 @@ LeaseSetRefresh GatewayRouter::refreshLeaseSet(
     }
     const std::uint32_t id = link_->nextId();
     const nlohmann::json ask = {{"endpoint", from->id()}, {"host", remoteHost}};
-    const std::optional<Frame> answer
+    const Frame answer
         = link_->call(gateway::encodeJson(FrameType::eLeaseSetRefresh, id, ask), id, kCallTimeout);
-    if (!answer) {
-        throw std::runtime_error(
-            "bazarish::i2p: the gateway did not answer a lease set lookup in time");
-    }
-    if (answer->type != FrameType::eOk) {
-        const nlohmann::json said = answer->type == FrameType::eError
-            ? gateway::bodyJson(*answer) : nlohmann::json::object();
+    if (answer.type != FrameType::eOk) {
+        const nlohmann::json said = answer.type == FrameType::eError
+            ? gateway::bodyJson(answer) : nlohmann::json::object();
         throw GatewayRefusal("bazarish::i2p: the gateway refused a lease set lookup: "
-            + said.value("message", std::string(gateway::frameTypeName(answer->type))));
+            + said.value("message", std::string(gateway::frameTypeName(answer.type))));
     }
-    return gateway::leaseSetRefreshFromJson(gateway::bodyJson(*answer));
+    return gateway::leaseSetRefreshFromJson(gateway::bodyJson(answer));
 }
 
 void GatewayRouter::arrived(

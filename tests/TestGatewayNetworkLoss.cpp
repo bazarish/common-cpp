@@ -38,14 +38,14 @@ std::size_t createsHeard(test::FakeGateway& fake)
     return creates;
 }
 
-bool createFails(i2p::Router& router)
+std::string createFailure(i2p::Router& router)
 {
     try {
         (void)router.createEndpoint(i2p::EndpointConfig{});
-    } catch (const std::runtime_error&) {
-        return true;
+    } catch (const std::runtime_error& error) {
+        return error.what();
     }
-    return false;
+    return {};
 }
 
 bool reachesState(const i2p::TransportState wanted)
@@ -115,7 +115,7 @@ try {
     {
         const auto started = Clock::now();
         CHECK(endpoint->connect(kNobody, kDialFor) == nullptr);
-        CHECK(createFails(router));
+        CHECK(createFailure(router) == "bazarish::i2p: the device has no network");
         CHECK(Clock::now() - started < kEndsWithin);
     }
 
@@ -132,7 +132,7 @@ try {
     {
         bool failed = false;
         const auto started = Clock::now();
-        std::thread create([&]() { failed = createFails(router); });
+        std::thread create([&]() { failed = !createFailure(router).empty(); });
         std::this_thread::sleep_for(kCallUnderWay);
         i2p::networkLost();
         create.join();
@@ -152,7 +152,7 @@ try {
     CHECK(reachesState(i2p::TransportState::eGatewayUnreachable));
     {
         const auto started = Clock::now();
-        CHECK(createFails(router));
+        CHECK(createFailure(router) == "bazarish::i2p: the gateway cannot be reached");
         CHECK(last->connect(kNobody, kDialFor) == nullptr);
         CHECK(Clock::now() - started < kEndsWithin);
     }
