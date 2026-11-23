@@ -874,6 +874,7 @@ public:
     void setSwitchedOff(bool off);
     bool switchedOff() const { return switchedOff_; }
     bool registrationUnfinished() const { return isPrimary() && cardB64_.empty(); }
+    bool listedByServer() const { return ownListing_.contains(deviceId()); }
     bool deviceRevoked() const { return deviceRevoked_; }
     void noteDeviceRevoked();
     void onDeviceRevoked(std::function<void()> tell);

@@ -783,10 +783,12 @@ try {
         }
         CHECK(announceRefused);
         CHECK(alice->registrationUnfinished());
+        CHECK(!alice->listedByServer());
         alice->setSwitchedOff(false);
 
         alice->registerAccount();
         CHECK(!alice->registrationUnfinished());
+        CHECK(alice->listedByServer());
         bob->registerAccount();
         {
             std::lock_guard<std::mutex> lock(m.mu);
