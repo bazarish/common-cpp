@@ -61,10 +61,16 @@ constexpr const char* kHost = "host";
 constexpr std::int64_t kBlockAt = 1000;
 constexpr std::size_t kTwoCandidates = 2;
 
-class ListAsks final : public IngestListener {
+class GroupHeard final : public IngestListener {
 public:
     void memberListWanted(const std::string& peer) override { asked.push_back(peer); }
+    void groupReactionAdded(const std::string&, const std::string& target,
+        const std::string& emoji) override
+    {
+        counted.push_back(target + " " + emoji);
+    }
     std::vector<std::string> asked;
+    std::vector<std::string> counted;
 };
 
 IncomingMessage fromHost(const std::string& type, const std::string& e2eId)
@@ -200,7 +206,7 @@ void checkGroupIngest(const fs::path& file)
     TranscriptStore store;
     CHECK(store.open(file, "secret"));
     const Notes notes;
-    ListAsks listener;
+    GroupHeard listener;
     TranscriptIngest ingest(store, []() { return std::string(kOwn); }, notes, listener);
 
     CHECK(store.memberListState(kHost) == MemberListState::eUnknown);
@@ -263,6 +269,22 @@ void checkGroupIngest(const fs::path& file)
     CHECK(store.setLastReadId(kHost, namedId));
     CHECK(store.unreadMentionCount(kHost) == 1);
     CHECK(store.firstUnreadMentionId(kHost) == replyId);
+
+    IncomingMessage counting = fromHost(kTypeGroupReactions, "counts-1");
+    counting.groupReactionsJson = R"([{"ref":"mine","counts":{"👍":1}}])";
+    CHECK(ingest.takeIn(counting));
+    CHECK(listener.counted == (std::vector<std::string>{"mine 👍"}));
+    counting.e2eId = "counts-2";
+    CHECK(ingest.takeIn(counting));
+    CHECK(listener.counted.size() == 1);
+    counting.e2eId = "counts-3";
+    counting.groupReactionsJson = R"([{"ref":"mine","counts":{"👍":1,"😀":2}}])";
+    CHECK(ingest.takeIn(counting));
+    CHECK(listener.counted == (std::vector<std::string>{"mine 👍", "mine 😀"}));
+    counting.e2eId = "counts-4";
+    counting.groupReactionsJson = R"([{"ref":"mine","counts":{"😀":1}}])";
+    CHECK(ingest.takeIn(counting));
+    CHECK(listener.counted.size() == 2);
 
     CHECK(ingest.takeIn(listLetter("drop-1", change(MemberListOp::eRemoved, {"Bob"}, 2))));
     CHECK(store.memberListState(kHost) == MemberListState::eUnknown);

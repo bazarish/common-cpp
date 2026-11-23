@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <map>
 #include <utility>
 
 namespace bazarish::client {
@@ -38,6 +39,22 @@ Placement placeReceived(const std::int64_t sentAtMs, const std::int64_t arrivalM
 {
     const std::int64_t written = sentAtMs > 0 ? sentAtMs : arrivalMs;
     return {written, std::max(written, floor)};
+}
+
+std::string emojiAddedMost(const std::map<std::string, std::int64_t>& before,
+    const std::map<std::string, std::int64_t>& after)
+{
+    std::string added;
+    std::int64_t most = 0;
+    for (const auto& [emoji, count] : after) {
+        const auto was = before.find(emoji);
+        const std::int64_t grew = count - (was == before.cend() ? 0 : was->second);
+        if (grew > most) {
+            most = grew;
+            added = emoji;
+        }
+    }
+    return added;
 }
 
 }  // namespace
@@ -438,8 +455,15 @@ bool TranscriptIngest::applyGroupReactions(const std::string& peer, const std::s
                     counts[it.key()] = it.value().get<std::int64_t>();
                 }
             }
-            if (!store_.setGroupReactionCounts(peer, entry.value("ref", std::string()), counts)) {
+            const std::string ref = entry.value("ref", std::string());
+            const std::map<std::string, std::int64_t> before
+                = store_.groupReactionCounts(peer, ref);
+            if (!store_.setGroupReactionCounts(peer, ref, counts)) {
                 return false;
+            }
+            const std::string added = emojiAddedMost(before, counts);
+            if (!added.empty()) {
+                listener_.groupReactionAdded(peer, ref, added);
             }
         }
     }

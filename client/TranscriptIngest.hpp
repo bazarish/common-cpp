@@ -39,6 +39,7 @@ public:
     virtual void reactionSet(
         const std::string&, const std::string&, const std::string&, const std::string&) {}
     virtual void groupReactionsChanged(const std::string&) {}
+    virtual void groupReactionAdded(const std::string&, const std::string&, const std::string&) {}
     virtual void groupChanged(const std::string&) {}
     // The app answers with Session::askGroupMembers.
     virtual void memberListWanted(const std::string&) {}
