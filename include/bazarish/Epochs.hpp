@@ -19,7 +19,7 @@
 namespace bazarish {
 
 using EpochNumber = std::int64_t;
-// The number of the revocation list a key was made under.
+// The revocation number a key was made under.
 using EpochGeneration = std::int64_t;
 inline constexpr EpochGeneration kFirstEpochGeneration = 0;
 
@@ -79,9 +79,9 @@ std::vector<EpochPublic> chosenEpochs(const std::vector<EpochPublic>& epochs);
 std::vector<EpochPublic> mergedEpochs(const std::vector<EpochPublic>& held,
     const std::vector<EpochPublic>& offered, std::int64_t utcSeconds);
 
-// Within the push horizon and, once `devices` holds the list, made by an active primary under it.
-std::vector<EpochPublic> admittedEpochs(
-    const std::vector<EpochPublic>& offered, const DeviceBook& devices, std::int64_t utcSeconds);
+// Within the push horizon and, when the account's revocation number is known, made under it.
+std::vector<EpochPublic> admittedEpochs(const std::vector<EpochPublic>& offered,
+    std::optional<std::int64_t> revocationNumber, std::int64_t utcSeconds);
 
 Bytes sealToEpoch(const Bytes& plaintext, const EpochPublic& epoch);
 

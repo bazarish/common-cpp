@@ -21,7 +21,7 @@ namespace bazarish {
 namespace {
 
 const char* const kDeviceCertType = "device-cert";
-const char* const kRevocationListType = "revocation-list";
+const char* const kDepartureType = "device-departure";
 constexpr char kVersionField[] = "v";
 constexpr char kTypeField[] = "t";
 constexpr char kRootField[] = "root";
@@ -47,10 +47,16 @@ const std::set<std::string_view>& deviceCertFields()
     return kFields;
 }
 
-const std::set<std::string_view>& revocationListFields()
+const std::set<std::string_view>& departureFields()
 {
     static const std::set<std::string_view> kFields{
-        kVersionField, kTypeField, kRootField, kNumberField, kRevokedField, kIssuedAtField};
+        kVersionField, kTypeField, kRootField, kDeviceField, kIssuedAtField};
+    return kFields;
+}
+
+const std::set<std::string_view>& revocationFields()
+{
+    static const std::set<std::string_view> kFields{kNumberField, kRevokedField};
     return kFields;
 }
 
@@ -249,52 +255,46 @@ void DeviceCertificate::requireSigned(
     }
 }
 
-Bytes RevocationList::issue(const Identity& rootIdentity, const std::int64_t number,
-    std::vector<std::string> revoked, const std::int64_t issuedAt)
+Revocation Revocation::of(const std::int64_t number, std::vector<std::string> revoked)
 {
     if (number < kFirstRevocationNumber) {
-        throw std::invalid_argument("a revocation list is numbered from zero");
+        throw std::invalid_argument("a revocation is numbered from zero");
     }
     for (const std::string& device : revoked) {
         requireDeviceId(device);
     }
     std::sort(revoked.begin(), revoked.end());
     revoked.erase(std::unique(revoked.begin(), revoked.end()), revoked.end());
-    const nlohmann::json body = {
-        {kVersionField, kCertificateFormatVersion},
-        {kTypeField, kRevocationListType},
-        {kRootField, rootIdentity.fingerprint()},
-        {kNumberField, number},
-        {kRevokedField, revoked},
-        {kIssuedAtField, issuedAt},
-    };
-    document::requireExactFields(body, revocationListFields());
-    return hybrid::signJson(body, rootIdentity);
+    return Revocation{number, std::move(revoked)};
 }
 
-RevocationList RevocationList::verify(const Bytes& der)
+nlohmann::json Revocation::toJson() const
 {
-    const hybrid::VerifiedJson verified = document::verifyTagged(der, kRevocationListType);
-    document::requireExactFields(verified.body, revocationListFields());
-    RevocationList list;
-    list.root = verified.body.at(kRootField).get<std::string>();
-    document::requireSigner(verified, list.root);
-    list.number = verified.body.at(kNumberField).get<std::int64_t>();
-    if (list.number < kFirstRevocationNumber) {
-        throw std::runtime_error("a revocation list is numbered from zero");
+    return {{kNumberField, number}, {kRevokedField, revoked}};
+}
+
+Revocation Revocation::fromJson(const nlohmann::json& value)
+{
+    if (!value.is_object()) {
+        throw std::runtime_error("a revocation is an object");
     }
-    list.revoked = verified.body.at(kRevokedField).get<std::vector<std::string>>();
-    for (std::size_t i = 0; i < list.revoked.size(); ++i) {
-        requireDeviceId(list.revoked[i]);
-        if (i > 0 && list.revoked[i - 1] >= list.revoked[i]) {
-            throw std::runtime_error("a revocation list names its devices in order, each once");
+    document::requireExactFields(value, revocationFields());
+    Revocation revocation;
+    revocation.number = value.at(kNumberField).get<std::int64_t>();
+    if (revocation.number < kFirstRevocationNumber) {
+        throw std::runtime_error("a revocation is numbered from zero");
+    }
+    revocation.revoked = value.at(kRevokedField).get<std::vector<std::string>>();
+    for (std::size_t i = 0; i < revocation.revoked.size(); ++i) {
+        requireDeviceId(revocation.revoked[i]);
+        if (i > 0 && revocation.revoked[i - 1] >= revocation.revoked[i]) {
+            throw std::runtime_error("a revocation names its devices in order, each once");
         }
     }
-    list.issuedAt = verified.body.at(kIssuedAtField).get<std::int64_t>();
-    return list;
+    return revocation;
 }
 
-bool RevocationList::revokes(const std::string& device) const
+bool Revocation::revokes(const std::string& device) const
 {
     return std::binary_search(revoked.begin(), revoked.end(), device);
 }
@@ -304,30 +304,14 @@ bool DeviceBook::empty() const
     return root_.empty();
 }
 
-bool DeviceBook::complete() const
-{
-    return revocation_.has_value();
-}
-
 const std::string& DeviceBook::root() const
 {
     return root_;
 }
 
-std::int64_t DeviceBook::revocationNumber() const
+const Revocation& DeviceBook::revocation() const
 {
-    if (!revocation_.has_value()) {
-        throw std::logic_error("this book holds no revocation list");
-    }
-    return revocation_->number;
-}
-
-const Bytes& DeviceBook::revocationDer() const
-{
-    if (!revocation_.has_value()) {
-        throw std::logic_error("this book holds no revocation list");
-    }
-    return revocationDer_;
+    return revocation_;
 }
 
 void DeviceBook::requireRoot(const std::string& root)
@@ -341,24 +325,21 @@ void DeviceBook::requireRoot(const std::string& root)
     }
 }
 
-bool DeviceBook::take(const std::vector<Bytes>& certDers, const std::optional<Bytes>& revocationDer)
+bool DeviceBook::take(const std::vector<Bytes>& certDers, const std::optional<Revocation>& revocation)
 {
     DeviceBook next = *this;
     bool learned = false;
-    if (revocationDer.has_value()) {
-        RevocationList list = RevocationList::verify(*revocationDer);
-        next.requireRoot(list.root);
-        if (next.revocation_.has_value() && list.number < next.revocation_->number) {
-            throw std::runtime_error("a revocation list older than the one held");
+    if (revocation.has_value()) {
+        if (revocation->number < next.revocation_.number) {
+            throw std::runtime_error("a revocation older than the one held");
         }
-        if (!next.revocation_.has_value() || list.number > next.revocation_->number) {
-            next.revocation_ = std::move(list);
-            next.revocationDer_ = *revocationDer;
+        if (revocation->number > next.revocation_.number) {
             learned = true;
+            next.revocation_ = *revocation;
             std::erase_if(next.certs_,
-                [&next](const auto& held) { return next.revocation_->revokes(held.first); });
+                [&next](const auto& held) { return next.revocation_.revokes(held.first); });
             std::erase_if(next.certDers_,
-                [&next](const auto& held) { return next.revocation_->revokes(held.first); });
+                [&next](const auto& held) { return next.revocation_.revokes(held.first); });
         }
     }
     for (const Bytes& der : certDers) {
@@ -386,7 +367,7 @@ std::optional<DeviceCertificate> DeviceBook::active(const std::string& device) c
 
 bool DeviceBook::revoked(const std::string& device) const
 {
-    return revocation_.has_value() && revocation_->revokes(device);
+    return revocation_.revokes(device);
 }
 
 std::vector<DeviceCertificate> DeviceBook::activeDevices() const
@@ -411,9 +392,13 @@ std::vector<Bytes> DeviceBook::activeCertDers() const
     return ders;
 }
 
-std::vector<std::string> DeviceBook::revokedIds() const
+std::optional<Bytes> DeviceBook::certDer(const std::string& device) const
 {
-    return revocation_.has_value() ? revocation_->revoked : std::vector<std::string>{};
+    const auto found = certDers_.find(device);
+    if (found == certDers_.end()) {
+        return std::nullopt;
+    }
+    return found->second;
 }
 
 nlohmann::json DeviceBook::toJson() const
@@ -422,11 +407,7 @@ nlohmann::json DeviceBook::toJson() const
     for (const Bytes& der : activeCertDers()) {
         certs.push_back(toBase64(der));
     }
-    nlohmann::json stored = {{kCertsField, certs}};
-    if (revocation_.has_value()) {
-        stored[kRevocationField] = toBase64(revocationDer_);
-    }
-    return stored;
+    return {{kCertsField, certs}, {kRevocationField, revocation_.toJson()}};
 }
 
 DeviceBook DeviceBook::fromJson(const nlohmann::json& stored)
@@ -435,19 +416,14 @@ DeviceBook DeviceBook::fromJson(const nlohmann::json& stored)
     for (const nlohmann::json& cert : stored.at(kCertsField)) {
         certs.push_back(fromBase64(cert.get<std::string>()));
     }
-    std::optional<Bytes> revocation;
-    if (stored.contains(kRevocationField)) {
-        revocation = fromBase64(stored.at(kRevocationField).get<std::string>());
-    }
     DeviceBook book;
-    book.take(certs, revocation);
+    book.take(certs, Revocation::fromJson(stored.at(kRevocationField)));
     return book;
 }
 
 bool DeviceBook::operator==(const DeviceBook& other) const
 {
-    return root_ == other.root_ && certDers_ == other.certDers_
-        && revocationDer_ == other.revocationDer_;
+    return root_ == other.root_ && certDers_ == other.certDers_ && revocation_ == other.revocation_;
 }
 
 DeviceCredential::DeviceCredential(Identity signing, Bytes certDer)
@@ -489,6 +465,37 @@ const std::string& DeviceCredential::device() const
 const std::string& DeviceCredential::account() const
 {
     return cert_.root;
+}
+
+Bytes DeviceDeparture::issue(const DeviceCredential& device, const std::int64_t issuedAt)
+{
+    const nlohmann::json body = {
+        {kVersionField, kCertificateFormatVersion},
+        {kTypeField, kDepartureType},
+        {kRootField, device.account()},
+        {kDeviceField, device.device()},
+        {kIssuedAtField, issuedAt},
+    };
+    document::requireExactFields(body, departureFields());
+    return hybrid::signJson(body, device.signing());
+}
+
+DeviceDeparture DeviceDeparture::verify(const Bytes& der, const DeviceCertificate& cert)
+{
+    const hybrid::VerifiedJson verified = document::verifyTagged(der, kDepartureType);
+    document::requireExactFields(verified.body, departureFields());
+    if (verified.signerClassicalDer != cert.signingClassicalDer
+        || verified.signerPqDer != cert.signingPqDer) {
+        throw std::runtime_error("a departure signed by other keys than its device's");
+    }
+    DeviceDeparture departure;
+    departure.root = verified.body.at(kRootField).get<std::string>();
+    departure.device = verified.body.at(kDeviceField).get<std::string>();
+    departure.issuedAt = verified.body.at(kIssuedAtField).get<std::int64_t>();
+    if (departure.root != cert.root || departure.device != cert.device) {
+        throw std::runtime_error("a departure names another device than the one that signed it");
+    }
+    return departure;
 }
 
 }  // namespace bazarish

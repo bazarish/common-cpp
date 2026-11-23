@@ -74,6 +74,13 @@ AccountInfo readInfo(const std::string& id, const fs::path& file, const std::str
     }
     info.fingerprint = meta.value("fingerprint", std::string{});
     info.encrypted = !passphrase.empty();
+    const DeviceCertificate own = DeviceCertificate::verify(db->get("device-cert").value());
+    info.primary = own.role == DeviceRole::ePrimary;
+    const DeviceBook book = DeviceBook::fromJson(parseJson(db->text("own-devices")).at("book"));
+    for (const DeviceCertificate& cert : book.activeDevices()) {
+        info.otherPrimaries = info.otherPrimaries
+            || (cert.device != own.device && cert.role == DeviceRole::ePrimary);
+    }
     return info;
 }
 

@@ -110,7 +110,7 @@ void testMissingOrBrokenBlockIsRefused()
 void testCertTravelsOnlyWhenAskedFor()
 {
     const Account author;
-    nlohmann::json introduction = message(author.fingerprint(), "hello", "account.devices");
+    nlohmann::json introduction = message(author.fingerprint(), "hello");
     signAuthorship(introduction, author.device, /*withCert=*/true);
     CHECK(carriedCert(introduction) == author.certDer);
     CHECK(authorOf(introduction, DeviceBook{}).account == author.fingerprint());
@@ -120,32 +120,33 @@ void testCertTravelsOnlyWhenAskedFor()
     CHECK(carriedCert(later).empty());
     CHECK_THROWS(authorOf(later, DeviceBook{}));
     DeviceBook learned;
-    learned.take({carriedCert(introduction)}, std::nullopt);
+    learned.take({carriedCert(introduction)});
     CHECK(authorOf(later, learned).account == author.fingerprint());
 }
 
-void testCertOnlyOnTheLettersThatIntroduceADevice()
+void testAnyLetterMayCarryTheCert()
 {
     const Account author;
-    for (const char* const type : {"contact.request", "account.devices", "device.devices"}) {
-        nlohmann::json introducing = message(author.fingerprint(), "hello", type);
-        signAuthorship(introducing, author.device, /*withCert=*/true);
-        CHECK(authorOf(introducing, DeviceBook{}).account == author.fingerprint());
+    for (const char* const type : {"contact.request", "text", "reaction", "contact.knows"}) {
+        nlohmann::json carrying = message(author.fingerprint(), "hello", type);
+        signAuthorship(carrying, author.device, /*withCert=*/true);
+        CHECK(authorOf(carrying, DeviceBook{}).account == author.fingerprint());
+        CHECK(authorOf(carrying, author.book()).account == author.fingerprint());
     }
-    nlohmann::json text = message(author.fingerprint(), "hello");
-    signAuthorship(text, author.device, /*withCert=*/true);
-    CHECK_THROWS(authorOf(text, DeviceBook{}));
-    CHECK_THROWS(authorOf(text, author.book()));
+    const Account stranger;
+    nlohmann::json foreign = message(author.fingerprint(), "hello");
+    signAuthorship(foreign, stranger.device, /*withCert=*/true);
+    CHECK_THROWS(authorOf(foreign, author.book()));
 }
 
 void testRevokedDeviceIsRefused()
 {
     const Account author;
     DeviceBook book = author.book();
-    nlohmann::json content = message(author.fingerprint(), "hello", "account.devices");
+    nlohmann::json content = message(author.fingerprint(), "hello");
     signAuthorship(content, author.device, /*withCert=*/true);
     CHECK(authorOf(content, book).account == author.fingerprint());
-    book.take({}, RevocationList::issue(author.root, 1, {author.keys.id()}, devicetest::kIssuedAt));
+    book.take({}, Revocation::of(1, {author.keys.id()}));
     CHECK_THROWS(authorOf(content, book));
 }
 
@@ -178,7 +179,7 @@ try {
     testAnotherAuthorsBlockIsRefused();
     testMissingOrBrokenBlockIsRefused();
     testCertTravelsOnlyWhenAskedFor();
-    testCertOnlyOnTheLettersThatIntroduceADevice();
+    testAnyLetterMayCarryTheCert();
     testRevokedDeviceIsRefused();
     testWhatTheBlockCosts();
     std::printf("TestAuthorship: all checks passed\n");

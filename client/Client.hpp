@@ -56,6 +56,19 @@ struct OverviewDevice {
     bool operator==(const OverviewDevice&) const = default;
 };
 
+struct ServerDevice {
+    Bytes certDer;
+    Bytes sealingDer;
+    bool registered = false;
+    Bytes departure;
+};
+
+struct ServerDeviceList {
+    std::uint64_t version = 0;
+    std::vector<ServerDevice> devices;
+    Bytes card;
+};
+
 // What the Account page shows of the server's side; the version names one state of it.
 struct AccountOverview {
     std::string version;
@@ -64,6 +77,7 @@ struct AccountOverview {
     std::int64_t transientExpires = 0;
     MailboxUsage usage;
     std::vector<OverviewDevice> devices;
+    std::uint64_t devicesVersion = 0;
 
     bool operator==(const AccountOverview&) const = default;
 };
@@ -81,6 +95,7 @@ struct PublishResult {
 
 struct ContactInfo {
     ContactCard card;
+    Bytes cardDer;
     Bytes cardKey;
 };
 
@@ -155,8 +170,8 @@ public:
     bool facadePublishedAnew();
     void liftStandOff();
 
-    PublishResult publishCard(const ContactCard& content, const Bytes& cardKey,
-        const DestinationInfo& serving, std::int64_t notBefore);
+    PublishResult publishCard(const ContactCard& content, const Identity& root,
+        const Bytes& cardKey, const DestinationInfo& serving, std::int64_t notBefore);
 
     void closeAccount();
     void registerHere();
@@ -176,8 +191,9 @@ public:
     DestinationInfo myDestination();
 
     // `install` tells this copy of the device from any other copy of its keys.
-    void registerThisDevice(const std::string& install);
-    void forgetDeviceMail(const std::string& device);
+    void registerThisDevice(const std::string& install, const Bytes& sealingDer);
+    ServerDeviceList deviceList();
+    void depart(const Bytes& departure);
     void onDeviceRevoked(std::function<void()> tell) { api_.onDeviceRevoked(std::move(tell)); }
     void onLinkStage(std::function<void(LinkStage)> tell) { api_.onLinkStage(std::move(tell)); }
     void registerPasses(const std::vector<Bytes>& handles);
@@ -186,11 +202,14 @@ public:
     // A held wait ends when mail arrives or the link breaks, and at no set time.
     enum class MailWait { eAtOnce, eHeld };
     // A held wait is not ended by the items named in `deferred`, which this device holds already.
-    std::vector<PendingEntry> waitForPending(MailWait wait, const std::vector<std::string>& deferred);
+    std::vector<PendingEntry> waitForPending(MailWait wait, const std::vector<std::string>& deferred,
+        std::optional<std::uint64_t> devicesVersion);
     std::optional<MailboxUsage> lastMailboxUsage() const;
+    std::optional<std::uint64_t> lastDevicesVersion() const;
     // Items no longer held are left out of the answer.
     std::vector<FetchedItem> fetch(const std::vector<std::string>& ids);
     void ack(const std::vector<std::string>& ids);
+    // An empty `toDevice` writes for every other registered device.
     void submitSelf(const std::string& deliveryId, const Bytes& payload, const std::string& kind,
         const std::string& toDevice);
 
@@ -203,6 +222,7 @@ private:
     std::shared_ptr<WireLog> log_ = std::make_shared<WireLog>();
     ApiClient api_;
     std::optional<MailboxUsage> lastMailboxUsage_;
+    std::optional<std::uint64_t> lastDevicesVersion_;
 };
 
 }  // namespace bazarish::client

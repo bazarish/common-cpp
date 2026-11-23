@@ -27,14 +27,12 @@ struct ContactCard {
     std::vector<EpochPublic> epochs;
     std::int64_t issuedAt = 0;
     Bytes servingSealingKeyDer;
-    // The account's active devices and its newest revocation list, each signed by its root.
-    DeviceBook devices;
-    // The device that signed the card.
-    std::string signer;
+    Revocation revocation;
+    std::string owner;
 
     std::string fingerprint() const;
 
-    Bytes issue(const Identity& deviceSigning) const;
+    Bytes issue(const Identity& root) const;
     static ContactCard verify(const Bytes& der);
 
     Key servingSealingKey() const;

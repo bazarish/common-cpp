@@ -81,6 +81,9 @@ struct Contact {
     std::int64_t exchangedAt = 0;
     std::string displayName;
     DeviceBook devices;
+    Bytes card;
+    // This device's alone: it never travels in the address book.
+    bool knowsMe = false;
     Bytes avatar;
     std::string avatarMime;
     bool avatarSentToPeer = false;
@@ -285,6 +288,30 @@ struct OwnDevice {
     std::int64_t issuedAt = 0;
     bool revoked = false;
     bool current = false;
+    // The server holds no mail for it: it left, or asked for none for 30 days.
+    bool registered = true;
+    bool departed = false;
+};
+
+struct OwnListing {
+    bool registered = true;
+    Bytes departure;
+};
+
+class DevicesWatch {
+public:
+    std::optional<std::uint64_t> held() const;
+    void hold(std::uint64_t version);
+    // Tells the owner when `version` is not the one held.
+    void saw(std::uint64_t version);
+    bool moved() const;
+    void onMoved(std::function<void()> tell);
+
+private:
+    mutable std::mutex mutex_;
+    std::optional<std::uint64_t> held_;
+    std::optional<std::uint64_t> seen_;
+    std::function<void()> tell_;
 };
 
 struct ContactDevice {
@@ -379,9 +406,10 @@ public:
     bool isPrimary() const;
     // Active devices oldest first, then the revoked ones.
     std::vector<OwnDevice> ownDevices() const;
-    // A new revocation list, card and key for the current epoch; only the devices left get the key.
+    // A card that revokes the device and new epoch keys; only the devices left get the keys.
     void revokeDevice(const std::string& deviceId);
-    void forgetDeviceMail(const std::string& deviceId);
+    // Before the profile is removed: the server unregisters this device.
+    void leaveAccount();
     // After a restore from a backup: the account's other active devices, until the user answers.
     std::vector<OwnDevice> devicesToReview() const;
     // Revokes the chosen ones, none for keeping them all, and the question is settled.
@@ -545,6 +573,7 @@ public:
         std::string accountLabel;
         FetchTransport transport;
         std::shared_ptr<const KeptMail> keptMail;
+        std::shared_ptr<DevicesWatch> devices;
     };
     struct AliasErrandContext {
         std::string rootPem;
@@ -606,7 +635,7 @@ public:
     static std::unique_ptr<Client> makeEventClient(const ContactFetchContext& context);
     // The items this device keeps are left out of the answer and do not end a held wait.
     static std::vector<PendingEntry> waitForMail(
-        Client& waiter, Client::MailWait wait, const KeptMail& kept);
+        Client& waiter, Client::MailWait wait, const KeptMail& kept, DevicesWatch& devices);
 
     static ContactCardResolved resolveContactCard(const ContactFetchContext& context,
         const ContactCardRequest& request, const std::function<void(CardStep)>& onStep);
@@ -897,7 +926,7 @@ private:
     void adoptAddressKeys(const SecretBytes& sealingPem, const SecretBytes& signingPem);
     Bytes servingSealingDer() const;
     void registerEveryPass();
-    nlohmann::json routingLetter() const;
+    nlohmann::json cardLetter() const;
     void signRoutingCarrier();
     void noteExchange(const std::string& peerFingerprint);
     void makeCardEpochs();
@@ -938,13 +967,17 @@ private:
     std::vector<std::string> siblingDevices() const;
     void persistOwnDevices() const;
     void noteRevokedSeen();
-    nlohmann::json ownDevicesLetter() const;
-    void sendOwnDevicesToDevices();
-    void sendDevicesTo(const std::string& peerFingerprint);
-    void announceThisDevice();
-    void takeOwnDevices(const nlohmann::json& body);
-    void takeContactDevices(const std::string& peerFingerprint, const nlohmann::json& body);
-    void takeContactBook(Contact& contact, const DeviceBook& offered);
+    void revokeDevices(const std::vector<std::string>& devices);
+    void takeContactCert(const std::string& peerFingerprint, const Bytes& certDer);
+    // Reads the `knows` of a letter the contact signed; answers a `contact.knows` that misses us.
+    void noteKnows(const std::string& peerFingerprint, const nlohmann::json& body);
+    void askToKnow(const std::string& peerFingerprint);
+    void signForContact(nlohmann::json& inner, const std::string& peerFingerprint) const;
+    // True when the card moved the contact to another destination.
+    bool takeCardLetter(const std::string& peerFingerprint, const nlohmann::json& body);
+    bool takeContactCard(const std::string& peerFingerprint, Contact& contact, const ContactCard& card,
+        const Bytes& der);
+    static std::optional<std::int64_t> revocationNumberOf(const Contact& contact);
     void withdrawSelfDeliveriesTo(const std::string& device);
     nlohmann::json bundleBase();
 
@@ -994,16 +1027,19 @@ private:
     bool createsEpochs() const;
     void ensureOwnEpochs();
     bool republishCardIfStale();
+    void enrollHere();
+    // False when the server serves no such account yet.
+    bool joinServer();
+    void takeDeviceList();
+    void takeDeviceListIfMoved();
     void keepEpochs();
     bool sendsEpochsTo(const std::string& peerFingerprint) const;
     bool epochsQueued(const std::string& peerFingerprint) const;
     void sendEpochsTo(const std::string& peerFingerprint);
-    void takeEpochs(const std::string& peerFingerprint, const std::string& fromDevice,
-        const nlohmann::json& body);
     void takeOwnEpochs(const std::string& fromDevice, const nlohmann::json& body);
     void sendRingToDevices(const std::set<EpochNumber>& numbers, std::vector<std::string> devices);
+    void sendRingToSelf(const std::set<EpochNumber>& numbers);
     void dropUnmadeEpochs(Contact& contact) const;
-    void takeContactEpochs(const std::string& peerFingerprint, const std::vector<EpochPublic>& offered);
     // What asks for a contact's card: maintenance waits a day after any try, the others only after one that came.
     enum class CardAsk { eMaintenance, eUser, eEvent };
     bool refreshContactEpochs(const std::string& peerFingerprint, CardAsk ask);
@@ -1015,6 +1051,7 @@ private:
     CardFetched fetchContactCard(const std::string& peerFingerprint);
     void takeNewerLeaseSets();
     bool unknownDeviceOf(const std::string& peerFingerprint, const nlohmann::json& body) const;
+    bool unknownOwnDevice(const nlohmann::json& body) const;
     void syncAvatarToSelf();
     void syncContactNameToSelf(const std::string& peerFingerprint, const std::string& name);
     void storeOwnAvatar(const Bytes& data, const std::string& mime);
@@ -1240,6 +1277,11 @@ private:
     std::map<std::string, std::int64_t> revokedSeen_;
     // The sealing key of each of the account's devices, this one too.
     std::map<std::string, Bytes> ownSealing_;
+    std::map<std::string, OwnListing> ownListing_;
+    // The devices a restored backup named, offered for revocation until the user answers.
+    DeviceBook reviewBook_;
+    std::uint64_t devicesVersion_ = 0;
+    std::shared_ptr<DevicesWatch> devicesWatch_ = std::make_shared<DevicesWatch>();
     UtcClock epochClock_ = systemUtcSeconds;
     std::map<std::string, std::int64_t> epochsDue_;
     // UTC second each missing epoch of ours is made at, unless another device's key comes first.
@@ -1314,7 +1356,6 @@ private:
     bool acceptCalls_ = true;
     bool sendReceipts_ = true;
     bool showPresence_ = true;
-    bool announceOwed_ = false;
     bool reviewDevices_ = false;
     std::unique_ptr<Presence> presence_;
     std::vector<std::string> presenceOrder_;

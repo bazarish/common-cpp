@@ -13,8 +13,10 @@ constexpr std::size_t kMaxSealedBodyBytes = kMaxMessagePayloadBytes - kHybridSea
 constexpr std::size_t kMaxMessageIdBytes = 64;
 constexpr std::size_t kMaxMediaNameBytes = 255;
 constexpr std::size_t kMaxMediaMimeBytes = 255;
+// docs-main Messages.md, auth: `knows` names the newest ones.
+constexpr std::size_t kMaxKnownDevices = 32;
 // All but the media of the heaviest picture or voice message, as TestDeliveryPass weighs it.
-constexpr std::size_t kMediaMessageReserveBytes = 9522;
+constexpr std::size_t kMediaMessageReserveBytes = 18274;
 constexpr std::size_t kMaxMediaBytes = kMaxSealedBodyBytes - kMediaMessageReserveBytes;
 constexpr std::size_t kMaxPendingContactRequests = 30;
 

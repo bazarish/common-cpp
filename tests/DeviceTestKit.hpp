@@ -28,8 +28,7 @@ struct Device {
     DeviceCredential credential;
 };
 
-// The devices of `root` as a card lists them, with the revocation list numbered `number`.
-inline DeviceBook bookOf(const Identity& root, const std::vector<const Device*>& devices,
+inline DeviceBook bookOf(const std::vector<const Device*>& devices,
     const std::int64_t number = kFirstRevocationNumber, const std::vector<std::string>& revoked = {})
 {
     std::vector<Bytes> certs;
@@ -37,7 +36,7 @@ inline DeviceBook bookOf(const Identity& root, const std::vector<const Device*>&
         certs.push_back(device->certDer);
     }
     DeviceBook book;
-    book.take(certs, RevocationList::issue(root, number, revoked, kIssuedAt));
+    book.take(certs, Revocation::of(number, revoked));
     return book;
 }
 
@@ -51,7 +50,7 @@ struct Account {
 
     std::string fingerprint() const { return root.fingerprint(); }
 
-    DeviceBook book() const { return bookOf(root, {&primary}); }
+    DeviceBook book() const { return bookOf({&primary}); }
 };
 
 }  // namespace bazarish::devicetest

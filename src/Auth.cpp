@@ -276,12 +276,12 @@ DeviceCaller verifyDeviceRequest(const Headers& headers, const std::int64_t now,
     ReplayCache& replayCache)
 {
     const Bytes canonicalBytes = signedCanonical(headers, now, method, target, body);
-    const DeviceCertificate cert
-        = DeviceCertificate::verify(fromBase64(requireHeader(headers, kHeaderDevice)));
+    Bytes certDer = fromBase64(requireHeader(headers, kHeaderDevice));
+    const DeviceCertificate cert = DeviceCertificate::verify(certDer);
     cert.requireSigned(canonicalBytes, fromBase64(requireHeader(headers, kHeaderSignatureClassical)),
         fromBase64(requireHeader(headers, kHeaderSignaturePq)));
     requireFirstUse(headers, now, replayCache);
-    return DeviceCaller{cert.root, cert.device, cert.role};
+    return DeviceCaller{cert.root, cert.device, cert.role, std::move(certDer)};
 }
 
 }  // namespace bazarish::auth

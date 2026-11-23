@@ -100,53 +100,71 @@ try {
     }
 
     {
-        const Bytes listed = RevocationList::issue(root, 2, {tablet.id(), phone.id(), tablet.id()}, kNow);
-        const RevocationList list = RevocationList::verify(listed);
-        CHECK(list.root == root.fingerprint());
-        CHECK(list.number == 2);
-        CHECK(list.revoked.size() == 2);
-        CHECK(list.revokes(tablet.id()));
-        CHECK(!list.revokes("aaaaaaaaaa"));
-        CHECK_THROWS(RevocationList::issue(root, -1, {}, kNow));
-        CHECK_THROWS(RevocationList::issue(root, 1, {"nope"}, kNow));
-        nlohmann::json unordered = hybrid::verifyJson(listed).body;
+        const Revocation revocation = Revocation::of(2, {tablet.id(), phone.id(), tablet.id()});
+        CHECK(revocation.number == 2);
+        CHECK(revocation.revoked.size() == 2);
+        CHECK(revocation.revokes(tablet.id()));
+        CHECK(!revocation.revokes("aaaaaaaaaa"));
+        CHECK(Revocation::fromJson(revocation.toJson()) == revocation);
+        CHECK_THROWS(Revocation::of(-1, {}));
+        CHECK_THROWS(Revocation::of(1, {"nope"}));
+        nlohmann::json unordered = revocation.toJson();
         std::swap(unordered["revoked"][0], unordered["revoked"][1]);
-        CHECK_THROWS(RevocationList::verify(hybrid::signJson(unordered, root)));
-        CHECK_THROWS(RevocationList::verify(hybrid::signJson(hybrid::verifyJson(listed).body,
-            Identity::generate())));
+        CHECK_THROWS(Revocation::fromJson(unordered));
+        nlohmann::json twice = revocation.toJson();
+        twice["revoked"][1] = twice["revoked"][0];
+        CHECK_THROWS(Revocation::fromJson(twice));
+        nlohmann::json extra = revocation.toJson();
+        extra["issuedAt"] = kNow;
+        CHECK_THROWS(Revocation::fromJson(extra));
     }
 
     {
-        const Bytes first = RevocationList::issue(root, kFirstRevocationNumber, {}, kNow);
+        const DeviceCredential leaving(Identity::fromPrivatePem(tablet.signingPem()), tabletCert);
+        const Bytes departure = DeviceDeparture::issue(leaving, kNow);
+        const DeviceDeparture taken
+            = DeviceDeparture::verify(departure, DeviceCertificate::verify(tabletCert));
+        CHECK(taken.root == root.fingerprint());
+        CHECK(taken.device == tablet.id());
+        CHECK(taken.issuedAt == kNow);
+        CHECK_THROWS(DeviceDeparture::verify(departure, DeviceCertificate::verify(phoneCert)));
+        nlohmann::json other = hybrid::verifyJson(departure).body;
+        other["device"] = phone.id();
+        CHECK_THROWS(DeviceDeparture::verify(
+            hybrid::signJson(other, tablet.signing()), DeviceCertificate::verify(tabletCert)));
+        CHECK_THROWS(DeviceDeparture::verify(hybrid::signJson(hybrid::verifyJson(departure).body,
+                                                 root),
+            DeviceCertificate::verify(tabletCert)));
+        CHECK_THROWS(DeviceDeparture::verify(phoneCert, DeviceCertificate::verify(tabletCert)));
+    }
+
+    {
         DeviceBook book;
         CHECK(book.empty());
-        CHECK(book.take({phoneCert}, std::nullopt));
-        CHECK(!book.complete());
+        CHECK(book.take({phoneCert}));
         CHECK(book.root() == root.fingerprint());
-        CHECK(book.take({tabletCert}, first));
-        CHECK(book.complete());
-        CHECK(!book.take({phoneCert, tabletCert}, first));
+        CHECK(book.take({tabletCert}, Revocation::of(kFirstRevocationNumber, {})));
+        CHECK(!book.take({phoneCert, tabletCert}, Revocation::of(kFirstRevocationNumber, {})));
         CHECK(book.activeDevices().size() == 2);
         CHECK(book.activeDevices().front().device == phone.id());
         CHECK(book.active(tablet.id()).has_value());
+        CHECK(book.certDer(tablet.id()) == tabletCert);
 
         const Identity stranger = Identity::generate();
         const DeviceKeys stray = DeviceKeys::generate();
         CHECK_THROWS(book.take(
-            {DeviceCertificate::issue(stranger, DevicePublic::of(stray), DeviceRole::ePrimary, kNow)},
-            std::nullopt));
-        CHECK_THROWS(book.take({}, RevocationList::issue(stranger, 1, {}, kNow)));
+            {DeviceCertificate::issue(stranger, DevicePublic::of(stray), DeviceRole::ePrimary, kNow)}));
         CHECK(book.activeDevices().size() == 2);
 
-        const Bytes second = RevocationList::issue(root, 1, {tablet.id()}, kNow);
-        CHECK(book.take({}, second));
+        CHECK(book.take({}, Revocation::of(1, {tablet.id()})));
         CHECK(book.revoked(tablet.id()));
         CHECK(!book.active(tablet.id()).has_value());
-        CHECK(book.revokedIds() == std::vector<std::string>{tablet.id()});
-        CHECK(!book.take({tabletCert}, std::nullopt));
+        CHECK(!book.certDer(tablet.id()).has_value());
+        CHECK(book.revocation().revoked == std::vector<std::string>{tablet.id()});
+        CHECK(!book.take({tabletCert}));
         CHECK(!book.active(tablet.id()).has_value());
-        CHECK_THROWS(book.take({}, first));
-        CHECK(book.revocationNumber() == 1);
+        CHECK_THROWS(book.take({}, Revocation::of(kFirstRevocationNumber, {})));
+        CHECK(book.revocation().number == 1);
 
         const DeviceBook stored = DeviceBook::fromJson(book.toJson());
         CHECK(stored == book);

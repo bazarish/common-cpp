@@ -36,70 +36,27 @@ constexpr char kKindField[] = "kind";
 constexpr char kDestField[] = "dest";
 constexpr char kEpochsField[] = "epochs";
 constexpr char kServingKeyField[] = "servingKey";
-constexpr char kDevicesField[] = "devices";
 constexpr char kRevocationField[] = "revocation";
 
 const std::set<std::string_view>& contactCardFields()
 {
     static const std::set<std::string_view> kFields{kVersionField, kTypeField, kIssuedAtField,
-        kKindField, kDestField, kEpochsField, kServingKeyField, kDevicesField, kRevocationField};
+        kKindField, kDestField, kEpochsField, kServingKeyField, kRevocationField};
     return kFields;
 }
 
 void requireCardEpochs(
-    const std::vector<bazarish::EpochPublic>& epochs, const bazarish::DeviceBook& devices)
+    const std::vector<bazarish::EpochPublic>& epochs, const bazarish::Revocation& revocation)
 {
     if (bazarish::chosenEpochs(epochs).size() != epochs.size() || epochs.size() != bazarish::kCardEpochs
         || epochs.back().n != epochs.front().n + 1) {
         throw std::runtime_error("a contact card carries an epoch and the one after it");
     }
     for (const bazarish::EpochPublic& epoch : epochs) {
-        const std::optional<bazarish::DeviceCertificate> maker = devices.active(epoch.by);
-        if (!maker.has_value() || maker->role != bazarish::DeviceRole::ePrimary) {
-            throw std::runtime_error("a contact card carries an epoch key no primary device made");
-        }
-        if (epoch.g > devices.revocationNumber()) {
-            throw std::runtime_error("a contact card carries an epoch key of a list it does not hold");
+        if (epoch.g > revocation.number) {
+            throw std::runtime_error("a contact card carries an epoch key of a revocation it does not hold");
         }
     }
-}
-
-bazarish::DeviceBook cardDevices(const std::vector<bazarish::Bytes>& certDers,
-    const bazarish::Bytes& revocationDer)
-{
-    bazarish::DeviceBook devices;
-    devices.take(certDers, revocationDer);
-    if (devices.activeDevices().size() != certDers.size()) {
-        throw std::runtime_error("a contact card lists each active device of its account once");
-    }
-    return devices;
-}
-
-std::vector<bazarish::Bytes> certsFromJson(const nlohmann::json& list)
-{
-    if (!list.is_array() || list.empty()) {
-        throw std::runtime_error("a contact card lists the devices of its account");
-    }
-    std::vector<bazarish::Bytes> certs;
-    for (const nlohmann::json& cert : list) {
-        certs.push_back(bazarish::fromBase64(cert.get<std::string>()));
-    }
-    return certs;
-}
-
-std::string signingDevice(const bazarish::Bytes& classicalDer, const bazarish::Bytes& pqDer,
-    const bazarish::DeviceBook& devices)
-{
-    const std::string id = bazarish::deviceIdOf(classicalDer, pqDer);
-    const std::optional<bazarish::DeviceCertificate> signer = devices.active(id);
-    if (!signer.has_value() || signer->signingClassicalDer != classicalDer
-        || signer->signingPqDer != pqDer) {
-        throw std::runtime_error("a contact card signed by none of its account's devices");
-    }
-    if (signer->role != bazarish::DeviceRole::ePrimary) {
-        throw std::runtime_error("a contact card carries epoch keys, so only a primary device signs it");
-    }
-    return id;
 }
 
 const char* cardType(const bazarish::ServerCard::Service service)
@@ -112,12 +69,8 @@ const char* cardType(const bazarish::ServerCard::Service service)
 
 namespace bazarish {
 
-Bytes ContactCard::issue(const Identity& deviceSigning) const
+Bytes ContactCard::issue(const Identity& root) const
 {
-    nlohmann::json certs = nlohmann::json::array();
-    for (const Bytes& der : devices.activeCertDers()) {
-        certs.push_back(toBase64(der));
-    }
     const nlohmann::json body = {
         {kVersionField, kCertificateFormatVersion},
         {kTypeField, kContactCardType},
@@ -126,13 +79,11 @@ Bytes ContactCard::issue(const Identity& deviceSigning) const
         {kDestField, dest},
         {kEpochsField, epochsJson(epochs)},
         {kServingKeyField, toBase64(servingSealingKeyDer)},
-        {kDevicesField, certs},
-        {kRevocationField, toBase64(devices.revocationDer())},
+        {kRevocationField, revocation.toJson()},
     };
     requireExactFields(body, contactCardFields());
-    requireCardEpochs(epochs, devices);
-    signingDevice(deviceSigning.classical().publicDer(), deviceSigning.pq().publicDer(), devices);
-    return hybrid::signJson(body, deviceSigning);
+    requireCardEpochs(epochs, revocation);
+    return hybrid::signJson(body, root);
 }
 
 ContactCard ContactCard::verify(const Bytes& der)
@@ -144,11 +95,10 @@ ContactCard ContactCard::verify(const Bytes& der)
     card.kind = accountKindFromName(verified.body.at(kKindField).get<std::string>());
     card.dest = verified.body.at(kDestField).get<std::string>();
     validateB33I2pHost(card.dest);
-    card.devices = cardDevices(certsFromJson(verified.body.at(kDevicesField)),
-        fromBase64(verified.body.at(kRevocationField).get<std::string>()));
-    card.signer = signingDevice(verified.signerClassicalDer, verified.signerPqDer, card.devices);
+    card.revocation = Revocation::fromJson(verified.body.at(kRevocationField));
+    card.owner = hybridFingerprint(verified.signerClassicalDer, verified.signerPqDer);
     card.epochs = epochsFromJson(verified.body.at(kEpochsField));
-    requireCardEpochs(card.epochs, card.devices);
+    requireCardEpochs(card.epochs, card.revocation);
     card.servingSealingKeyDer = fromBase64(verified.body.at(kServingKeyField).get<std::string>());
     if (!hybrid::isSealingKey(Key::fromPublicDer(card.servingSealingKeyDer))) {
         throw std::runtime_error("a contact card names a serving key that is not X25519 and ML-KEM-768");
@@ -158,7 +108,7 @@ ContactCard ContactCard::verify(const Bytes& der)
 
 std::string ContactCard::fingerprint() const
 {
-    return devices.root();
+    return owner;
 }
 
 Key ContactCard::servingSealingKey() const

@@ -225,8 +225,8 @@ std::vector<EpochPublic> mergedEpochs(const std::vector<EpochPublic>& held,
     return merged;
 }
 
-std::vector<EpochPublic> admittedEpochs(
-    const std::vector<EpochPublic>& offered, const DeviceBook& devices, const std::int64_t utcSeconds)
+std::vector<EpochPublic> admittedEpochs(const std::vector<EpochPublic>& offered,
+    const std::optional<std::int64_t> revocationNumber, const std::int64_t utcSeconds)
 {
     const EpochNumber horizon = epochAt(utcSeconds) + kEpochPushHorizon;
     std::vector<EpochPublic> admitted;
@@ -234,12 +234,8 @@ std::vector<EpochPublic> admittedEpochs(
         if (epoch.n > horizon) {
             continue;
         }
-        if (devices.complete()) {
-            const std::optional<DeviceCertificate> maker = devices.active(epoch.by);
-            if (!maker.has_value() || maker->role != DeviceRole::ePrimary
-                || epoch.g > devices.revocationNumber()) {
-                continue;
-            }
+        if (revocationNumber.has_value() && epoch.g > *revocationNumber) {
+            continue;
         }
         admitted.push_back(epoch);
     }

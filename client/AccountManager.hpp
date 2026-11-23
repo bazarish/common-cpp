@@ -17,6 +17,8 @@ struct AccountInfo {
     std::filesystem::path file;
     std::string fingerprint;
     bool encrypted = false;
+    bool primary = false;
+    bool otherPrimaries = false;
 };
 
 class AccountManager {

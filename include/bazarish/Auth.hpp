@@ -83,6 +83,7 @@ struct DeviceCaller {
     std::string user;
     std::string device;
     DeviceRole role = DeviceRole::eSecondary;
+    Bytes certDer;
 };
 
 DeviceCaller verifyDeviceRequest(const Headers& headers, std::int64_t now,

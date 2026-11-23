@@ -20,6 +20,7 @@ namespace bazarish::teststub {
 
 inline constexpr const char* kCallerHeader = "x-bazarish-test-caller";
 inline constexpr const char* kCallerDeviceHeader = "x-bazarish-test-device";
+inline constexpr const char* kCallerCertHeader = "x-bazarish-test-cert";
 
 class Tunnel {
 public:
@@ -87,7 +88,7 @@ private:
                 replays_);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                secrets_.push_back({hello.secret, caller.user, caller.device, 0});
+                secrets_.push_back({hello.secret, caller.user, caller.device, caller.certDer, 0});
                 ++opened_;
             }
             sealed(bazarish::tunnel::sealWelcome(
@@ -100,6 +101,7 @@ private:
         SecretBytes key;
         std::string caller;
         std::string device;
+        Bytes certDer;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             for (Opened& open : secrets_) {
@@ -111,6 +113,7 @@ private:
                             open.secret, toHex(sha256(open.secret.bytes())).substr(0, 32));
                         caller = open.user;
                         device = open.device;
+                        certDer = open.certDer;
                         break;
                     }
                 }
@@ -175,6 +178,7 @@ private:
         }
         inner.headers[kCallerHeader] = caller;
         inner.headers[kCallerDeviceHeader] = device;
+        inner.headers[kCallerCertHeader] = toBase64(certDer);
         server.dispatch(inner, [this, sealed, handle, key](bazarish::http::Response answer) {
             bazarish::tunnel::Response out;
             out.status = answer.status;
@@ -199,6 +203,7 @@ private:
         SecretBytes secret;
         std::string user;
         std::string device;
+        Bytes certDer;
         std::uint64_t lastSeq = 0;
     };
 

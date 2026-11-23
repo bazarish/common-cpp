@@ -96,6 +96,13 @@ struct Account {
     std::int64_t delegatedUntil = 0;
     std::set<std::string> passes;
     std::map<std::string, std::string> installs;
+    struct Listed {
+        Bytes cert;
+        Bytes sealing;
+        Bytes departure;
+    };
+    std::map<std::string, Listed> listed;
+    std::uint64_t devicesVersion = 0;
     std::set<std::string> seen;
     std::vector<Item> mailbox;
 };
@@ -174,6 +181,11 @@ std::string requireCaller(const http::Request& request)
 std::string requireDevice(const http::Request& request)
 {
     return request.header(bazarish::teststub::kCallerDeviceHeader);
+}
+
+Bytes callerCert(const http::Request& request)
+{
+    return fromBase64(request.header(bazarish::teststub::kCallerCertHeader));
 }
 
 using StubHandler = std::function<void(const http::Request&, http::Response&)>;
@@ -613,10 +625,8 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
     CHECK(r->deviceId() != lostDevice);
     {
         const std::vector<OwnDevice> devices = r->ownDevices();
-        CHECK(devices.size() == 2);
-        CHECK(std::none_of(devices.begin(), devices.end(), [](const OwnDevice& d) { return d.revoked; }));
-        CHECK(std::any_of(devices.begin(), devices.end(),
-            [&](const OwnDevice& d) { return d.id == lostDevice; }));
+        CHECK(devices.size() == 1);
+        CHECK(devices.front().current);
     }
     const EpochNumber current = epochAt(restoreAt);
     std::printf("%s: restored device %s (lost %s); epoch now %lld, backup epochs %lld..%lld\n",
@@ -674,7 +684,6 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
             static_cast<long long>(card.epochs.front().n), card.epochs.front().by.c_str(),
             static_cast<long long>(card.epochs.back().n), card.dest.substr(0, 8).c_str());
         CHECK(card.epochs.front().n == current);
-        CHECK(card.devices.active(lostDevice).has_value());
     }
     CHECK(r->i2pAddress() == uAddress);
 
@@ -704,15 +713,15 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
             return epochFor(epochsFromJson(held.at(contact.fingerprint()).at("epochs")), m.utc.load())
                 .has_value();
         };
+        const bool onTheLeaseSet = testutil::waitFor([&]() {
+            r->flushPendingEchoes();
+            return holdsEpochOf(*bot);
+        });
         const bool failedFirst = [&]() {
             const std::lock_guard<std::mutex> lock(m.mu);
             const std::vector<Mock::CardAsk>& asks = m.cardAsks[bot->fingerprint()];
             return !asks.empty() && !asks.front().came;
         }();
-        const bool onTheLeaseSet = testutil::waitFor([&]() {
-            r->flushPendingEchoes();
-            return holdsEpochOf(*bot);
-        });
         std::printf("%s: B's card %s; with B's lease set looked up it %s before U wrote to B\n",
             run.tag.c_str(), failedFirst ? "did not connect" : "was not asked",
             onTheLeaseSet ? "came" : "did not come");
@@ -852,11 +861,21 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
         const auto notesBefore = notesFrom(c1->fingerprint());
         const auto strayBefore = notesFrom(std::string());
         quiet();
-        std::printf("%s: a letter of an unknown device of C1 left %ld note(s) in C1's chat, a letter sealed to "
-                    "a key U never held left %ld anywhere\n",
-            run.tag.c_str(), static_cast<long>(notesFrom(c1->fingerprint()) - notesBefore),
+        const bool held = [&]() {
+            const std::lock_guard<std::mutex> lock(m.mu);
+            return std::any_of(m.accounts.at(uFp).mailbox.begin(), m.accounts.at(uFp).mailbox.end(),
+                [&](const Item& item) {
+                    return !item.ackedBy.contains(r->deviceId())
+                        && item.payload.size() > 0 && item.cls == "content"
+                        && hybrid::sealedKid(item.payload) == r->ownEpochs().front().kid();
+                });
+        }();
+        std::printf("%s: a letter of a device of C1 U holds no certificate for is %s; a letter sealed to "
+                    "a key U never held left %ld note(s)\n",
+            run.tag.c_str(), held ? "held for its certificate" : "gone",
             static_cast<long>(notesFrom(std::string()) - strayBefore));
-        CHECK(notesFrom(c1->fingerprint()) == notesBefore + 1);
+        CHECK(held);
+        CHECK(notesFrom(c1->fingerprint()) == notesBefore);
         CHECK(notesFrom(std::string()) == strayBefore);
         CHECK(!heardText(uFp, run.tag + ": from a device C1's card does not name"));
     }
@@ -874,8 +893,9 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
     at(m.utc.load() + kSecondsPerHour);
     {
         const std::lock_guard<std::mutex> lock(m.mu);
-        CHECK(ContactCard::verify(fromBase64(m.accounts.at(uFp).card)).devices.revoked(lostDevice));
+        CHECK(ContactCard::verify(fromBase64(m.accounts.at(uFp).card)).revocation.revokes(lostDevice));
         CHECK(!m.accounts.at(uFp).installs.contains(lostDevice));
+        CHECK(!m.accounts.at(uFp).listed.contains(lostDevice));
     }
     for (Session* contact : contacts) {
         const std::vector<ContactDevice> devices = contact->contactDevices(uFp);
@@ -927,7 +947,8 @@ try {
         return &found->second;
     };
     const auto revokedHere = [](const Account& account, const std::string& device) {
-        return !account.card.empty() && ContactCard::verify(fromBase64(account.card)).devices.revoked(device);
+        return !account.card.empty()
+            && ContactCard::verify(fromBase64(account.card)).revocation.revokes(device);
     };
 
     server.get("/v1/messaging/destination", stub([&](const http::Request& request, http::Response& response) {
@@ -959,7 +980,12 @@ try {
         account.card = cardB64;
         account.cardKey = linkKeyFromText(body.at("cardKey").get<std::string>());
         for (auto device = account.installs.begin(); device != account.installs.end();) {
-            device = card.devices.revoked(device->first) ? account.installs.erase(device) : std::next(device);
+            device = card.revocation.revokes(device->first) ? account.installs.erase(device) : std::next(device);
+        }
+        if (std::erase_if(account.listed,
+                [&card](const auto& entry) { return card.revocation.revokes(entry.first); })
+            > 0) {
+            ++account.devicesVersion;
         }
         Mock::dropTaken(account);
         respondJson(response, {{"quotaBytes", kQuotaBytes},
@@ -1019,9 +1045,11 @@ try {
             refuse(response, kNotFound, "ACCOUNT_UNKNOWN");
             return;
         }
+        const std::string to = body.value("to", std::string());
         account->mailbox.push_back({body.at("deliveryId").get<std::string>(), "device",
-            fromBase64(body.at("payload").get<std::string>()), body.at("to").get<std::string>(),
-            m.utc.load(), {}});
+            fromBase64(body.at("payload").get<std::string>()), to, m.utc.load(),
+            to.empty() ? std::set<std::string>{requireDevice(request)} : std::set<std::string>{}});
+        Mock::dropTaken(*account);
         respondJson(response, {{"ok", true}});
     }));
     server.post("/v1/messaging/clients", stub([&](const http::Request& request, http::Response& response) {
@@ -1042,6 +1070,46 @@ try {
             refuse(response, kConflict, "DEVICE_TAKEN");
             return;
         }
+        const Bytes sealing = fromBase64(
+            nlohmann::json::parse(request.body).at("sealing").get<std::string>());
+        CHECK(DeviceCertificate::verify(callerCert(request)).sealsWith(sealing));
+        if (added) {
+            account->listed[device] = {callerCert(request), sealing, {}};
+            ++account->devicesVersion;
+        }
+        respondJson(response, {{"ok", true}});
+    }));
+    server.get("/v1/messaging/devices", stub([&](const http::Request& request, http::Response& response) {
+        const std::lock_guard<std::mutex> lock(m.mu);
+        Account* account = known(requireCaller(request));
+        if (account == nullptr) {
+            refuse(response, kNotFound, "ACCOUNT_UNKNOWN");
+            return;
+        }
+        nlohmann::json devices = nlohmann::json::array();
+        for (const auto& [device, entry] : account->listed) {
+            devices.push_back({{"cert", toBase64(entry.cert)}, {"sealing", toBase64(entry.sealing)},
+                {"registered", account->installs.contains(device)},
+                {"departure", toBase64(entry.departure)}});
+        }
+        respondJson(response,
+            {{"version", account->devicesVersion}, {"devices", devices}, {"card", account->card}});
+    }));
+    server.post("/v1/messaging/departure", stub([&](const http::Request& request, http::Response& response) {
+        const std::string device = requireDevice(request);
+        const Bytes departure = fromBase64(
+            nlohmann::json::parse(request.body).at("departure").get<std::string>());
+        DeviceDeparture::verify(departure, DeviceCertificate::verify(callerCert(request)));
+        const std::lock_guard<std::mutex> lock(m.mu);
+        Account* account = known(requireCaller(request));
+        if (account == nullptr) {
+            refuse(response, kNotFound, "ACCOUNT_UNKNOWN");
+            return;
+        }
+        account->installs.erase(device);
+        account->listed.at(device).departure = departure;
+        ++account->devicesVersion;
+        Mock::dropTaken(*account);
         respondJson(response, {{"ok", true}});
     }));
     server.post("/v1/messaging/passes", stub([&](const http::Request& request, http::Response& response) {

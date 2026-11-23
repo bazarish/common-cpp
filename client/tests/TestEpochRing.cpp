@@ -114,14 +114,8 @@ try {
     }
 
     {
-        const Identity root = Identity::generate();
         const DeviceKeys primary = DeviceKeys::generate();
         const DeviceKeys secondary = DeviceKeys::generate();
-        DeviceBook book;
-        book.take({DeviceCertificate::issue(root, DevicePublic::of(primary), DeviceRole::ePrimary, kIntoEpoch),
-                      DeviceCertificate::issue(
-                          root, DevicePublic::of(secondary), DeviceRole::eSecondary, kIntoEpoch)},
-            std::nullopt);
         const Bytes der = Key::generateSealing().publicDer();
         const std::vector<EpochPublic> offeredKeys{
             {kEpoch, kFirstEpochGeneration, primary.id(), der},
@@ -129,12 +123,14 @@ try {
             {kEpoch + kEpochPushHorizon + 1, kFirstEpochGeneration, primary.id(), der},
             {kEpoch, kLaterGeneration, primary.id(), der},
             {kEpoch, kFirstEpochGeneration, secondary.id(), der}};
-        CHECK(admittedEpochs(offeredKeys, book, inside(kEpoch)).size() == offeredKeys.size() - 1);
-        book.take({}, RevocationList::issue(root, kFirstRevocationNumber, {}, kIntoEpoch));
-        const std::vector<EpochPublic> admitted = admittedEpochs(offeredKeys, book, inside(kEpoch));
-        CHECK(admitted.size() == 2);
-        CHECK(admitted.front() == offeredKeys[0]);
-        CHECK(admitted.back() == offeredKeys[1]);
+        CHECK(admittedEpochs(offeredKeys, std::nullopt, inside(kEpoch)).size() == offeredKeys.size() - 1);
+        const std::vector<EpochPublic> admitted
+            = admittedEpochs(offeredKeys, kFirstRevocationNumber, inside(kEpoch));
+        CHECK(admitted.size() == 3);
+        CHECK(admitted[0] == offeredKeys[0]);
+        CHECK(admitted[1] == offeredKeys[1]);
+        CHECK(admitted[2] == offeredKeys[4]);
+        CHECK(admittedEpochs(offeredKeys, kLaterGeneration, inside(kEpoch)).size() == 4);
     }
 
     const Bytes oldMail = sealToEpoch(plain, both.back());

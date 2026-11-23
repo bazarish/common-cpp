@@ -74,6 +74,11 @@ std::string requireDevice(const http::Request& request)
     return request.header(bazarish::teststub::kCallerDeviceHeader);
 }
 
+Bytes callerCert(const http::Request& request)
+{
+    return fromBase64(request.header(bazarish::teststub::kCallerCertHeader));
+}
+
 DeviceCredential deviceOf(const fs::path& accountDir)
 {
     const AccountDb db(accountDir, std::string{});
@@ -149,6 +154,7 @@ struct Mock {
         std::string cls;
         Bytes payload;
         std::string forDevice;
+        std::set<std::string> ackedBy;
     };
     std::map<std::string, std::vector<Item>> mailbox;
     std::map<std::string, std::size_t> fetches;
@@ -156,6 +162,26 @@ struct Mock {
     std::map<std::string, std::set<std::string>> registered;
     // Account, then device, to the install token it registered with.
     std::map<std::string, std::map<std::string, std::string>> installs;
+    struct Listed {
+        Bytes cert;
+        Bytes sealing;
+        Bytes departure;
+    };
+    std::map<std::string, std::map<std::string, Listed>> listed;
+    std::map<std::string, std::uint64_t> devicesVersion;
+
+    void dropTaken(const std::string& account)
+    {
+        std::vector<Item>& box = mailbox[account];
+        const std::map<std::string, std::string>& readers = installs[account];
+        std::erase_if(box, [&readers](const Item& item) {
+            if (!item.forDevice.empty()) {
+                return item.ackedBy.contains(item.forDevice);
+            }
+            return std::all_of(readers.begin(), readers.end(),
+                [&item](const auto& reader) { return item.ackedBy.contains(reader.first); });
+        });
+    }
     std::map<std::string, std::set<std::string>> seenIds;
     std::size_t largestContactRequest = 0;
     int nextId = 1;
@@ -410,6 +436,15 @@ try {
                   m.certFor[caller] = cardB64;
                   m.cardKeyFor[caller] = linkKeyFromText(
                       nlohmann::json::parse(request.body).at("cardKey").get<std::string>());
+                  std::map<std::string, std::string>& installs = m.installs[caller];
+                  std::erase_if(installs,
+                      [&card](const auto& entry) { return card.revocation.revokes(entry.first); });
+                  if (std::erase_if(m.listed[caller],
+                          [&card](const auto& entry) { return card.revocation.revokes(entry.first); })
+                      > 0) {
+                      ++m.devicesVersion[caller];
+                  }
+                  m.dropTaken(caller);
               }
               respondJson(response, {{"quotaBytes", 100u * 1024 * 1024}, {"approval", "approved"},
                   {"registrationMessage", ""}});
@@ -459,8 +494,14 @@ try {
             const std::string caller = requireCaller(request);
             const nlohmann::json body = nlohmann::json::parse(request.body);
             std::lock_guard<std::mutex> lock(m.mu);
-            m.mailbox[caller].push_back({body.at("deliveryId").get<std::string>(), "device",
-                fromBase64(body.at("payload").get<std::string>()), body.at("to").get<std::string>()});
+            const std::string to = body.value("to", std::string());
+            Mock::Item item{body.at("deliveryId").get<std::string>(), "device",
+                fromBase64(body.at("payload").get<std::string>()), to};
+            if (to.empty()) {
+                item.ackedBy.insert(requireDevice(request));
+            }
+            m.mailbox[caller].push_back(std::move(item));
+            m.dropTaken(caller);
             respondJson(response, {{"ok", true}});
         }));
 
@@ -468,7 +509,7 @@ try {
     const auto revokedHere = [&m](const std::string& account, const std::string& device) {
         const auto card = m.certFor.find(account);
         return card != m.certFor.end() && !card->second.empty()
-            && ContactCard::verify(fromBase64(card->second)).devices.revoked(device);
+            && ContactCard::verify(fromBase64(card->second)).revocation.revokes(device);
     };
     const auto refuseRevoked = [](http::Response& response) {
         response.status = 403;
@@ -487,6 +528,12 @@ try {
                 refuseRevoked(response);
                 return;
             }
+            if (m.listed[caller].contains(device) && !m.listed[caller].at(device).departure.empty()) {
+                response.status = 409;
+                respondJson(response,
+                    {{"error", {{"code", "DEVICE_TAKEN"}, {"message", "it left"}}}});
+                return;
+            }
             const auto [held, added] = m.installs[caller].emplace(device, install);
             if (!added && held->second != install) {
                 response.status = 409;
@@ -494,6 +541,60 @@ try {
                     {{"error", {{"code", "DEVICE_TAKEN"}, {"message", "another copy"}}}});
                 return;
             }
+            const Bytes sealing = fromBase64(
+                nlohmann::json::parse(request.body).at("sealing").get<std::string>());
+            CHECK(DeviceCertificate::verify(callerCert(request)).sealsWith(sealing));
+            if (added) {
+                m.listed[caller][device] = {callerCert(request), sealing, {}};
+                ++m.devicesVersion[caller];
+            }
+            respondJson(response, {{"ok", true}});
+        }));
+
+    server.get(kEventsPath,
+        stub([&](const http::Request& request, http::Response& response) {
+            const std::string caller = requireCaller(request);
+            const std::string device = requireDevice(request);
+            std::lock_guard<std::mutex> lock(m.mu);
+            nlohmann::json pending = nlohmann::json::array();
+            for (const Mock::Item& item : m.mailbox[caller]) {
+                if ((!item.forDevice.empty() && item.forDevice != device)
+                    || item.ackedBy.contains(device)) {
+                    continue;
+                }
+                pending.push_back(
+                    {{"id", item.id}, {"class", item.cls}, {"bytes", item.payload.size()}});
+            }
+            respondJson(response, {{"pending", pending}, {"usedBytes", 0}, {"quotaBytes", 0},
+                {"devicesVersion", m.devicesVersion[caller]}});
+        }));
+
+    server.get("/v1/messaging/devices",
+        stub([&](const http::Request& request, http::Response& response) {
+            const std::string caller = requireCaller(request);
+            std::lock_guard<std::mutex> lock(m.mu);
+            nlohmann::json devices = nlohmann::json::array();
+            for (const auto& [device, entry] : m.listed[caller]) {
+                devices.push_back({{"cert", toBase64(entry.cert)}, {"sealing", toBase64(entry.sealing)},
+                    {"registered", m.installs[caller].contains(device)},
+                    {"departure", toBase64(entry.departure)}});
+            }
+            respondJson(response, {{"version", m.devicesVersion[caller]}, {"devices", devices},
+                {"card", m.certFor.contains(caller) ? m.certFor.at(caller) : std::string()}});
+        }));
+
+    server.post("/v1/messaging/departure",
+        stub([&](const http::Request& request, http::Response& response) {
+            const std::string caller = requireCaller(request);
+            const std::string device = requireDevice(request);
+            const Bytes departure = fromBase64(
+                nlohmann::json::parse(request.body).at("departure").get<std::string>());
+            DeviceDeparture::verify(departure, DeviceCertificate::verify(callerCert(request)));
+            std::lock_guard<std::mutex> lock(m.mu);
+            m.installs[caller].erase(device);
+            m.listed[caller].at(device).departure = departure;
+            ++m.devicesVersion[caller];
+            m.dropTaken(caller);
             respondJson(response, {{"ok", true}});
         }));
 
@@ -531,7 +632,8 @@ try {
             }
             nlohmann::json pending = nlohmann::json::array();
             for (const Mock::Item& item : m.mailbox[caller]) {
-                if (!item.forDevice.empty() && item.forDevice != device) {
+                if ((!item.forDevice.empty() && item.forDevice != device)
+                    || item.ackedBy.contains(device)) {
                     continue;
                 }
                 pending.push_back(
@@ -575,13 +677,14 @@ try {
                     {{"errorCode", "INTERNAL"}, {"errorMessage", "ack refused by the test"}});
                 return;
             }
-            std::vector<Mock::Item>& box = m.mailbox[caller];
             for (const nlohmann::json& id : ids) {
-                const std::string acked = id.get<std::string>();
-                box.erase(std::remove_if(box.begin(), box.end(),
-                              [&](const Mock::Item& item) { return item.id == acked; }),
-                    box.end());
+                for (Mock::Item& item : m.mailbox[caller]) {
+                    if (item.id == id.get<std::string>()) {
+                        item.ackedBy.insert(requireDevice(request));
+                    }
+                }
             }
+            m.dropTaken(caller);
             ++m.acks[caller];
             respondJson(response, {{"ok", true}});
         }));
@@ -626,14 +729,18 @@ try {
                                       const std::string& type) {
             const AccountDb db(accountDir, std::string{});
             const Key sealing = Key::fromPrivatePem(db.text("device-sealing.pem"));
+            EpochRing ring;
+            ring.addAll(SecretBytes(db.get("epochs").value()));
             const std::string device = deviceOf(accountDir).device();
             const std::lock_guard<std::mutex> lock(m.mu);
             for (const Mock::Item& item : m.mailbox[owner]) {
-                if (item.cls != "device" || item.forDevice != device) {
+                if (item.cls != "device" || item.ackedBy.contains(device)
+                    || (!item.forDevice.empty() && item.forDevice != device)) {
                     continue;
                 }
-                const nlohmann::json bodies
-                    = nlohmann::json::from_cbor(unpadFromLadder(hybrid::unseal(item.payload, sealing)).bytes());
+                const SecretBytes opened = item.forDevice.empty() ? ring.open(item.payload)
+                                                                  : hybrid::unseal(item.payload, sealing);
+                const nlohmann::json bodies = nlohmann::json::from_cbor(unpadFromLadder(opened).bytes());
                 for (const nlohmann::json& body : bodies) {
                     if (body.value("type", std::string()) == type) {
                         return true;
@@ -1030,8 +1137,16 @@ try {
                 CHECK(m.mailbox[bob->fingerprint()].size() == waiting);
             }
             alice->setDisplayName("Alice of the log");
-            alice->flushPendingEchoes();
-            CHECK(!logHas(alice->connectionLog(), "POST /v1/messaging/self (device.account-name)", "200"));
+            CHECK(testutil::waitFor([&]() {
+                alice->flushPendingEchoes();
+                return logHas(alice->connectionLog(), "POST /v1/messaging/self (device.account-name)", "200");
+            }));
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                CHECK(std::none_of(m.mailbox[alice->fingerprint()].begin(),
+                    m.mailbox[alice->fingerprint()].end(),
+                    [](const Mock::Item& item) { return item.cls == "device"; }));
+            }
         }
 
         {
@@ -1218,7 +1333,7 @@ try {
             CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
                     CHECK(item.contentType != "unsupported");
-                    if (item.contentType == "contact.routing") {
+                    if (item.contentType == kTypeAccountCard) {
                         sawRouting = true;
                     }
                 }
@@ -1263,7 +1378,7 @@ try {
                 return arrived;
             }));
             for (const IncomingMessage& item : bob->sync()) {
-                CHECK(item.contentType != "contact.routing");
+                CHECK(item.contentType != kTypeAccountCard);
             }
         }
 
@@ -1935,7 +2050,8 @@ try {
                 return m.mailbox[alice->fingerprint()].back().payload.size();
             }();
             std::printf("TestDeliveryPass: the heaviest picture message is %zu bytes\n", heaviest);
-            constexpr std::size_t kHeaviestSlackBytes = 64;
+            constexpr std::size_t kKnownIdBytes = 1 + kDeviceIdLength;
+            constexpr std::size_t kHeaviestSlackBytes = 64 + (kMaxKnownDevices - 1) * kKnownIdBytes;
             CHECK(heaviest <= kMaxMessagePayloadBytes);
             CHECK(kMaxMessagePayloadBytes - heaviest < kHeaviestSlackBytes);
             const std::size_t beforeFile = heldForAlice();
@@ -2438,8 +2554,14 @@ try {
             CHECK(second->fingerprint() == alice->fingerprint());
             CHECK(!second->hasContact(bob->fingerprint()));
 
+            second->setFetchTransport(directDial);
+            second->setOutboundLinks(courierFor());
+            second->registerAccount();
             second->sync();
-            CHECK(testutil::waitFor([&]() { return selfHolds("device.contacts-request"); }));
+            CHECK(testutil::waitFor([&]() {
+                second->flushPendingEchoes();
+                return selfHolds("device.contacts-request");
+            }));
             alice->sync();
             CHECK(testutil::waitFor([&]() {
                 second->sync();
@@ -2471,7 +2593,7 @@ try {
             bool bobHeardKeys = false;
             CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
-                    bobHeardKeys = bobHeardKeys || item.contentType == "contact.routing";
+                    bobHeardKeys = bobHeardKeys || item.contentType == kTypeAccountCard;
                 }
                 return bobHeardKeys;
             }));
@@ -2536,8 +2658,14 @@ try {
                 fs::remove(thirdDir);
                 Session::importAccount(earlyBundle, thirdDir, "bundle-password");
                 const std::unique_ptr<Session> third = Session::open(thirdDir, std::string{});
+                third->setFetchTransport(directDial);
+                third->setOutboundLinks(courierFor());
+                third->registerAccount();
                 third->sync();
-                CHECK(testutil::waitFor([&]() { return selfHolds("device.contacts-request"); }));
+                CHECK(testutil::waitFor([&]() {
+                    third->flushPendingEchoes();
+                    return selfHolds("device.contacts-request");
+                }));
                 alice->sync();
                 CHECK(testutil::waitFor([&]() {
                     third->sync();
@@ -2583,7 +2711,8 @@ try {
             const auto fromAnotherDevice = [&](nlohmann::json notice) {
                 signAuthorship(notice, aliceIdentity, /*withCert=*/false);
                 std::lock_guard<std::mutex> lock(m.mu);
-                m.mailbox[alice->fingerprint()].push_back({"self-" + notice.at("id").get<std::string>(),
+                m.mailbox[alice->fingerprint()].push_back({"self-" + notice.at("id").get<std::string>()
+                        + "-" + std::to_string(m.nextId++),
                     "device",
                     sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({notice}))),
                         alice->ownEpochs().front())});
@@ -2998,8 +3127,12 @@ try {
                 twin->setPresenceClock(clock);
                 CHECK(twin->presenceSeed().bytes() == pam->presenceSeed().bytes());
                 CHECK(!twin->hasContact(quin->fingerprint()));
+                twin->setFetchTransport(directDial);
+                twin->setOutboundLinks(courierFor());
+                twin->registerAccount();
                 twin->sync();
                 CHECK(testutil::waitFor([&]() {
+                    twin->flushPendingEchoes();
                     return postedToSelf(scratch / "bz-presence-pam", pam->fingerprint(),
                         "device.contacts-request");
                 }));
@@ -3180,6 +3313,7 @@ try {
             gina2->setEpochClock(clock);
             gina2->setFetchTransport(directDial);
             gina2->setOutboundLinks(courierFor());
+            gina2->registerAccount();
             CHECK(testutil::waitFor([&]() {
                 gina2->sync();
                 gina->sync();
@@ -3290,6 +3424,7 @@ try {
             CHECK(!sawErased);
             CHECK(sawCurrent);
 
+            (void)gina2->sync();
             int unreadable = 0;
             gina2->onUnreadableMail([&unreadable]() { ++unreadable; });
             const auto lastIdFor = [&](const std::string& account) {
@@ -3299,8 +3434,9 @@ try {
             const auto stillPending = [&](const std::string& account, const std::string& id) {
                 const std::lock_guard<std::mutex> lock(m.mu);
                 const std::vector<Mock::Item>& box = m.mailbox[account];
-                return std::any_of(
-                    box.begin(), box.end(), [&id](const Mock::Item& item) { return item.id == id; });
+                return std::any_of(box.begin(), box.end(), [&](const Mock::Item& item) {
+                    return item.id == id && !item.ackedBy.contains(gina2->deviceId());
+                });
             };
             const auto readNow = [](Session& session, const std::string& text) {
                 for (const IncomingMessage& item : session.sync()) {
@@ -3369,36 +3505,32 @@ try {
                             gina->ownEpochs().front())});
                 }
                 const std::string tabId = lastIdFor(gina->fingerprint());
-                gina2->setFetchTransport([](const std::string&, const std::string&, const Bytes&) -> FetchOutcome {
-                    throw std::runtime_error("the card does not come in this test");
-                });
                 CHECK(!readNow(*gina2, "from hal's new tablet"));
                 CHECK(stillPending(gina->fingerprint(), tabId));
-                gina2->setFetchTransport(directDial);
-                const DeviceBook halBook = [&]() {
-                    const std::lock_guard<std::mutex> lock(m.mu);
-                    return ContactCard::verify(fromBase64(m.certFor.at(hal->fingerprint()))).devices;
-                }();
-                nlohmann::json certs = nlohmann::json::array();
-                for (const Bytes& der : halBook.activeCertDers()) {
-                    certs.push_back(toBase64(der));
-                }
-                certs.push_back(toBase64(tabCert));
-                nlohmann::json devices = {{"v", 1}, {"type", "account.devices"},
+                bool asked = false;
+                CHECK(testutil::waitFor([&]() {
+                    gina2->flushPendingEchoes();
+                    for (const IncomingMessage& item : hal->sync()) {
+                        asked = asked
+                            || (item.contentType == kTypeContactKnows
+                                && item.fromFingerprint == gina->fingerprint());
+                    }
+                    return asked;
+                }));
+                nlohmann::json introduced = {{"v", 1}, {"type", kTypeContactKnows},
                     {"id", toHex(randomBytes(kMessageIdBytes))}, {"from", hal->fingerprint()},
-                    {"sentAt", nowMillis()}, {"devices", certs},
-                    {"revocation", toBase64(halBook.revocationDer())}};
-                signAuthorship(devices, halIdentity, /*withCert=*/false);
+                    {"sentAt", nowMillis()}, {kKnowsField, nlohmann::json::array()}};
+                signAuthorship(introduced, tabKey, /*withCert=*/true);
                 {
                     const std::lock_guard<std::mutex> lock(m.mu);
-                    m.mailbox[gina->fingerprint()].push_back({devices.at("id").get<std::string>(),
+                    m.mailbox[gina->fingerprint()].push_back({introduced.at("id").get<std::string>(),
                         "content",
-                        sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({devices}))),
+                        sealToEpoch(padToLadder(nlohmann::json::to_cbor(nlohmann::json::array({introduced}))),
                             gina->ownEpochs().front())});
                 }
                 CHECK(readNow(*gina2, "from hal's new tablet"));
-                std::printf("TestDeliveryPass: a letter of an unknown device of a contact was read "
-                            "once its device list arrived\n");
+                std::printf("TestDeliveryPass: a letter of an unknown device of a contact waited, the "
+                            "contact was asked, and the device's certificate let it be read\n");
             }
 
             {
@@ -3520,12 +3652,11 @@ try {
                 CHECK(m.certFor[ann->fingerprint()] == cardBeforeTablet);
             }
             CHECK(testutil::waitFor([&]() {
+                (void)tab->sync();
                 (void)ann->sync();
-                ann->flushPendingEchoes();
-                std::lock_guard<std::mutex> lock(m.mu);
-                return ContactCard::verify(fromBase64(m.certFor[ann->fingerprint()]))
-                    .devices.active(tab->deviceId())
-                    .has_value();
+                const std::vector<OwnDevice> devices = ann->ownDevices();
+                return std::any_of(devices.begin(), devices.end(),
+                    [&](const OwnDevice& device) { return device.id == tab->deviceId(); });
             }));
             CHECK(refusedForRole([&]() { tab->disableI2pDest(); }));
             CHECK(refusedForRole([&]() { tab->setDelegationDays(kMaxDelegationDays, true); }));
@@ -3586,19 +3717,11 @@ try {
                 tab->sync();
                 return tab->displayName() == "Ann of two devices";
             }));
-            {
-                const std::lock_guard<std::mutex> lock(m.mu);
-                for (const Mock::Item& item : m.mailbox[ann->fingerprint()]) {
-                    CHECK(item.cls != "device" || !item.forDevice.empty());
-                }
-            }
 
-            CHECK(testutil::waitFor([&]() {
-                ben->sync();
-                return ben->contactDevices(ann->fingerprint()).size() == 2;
-            }));
+            CHECK(ben->contactDevices(ann->fingerprint()).size() == 1);
             tab->sendMessage(ben->fingerprint(), "from the tablet");
             CHECK(hearsText(*ben, "from the tablet").fromDevice == tab->deviceId());
+            CHECK(ben->contactDevices(ann->fingerprint()).size() == 2);
             CHECK(storedDeviceId(AccountDb(scratch / "bz-devices-tab", std::string{}))
                 == tab->deviceId());
 
@@ -3611,19 +3734,25 @@ try {
                 tab->flushPendingEchoes();
                 tab->setEpochClock(systemUtcSeconds);
                 for (const WireEvent& event : tab->connectionLog()) {
-                    CHECK(!event.what.starts_with(kTypeAccountEpochs));
+                    CHECK(!event.what.starts_with(kTypeAccountCard));
                 }
             }
 
             const DeviceCredential tabletKey = deviceOf(scratch / "bz-devices-tab");
             const std::vector<EpochPublic> annBefore = ann->ownEpochs();
             {
-                nlohmann::json offer = {{"v", 1}, {"type", "account.epochs"},
+                ContactCard forged = ContactCard::verify(fromBase64([&]() {
+                    std::lock_guard<std::mutex> lock(m.mu);
+                    return m.certFor[ann->fingerprint()];
+                }()));
+                forged.issuedAt = nowSeconds() + 1;
+                forged.epochs.front() = {annBefore.front().n, kFirstEpochGeneration, tabletKey.device(),
+                    Key::generateSealing().publicDer()};
+                nlohmann::json offer = {{"v", 1}, {"type", kTypeAccountCard},
                     {"id", toHex(randomBytes(kMessageIdBytes))}, {"from", ann->fingerprint()},
                     {"sentAt", nowMillis()},
-                    {"epochs",
-                        epochsJson({{annBefore.front().n, kFirstEpochGeneration + 7, tabletKey.device(),
-                            Key::generateSealing().publicDer()}})}};
+                    {kCardField, nlohmann::json::binary(forged.issue(tabletKey.signing()))},
+                    {kKnowsField, nlohmann::json::array()}};
                 signAuthorship(offer, tabletKey, /*withCert=*/false);
                 sealedTo(ben->fingerprint(), offer, ben->ownEpochs().front());
                 ben->sync();
@@ -3717,6 +3846,158 @@ try {
                 AccountDb(scratch / "bz-devices-tab", std::string{}).text("epochs")));
             CHECK_THROWS(tabletRing.open(sealedAfter));
             CHECK(hearsText(*ann, "after the revocation").fromDevice == ben->deviceId());
+
+            {
+                const std::unique_ptr<Session> desk = accountNamed(
+                    "bz-pair-desk", "vlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p");
+                const Bytes key = newLinkKey();
+                const DeviceKeys made = DeviceKeys::generate();
+                const Bytes sealed = desk->pairingBundle(DeviceRole::ePrimary, key)(DevicePublic::of(made));
+                fs::remove(scratch / "bz-pair-phone");
+                Session::importAccountBundle(
+                    openPairBundle(key, completePairBundle(key, sealed, made)).bytes(),
+                    scratch / "bz-pair-phone");
+                const std::unique_ptr<Session> phone = opened("bz-pair-phone");
+                waitPastPublished(desk->fingerprint());
+                (void)phone->refreshOwnCard();
+                waitPastPublished(desk->fingerprint());
+                phone->registerAccount();
+                const auto holds = [](Session& session, const std::string& device) {
+                    const std::vector<OwnDevice> devices = session.ownDevices();
+                    return std::any_of(devices.begin(), devices.end(),
+                        [&](const OwnDevice& own) { return own.id == device && !own.revoked; });
+                };
+                CHECK(testutil::waitFor([&]() {
+                    phone->flushPendingEchoes();
+                    desk->sync();
+                    return holds(*desk, phone->deviceId());
+                }));
+                phone->setDisplayName("named on the phone");
+                CHECK(testutil::waitFor([&]() {
+                    phone->flushPendingEchoes();
+                    desk->sync();
+                    return desk->displayName() == "named on the phone";
+                }));
+                desk->setDisplayName("named on the desk");
+                CHECK(testutil::waitFor([&]() {
+                    desk->flushPendingEchoes();
+                    phone->sync();
+                    return phone->displayName() == "named on the desk";
+                }));
+                std::printf("TestDeliveryPass: a paired primary that published its card before registering "
+                            "is known to the one that paired it\n");
+            }
+
+            {
+                const std::unique_ptr<Session> kim = accountNamed(
+                    "bz-left-kim", "wlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p");
+                const std::unique_ptr<Session> lou = accountNamed(
+                    "bz-left-lou", "xlkbeyqjykssca6o7qlbwgq4fr2hry7kw2ursn2sh3lt3acox6gqaaaa.b32.i2p");
+                addByInvite(*kim, lou->inviteUri(), "kim");
+                CHECK(testutil::waitFor([&]() {
+                    lou->sync();
+                    return lou->contactIsPending(kim->fingerprint());
+                }));
+                lou->acceptContactRequest(kim->fingerprint());
+                CHECK(testutil::waitFor([&]() {
+                    kim->sync();
+                    return kim->canWriteTo(lou->fingerprint());
+                }));
+
+                const Bytes key = newLinkKey();
+                const DeviceKeys made = DeviceKeys::generate();
+                const Bytes sealed = kim->pairingBundle(DeviceRole::ePrimary, key)(DevicePublic::of(made));
+                fs::remove(scratch / "bz-left-phone");
+                Session::importAccountBundle(
+                    openPairBundle(key, completePairBundle(key, sealed, made)).bytes(),
+                    scratch / "bz-left-phone");
+                const std::unique_ptr<Session> phone = opened("bz-left-phone");
+                waitPastPublished(kim->fingerprint());
+                phone->registerAccount();
+                phone->setDisplayName("kim on the phone");
+                const auto selfWaitsForKim = [&]() {
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    return std::any_of(m.mailbox[kim->fingerprint()].begin(),
+                        m.mailbox[kim->fingerprint()].end(), [&](const Mock::Item& item) {
+                            return item.cls == "device" && item.forDevice.empty()
+                                && item.ackedBy.contains(phone->deviceId())
+                                && !item.ackedBy.contains(kim->deviceId());
+                        });
+                };
+                CHECK(testutil::waitFor([&]() {
+                    phone->flushPendingEchoes();
+                    return selfWaitsForKim();
+                }));
+                CHECK(testutil::waitFor([&]() {
+                    kim->sync();
+                    return kim->displayName() == "kim on the phone";
+                }));
+                const auto holdsActive = [](Session& session, const std::string& device) {
+                    const std::vector<OwnDevice> devices = session.ownDevices();
+                    return std::any_of(devices.begin(), devices.end(),
+                        [&](const OwnDevice& own) { return own.id == device && !own.revoked; });
+                };
+                CHECK(holdsActive(*kim, phone->deviceId()));
+                std::printf("TestDeliveryPass: a device offline while another registered read that "
+                            "one's self-message when it came back\n");
+
+                const auto lastLetterFor = [&](Session& to, const fs::path& toDir) {
+                    EpochRing ring;
+                    ring.addAll(SecretBytes(AccountDb(toDir, std::string{}).get("epochs").value()));
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    const Mock::Item& item = m.mailbox[to.fingerprint()].back();
+                    return nlohmann::json::from_cbor(unpadFromLadder(ring.open(item.payload)).bytes()).at(0);
+                };
+                const auto sendAndWeigh = [&](const std::string& text) {
+                    const std::size_t before = [&]() {
+                        const std::lock_guard<std::mutex> lock(m.mu);
+                        return m.mailbox[lou->fingerprint()].size();
+                    }();
+                    phone->sendMessage(lou->fingerprint(), text);
+                    CHECK(testutil::waitFor([&]() {
+                        phone->flushPendingEchoes();
+                        const std::lock_guard<std::mutex> lock(m.mu);
+                        return m.mailbox[lou->fingerprint()].size() > before;
+                    }));
+                    return lastLetterFor(*lou, scratch / "bz-left-lou");
+                };
+                const nlohmann::json first = sendAndWeigh("first from the phone");
+                CHECK(!carriedCert(first).empty());
+                CHECK(hearsText(*lou, "first from the phone").fromDevice == phone->deviceId());
+                lou->sendMessage(kim->fingerprint(), "lou answers");
+                CHECK(hearsText(*phone, "lou answers").fromFingerprint == lou->fingerprint());
+                const nlohmann::json second = sendAndWeigh("second from the phone");
+                CHECK(carriedCert(second).empty());
+                CHECK(hearsText(*lou, "second from the phone").fromDevice == phone->deviceId());
+                std::printf("TestDeliveryPass: a new device's certificate went with its letters until "
+                            "the contact named it as known\n");
+
+                phone->leaveAccount();
+                const Session::ContactFetchContext context = kim->contactFetchContext();
+                const std::unique_ptr<Client> waiter = Session::makeEventClient(context);
+                (void)Session::waitForMail(
+                    *waiter, Client::MailWait::eAtOnce, *context.keptMail, *context.devices);
+                CHECK(context.devices->moved());
+                waitPastPublished(kim->fingerprint());
+                kim->flushPendingEchoes();
+                CHECK(!holdsActive(*kim, phone->deviceId()));
+                {
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    CHECK(ContactCard::verify(fromBase64(m.certFor[kim->fingerprint()]))
+                              .revocation.revokes(phone->deviceId()));
+                    CHECK(!m.listed[kim->fingerprint()].contains(phone->deviceId()));
+                }
+                CHECK(testutil::waitFor([&]() {
+                    kim->flushPendingEchoes();
+                    lou->sync();
+                    const std::vector<ContactDevice> devices = lou->contactDevices(kim->fingerprint());
+                    return std::any_of(devices.begin(), devices.end(), [&](const ContactDevice& device) {
+                        return device.id == phone->deviceId() && device.revoked;
+                    });
+                }));
+                std::printf("TestDeliveryPass: a device that left was revoked by the primary that saw "
+                            "it, and the contact learned it from the card\n");
+            }
         }
     }
 

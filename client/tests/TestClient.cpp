@@ -41,6 +41,7 @@ namespace {
 
 constexpr std::uint64_t kMailboxUsed = 1234;
 constexpr std::uint64_t kMailboxQuota = 50000;
+constexpr std::uint64_t kDevicesVersion = 7;
 constexpr std::int64_t kOverviewExpires = 1900000000;
 constexpr std::uint32_t kBusyBits = 2;
 constexpr std::size_t kBusyStampBytes = 16;
@@ -147,9 +148,7 @@ try {
             card.epochs = {{current, kFirstEpochGeneration, bob.keys.id(), Key::generateSealing().publicDer()},
                 {current + 1, kFirstEpochGeneration, bob.keys.id(), Key::generateSealing().publicDer()}};
             card.servingSealingKeyDer = servingSealing.publicDer();
-            card.devices = bob.book();
-            outcome.sealed
-                = KeyedSeal(bobCardKey, kCardReplyLabel).seal(card.issue(bob.device.signing()));
+            outcome.sealed = KeyedSeal(bobCardKey, kCardReplyLabel).seal(card.issue(bob.root));
             return outcome;
         }
 
@@ -207,6 +206,8 @@ try {
             (void)requireCaller(request);
             CHECK(request.header(teststub::kCallerDeviceHeader) == alice.keys.id());
             CHECK(nlohmann::json::parse(request.body).at("install") == "install01");
+            CHECK(fromBase64(nlohmann::json::parse(request.body).at("sealing").get<std::string>())
+                == alice.keys.sealing().publicDer());
             respondJson(response, {{"ok", true}});
         }));
 
@@ -238,15 +239,18 @@ try {
         }));
 
     std::string waitedWith;
+    std::string waitedDevices;
     server.get(kEventsPath,
         stub([&](const http::Request& request, http::Response& response) {
             (void)requireCaller(request);
             waitedWith = request.query(kEventsDeferredKey);
+            waitedDevices = request.query(kEventsDevicesKey);
             respondJson(response,
                 {{"pending",
                      nlohmann::json::array({{{"id", "blob1"}, {"class", "content"}, {"bytes", 9}},
                          {{"id", "blob2"}, {"class", "contact"}, {"bytes", 4}}})},
-                    {"usedBytes", kMailboxUsed}, {"quotaBytes", kMailboxQuota}});
+                    {"usedBytes", kMailboxUsed}, {"quotaBytes", kMailboxQuota},
+                    {"devicesVersion", kDevicesVersion}});
         }));
 
     std::string overviewQuery;
@@ -257,7 +261,7 @@ try {
             respondJson(response,
                 {{"version", "v2"}, {"dest", aliceDest}, {"state", "active"},
                     {"transientExpires", kOverviewExpires}, {"usedBytes", kMailboxUsed},
-                    {"quotaBytes", kMailboxQuota},
+                    {"quotaBytes", kMailboxQuota}, {"devicesVersion", kDevicesVersion},
                     {"clients",
                         nlohmann::json::array({{{"device", "phone"}, {"current", true},
                             {"queue", 0}}, {{"device", "laptop"}, {"current", false},
@@ -321,8 +325,7 @@ try {
         const EpochNumber current = epochAt(nowSeconds());
         content.epochs = {{current, kFirstEpochGeneration, alice.keys.id(), Key::generateSealing().publicDer()},
             {current + 1, kFirstEpochGeneration, alice.keys.id(), Key::generateSealing().publicDer()}};
-        content.devices = alice.book();
-        const PublishResult result = client.publishCard(content, aliceCardKey, serving, 0);
+        const PublishResult result = client.publishCard(content, alice.root, aliceCardKey, serving, 0);
         CHECK(!result.approvalPending);
         CHECK(result.dest == aliceDest);
         CHECK(result.servingSealingKeyDer == servingSealing.publicDer());
@@ -396,7 +399,7 @@ try {
     }
 
     {
-        client.registerThisDevice("install01");
+        client.registerThisDevice("install01", alice.keys.sealing().publicDer());
         client.registerPasses({Bytes(kDeliveryPassSize, 0x44), Bytes(kDeliveryPassSize, 0x55)});
         client.revokePasses({Bytes(kDeliveryPassSize, 0x44)});
         CHECK(revokesAsked == 1);
@@ -435,9 +438,20 @@ try {
     {
         KeptMail kept;
         CHECK(kept.keep("blob1"));
+        DevicesWatch devices;
+        devices.hold(kDevicesVersion - 1);
+        int moved = 0;
+        devices.onMoved([&moved]() { ++moved; });
         const std::vector<PendingEntry> news
-            = Session::waitForMail(client, Client::MailWait::eHeld, kept);
+            = Session::waitForMail(client, Client::MailWait::eHeld, kept, devices);
         CHECK(waitedWith == "blob1");
+        CHECK(waitedDevices == std::to_string(kDevicesVersion - 1));
+        CHECK(moved == 1);
+        CHECK(devices.moved());
+        devices.hold(kDevicesVersion);
+        CHECK(!devices.moved());
+        (void)Session::waitForMail(client, Client::MailWait::eHeld, kept, devices);
+        CHECK(moved == 1);
         CHECK(news.size() == 1 && news.front().id == "blob2");
         CHECK((client.lastMailboxUsage() == MailboxUsage{kMailboxUsed, kMailboxQuota}));
         for (std::size_t i = 0; kept.ids().size() < kMaxDeferredMailItems; ++i) {

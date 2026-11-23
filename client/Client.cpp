@@ -248,15 +248,15 @@ void Client::close()
     api_.close();
 }
 
-PublishResult Client::publishCard(const ContactCard& content, const Bytes& cardKey,
-    const DestinationInfo& serving, const std::int64_t notBefore)
+PublishResult Client::publishCard(const ContactCard& content, const Identity& root,
+    const Bytes& cardKey, const DestinationInfo& serving, const std::int64_t notBefore)
 {
     validateB33I2pHost(serving.dest);
     ContactCard signedCard = content;
     signedCard.issuedAt = std::max(nowSeconds(), notBefore + 1);
     signedCard.dest = serving.dest;
     signedCard.servingSealingKeyDer = serving.servingSealingKeyDer;
-    const Bytes card = signedCard.issue(credential_.signing());
+    const Bytes card = signedCard.issue(root);
     const nlohmann::json answer = api_.postJson(
         "/v1/account/card", {{"card", toBase64(card)}, {"cardKey", linkKeyText(cardKey)}}).json();
 
@@ -323,6 +323,7 @@ nlohmann::json overviewToJson(const AccountOverview& overview)
         {"usedBytes", overview.usage.usedBytes},
         {"quotaBytes", overview.usage.quotaBytes},
         {"clients", clients},
+        {"devicesVersion", overview.devicesVersion},
     };
 }
 
@@ -334,6 +335,7 @@ AccountOverview overviewFromJson(const nlohmann::json& body)
     overview.state = body.at("state").get<std::string>();
     overview.transientExpires = body.at("transientExpires").get<std::int64_t>();
     overview.usage = usageOf(body);
+    overview.devicesVersion = body.at("devicesVersion").get<std::uint64_t>();
     for (const nlohmann::json& entry : body.at("clients")) {
         overview.devices.push_back({entry.at("device").get<std::string>(),
             entry.at("current").get<bool>(), entry.at("queue").get<std::size_t>()});
@@ -364,6 +366,7 @@ ContactInfo Client::fetchCard(const Descriptor& descriptor, const FetchTransport
     ContactInfo info;
     try {
         info.card = ContactCard::verify(cardDer->bytes());
+        info.cardDer = cardDer->bytes();
         validateB33I2pHost(info.card.dest);
     } catch (const std::exception& error) {
         std::string reason = "the fetched card does not read: ";
@@ -449,17 +452,29 @@ DestinationInfo Client::myDestination()
     return info;
 }
 
-void Client::registerThisDevice(const std::string& install)
+void Client::registerThisDevice(const std::string& install, const Bytes& sealingDer)
 {
-    api_.postJson("/v1/messaging/clients", {{"install", install}});
+    api_.postJson("/v1/messaging/clients", {{"install", install}, {"sealing", toBase64(sealingDer)}});
 }
 
-void Client::forgetDeviceMail(const std::string& device)
+ServerDeviceList Client::deviceList()
 {
-    if (!isDeviceId(device)) {
-        throw std::invalid_argument("not a device id: " + device);
+    const nlohmann::json body = api_.get("/v1/messaging/devices").json();
+    ServerDeviceList list;
+    list.version = body.at("version").get<std::uint64_t>();
+    for (const nlohmann::json& entry : body.at("devices")) {
+        list.devices.push_back({fromBase64(entry.at("cert").get<std::string>()),
+            fromBase64(entry.at("sealing").get<std::string>()), entry.at("registered").get<bool>(),
+            fromBase64(entry.at("departure").get<std::string>())});
     }
-    api_.del("/v1/messaging/clients/" + device);
+    list.card = fromBase64(body.at("card").get<std::string>());
+    lastDevicesVersion_ = list.version;
+    return list;
+}
+
+void Client::depart(const Bytes& departure)
+{
+    api_.postJson("/v1/messaging/departure", {{"departure", toBase64(departure)}});
 }
 
 void Client::registerPasses(const std::vector<Bytes>& handles)
@@ -480,11 +495,17 @@ void Client::revokePasses(const std::vector<Bytes>& handles)
     api_.postJson("/v1/messaging/passes/revoke", {{"passes", encoded}});
 }
 
-std::vector<PendingEntry> Client::waitForPending(
-    const MailWait wait, const std::vector<std::string>& deferred)
+std::vector<PendingEntry> Client::waitForPending(const MailWait wait,
+    const std::vector<std::string>& deferred, const std::optional<std::uint64_t> devicesVersion)
 {
     const bool held = wait == MailWait::eHeld;
     std::string query = held ? kEventsHoldQuery : "";
+    if (devicesVersion.has_value()) {
+        if (!query.empty()) {
+            query += "&";
+        }
+        query += std::string(kEventsDevicesKey) + "=" + std::to_string(*devicesVersion);
+    }
     if (held && !deferred.empty()) {
         query += std::string("&") + kEventsDeferredKey + "=";
         for (std::size_t i = 0; i < deferred.size(); ++i) {
@@ -499,6 +520,7 @@ std::vector<PendingEntry> Client::waitForPending(
     const nlohmann::json body = response.json();
     const std::vector<PendingEntry> entries = pendingEntries(body.at("pending"));
     lastMailboxUsage_ = usageOf(body);
+    lastDevicesVersion_ = body.at("devicesVersion").get<std::uint64_t>();
     if (!entries.empty()) {
         log_->record({0, false, "poll: " + std::to_string(entries.size()) + " waiting", "200", {}});
     }
@@ -508,6 +530,11 @@ std::vector<PendingEntry> Client::waitForPending(
 std::optional<MailboxUsage> Client::lastMailboxUsage() const
 {
     return lastMailboxUsage_;
+}
+
+std::optional<std::uint64_t> Client::lastDevicesVersion() const
+{
+    return lastDevicesVersion_;
 }
 
 std::vector<PendingEntry> Client::listPending()
@@ -562,9 +589,11 @@ void Client::ack(const std::vector<std::string>& ids)
 void Client::submitSelf(const std::string& deliveryId, const Bytes& payload,
     const std::string& kind, const std::string& toDevice)
 {
-    api_.postJson("/v1/messaging/self",
-        {{"deliveryId", deliveryId}, {"payload", toBase64(payload)}, {"to", toDevice}},
-        ApiClient::kDefaultReadTimeoutSeconds, kind);
+    nlohmann::json body = {{"deliveryId", deliveryId}, {"payload", toBase64(payload)}};
+    if (!toDevice.empty()) {
+        body["to"] = toDevice;
+    }
+    api_.postJson("/v1/messaging/self", body, ApiClient::kDefaultReadTimeoutSeconds, kind);
 }
 
 }  // namespace bazarish::client

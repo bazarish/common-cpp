@@ -5,6 +5,7 @@
 
 #include "TestUtil.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 
 using namespace bazarish;
@@ -23,14 +24,7 @@ try {
     const Identity user = Identity::generate();
     const DeviceKeys phone = DeviceKeys::generate();
     const DeviceKeys tablet = DeviceKeys::generate();
-    const Bytes phoneCert
-        = DeviceCertificate::issue(user, DevicePublic::of(phone), DeviceRole::ePrimary, kNow);
-    const Bytes tabletCert
-        = DeviceCertificate::issue(user, DevicePublic::of(tablet), DeviceRole::eSecondary, kNow);
-    const Bytes revocation = RevocationList::issue(user, kFirstRevocationNumber, {}, kNow);
-    DeviceBook book;
-    book.take({phoneCert, tabletCert}, revocation);
-    const Identity& signer = phone.signing();
+    const Identity& signer = user;
     const Identity serverRoot = Identity::generate();
     const Key sealing = Key::generateSealing();
     const Key nextSealing = Key::generateSealing();
@@ -38,6 +32,7 @@ try {
     const std::vector<EpochPublic> epochs{
         {kEpoch, kFirstEpochGeneration, phone.id(), sealing.publicDer()},
         {kEpoch + 1, kFirstEpochGeneration, phone.id(), nextSealing.publicDer()}};
+    const Revocation revocation = Revocation::of(kFirstRevocationNumber, {});
 
     const Key servingSealing = Key::generateSealing();
     const std::string dest = std::string(kB33Label, 'a') + ".b32.i2p";
@@ -48,27 +43,22 @@ try {
         card.dest = dest;
         card.epochs = epochs;
         card.servingSealingKeyDer = servingSealing.publicDer();
-        card.devices = book;
+        card.revocation = revocation;
         return card;
     };
-    nlohmann::json listed = nlohmann::json::array();
-    for (const Bytes& der : book.activeCertDers()) {
-        listed.push_back(toBase64(der));
-    }
     const auto bodyOf = [&](const AccountKind kind) {
         return nlohmann::json{{"v", kCertificateFormatVersion}, {"t", "contact-card"},
             {"issuedAt", kNow}, {"kind", std::string(accountKindName(kind))}, {"dest", dest},
             {"epochs", epochsJson(epochs)},
-            {"servingKey", toBase64(servingSealing.publicDer())}, {"devices", listed},
-            {"revocation", toBase64(revocation)}};
+            {"servingKey", toBase64(servingSealing.publicDer())},
+            {"revocation", revocation.toJson()}};
     };
 
     for (const AccountKind kind : {AccountKind::eUser, AccountKind::eBot, AccountKind::eChat}) {
         const ContactCard contact = ContactCard::verify(cardOf(kind).issue(signer));
         CHECK(contact.kind == kind);
         CHECK(contact.fingerprint() == user.fingerprint());
-        CHECK(contact.signer == phone.id());
-        CHECK(contact.devices == book);
+        CHECK(contact.revocation == revocation);
         CHECK(contact.issuedAt == kNow);
         CHECK(contact.dest == dest);
         CHECK(contact.epochs == epochs);
@@ -95,6 +85,9 @@ try {
         nlohmann::json extraNull = bodyOf(kind);
         extraNull["empty"] = nullptr;
         CHECK_THROWS(ContactCard::verify(hybrid::signJson(extraNull, signer)));
+        nlohmann::json devices = bodyOf(kind);
+        devices["devices"] = nlohmann::json::array();
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(devices, signer)));
         for (const int version : {0, kCertificateFormatVersion + 1}) {
             nlohmann::json versioned = bodyOf(kind);
             versioned["v"] = version;
@@ -116,9 +109,9 @@ try {
         ContactCard gap = cardOf(kind);
         gap.epochs.back().n = kEpoch + 2;
         CHECK_THROWS(gap.issue(signer));
-        ContactCard twoMakers = cardOf(kind);
-        twoMakers.epochs.back() = EpochPublic{kEpoch, kFirstEpochGeneration, tablet.id(), nextSealing.publicDer()};
-        CHECK_THROWS(twoMakers.issue(signer));
+        ContactCard sameEpoch = cardOf(kind);
+        sameEpoch.epochs.back() = EpochPublic{kEpoch, kFirstEpochGeneration, tablet.id(), nextSealing.publicDer()};
+        CHECK_THROWS(sameEpoch.issue(signer));
 
         nlohmann::json legacy = bodyOf(kind);
         legacy["sealingKey"] = toBase64(sealing.publicDer());
@@ -155,15 +148,12 @@ try {
 
     {
         const Identity impostor = Identity::generate();
-        CHECK_THROWS(full.issue(impostor));
-        CHECK_THROWS(full.issue(user));
-        CHECK_THROWS(ContactCard::verify(hybrid::signJson(bodyOf(AccountKind::eUser), impostor)));
-        CHECK_THROWS(ContactCard::verify(hybrid::signJson(bodyOf(AccountKind::eUser), user)));
-        CHECK_THROWS(full.issue(tablet.signing()));
-        CHECK_THROWS(ContactCard::verify(hybrid::signJson(bodyOf(AccountKind::eUser), tablet.signing())));
-        nlohmann::json laterList = bodyOf(AccountKind::eUser);
-        laterList["epochs"][1]["g"] = kFirstRevocationNumber + 1;
-        CHECK_THROWS(ContactCard::verify(hybrid::signJson(laterList, signer)));
+        CHECK(ContactCard::verify(full.issue(impostor)).fingerprint() == impostor.fingerprint());
+        CHECK(ContactCard::verify(full.issue(phone.signing())).fingerprint() != user.fingerprint());
+
+        nlohmann::json laterRevocation = bodyOf(AccountKind::eUser);
+        laterRevocation["epochs"][1]["g"] = kFirstRevocationNumber + 1;
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(laterRevocation, signer)));
         nlohmann::json plainB32 = bodyOf(AccountKind::eUser);
         plainB32["dest"] = std::string(kB32Label, 'a') + ".b32.i2p";
         CHECK_THROWS(ContactCard::verify(hybrid::signJson(plainB32, signer)));
@@ -171,33 +161,26 @@ try {
         weakServing["servingKey"] = toBase64(Key::generateX25519().publicDer());
         CHECK_THROWS(ContactCard::verify(hybrid::signJson(weakServing, signer)));
 
-        ContactCard secondaryKeys = full;
-        secondaryKeys.epochs.back().by = tablet.id();
-        CHECK_THROWS(secondaryKeys.issue(signer));
-        nlohmann::json secondaryEpochs = bodyOf(AccountKind::eUser);
-        secondaryEpochs["epochs"][1]["by"] = tablet.id();
-        CHECK_THROWS(ContactCard::verify(hybrid::signJson(secondaryEpochs, signer)));
+        ContactCard revoking = full;
+        revoking.revocation = Revocation::of(kFirstRevocationNumber + 1, {tablet.id()});
+        revoking.epochs.back().g = kFirstRevocationNumber + 1;
+        const ContactCard revoked = ContactCard::verify(revoking.issue(signer));
+        CHECK(revoked.revocation.revokes(tablet.id()));
+        CHECK(!revoked.revocation.revokes(phone.id()));
 
-        nlohmann::json revokedListed = bodyOf(AccountKind::eUser);
-        revokedListed["revocation"]
-            = toBase64(RevocationList::issue(user, kFirstRevocationNumber + 1, {tablet.id()}, kNow));
-        CHECK_THROWS(ContactCard::verify(hybrid::signJson(revokedListed, signer)));
-        nlohmann::json twice = bodyOf(AccountKind::eUser);
-        twice["devices"].push_back(twice["devices"][0]);
-        CHECK_THROWS(ContactCard::verify(hybrid::signJson(twice, signer)));
-        nlohmann::json noDevices = bodyOf(AccountKind::eUser);
-        noDevices["devices"] = nlohmann::json::array();
-        CHECK_THROWS(ContactCard::verify(hybrid::signJson(noDevices, signer)));
-
-        const DeviceKeys strayKeys = DeviceKeys::generate();
-        nlohmann::json foreign = bodyOf(AccountKind::eUser);
-        foreign["devices"].push_back(toBase64(DeviceCertificate::issue(
-            impostor, DevicePublic::of(strayKeys), DeviceRole::ePrimary, kNow)));
-        CHECK_THROWS(ContactCard::verify(hybrid::signJson(foreign, signer)));
-        nlohmann::json foreignList = bodyOf(AccountKind::eUser);
-        foreignList["revocation"]
-            = toBase64(RevocationList::issue(impostor, kFirstRevocationNumber, {}, kNow));
-        CHECK_THROWS(ContactCard::verify(hybrid::signJson(foreignList, signer)));
+        nlohmann::json backwardsList = bodyOf(AccountKind::eUser);
+        backwardsList["revocation"] = {{"number", 1},
+            {"revoked", {std::max(phone.id(), tablet.id()), std::min(phone.id(), tablet.id())}}};
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(backwardsList, signer)));
+        nlohmann::json negative = bodyOf(AccountKind::eUser);
+        negative["revocation"]["number"] = kFirstRevocationNumber - 1;
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(negative, signer)));
+        nlohmann::json notAnId = bodyOf(AccountKind::eUser);
+        notAnId["revocation"]["revoked"] = {"nope"};
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(notAnId, signer)));
+        nlohmann::json extraRevocationField = bodyOf(AccountKind::eUser);
+        extraRevocationField["revocation"]["issuedAt"] = kNow;
+        CHECK_THROWS(ContactCard::verify(hybrid::signJson(extraRevocationField, signer)));
     }
 
     {

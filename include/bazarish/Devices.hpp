@@ -84,41 +84,37 @@ struct DeviceCertificate {
         const Bytes& pqSignature) const;
 };
 
-struct RevocationList {
-    std::string root;
+struct Revocation {
     std::int64_t number = kFirstRevocationNumber;
-    // Ascending.
+    // Ascending, each once.
     std::vector<std::string> revoked;
-    std::int64_t issuedAt = 0;
 
-    static Bytes issue(const Identity& rootIdentity, std::int64_t number,
-        std::vector<std::string> revoked, std::int64_t issuedAt);
-    static RevocationList verify(const Bytes& der);
+    static Revocation of(std::int64_t number, std::vector<std::string> revoked);
+    nlohmann::json toJson() const;
+    static Revocation fromJson(const nlohmann::json& value);
 
     bool revokes(const std::string& device) const;
+    bool operator==(const Revocation&) const = default;
 };
 
-// The devices of one account as another party holds them: certificates and the newest list.
+// The devices of one account as another party holds them: certificates and the revocation.
 class DeviceBook {
 public:
     bool empty() const;
-    // A book that holds no revocation list knows the devices it was shown and nothing more.
-    bool complete() const;
     const std::string& root() const;
-    std::int64_t revocationNumber() const;
-    const Bytes& revocationDer() const;
+    const Revocation& revocation() const;
 
-    // Throws on another account's document or a list older than the one held; true when it learned.
-    bool take(const std::vector<Bytes>& certDers, const std::optional<Bytes>& revocationDer);
+    // Throws on another account's certificate or a lower revocation; true when it learned.
+    bool take(const std::vector<Bytes>& certDers, const std::optional<Revocation>& revocation = {});
 
     std::optional<DeviceCertificate> active(const std::string& device) const;
     bool revoked(const std::string& device) const;
     // Oldest first.
     std::vector<DeviceCertificate> activeDevices() const;
     std::vector<Bytes> activeCertDers() const;
-    std::vector<std::string> revokedIds() const;
+    std::optional<Bytes> certDer(const std::string& device) const;
 
-    // {certs: [base64], revocation: base64 or absent}.
+    // {certs: [base64], revocation: {number, revoked}}.
     nlohmann::json toJson() const;
     static DeviceBook fromJson(const nlohmann::json& stored);
 
@@ -130,8 +126,7 @@ private:
     std::string root_;
     std::map<std::string, Bytes> certDers_;
     std::map<std::string, DeviceCertificate> certs_;
-    Bytes revocationDer_;
-    std::optional<RevocationList> revocation_;
+    Revocation revocation_;
 };
 
 class DeviceCredential {
@@ -150,6 +145,16 @@ private:
     Identity signing_;
     Bytes certDer_;
     DeviceCertificate cert_;
+};
+
+struct DeviceDeparture {
+    std::string root;
+    std::string device;
+    std::int64_t issuedAt = 0;
+
+    static Bytes issue(const DeviceCredential& device, std::int64_t issuedAt);
+    // Throws unless the keys `cert` certifies signed it, for that device of that account.
+    static DeviceDeparture verify(const Bytes& der, const DeviceCertificate& cert);
 };
 
 }  // namespace bazarish
