@@ -194,6 +194,7 @@ public:
     void registerThisDevice(const std::string& install, const Bytes& sealingDer);
     ServerDeviceList deviceList();
     void depart(const Bytes& departure);
+    void clearDeviceQueue(const std::string& device);
     void onDeviceRevoked(std::function<void()> tell) { api_.onDeviceRevoked(std::move(tell)); }
     void onLinkStage(std::function<void(LinkStage)> tell) { api_.onLinkStage(std::move(tell)); }
     void registerPasses(const std::vector<Bytes>& handles);

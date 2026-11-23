@@ -6700,6 +6700,17 @@ void Session::leaveAccount()
     bazarish::log::info("this device left its account on the server");
 }
 
+void Session::clearDeviceQueue(const std::string& device)
+{
+    requirePrimary("clear another device's queue");
+    requireSwitchedOn();
+    if (device == deviceId()) {
+        throw std::invalid_argument("a device does not clear its own queue");
+    }
+    client_->clearDeviceQueue(device);
+    takeDeviceList();
+}
+
 void Session::revokeDevice(const std::string& device)
 {
     requirePrimary("revoke a device");

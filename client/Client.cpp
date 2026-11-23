@@ -477,6 +477,14 @@ void Client::depart(const Bytes& departure)
     api_.postJson("/v1/messaging/departure", {{"departure", toBase64(departure)}});
 }
 
+void Client::clearDeviceQueue(const std::string& device)
+{
+    if (!isDeviceId(device)) {
+        throw std::invalid_argument("not a device id: " + device);
+    }
+    api_.del("/v1/messaging/clients/" + device);
+}
+
 void Client::registerPasses(const std::vector<Bytes>& handles)
 {
     nlohmann::json encoded = nlohmann::json::array();

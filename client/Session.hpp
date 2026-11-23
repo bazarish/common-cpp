@@ -410,6 +410,8 @@ public:
     void revokeDevice(const std::string& deviceId);
     // Before the profile is removed: the server unregisters this device.
     void leaveAccount();
+    // The server unregisters another device and drops what it held for it; the device stays listed.
+    void clearDeviceQueue(const std::string& deviceId);
     // After a restore from a backup: the account's other active devices, until the user answers.
     std::vector<OwnDevice> devicesToReview() const;
     // Revokes the chosen ones, none for keeping them all, and the question is settled.

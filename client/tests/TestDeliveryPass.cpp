@@ -598,6 +598,19 @@ try {
             respondJson(response, {{"ok", true}});
         }));
 
+    server.del("/v1/messaging/clients/{id}",
+        stub([&](const http::Request& request, http::Response& response) {
+            const std::string caller = requireCaller(request);
+            const std::string device = request.captures.at(0);
+            CHECK(device != requireDevice(request));
+            CHECK(DeviceCertificate::verify(callerCert(request)).role == DeviceRole::ePrimary);
+            std::lock_guard<std::mutex> lock(m.mu);
+            m.installs[caller].erase(device);
+            ++m.devicesVersion[caller];
+            m.dropTaken(caller);
+            respondJson(response, {{"ok", true}});
+        }));
+
     server.post("/v1/messaging/passes",
         stub([&](const http::Request& request, http::Response& response) {
             const std::string caller = requireCaller(request);
@@ -3971,6 +3984,45 @@ try {
                 CHECK(hearsText(*lou, "second from the phone").fromDevice == phone->deviceId());
                 std::printf("TestDeliveryPass: a new device's certificate went with its letters until "
                             "the contact named it as known\n");
+
+                const auto listedAs = [](Session& session, const std::string& device) {
+                    for (const OwnDevice& own : session.ownDevices()) {
+                        if (own.id == device) {
+                            return std::optional<bool>(own.registered);
+                        }
+                    }
+                    return std::optional<bool>();
+                };
+                const auto heldForPhoneAlone = [&]() {
+                    const std::lock_guard<std::mutex> lock(m.mu);
+                    return std::count_if(m.mailbox[kim->fingerprint()].begin(),
+                        m.mailbox[kim->fingerprint()].end(), [&](const Mock::Item& item) {
+                            return item.ackedBy.contains(kim->deviceId())
+                                && !item.ackedBy.contains(phone->deviceId());
+                        });
+                };
+                kim->setDisplayName("named while the phone is away");
+                CHECK(testutil::waitFor([&]() {
+                    kim->flushPendingEchoes();
+                    return heldForPhoneAlone() > 0;
+                }));
+                CHECK_THROWS(kim->clearDeviceQueue(kim->deviceId()));
+                kim->clearDeviceQueue(phone->deviceId());
+                CHECK(heldForPhoneAlone() == 0);
+                CHECK(listedAs(*kim, phone->deviceId()) == std::optional<bool>(false));
+                CHECK(holdsActive(*kim, phone->deviceId()));
+                phone->registerAccount();
+                {
+                    const Session::ContactFetchContext watched = kim->contactFetchContext();
+                    const std::unique_ptr<Client> waiter = Session::makeEventClient(watched);
+                    (void)Session::waitForMail(
+                        *waiter, Client::MailWait::eAtOnce, *watched.keptMail, *watched.devices);
+                    CHECK(watched.devices->moved());
+                    kim->flushPendingEchoes();
+                }
+                CHECK(listedAs(*kim, phone->deviceId()) == std::optional<bool>(true));
+                std::printf("TestDeliveryPass: a primary cleared another device's queue; the device "
+                            "stayed listed and registered again\n");
 
                 phone->leaveAccount();
                 const Session::ContactFetchContext context = kim->contactFetchContext();
