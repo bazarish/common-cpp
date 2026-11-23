@@ -1,4 +1,5 @@
 // Bazarish project (c) 2026
+#include "bazarish/Bytes.hpp"
 #include "bazarish/Crypto.hpp"
 
 #include "TestUtil.hpp"
@@ -6,8 +7,16 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <string>
 
 using namespace bazarish;
+
+namespace {
+
+// SHA-256("abc") XOR SHA3-256("abc"), computed with Python's hashlib.
+const std::string kAbcKeyDigest = "80e04b18c0e3ea58451d57f3367db29e355c69cda88a28c7f2af1d24e343009f";
+
+}  // namespace
 
 int main()
 try {
@@ -38,6 +47,8 @@ try {
     }
     CHECK(!publicOnly.hasPrivate());
     CHECK(publicOnly.fingerprint() == fingerprint);
+    CHECK(toHex(keyDigest({'a', 'b', 'c'})) == kAbcKeyDigest);
+    CHECK(fingerprint == toBase32(keyDigest(signing.publicDer())));
 
     const Key restored = Key::fromPrivatePem(signing.privatePem());
     CHECK(restored.hasPrivate());

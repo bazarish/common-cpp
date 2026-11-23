@@ -306,7 +306,7 @@ Bytes Key::rawPrivate() const
 
 std::string Key::fingerprint() const
 {
-    return toBase32(sha256(publicDer()));
+    return toBase32(keyDigest(publicDer()));
 }
 
 bool Key::hasPrivate() const
@@ -365,13 +365,32 @@ bool verify(const Key& key, const Bytes& data, const Bytes& signature)
     return ok;
 }
 
-Bytes sha256(const Bytes& data)
+namespace {
+
+Bytes digestWith(const Bytes& data, const EVP_MD* const algorithm)
 {
     Bytes digest(kFingerprintBytes);
     unsigned int size = 0;
-    if (EVP_Digest(data.data(), data.size(), digest.data(), &size, EVP_sha256(), nullptr) != 1
+    if (EVP_Digest(data.data(), data.size(), digest.data(), &size, algorithm, nullptr) != 1
         || size != kFingerprintBytes) {
         throw std::runtime_error("EVP_Digest failed");
+    }
+    return digest;
+}
+
+}  // namespace
+
+Bytes sha256(const Bytes& data)
+{
+    return digestWith(data, EVP_sha256());
+}
+
+Bytes keyDigest(const Bytes& data)
+{
+    Bytes digest = digestWith(data, EVP_sha256());
+    const Bytes keccak = digestWith(data, EVP_sha3_256());
+    for (std::size_t at = 0; at < digest.size(); ++at) {
+        digest[at] ^= keccak[at];
     }
     return digest;
 }
@@ -637,7 +656,7 @@ std::string hybridFingerprint(const Bytes& classicalPublicDer, const Bytes& pqPu
 {
     Bytes joined = classicalPublicDer;
     joined.insert(joined.end(), pqPublicDer.begin(), pqPublicDer.end());
-    return toBase32(sha256(joined));
+    return toBase32(keyDigest(joined));
 }
 
 }  // namespace bazarish

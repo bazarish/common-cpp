@@ -71,7 +71,7 @@ Bytes signedMessage(
     Bytes keys = classicalPublicDer;
     append(keys, pqPublicDer);
     Bytes message = contextBytes(kSignContext);
-    append(message, bazarish::sha256(keys));
+    append(message, bazarish::keyDigest(keys));
     append(message, body);
     return message;
 }

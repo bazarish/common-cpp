@@ -41,7 +41,7 @@ std::string pinOfSpki(X509* const certificate)
     if (length <= 0 || !der) {
         throw std::runtime_error("tls: the certificate carries no key");
     }
-    return toHex(sha256(Bytes(der.get(), der.get() + length)));
+    return toHex(keyDigest(Bytes(der.get(), der.get() + length)));
 }
 
 X509Ptr readCertificate(const fs::path& path)

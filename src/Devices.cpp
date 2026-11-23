@@ -202,7 +202,7 @@ Bytes DeviceCertificate::issue(const Identity& rootIdentity, const DevicePublic&
         {kSigningField,
             {{kClassicalKeyField, toBase64(device.signingClassicalDer)},
                 {kPqKeyField, toBase64(device.signingPqDer)}}},
-        {kSealingField, toBase64(sha256(device.sealingDer))},
+        {kSealingField, toBase64(keyDigest(device.sealingDer))},
         {kRoleField, std::string(deviceRoleName(role))},
         {kIssuedAtField, issuedAt},
     };
@@ -230,7 +230,7 @@ DeviceCertificate DeviceCertificate::verify(const Bytes& der)
     }
     cert.sealingDigest = fromBase64(verified.body.at(kSealingField).get<std::string>());
     if (cert.sealingDigest.size() != kFingerprintBytes) {
-        throw std::runtime_error("a device certificate names its sealing key by its SHA-256");
+        throw std::runtime_error("a device certificate names its sealing key by its digest");
     }
     cert.role = deviceRoleFromName(verified.body.at(kRoleField).get<std::string>());
     cert.issuedAt = verified.body.at(kIssuedAtField).get<std::int64_t>();
@@ -239,7 +239,7 @@ DeviceCertificate DeviceCertificate::verify(const Bytes& der)
 
 bool DeviceCertificate::sealsWith(const Bytes& sealingDer) const
 {
-    const Bytes digest = sha256(sealingDer);
+    const Bytes digest = keyDigest(sealingDer);
     return digest.size() == sealingDigest.size()
         && CRYPTO_memcmp(digest.data(), sealingDigest.data(), digest.size()) == 0;
 }

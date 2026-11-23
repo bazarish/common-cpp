@@ -71,6 +71,8 @@ Bytes sign(const Key& key, const Bytes& data);
 bool verify(const Key& key, const Bytes& data, const Bytes& signature);
 
 Bytes sha256(const Bytes& data);
+// SHA-256(data) XOR SHA3-256(data) (FIPS 180-4, FIPS 202): what names a key.
+Bytes keyDigest(const Bytes& data);
 
 inline constexpr std::size_t kAeadKeyBytes = 32;
 inline constexpr std::size_t kAeadNonceBytes = 12;
