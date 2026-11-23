@@ -873,6 +873,7 @@ public:
     static constexpr std::size_t kPendingItemsPerPass = 5;
     void setSwitchedOff(bool off);
     bool switchedOff() const { return switchedOff_; }
+    bool registrationUnfinished() const { return isPrimary() && cardB64_.empty(); }
     bool deviceRevoked() const { return deviceRevoked_; }
     void noteDeviceRevoked();
     void onDeviceRevoked(std::function<void()> tell);

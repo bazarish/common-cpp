@@ -782,9 +782,11 @@ try {
             announceRefused = true;
         }
         CHECK(announceRefused);
+        CHECK(alice->registrationUnfinished());
         alice->setSwitchedOff(false);
 
         alice->registerAccount();
+        CHECK(!alice->registrationUnfinished());
         bob->registerAccount();
         {
             std::lock_guard<std::mutex> lock(m.mu);
