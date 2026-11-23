@@ -295,7 +295,7 @@ Socket openControlSocket(const std::string& host, const std::uint16_t port)
     }
     quietenSignals(fd.get());
     if (::connect(native(fd.get()), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
-        throw Error(Result::eI2pError,
+        throw Error(Result::eNoRouter,
             "SAM: no router at " + host + ":" + std::to_string(port));
     }
     setSocketTimeouts(fd.get(), kControlIoTimeoutSeconds);

@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <stop_token>
 #include <thread>
 #include <vector>
 
@@ -21,7 +22,8 @@ using backend::DestTag;
 namespace {
 
 constexpr auto kDestinationReadyTimeout = std::chrono::seconds(180);
-constexpr auto kHeldDestinationRetry = std::chrono::seconds(5);
+constexpr auto kRouterRetry = std::chrono::seconds(5);
+constexpr auto kSessionWatch = std::chrono::seconds(5);
 
 constexpr auto kProbeInterval = std::chrono::seconds(5);
 
@@ -92,7 +94,7 @@ public:
         , hostAddress_(i2p::routingHost(publicDestination_, config.blinded))
         , tag_(config.label, config.accountLabel)
     {
-        builder_ = std::thread([this]() { build(); });
+        builder_ = std::thread([this]() { serve(); });
     }
 
     ~SamEndpoint() override
@@ -111,7 +113,6 @@ public:
         return streams_ != nullptr && streams_->alive();
     }
 
-    // A session the router dropped, or one that never came up, is not rebuilt here.
     bool lost() const override
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -235,10 +236,17 @@ public:
     bool published() const { return config_.published; }
 
 private:
-    void build()
+    void serve()
+    {
+        while (build() && awaitDrop()) {
+            bazarish::log::info("i2p: destination {} is coming up again", tag_.named());
+        }
+    }
+
+    bool build()
     {
         try {
-            for (bool told = false;;) {
+            for (bool toldHeld = false, toldSilent = false;;) {
                 try {
                     auto session = std::make_shared<sam::Session>(router_,
                         sessionConfigFor(config_, sam::Style::eStream), kDestinationReadyTimeout,
@@ -247,19 +255,27 @@ private:
                     streams_ = std::move(session);
                     break;
                 } catch (const sam::Error& error) {
-                    if (error.result() != sam::Result::eDuplicatedDest) {
+                    if (error.result() == sam::Result::eDuplicatedDest) {
+                        if (!toldHeld) {
+                            bazarish::log::info("i2p: destination {} is still held by the router; "
+                                                "waiting for it to let go",
+                                tag_.named());
+                            toldHeld = true;
+                        }
+                    } else if (error.result() == sam::Result::eNoRouter) {
+                        if (!toldSilent) {
+                            bazarish::log::info("i2p: the router is not answering; "
+                                                "destination {} waits for it",
+                                tag_.named());
+                            toldSilent = true;
+                        }
+                    } else {
                         throw;
-                    }
-                    if (!told) {
-                        bazarish::log::info("i2p: destination {} is still held by the router; "
-                                            "waiting for it to let go",
-                            tag_.named());
-                        told = true;
                     }
                 }
                 std::unique_lock<std::mutex> lock(mutex_);
-                if (ready_.wait_for(lock, kHeldDestinationRetry, [this] { return stopped_.load(); })) {
-                    return;
+                if (ready_.wait_for(lock, kRouterRetry, [this] { return stopped_.load(); })) {
+                    return false;
                 }
             }
         } catch (const std::exception& error) {
@@ -270,6 +286,30 @@ private:
         }
         ready_.notify_all();
         stateSignal->changed();
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return streams_ != nullptr;
+    }
+
+    bool awaitDrop()
+    {
+        std::shared_ptr<sam::Session> session;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            session = streams_;
+        }
+        if (session == nullptr) {
+            return false;
+        }
+        const auto gone = [this, &session]() { return stopped_.load() || !session->alive(); };
+        while (!stateSignal->waitUntil(
+            std::chrono::steady_clock::now() + kSessionWatch, std::stop_token(), gone)) {
+        }
+        if (stopped_) {
+            return false;
+        }
+        const std::lock_guard<std::mutex> lock(mutex_);
+        streams_.reset();
+        return true;
     }
 
     std::shared_ptr<sam::Session> waitForStreams(const std::chrono::seconds timeout)
@@ -289,6 +329,9 @@ private:
         const std::lock_guard<std::mutex> lock(datagramMutex_);
         std::shared_ptr<sam::Session>& session
             = style == sam::Style::eRaw ? raw_ : repliable_;
+        if (session != nullptr && !session->alive()) {
+            session.reset();
+        }
         if (session == nullptr) {
             session = std::make_shared<sam::Session>(
                 router_, sessionConfigFor(config_, style), kDestinationReadyTimeout);

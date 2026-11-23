@@ -16,6 +16,7 @@
 #include <chrono>
 #include <functional>
 #include <cstdio>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -90,7 +91,11 @@ std::string valueOf(const std::string& line, const std::string& key)
 
 class FakeRouter {
 public:
-    FakeRouter()
+    FakeRouter() : FakeRouter(0, 0) {}
+
+    FakeRouter(const std::uint16_t controlPort, const std::uint16_t datagramPort)
+        : controlPort_(controlPort)
+        , udpPort_(datagramPort)
     {
         listener_ = openLoopbackListener(controlPort_);
         udp_ = openLoopbackDatagramSocket(udpPort_);
@@ -231,8 +236,11 @@ private:
     {
         const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
         CHECK(fd >= 0);
+        const int on = 1;
+        CHECK(::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == 0);
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         CHECK(::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0);
         CHECK(::listen(fd, 16) == 0);
@@ -246,6 +254,7 @@ private:
         CHECK(fd >= 0);
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         CHECK(::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0);
         port = boundPort(fd);
@@ -628,34 +637,78 @@ void testSessionIsLostWhenTheRouterDropsIt()
     CHECK_THROWS(session.accept(peer, kAcceptWait));
 }
 
-void testEndpointTellsADeadSession()
+void testEndpointBuildsAnotherSessionAfterADrop()
 {
+    FakeRouter router;
+    i2p::Router over(samAt(router));
+    over.start();
+    i2p::EndpointConfig wanted;
+    wanted.keys = i2p::Keys::generate();
+    const std::shared_ptr<i2p::Endpoint> endpoint = over.createEndpoint(wanted);
+    CHECK(waitUntil([&endpoint]() { return endpoint->ready(); }));
+    CHECK(!endpoint->lost());
+    const std::string first = router.waitForCommand("SESSION CREATE");
+
+    router.dropConnections();
+
+    const std::string again = router.waitForCommand("SESSION CREATE", 2);
+    CHECK(again != "");
+    CHECK(valueOf(again, "DESTINATION") == valueOf(first, "DESTINATION"));
+    CHECK(waitUntil([&endpoint]() { return endpoint->ready(); }));
+    CHECK(!endpoint->lost());
+}
+
+void testEndpointWaitsOutARouterRestart()
+{
+    std::unique_ptr<FakeRouter> router = std::make_unique<FakeRouter>();
+    const std::uint16_t control = router->address().controlPort;
+    const std::uint16_t datagrams = router->address().datagramPort;
+    i2p::Router over(samAt(*router));
+    over.start();
+    i2p::EndpointConfig wanted;
+    wanted.keys = i2p::Keys::generate();
+    const std::shared_ptr<i2p::Endpoint> endpoint = over.createEndpoint(wanted);
+    CHECK(waitUntil([&endpoint]() { return endpoint->ready(); }));
+
+    router.reset();
+    CHECK(waitUntil([&endpoint]() { return !endpoint->ready(); }));
+    std::this_thread::sleep_for(kStrangerWait);
+
+    router = std::make_unique<FakeRouter>(control, datagrams);
+
+    CHECK(router->waitForCommand("SESSION CREATE") != "");
+    CHECK(waitUntil([&endpoint]() { return endpoint->ready(); }));
+    CHECK(!endpoint->lost());
+}
+
+void testNoRouterCarriesItsCode()
+{
+    std::uint16_t control = 0;
     {
         FakeRouter router;
-        i2p::Router over(samAt(router));
-        over.start();
-        i2p::EndpointConfig wanted;
-        wanted.keys = i2p::Keys::generate();
-        const std::shared_ptr<i2p::Endpoint> endpoint = over.createEndpoint(wanted);
-        CHECK(waitUntil([&endpoint]() { return endpoint->ready(); }));
-        CHECK(!endpoint->lost());
-        router.dropConnections();
-        CHECK(waitUntil([&endpoint]() { return endpoint->lost(); }));
-        std::string peer;
-        CHECK_THROWS(endpoint->accept(peer, std::chrono::duration_cast<std::chrono::seconds>(kAcceptWait)));
+        control = router.address().controlPort;
     }
-    {
-        FakeRouter router;
-        router.refuseSessions();
-        i2p::Router over(samAt(router));
-        over.start();
-        i2p::EndpointConfig wanted;
-        wanted.keys = i2p::Keys::generate();
-        const std::shared_ptr<i2p::Endpoint> endpoint = over.createEndpoint(wanted);
-        CHECK(waitUntil([&endpoint]() { return endpoint->lost(); }));
-        std::string peer;
-        CHECK_THROWS(endpoint->accept(peer, std::chrono::duration_cast<std::chrono::seconds>(kAcceptWait)));
+    const sam::RouterAddress gone{"127.0.0.1", control, 0};
+    try {
+        sam::Session session(gone, streamConfig(), kReady);
+        CHECK(false);
+    } catch (const sam::Error& error) {
+        CHECK(error.result() == sam::Result::eNoRouter);
     }
+}
+
+void testEndpointTellsADestinationThatNeverCameUp()
+{
+    FakeRouter router;
+    router.refuseSessions();
+    i2p::Router over(samAt(router));
+    over.start();
+    i2p::EndpointConfig wanted;
+    wanted.keys = i2p::Keys::generate();
+    const std::shared_ptr<i2p::Endpoint> endpoint = over.createEndpoint(wanted);
+    CHECK(waitUntil([&endpoint]() { return endpoint->lost(); }));
+    std::string peer;
+    CHECK_THROWS(endpoint->accept(peer, std::chrono::duration_cast<std::chrono::seconds>(kAcceptWait)));
 }
 
 void testStopWakesAHeldRead()
@@ -816,7 +869,10 @@ try {
     testLeaseSetReaders();
     testRepliableDatagrams();
     testSessionIsLostWhenTheRouterDropsIt();
-    testEndpointTellsADeadSession();
+    testEndpointBuildsAnotherSessionAfterADrop();
+    testEndpointWaitsOutARouterRestart();
+    testNoRouterCarriesItsCode();
+    testEndpointTellsADestinationThatNeverCameUp();
     testStopWakesAHeldRead();
     testWaitsForAHeldDestination();
     testRefusesWhatIsNotLoopback();

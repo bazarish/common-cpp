@@ -37,6 +37,7 @@ enum class Result {
     eDuplicatedDest,
     eInvalidKey,
     eCantReachPeer,
+    eNoRouter,
     eI2pError,
     eUnknown,
 };
