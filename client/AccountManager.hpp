@@ -3,6 +3,7 @@
 
 #include "Session.hpp"
 
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -36,6 +37,7 @@ public:
     void discardInterruptedImports();
 
     std::vector<AccountInfo> list() const;
+    std::size_t count() const;
     bool exists(const std::string& id) const;
     std::filesystem::path fileFor(const std::string& id) const;
 
@@ -51,6 +53,8 @@ public:
     void remove(const std::string& id);
 
 private:
+    std::vector<std::filesystem::path> files() const;
+
     std::filesystem::path root_;
     AccountInfo importWith(const std::string& name, const std::string& atRestPassphrase,
         const std::function<void(const std::filesystem::path&)>& write);

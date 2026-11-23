@@ -62,6 +62,9 @@ AccountInfo readInfo(const std::string& id, const fs::path& file, const std::str
     std::unique_ptr<AccountDb> db;
     try {
         db = std::make_unique<AccountDb>(file, passphrase);
+    } catch (const accountkey::WrongPassphrase&) {
+        info.encrypted = true;
+        return info;
     } catch (const std::exception& error) {
         bazarish::log::info("account {} did not open: {}", id, error.what());
         info.encrypted = true;
@@ -178,17 +181,35 @@ bool AccountManager::exists(const std::string& id) const
     return fs::exists(fileFor(id));
 }
 
+std::vector<fs::path> AccountManager::files() const
+{
+    std::vector<fs::path> files;
+    if (!fs::exists(root_)) {
+        return files;
+    }
+    for (const fs::directory_entry& entry : fs::directory_iterator(root_)) {
+        if (entry.is_regular_file() && entry.path().extension() == kFileSuffix) {
+            files.push_back(entry.path());
+        }
+    }
+    return files;
+}
+
+std::size_t AccountManager::count() const
+{
+    return files().size();
+}
+
 std::vector<AccountInfo> AccountManager::list() const
 {
     std::vector<AccountInfo> accounts;
-    if (!fs::exists(root_)) {
-        return accounts;
-    }
-    for (const fs::directory_entry& entry : fs::directory_iterator(root_)) {
-        if (!entry.is_regular_file() || entry.path().extension() != kFileSuffix) {
-            continue;
+    for (const fs::path& file : files()) {
+        const std::string id = utf8OfPath(file.stem());
+        try {
+            accounts.push_back(readInfo(id, file));
+        } catch (const std::exception& error) {
+            bazarish::log::warn("account {} is not listed: it does not read: {}", id, error.what());
         }
-        accounts.push_back(readInfo(utf8OfPath(entry.path().stem()), entry.path()));
     }
     return accounts;
 }

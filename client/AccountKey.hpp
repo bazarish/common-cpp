@@ -20,6 +20,11 @@ public:
     ReservedPassphrase();
 };
 
+class WrongPassphrase : public std::runtime_error {
+public:
+    WrongPassphrase();
+};
+
 bool isReservedPassphrase(const std::string& passphrase);
 
 std::filesystem::path sidecarFor(const std::filesystem::path& databaseFile);

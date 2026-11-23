@@ -254,7 +254,7 @@ SecretBytes open(const fs::path& file, const std::string& passphrase)
     const Sidecar sidecar = read(file);
     SecretBytes key;
     if (!unseal(SecretBytes(wrappingKey(passphrase, sidecar)).bytes(), sidecar, key)) {
-        throw std::runtime_error("account key: wrong passphrase");
+        throw WrongPassphrase();
     }
     return key;
 }
@@ -307,6 +307,11 @@ void settle(const fs::path& databaseFile)
 
 ReservedPassphrase::ReservedPassphrase()
     : std::invalid_argument("this passphrase is reserved for accounts without one")
+{
+}
+
+WrongPassphrase::WrongPassphrase()
+    : std::runtime_error("account key: wrong passphrase")
 {
 }
 

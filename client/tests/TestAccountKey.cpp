@@ -10,6 +10,7 @@
 
 #include <bazarish/Bytes.hpp>
 #include <bazarish/Epochs.hpp>
+#include <bazarish/Log.hpp>
 #include <bazarish/PrivateFile.hpp>
 
 #include "PageScan.hpp"
@@ -23,6 +24,8 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <vector>
 
 using namespace bazarish;
 using namespace bazarish::client;
@@ -266,6 +269,39 @@ void checkSessionPassphrase(const fs::path& dir)
     }
 }
 
+void checkLockedListedQuietly(const fs::path& dir)
+{
+    AccountManager manager(dir / "locked-list");
+    const AccountInfo made = manager.create("Locked", AccountKind::eUser, "secret");
+    accountkey::forget(manager.fileFor(made.id));
+    std::vector<std::string> lines;
+    log::setTap([&lines](log::Level, std::string_view, const std::string_view message) {
+        lines.emplace_back(message);
+    });
+    const std::vector<AccountInfo> listed = manager.list();
+    CHECK(manager.count() == 1);
+    log::setTap({});
+    CHECK(listed.size() == 1);
+    CHECK(listed.front().encrypted);
+    CHECK(lines.empty());
+}
+
+void checkUnreadableNotListed(const fs::path& dir)
+{
+    AccountManager manager(dir / "unreadable-list");
+    const AccountInfo kept = manager.create("Kept", AccountKind::eUser, "");
+    const AccountInfo broken = manager.create("Broken", AccountKind::eUser, "");
+    {
+        AccountDb db(manager.fileFor(broken.id), "");
+        db.put("device-cert", Bytes{1, 2, 3});
+    }
+    const std::vector<AccountInfo> listed = manager.list();
+    CHECK(listed.size() == 1);
+    CHECK(listed.front().id == kept.id);
+    CHECK(manager.count() == 2);
+    CHECK(fs::exists(manager.fileFor(broken.id)));
+}
+
 std::string secondPemLine(const std::string& pem)
 {
     std::istringstream lines(pem);
@@ -437,6 +473,8 @@ try {
     checkRefusedWhileOpen(dir);
     checkInterrupted(dir);
     checkSessionPassphrase(dir);
+    checkLockedListedQuietly(dir);
+    checkUnreadableNotListed(dir);
     checkReservedPassphrase(dir);
     checkEndedEpochErased(dir);
     checkBundleHoldsActiveKeysOnly(dir);
