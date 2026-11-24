@@ -355,7 +355,10 @@ void ApiClient::releaseI2pLink()
 
 void ApiClient::close()
 {
-    closed_.store(true);
+    {
+        const std::lock_guard<std::mutex> lock(linkMutex_);
+        closed_.store(true);
+    }
     releaseI2pLink();
 }
 
@@ -442,9 +445,13 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     }
     gatewayRefusal_.clear();
     const auto buildLink = [&]() {
+        i2pStream_.reset();
+        i2pOut_.reset();
+        if (closed_.load()) {
+            throw ApiError(std::nullopt, 0, LinkFailure::eNone, kClosedClient);
+        }
         reach(tried, LinkStage::eLink);
         reportConnectProgress(credential_.account(), ConnectMilestone::eTunnelsBuilding);
-        i2pStream_.reset();
         try {
             i2pOut_ = facadeLinkFor(credential_.account(), accountLabel_, tunnelPrivacy(), facade.host);
         } catch (const bazarish::i2p::GatewayRefusal& refusal) {
@@ -453,7 +460,12 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
         }
         i2pOutHost_ = facade.host;
         {
+            // Under the lock close() takes: a link built after it would outlive the client.
             const std::lock_guard<std::mutex> lock(linkMutex_);
+            if (closed_.load()) {
+                i2pOut_.reset();
+                throw ApiError(std::nullopt, 0, LinkFailure::eNone, kClosedClient);
+            }
             link_ = i2pOut_;
         }
         if (i2pOut_) {
