@@ -24,6 +24,8 @@ constexpr std::size_t kMaxContactRequestBytes = 33966;
 constexpr std::size_t kMaxContactGreetingBytes = 100;
 constexpr std::size_t kMaxAccountNameBytes = 64;
 constexpr std::size_t kAvatarMaxBytes = 500 * 1024;
+constexpr std::size_t kStatusMaxChars = 250;
+constexpr std::size_t kStatusMaxBytes = 500;
 constexpr std::size_t kMaxPictureBytes = kMaxMediaBytes;
 constexpr std::size_t kMaxVoiceBytes = kMaxMediaBytes;
 

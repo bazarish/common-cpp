@@ -987,6 +987,8 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
             contact.displayName = entry.at("displayName").get<std::string>();
             contact.avatarMime = entry.at("avatarMime").get<std::string>();
             contact.avatarSentToPeer = entry.at("avatarSentToPeer").get<bool>();
+            contact.status = entry.at("status").get<std::string>();
+            contact.statusSentToPeer = entry.at("statusSentToPeer").get<bool>();
             contact.notifications = entry.at("notifications").get<bool>();
             contact.allowCalls = entry.at("allowCalls").get<bool>();
             contacts.emplace(fingerprint, std::move(contact));
@@ -1112,6 +1114,7 @@ std::unique_ptr<Session> Session::open(const fs::path& accountFile, const std::s
     session->i2pTransient_ = loadBlob("i2p-transient");
 
     session->avatarMime_ = meta.value("avatarMime", std::string{});
+    session->status_ = meta.value("status", std::string{});
     if (!session->avatarMime_.empty()) {
         session->avatar_ = loadBlob("avatar.self");
         if (session->avatar_.empty()) {
@@ -1287,6 +1290,17 @@ const Bytes& Session::avatar() const
 const std::string& Session::avatarMime() const
 {
     return avatarMime_;
+}
+
+const std::string& Session::status() const
+{
+    return status_;
+}
+
+std::string Session::contactStatus(const std::string& peerFingerprint) const
+{
+    const auto found = contacts_.find(peerFingerprint);
+    return found == contacts_.end() ? std::string() : found->second.status;
 }
 
 std::string Session::contactDisplayName(const std::string& peerFingerprint) const
@@ -1522,6 +1536,7 @@ void Session::persistMeta() const
         {"delegationDays", delegationDays_},
         {"encrypted", encrypted_},
         {"avatarMime", avatarMime_},
+        {"status", status_},
         {"acceptCalls", acceptCalls_},
         {"sendReceipts", sendReceipts_},
         {"showPresence", showPresence_},
@@ -1572,6 +1587,8 @@ nlohmann::json Session::contactsToJson() const
             {"displayName", contact.displayName},
             {"avatarMime", contact.avatarMime},
             {"avatarSentToPeer", contact.avatarSentToPeer},
+            {"status", contact.status},
+            {"statusSentToPeer", contact.statusSentToPeer},
             {"notifications", contact.notifications},
             {"allowCalls", contact.allowCalls},
         };
@@ -2110,6 +2127,38 @@ void Session::syncAvatarToSelf()
     submitSignedToSelf(inner, "device.avatar");
 }
 
+void Session::storeOwnStatus(const std::string& text)
+{
+    status_ = text;
+    persistMeta();
+}
+
+void Session::storeContactStatus(const std::string& peerFingerprint, const std::string& text)
+{
+    if (!acceptableStatus(text)) {
+        bazarish::log::warn("a status from {} that is not plain text within the limits, ignored",
+            bazarish::log::redact(peerFingerprint));
+        return;
+    }
+    const auto found = contacts_.find(peerFingerprint);
+    if (found == contacts_.end()) {
+        return;
+    }
+    found->second.status = text;
+    persistContacts();
+}
+
+void Session::syncStatusToSelf()
+{
+    if (myDest_.empty() || myServingKeyB64_.empty()) {
+        return;
+    }
+    const nlohmann::json inner = envelope("device.status", toHex(randomBytes(16)), {
+        {"status", status_},
+    });
+    submitSignedToSelf(inner, "device.status");
+}
+
 void Session::syncContactNameToSelf(const std::string& peerFingerprint, const std::string& name)
 {
     if (myDest_.empty() || myServingKeyB64_.empty()) {
@@ -2120,6 +2169,30 @@ void Session::syncContactNameToSelf(const std::string& peerFingerprint, const st
         {"name", name},
     });
     submitSignedToSelf(inner, "device.contact-name");
+}
+
+bool acceptableStatus(const std::string_view text)
+{
+    if (text.size() > kStatusMaxBytes) {
+        return false;
+    }
+    std::size_t codePoints = 0;
+    std::size_t from = 0;
+    while (true) {
+        const std::size_t lineEnd = text.find('\n', from);
+        const std::optional<std::size_t> counted = plainCodePoints(text.substr(from,
+            lineEnd == std::string_view::npos ? std::string_view::npos : lineEnd - from));
+        if (!counted.has_value()) {
+            return false;
+        }
+        codePoints += *counted;
+        if (lineEnd == std::string_view::npos) {
+            break;
+        }
+        ++codePoints;
+        from = lineEnd + 1;
+    }
+    return codePoints <= kStatusMaxChars;
 }
 
 std::string safeContactName(const std::string& proposed)
@@ -2244,6 +2317,7 @@ void Session::setBlocked(const std::string& peerFingerprint, const bool blocked)
     if (blocked == isBlocked(peerFingerprint)) {
         return;
     }
+    requireSwitchedOn();
     if (blocked) {
         blocked_.insert(peerFingerprint);
         revokePassFor(peerFingerprint);
@@ -2254,15 +2328,11 @@ void Session::setBlocked(const std::string& peerFingerprint, const bool blocked)
         }
     }
     persistBlocked();
-    try {
-        sendSelf({
-            {"type", "device.contact-block"},
-            {"peer", peerFingerprint},
-            {"blocked", blocked},
-        });
-    } catch (const std::exception& error) {
-        bazarish::log::warn("contact-block self-sync failed: {}", error.what());
-    }
+    sendSelf({
+        {"type", "device.contact-block"},
+        {"peer", peerFingerprint},
+        {"blocked", blocked},
+    });
 }
 
 bool Session::contactNotifications(const std::string& peerFingerprint) const
@@ -2349,6 +2419,76 @@ void Session::maybeSendAvatarToContact(const std::string& peerFingerprint, const
     }
 }
 
+void Session::maybeSendStatusToContact(const std::string& peerFingerprint, const bool removal)
+{
+    if (status_.empty() && !removal) {
+        return;
+    }
+    const auto found = contacts_.find(peerFingerprint);
+    if (found == contacts_.end()) {
+        return;
+    }
+    const Contact& contact = found->second;
+    if (!contact.issuedToThem || contact.statusSentToPeer || contact.sendPass.empty()
+        || contact.servingSealingB64.empty()) {
+        return;
+    }
+    LetterTerms terms;
+    terms.statusDigest = statusDigest();
+    if (queuedLetter(peerFingerprint, [&terms](const OutboxEntry& entry) {
+            return entry.terms.statusDigest == terms.statusDigest;
+        })) {
+        return;
+    }
+    nlohmann::json inner = envelope("status", newMessageId(), {
+        {"status", status_},
+    });
+    try {
+        sendContent(peerFingerprint, std::move(inner), {}, false, terms);
+    } catch (const std::exception& error) {
+        bazarish::log::warn(
+            "status push to {} failed: {}", bazarish::log::redact(peerFingerprint), error.what());
+    }
+}
+
+void Session::setStatus(const std::string& text)
+{
+    if (!acceptableStatus(text)) {
+        throw std::runtime_error("a status is plain text of at most "
+            + std::to_string(kStatusMaxChars) + " characters and " + std::to_string(kStatusMaxBytes)
+            + " bytes");
+    }
+    if (text == status_) {
+        return;
+    }
+    settleDeliveries();
+    const bool removal = text.empty();
+    std::vector<std::string> tell;
+    for (const auto& [contactFp, contact] : contacts_) {
+        const bool carried = contact.statusSentToPeer
+            || queuedLetter(contactFp, [](const OutboxEntry& entry) {
+                   return !entry.terms.statusDigest.empty();
+               });
+        if (!removal || carried) {
+            tell.push_back(contactFp);
+        }
+    }
+    storeOwnStatus(text);
+    for (auto& [contactFp, contact] : contacts_) {
+        (void)contactFp;
+        contact.statusSentToPeer = false;
+    }
+    persistContacts();
+    for (const std::string& contactFp : tell) {
+        maybeSendStatusToContact(contactFp, removal);
+    }
+    try {
+        syncStatusToSelf();
+    } catch (const std::exception& error) {
+        bazarish::log::warn("status self-sync failed: {}", error.what());
+    }
+}
+
 void Session::setAvatar(const Bytes& data, const std::string& mime)
 {
     if (data.size() > kAvatarMaxBytes) {
@@ -2402,15 +2542,12 @@ void Session::removeContactEverywhere(const std::string& peerFingerprint)
     if (contacts_.find(peerFingerprint) == contacts_.end()) {
         return;
     }
+    requireSwitchedOn();
     revokePassFor(peerFingerprint);
-    try {
-        sendSelf({
-            {"type", "device.contact-remove"},
-            {"peer", peerFingerprint},
-        });
-    } catch (const std::exception& error) {
-        bazarish::log::warn("contact-remove self-sync failed: {}", error.what());
-    }
+    sendSelf({
+        {"type", "device.contact-remove"},
+        {"peer", peerFingerprint},
+    });
     removeContact(peerFingerprint);
 }
 
@@ -2699,6 +2836,7 @@ Bytes Session::outboxEntryBytes(const OutboxEntry& entry)
         {"schedule", entry.terms.scheduleThrough},
         {"epochs", entry.terms.epochsThrough},
         {"avatar", entry.terms.avatarDigest},
+        {"status", entry.terms.statusDigest},
         {"echoes", entry.echoes},
     };
     return nlohmann::json::to_cbor(stored);
@@ -2723,6 +2861,7 @@ Session::OutboxEntry Session::outboxEntryFrom(const Bytes& stored)
     entry.terms.scheduleThrough = held.at("schedule").get<PresenceDay>();
     entry.terms.epochsThrough = held.at("epochs").get<EpochNumber>();
     entry.terms.avatarDigest = held.at("avatar").get<std::string>();
+    entry.terms.statusDigest = held.at("status").get<std::string>();
     entry.echoes = held.at("echoes").get<std::vector<nlohmann::json>>();
     return entry;
 }
@@ -2986,6 +3125,11 @@ std::string Session::avatarDigest() const
     return toHex(sha256(described));
 }
 
+std::string Session::statusDigest() const
+{
+    return toHex(sha256(Bytes(status_.begin(), status_.end())));
+}
+
 void Session::withdrawDeliveries(const std::string& peerFingerprint)
 {
     settleDeliveries();
@@ -3202,6 +3346,7 @@ void Session::applySettled(const std::uint64_t seq, const DeliveryOutcome& outco
             bazarish::log::warn("contact-accept self-sync failed: {}", error.what());
         }
         maybeSendAvatarToContact(entry.peer);
+        maybeSendStatusToContact(entry.peer);
         offerPresenceSchedule(entry.peer);
     }
     if (outcome.carriedRouting || entry.terms.tellsRouting || entry.establishes) {
@@ -3226,6 +3371,11 @@ void Session::applySettled(const std::uint64_t seq, const DeliveryOutcome& outco
     if (!entry.terms.avatarDigest.empty() && contact != contacts_.end()
         && entry.terms.avatarDigest == avatarDigest()) {
         contact->second.avatarSentToPeer = true;
+        persistContacts();
+    }
+    if (!entry.terms.statusDigest.empty() && contact != contacts_.end()
+        && entry.terms.statusDigest == statusDigest()) {
+        contact->second.statusSentToPeer = true;
         persistContacts();
     }
     for (const nlohmann::json& echoed : entry.echoes) {
@@ -5239,6 +5389,20 @@ std::vector<IncomingMessage> Session::takeIn(
                         } catch (const std::exception& error) {
                             bazarish::log::warn("contact avatar ignored: {}", error.what());
                         }
+                    } else if (type == "status") {
+                        message.contentType = type;
+                        storeContactStatus(
+                            message.fromFingerprint, body.value("status", std::string()));
+                    } else if (type == "device.status") {
+                        message.contentType = type;
+                        if (message.fromFingerprint == fingerprint()) {
+                            const std::string text = body.value("status", std::string());
+                            if (acceptableStatus(text)) {
+                                storeOwnStatus(text);
+                            } else {
+                                bazarish::log::warn("own status from another device ignored");
+                            }
+                        }
                     } else if (type == "device.avatar") {
                         message.contentType = type;
                         if (message.fromFingerprint == fingerprint()) {
@@ -5461,6 +5625,7 @@ std::vector<IncomingMessage> Session::takeIn(
 
     for (const std::string& peer : establishedPeers) {
         maybeSendAvatarToContact(peer);
+        maybeSendStatusToContact(peer);
         offerPresenceSchedule(peer);
     }
 
@@ -5904,6 +6069,7 @@ nlohmann::json Session::contactBookEntry(
         entry["avatar"] = toBase64(contact.avatar);
         entry["avatarMime"] = contact.avatarMime;
     }
+    entry["status"] = contact.status;
     return entry;
 }
 
@@ -6007,6 +6173,12 @@ void Session::applyContactBook(const nlohmann::json& entries)
             contact.sendPass = entry.value("pass", std::string());
             if (entry.value("blocked", false)) {
                 blocked_.insert(peerFingerprint);
+            }
+        }
+        if (contact.status.empty()) {
+            if (const std::string status = entry.value("status", std::string());
+                acceptableStatus(status)) {
+                contact.status = status;
             }
         }
         if (contact.avatar.empty() && entry.contains("avatar")) {

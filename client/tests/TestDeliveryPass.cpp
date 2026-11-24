@@ -1443,6 +1443,48 @@ try {
         }
 
         {
+            const std::string longest(kStatusMaxChars, 'a');
+            CHECK(acceptableStatus(longest));
+            CHECK(!acceptableStatus(longest + "a"));
+            std::string widest;
+            for (std::size_t i = 0; i < kStatusMaxBytes / std::string("\u0436").size(); ++i) {
+                widest += "\u0436";
+            }
+            CHECK(acceptableStatus(widest));
+            CHECK(!acceptableStatus(widest + "\u0436"));
+            CHECK(!acceptableStatus("tab\there"));
+            CHECK_THROWS(alice->setStatus(longest + "a"));
+
+            const std::string status = "first line\nsecond line";
+            alice->setStatus(status);
+            CHECK(alice->status() == status);
+            CHECK(testutil::waitFor([&]() {
+                alice->flushPendingEchoes();
+                bob->sync();
+                return bob->contactStatus(alice->fingerprint()) == status;
+            }));
+
+            alice->setStatus({});
+            CHECK(alice->status().empty());
+            CHECK(testutil::waitFor([&]() {
+                alice->flushPendingEchoes();
+                bob->sync();
+                return bob->contactStatus(alice->fingerprint()).empty();
+            }));
+            std::printf("TestDeliveryPass: a status reaches the contact and its removal does too\n");
+        }
+
+        {
+            alice->setSwitchedOff(true);
+            CHECK_THROWS(alice->removeContactEverywhere(bob->fingerprint()));
+            CHECK(alice->hasContact(bob->fingerprint()));
+            CHECK_THROWS(alice->setBlocked(bob->fingerprint(), true));
+            CHECK(!alice->isBlocked(bob->fingerprint()));
+            alice->setSwitchedOff(false);
+            std::printf("TestDeliveryPass: a switched-off account neither removes nor blocks\n");
+        }
+
+        {
             const auto idsFor = [&m](const std::string& owner) {
                 std::set<std::string> ids;
                 const std::lock_guard<std::mutex> lock(m.mu);
@@ -2562,6 +2604,12 @@ try {
                 return !alice->contactAvatar(bob->fingerprint()).empty();
             }));
             CHECK(alice->contactAvatar(bob->fingerprint()) == face);
+            const std::string bobStatus = "Bob's status";
+            bob->setStatus(bobStatus);
+            CHECK(testutil::waitFor([&]() {
+                alice->sync();
+                return alice->contactStatus(bob->fingerprint()) == bobStatus;
+            }));
             alice->renameContact(bob->fingerprint(), "Bob of the book");
 
             const fs::path secondDir = scratch / "second.db";
@@ -2587,6 +2635,7 @@ try {
             CHECK(second->hasContact(bob->fingerprint()));
             CHECK(second->contactDisplayName(bob->fingerprint()) == "Bob of the book");
             CHECK(second->contactAvatar(bob->fingerprint()) == face);
+            CHECK(second->contactStatus(bob->fingerprint()) == bobStatus);
             CHECK(second->canWriteTo(bob->fingerprint()));
             alice->publishRouting();
             CHECK(testutil::waitFor([&]() {

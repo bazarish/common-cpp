@@ -41,6 +41,7 @@
 #include <deque>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -63,6 +64,8 @@ inline constexpr char kSavedChatName[] = "Saved messages";
 inline constexpr char kContactNamePrefix[] = "(Contact) ";
 
 std::string safeContactName(const std::string& proposed);
+
+bool acceptableStatus(std::string_view text);
 
 struct Contact {
     AccountKind kind = AccountKind::eUser;
@@ -87,6 +90,8 @@ struct Contact {
     Bytes avatar;
     std::string avatarMime;
     bool avatarSentToPeer = false;
+    std::string status;
+    bool statusSentToPeer = false;
     bool notifications = true;
     bool allowCalls = true;
 };
@@ -273,6 +278,7 @@ struct LetterTerms {
     PresenceDay scheduleThrough = 0;
     EpochNumber epochsThrough = 0;
     std::string avatarDigest;
+    std::string statusDigest;
     bool byUser = false;
 };
 
@@ -433,9 +439,12 @@ public:
     const Bytes& avatar() const;
     const std::string& avatarMime() const;
     void setAvatar(const Bytes& data, const std::string& mime);
+    const std::string& status() const;
+    void setStatus(const std::string& text);
 
     std::string contactDisplayName(const std::string& peerFingerprint) const;
     Bytes contactAvatar(const std::string& peerFingerprint) const;
+    std::string contactStatus(const std::string& peerFingerprint) const;
     bool contactIsPending(const std::string& peerFingerprint) const;
     bool contactAcceptInFlight(const std::string& peerFingerprint) const;
     void renameContact(const std::string& peerFingerprint, const std::string& name);
@@ -1018,6 +1027,7 @@ private:
     void echoSentToSelf(const std::string& peerFingerprint, const nlohmann::json& inner);
 
     void maybeSendAvatarToContact(const std::string& peerFingerprint, bool removal = false);
+    void maybeSendStatusToContact(const std::string& peerFingerprint, bool removal = false);
     bool sendsPresenceTo(const std::string& peerFingerprint) const;
     void sendPresenceSchedule(const std::string& peerFingerprint);
     bool scheduleQueued(const std::string& peerFingerprint) const;
@@ -1057,8 +1067,11 @@ private:
     bool unknownDeviceOf(const std::string& peerFingerprint, const nlohmann::json& body) const;
     bool unknownOwnDevice(const nlohmann::json& body) const;
     void syncAvatarToSelf();
+    void syncStatusToSelf();
     void syncContactNameToSelf(const std::string& peerFingerprint, const std::string& name);
     void storeOwnAvatar(const Bytes& data, const std::string& mime);
+    void storeOwnStatus(const std::string& text);
+    void storeContactStatus(const std::string& peerFingerprint, const std::string& text);
     void storeContactAvatar(
         const std::string& peerFingerprint, const Bytes& data, const std::string& mime);
     void persistSealedBlob(const std::string& filename, const Bytes& blob) const;
@@ -1110,6 +1123,7 @@ private:
     void attachWatch(std::uint64_t seq, const DeliveryWatch& watch);
     void attachLocked(std::uint64_t seq, const DeliveryWatch& watch);
     std::string avatarDigest() const;
+    std::string statusDigest() const;
     void tellCourier(const std::function<void(OutboundCourier&)>& tell);
     void persistContacts() const;
     void persistMeta() const;
@@ -1350,6 +1364,7 @@ private:
     std::string name_;
     Bytes avatar_;
     std::string avatarMime_;
+    std::string status_;
     std::string cardB64_;
     AccountKind kind_ = AccountKind::eUser;
     std::optional<PresenceSeed> presenceSeed_;
