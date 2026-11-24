@@ -55,6 +55,7 @@ std::size_t knownRouterCount(const std::filesystem::path& dataDir);
 
 // In the order a first connection passes them.
 enum class ConnectMilestone {
+    eGatewayConnecting,
     eRouterStarting,
     eBuiltInReseeds,
     eTunnelsBuilding,

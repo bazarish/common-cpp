@@ -630,14 +630,15 @@ int connectPercent(const ConnectMilestone milestone)
 {
     // The interface filters progress as monotonic: a retry must not report less than its start.
     switch (milestone) {
+    case ConnectMilestone::eGatewayConnecting: return 30;
     case ConnectMilestone::eRouterStarting: return 30;
     case ConnectMilestone::eBuiltInReseeds: return 30;
     case ConnectMilestone::eTunnelsBuilding: return 40;
     case ConnectMilestone::eTunnelsStillBuilding: return 40;
     case ConnectMilestone::eServerLookup: return 55;
-    case ConnectMilestone::eRegistering: return 60;
     case ConnectMilestone::eServerReached: return 65;
-    case ConnectMilestone::eRegisteringDevice: return 70;
+    case ConnectMilestone::eRegistering: return 68;
+    case ConnectMilestone::eRegisteringDevice: return 75;
     case ConnectMilestone::eCheckingAddress: return 83;
     case ConnectMilestone::ePublishingDestination: return 85;
     case ConnectMilestone::eDelegating: return 88;

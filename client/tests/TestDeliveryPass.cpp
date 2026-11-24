@@ -794,7 +794,20 @@ try {
         alice->registerAccount();
         CHECK(!alice->registrationUnfinished());
         CHECK(alice->listedByServer());
+        std::vector<ConnectMilestone> milestones;
+        setConnectProgressSink(bob->fingerprint(),
+            [&milestones](const ConnectMilestone milestone) { milestones.push_back(milestone); });
         bob->registerAccount();
+        setConnectProgressSink(bob->fingerprint(), {});
+        {
+            const auto at = [&milestones](const ConnectMilestone milestone) {
+                return std::find(milestones.begin(), milestones.end(), milestone);
+            };
+            CHECK(at(ConnectMilestone::eRegistering) < at(ConnectMilestone::eRegisteringDevice));
+            for (std::size_t i = 1; i < milestones.size(); ++i) {
+                CHECK(connectPercent(milestones[i - 1]) <= connectPercent(milestones[i]));
+            }
+        }
         {
             std::lock_guard<std::mutex> lock(m.mu);
             CHECK(m.signedUp.count(alice->fingerprint()) == 1);

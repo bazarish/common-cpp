@@ -433,7 +433,9 @@ std::optional<ApiResponse> ApiClient::i2pExchange(const Facade& facade, const st
     const int readTimeoutSeconds, LinkAttempt& tried)
 {
     reach(tried, LinkStage::eRouter);
-    reportConnectProgress(credential_.account(), ConnectMilestone::eRouterStarting);
+    reportConnectProgress(credential_.account(), usingGatewayTransport()
+            ? ConnectMilestone::eGatewayConnecting
+            : ConnectMilestone::eRouterStarting);
     setReseedUrls(endpoint_.reseeds);
     if (bootstrapI2pRouter(i2pDataDir_) == I2pBootstrap::eEmpty) {
         return std::nullopt;

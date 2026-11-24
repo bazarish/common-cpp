@@ -1631,8 +1631,11 @@ void Session::registerAccount()
         bazarish::log::info("account awaiting operator approval: no mailbox until then");
         return;
     }
-    if (!joined && !joinServer()) {
-        throw std::runtime_error("the server does not serve the account it took the card of");
+    if (!joined) {
+        reportConnectProgress(fingerprint(), ConnectMilestone::eRegisteringDevice);
+        if (!joinServer()) {
+            throw std::runtime_error("the server does not serve the account it took the card of");
+        }
     }
     registerEveryPass();
 
@@ -1658,6 +1661,7 @@ void Session::joinAsSecondary()
         bazarish::log::info("account awaiting operator approval: no mailbox until then");
         return;
     }
+    reportConnectProgress(fingerprint(), ConnectMilestone::eRegisteringDevice);
     enrollHere();
     registerEveryPass();
     reportConnectProgress(fingerprint(), ConnectMilestone::eCheckingAddress);
@@ -1688,7 +1692,6 @@ void Session::registerSelfHosted(const std::string& servedDest)
 
 void Session::enrollHere()
 {
-    reportConnectProgress(fingerprint(), ConnectMilestone::eRegisteringDevice);
     client_->registerThisDevice(install_, deviceSealing_.publicDer());
     takeDeviceList();
 }
