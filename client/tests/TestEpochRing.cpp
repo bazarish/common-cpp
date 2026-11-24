@@ -119,8 +119,8 @@ try {
         const Bytes der = Key::generateSealing().publicDer();
         const std::vector<EpochPublic> offeredKeys{
             {kEpoch, kFirstEpochGeneration, primary.id(), der},
-            {kEpoch + kEpochPushHorizon, kFirstEpochGeneration, primary.id(), der},
-            {kEpoch + kEpochPushHorizon + 1, kFirstEpochGeneration, primary.id(), der},
+            {kEpoch + kEpochAdmitHorizon, kFirstEpochGeneration, primary.id(), der},
+            {kEpoch + kEpochAdmitHorizon + 1, kFirstEpochGeneration, primary.id(), der},
             {kEpoch, kLaterGeneration, primary.id(), der},
             {kEpoch, kFirstEpochGeneration, secondary.id(), der}};
         CHECK(admittedEpochs(offeredKeys, std::nullopt, inside(kEpoch)).size() == offeredKeys.size() - 1);

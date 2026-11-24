@@ -6674,9 +6674,19 @@ void Session::keepEpochs()
     if (cardMayBeStale_) {
         cardMayBeStale_ = !republishCardIfStale();
     }
+    std::optional<EpochNumber> publishedThrough;
     std::vector<std::string> ready;
     for (const auto& [peerFingerprint, dueAt] : epochsDue_) {
-        if (dueAt <= utc) {
+        if (dueAt > utc) {
+            continue;
+        }
+        if (!publishedThrough.has_value()) {
+            publishedThrough = cardB64_.empty()
+                ? 0
+                : ContactCard::verify(fromBase64(cardB64_)).epochs.back().n;
+        }
+        const auto contact = contacts_.find(peerFingerprint);
+        if (contact == contacts_.end() || *publishedThrough > contact->second.epochsSentThrough) {
             ready.push_back(peerFingerprint);
         }
     }

@@ -29,8 +29,8 @@ inline constexpr std::int64_t kEpochSeconds = kEpochDays * kSecondsPerDay;
 inline constexpr std::int64_t kEpochOriginSeconds = 1767225600;
 inline constexpr std::int64_t kEpochKeptAfterEndSeconds = kMailRetentionDays * kSecondsPerDay;
 inline constexpr std::size_t kCardEpochs = 2;
-// Identity.md: a key is pushed when what was last sent leaves less than one epoch ahead.
-inline constexpr EpochNumber kEpochPushHorizon = 2;
+// Identity.md: a key more than this many epochs past the current one is dropped.
+inline constexpr EpochNumber kEpochAdmitHorizon = 2;
 
 inline constexpr std::uint8_t kEpochKidTag = 0x01;
 inline constexpr std::size_t kEpochKidNumberBytes = 4;

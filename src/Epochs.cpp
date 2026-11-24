@@ -228,7 +228,7 @@ std::vector<EpochPublic> mergedEpochs(const std::vector<EpochPublic>& held,
 std::vector<EpochPublic> admittedEpochs(const std::vector<EpochPublic>& offered,
     const std::optional<std::int64_t> revocationNumber, const std::int64_t utcSeconds)
 {
-    const EpochNumber horizon = epochAt(utcSeconds) + kEpochPushHorizon;
+    const EpochNumber horizon = epochAt(utcSeconds) + kEpochAdmitHorizon;
     std::vector<EpochPublic> admitted;
     for (const EpochPublic& epoch : offered) {
         if (epoch.n > horizon) {
