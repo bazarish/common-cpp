@@ -3454,7 +3454,8 @@ try {
                 gina->sync();
                 gina2->sync();
                 const std::lock_guard<std::mutex> lock(m.mu);
-                return m.mailbox[hal->fingerprint()].size() >= heldForHal + 3;
+                // The message and a card; a device that heard the other one sent it sends none.
+                return m.mailbox[hal->fingerprint()].size() >= heldForHal + 2;
             }));
 
             utc.store(epochStart(start + 2) + kSecondsPerDay);
