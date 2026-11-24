@@ -3370,6 +3370,8 @@ void Session::applySettled(const std::uint64_t seq, const DeliveryOutcome& outco
         contact->second.presenceSentThrough
             = std::max(contact->second.presenceSentThrough, entry.terms.scheduleThrough);
         persistContacts();
+        bazarish::log::info("presence: our schedule through {} reached {}",
+            presenceDayText(entry.terms.scheduleThrough), bazarish::log::redact(entry.peer));
     }
     if (!entry.terms.avatarDigest.empty() && contact != contacts_.end()
         && entry.terms.avatarDigest == avatarDigest()) {
@@ -6541,8 +6543,11 @@ void Session::takePresenceSchedule(const std::string& peerFingerprint, const nlo
         return;
     }
     const PresenceDay today = presenceToday();
-    PresenceSchedule kept
-        = mergedSchedule(found->second.presence, offeredPresenceSchedule(body.at("days"), today), today);
+    const PresenceSchedule offered = offeredPresenceSchedule(body.at("days"), today);
+    bazarish::log::info("presence: a schedule from {} covering {} day(s){}",
+        bazarish::log::redact(peerFingerprint), offered.size(),
+        offered.empty() ? std::string() : ", through " + presenceDayText(offered.back().day));
+    PresenceSchedule kept = mergedSchedule(found->second.presence, offered, today);
     if (kept == found->second.presence) {
         return;
     }

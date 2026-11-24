@@ -340,6 +340,7 @@ struct Presence::Impl {
         Clock::time_point readersChanged{};
         Clock::time_point raiseAfter{};
         std::map<std::uint64_t, Incoming> incoming;
+        bool readerlessTold = false;
     };
 
     struct WatcherLane {
@@ -874,6 +875,15 @@ struct Presence::Impl {
                 }
             }
             if (!lane.runner) {
+                if (online && lane.wanted.empty() && !lane.readerlessTold) {
+                    lane.readerlessTold = true;
+                    bazarish::log::info("presence: the presence address for {} stays down: no "
+                                        "contact has sent a schedule covering that day",
+                        presenceDayText(day));
+                }
+                if (!lane.wanted.empty()) {
+                    lane.readerlessTold = false;
+                }
                 if (online && !lane.wanted.empty()
                     && i2p::transportState() == i2p::TransportState::eUp) {
                     if (now >= lane.raiseAfter) {
