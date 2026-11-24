@@ -186,6 +186,7 @@ struct Mock {
     std::size_t largestContactRequest = 0;
     int nextId = 1;
     std::string refuseWith;
+    bool refusePassRegistration = false;
     int failAcks = 0;
     // Stored, then the stream ends before the reply: what a sender sees of a lost ack.
     std::string loseReplyTo;
@@ -616,6 +617,10 @@ try {
             const std::string caller = requireCaller(request);
             const nlohmann::json passes = nlohmann::json::parse(request.body).at("passes");
             std::lock_guard<std::mutex> lock(m.mu);
+            if (m.refusePassRegistration) {
+                response.status = kServiceUnavailable;
+                return;
+            }
             for (const nlohmann::json& handle : passes) {
                 m.registered[caller].insert(handle.get<std::string>());
             }
@@ -1867,6 +1872,18 @@ try {
                 return m.registered[alice->fingerprint()].size();
             };
             CHECK(held() == 0);
+
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.refusePassRegistration = true;
+            }
+            CHECK_THROWS(alice->setBlocked(bob->fingerprint(), false));
+            CHECK(alice->isBlocked(bob->fingerprint()));
+            CHECK(held() == 0);
+            {
+                std::lock_guard<std::mutex> lock(m.mu);
+                m.refusePassRegistration = false;
+            }
 
             alice->setBlocked(bob->fingerprint(), false);
             CHECK(!alice->isBlocked(bob->fingerprint()));

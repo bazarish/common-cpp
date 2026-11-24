@@ -2322,10 +2322,10 @@ void Session::setBlocked(const std::string& peerFingerprint, const bool blocked)
         blocked_.insert(peerFingerprint);
         revokePassFor(peerFingerprint);
     } else {
-        blocked_.erase(peerFingerprint);
         if (contacts_.count(peerFingerprint) > 0) {
             registerPassFor(peerFingerprint);
         }
+        blocked_.erase(peerFingerprint);
     }
     persistBlocked();
     sendSelf({
