@@ -1278,7 +1278,19 @@ try {
         }
 
         {
+            const auto heldForBob = [&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[bob->fingerprint()].size();
+            };
+            const std::size_t before = heldForBob();
             alice->setAvatar(Bytes(kAvatarMaxBytes, 'a'), "image/jpeg");
+            CHECK(testutil::waitFor([&]() { return heldForBob() > before; }));
+            const std::size_t sealed = [&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return m.mailbox[bob->fingerprint()].back().payload.size();
+            }();
+            std::printf("TestDeliveryPass: the largest avatar message is %zu bytes\n", sealed);
+            CHECK(sealed <= kMaxMessagePayloadBytes);
             std::size_t received = 0;
             CHECK(testutil::waitFor([&]() {
                 for (const IncomingMessage& item : bob->sync()) {
