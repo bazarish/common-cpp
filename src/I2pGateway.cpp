@@ -598,7 +598,8 @@ void StreamState::farSideFinished()
         const std::lock_guard<std::mutex> lock(mutex_);
         finished_ = true;
     }
-    arrived_.notify_all();
+    // I2P streaming has no half-close: the far end's close ends our side as well.
+    close();
 }
 
 void StreamState::reset()
@@ -631,6 +632,14 @@ std::size_t StreamState::readSome(const ByteBuffer buffer)
     lock.unlock();
 
     book_.consumed(got);
+    // Under the lock that sends the close, so no credit follows it for a stream the gateway ended.
+    const std::lock_guard<std::mutex> sending(sendMutex_);
+    {
+        const std::lock_guard<std::mutex> state(mutex_);
+        if (closed_) {
+            return got;
+        }
+    }
     const Bytes credit = gateway::encodeCredit(id_, book_.consumedTotal());
     if (const http::SocketPtr own = link_->socketFor(endpoint_)) {
         own->send(std::vector<unsigned char>(credit.begin(), credit.end()));

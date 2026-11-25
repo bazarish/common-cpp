@@ -195,7 +195,11 @@ public:
         streamReply_ = StreamReply{std::move(reply), end};
     }
 
-    void resetStreams()
+    void resetStreams() { endStreams(gateway::FrameType::eStreamReset); }
+
+    void closeStreams() { endStreams(gateway::FrameType::eStreamClose); }
+
+    void endStreams(const gateway::FrameType end)
     {
         std::vector<std::pair<std::shared_ptr<http::Socket>, std::uint32_t>> opened;
         {
@@ -203,7 +207,7 @@ public:
             opened.swap(streams_);
         }
         for (const auto& [socket, stream] : opened) {
-            socket->send(gateway::encode(gateway::FrameType::eStreamReset, stream));
+            socket->send(gateway::encode(end, stream));
         }
     }
 
