@@ -504,6 +504,49 @@ try {
 
     {
         Record record;
+        std::atomic<int> dials{0};
+        OutboundCourier courier(
+            dialling([&](const std::string&) -> std::shared_ptr<DeliveryStream> {
+            if (++dials == 1) {
+                i2p::networkChanged();
+                return std::make_shared<SilentStream>();
+            }
+            return std::make_shared<ServerStream>(keys.signing, keys.serving);
+        }),
+            {}, quick(kFarBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(settles(record, 1));
+        CHECK(record.outcome(1)->stored);
+        CHECK(dials.load() == 2);
+        CHECK(!record.saw(1, kPhaseWaiting));
+        std::printf("TestOutboundCourier: silence while this device moved network is sent again"
+                    " at once\n");
+    }
+
+    {
+        Record record;
+        std::atomic<bool> tunnels{false};
+        OutboundCourier::Links links = dialling([&](const std::string&) {
+            return std::make_shared<ServerStream>(keys.signing, keys.serving);
+        });
+        links.prepare = [&tunnels](const std::string&, const std::string&) {
+            return tunnels.load();
+        };
+        OutboundCourier courier(links, {}, quick(kFarBound));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(testutil::waitFor([&record]() { return record.saw(1, kPhaseOffline); }));
+        CHECK(!record.saw(1, kPhaseWaiting));
+        CHECK(!record.saw(1, kPhaseDialing));
+        tunnels = true;
+        courier.heard(kOwnMailboxRoute);
+        CHECK(settles(record, 1));
+        CHECK(record.outcome(1)->stored);
+        std::printf("TestOutboundCourier: no address with tunnels to send from waits for this"
+                    " device, not for the recipient\n");
+    }
+
+    {
+        Record record;
         FakeNet net(keys);
         net.live = 2;
         net.floodfill = 2;

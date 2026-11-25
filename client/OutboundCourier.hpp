@@ -202,7 +202,7 @@ private:
         bool releaseOwn = false;
     };
 
-    enum class Answer { eAnswered, eUnanswered, eBroken, eKeyless };
+    enum class Answer { eAnswered, eUnanswered, eUnprepared, eBroken, eKeyless };
 
     void workerLoop();
     std::optional<Job> pickLocked();

@@ -556,8 +556,10 @@ void OutboundCourier::runAttempt(const Job& job)
     }
     Outcome outcome;
     const std::uint64_t lossesBefore = i2p::linkLosses();
+    const std::uint64_t movesBefore = i2p::networkChanges();
     const Answer answer = attempt(job.letter, outcome);
-    const bool ownLink = i2p::linkLosses() != lossesBefore
+    const bool moved = i2p::networkChanges() != movesBefore;
+    const bool ownLink = answer == Answer::eUnprepared || i2p::linkLosses() != lossesBefore
         || i2p::transportState() != i2p::TransportState::eUp;
     std::vector<Settled> settled;
     std::vector<std::pair<DeliveryWatch, std::string>> waiting;
@@ -582,11 +584,16 @@ void OutboundCourier::runAttempt(const Job& job)
                 }
                 bazarish::log::warn("a {} to {} waits: this device holds no current key of its"
                                     " recipient", job.letter.kind, routeName(job.route));
+            } else if (moved && !ownLink) {
+                bazarish::log::info("{} was not reached while this device moved network:"
+                                    " sending again", routeName(job.route));
             } else if (held->second.letter.route == job.route && ownLink) {
                 waiting = closeGateLocked(job.route, true);
-                bazarish::log::warn("{} was not reached: this device lost its own link; what"
-                                    " waits for it goes when our server answers",
-                    routeName(job.route));
+                bazarish::log::warn("{} was not reached: this device {}; what waits for it goes"
+                                    " when our server answers",
+                    routeName(job.route),
+                    answer == Answer::eUnprepared ? "has no address with tunnels to send from"
+                                                  : "lost its own link");
             } else if (answer == Answer::eBroken) {
                 bazarish::log::info("{} answered and the stream broke: sending again",
                     routeName(job.route));
@@ -634,6 +641,9 @@ void OutboundCourier::runLookup(const Job& job)
                 newer = true;
                 bazarish::log::info(
                     "{} published a newer lease set: trying again", routeName(job.route));
+            } else {
+                bazarish::log::info("{} holds the lease set of the failed attempt: waiting",
+                    routeName(job.route));
             }
         }
     }
@@ -713,7 +723,7 @@ OutboundCourier::Answer OutboundCourier::attemptFederation(const Letter& letter,
         bazarish::log::warn("no address to send to {} from: {}", routeName(toDest), error.what());
     }
     if (!ready) {
-        return Answer::eUnanswered;
+        return Answer::eUnprepared;
     }
     phase(letter.seq, kPhaseDialing);
     std::shared_ptr<DeliveryStream> stream;
