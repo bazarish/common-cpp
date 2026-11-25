@@ -94,7 +94,7 @@
 --- a/libi2pd/TunnelPool.cpp
 +++ b/libi2pd/TunnelPool.cpp
 @@ -180,6 +180,7 @@
- 			std::unique_lock<std::mutex> l(m_OutboundTunnelsMutex);
+ 			std::lock_guard<std::mutex> l(m_OutboundTunnelsMutex);
  			m_OutboundTunnels.insert (createdTunnel);
  		}
 +		tunnels.PoolOutboundTunnelCreated (shared_from_this ());

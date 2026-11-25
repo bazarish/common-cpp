@@ -1,5 +1,5 @@
 diff --git a/libi2pd/Log.cpp b/libi2pd/Log.cpp
-index eef5d196..f641dedf 100644
+index db73ec4d..94f000ca 100644
 --- a/libi2pd/Log.cpp
 +++ b/libi2pd/Log.cpp
 @@ -13,6 +13,7 @@
@@ -8,9 +8,9 @@ index eef5d196..f641dedf 100644
  #include <algorithm>
 +#include <utility>
  
- namespace i2p {
- namespace log {
-@@ -180,6 +181,10 @@ namespace log {
+ namespace i2p
+ {
+@@ -182,6 +183,10 @@ namespace log
  						<< "/" << g_LogLevelStr[msg->level]
  						<< " - " << msg->text << std::endl;
  				break;
@@ -21,7 +21,7 @@ index eef5d196..f641dedf 100644
  			case eLogStdout:
  			default:
  				std::cout << TimeAsString(msg->timestamp)
-@@ -233,6 +238,13 @@ namespace log {
+@@ -235,6 +240,13 @@ namespace log
  		m_LogStream = os;
  	}
  
@@ -36,10 +36,10 @@ index eef5d196..f641dedf 100644
  	void Log::SendTo(const char *name, int facility) {
  		if (m_MinLevel == eLogNone) return;
 diff --git a/libi2pd/Log.h b/libi2pd/Log.h
-index 18592c9e..aab213ad 100644
+index 1d5a5f37..3a51891d 100644
 --- a/libi2pd/Log.h
 +++ b/libi2pd/Log.h
-@@ -39,6 +39,7 @@ enum LogType {
+@@ -40,6 +40,7 @@ enum LogType {
  	eLogStdout = 0,
  	eLogStream,
  	eLogFile,
@@ -47,7 +47,7 @@ index 18592c9e..aab213ad 100644
  #ifndef _WIN32
  	eLogSyslog,
  #endif
-@@ -49,6 +50,10 @@ namespace log {
+@@ -52,6 +53,10 @@ namespace log
  
  	struct LogMsg; /* forward declaration */
  
@@ -58,15 +58,15 @@ index 18592c9e..aab213ad 100644
  	class Log
  	{
  		private:
-@@ -56,6 +61,7 @@ namespace log {
+@@ -59,6 +64,7 @@ namespace log
  			enum LogType m_Destination;
  			enum LogLevel m_MinLevel;
  			std::shared_ptr<std::ostream> m_LogStream;
 +			LogSink m_Sink;
- 			std::string m_Logfile;
+ 			std::filesystem::path m_Logfile;
  			std::time_t m_LastTimestamp;
  			char m_LastDateTime[64];
-@@ -111,6 +117,12 @@ namespace log {
+@@ -114,6 +120,12 @@ namespace log
  			 */
  			void SendTo (std::shared_ptr<std::ostream> os);
  
