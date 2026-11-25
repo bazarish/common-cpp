@@ -1626,7 +1626,8 @@ void Session::registerAccount()
         result = client_->publishCard(cardToPublish(), *root_, cardKey_, serving, currentCardIssuedAt());
     }
     const bool movedOnCard = storeCard(result);
-    approval_ = {result.approvalPending, false, result.registrationMessage};
+    approval_ = {result.approvalPending, result.approvalPending && result.held, false,
+        result.registrationMessage};
     if (approval_.pending) {
         bazarish::log::info("account awaiting operator approval: no mailbox until then");
         return;
@@ -2578,12 +2579,13 @@ I2pDestStatus Session::i2pDestStatus()
 
 void Session::takeApproval(const I2pDestStatus& status)
 {
-    approval_ = {status.approval == kApprovalPending, false, status.registrationMessage};
+    const bool pending = status.approval == kApprovalPending;
+    approval_ = {pending, pending && status.held, false, status.registrationMessage};
 }
 
 void Session::refuseApproval(const std::string& reason)
 {
-    approval_ = {false, true, reason};
+    approval_ = {false, false, true, reason};
 }
 
 void Session::keepOverview(const AccountOverview& overview)

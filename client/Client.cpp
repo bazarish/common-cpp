@@ -146,6 +146,7 @@ I2pDestStatus i2pStatusOf(const nlohmann::json& body)
 {
     I2pDestStatus status;
     status.approval = body.value("approval", std::string());
+    status.held = body.value("held", false);
     status.registrationMessage = body.value("registrationMessage", std::string());
     status.transientExpires = body.value("transientExpires", std::int64_t{0});
     return status;
@@ -262,6 +263,7 @@ PublishResult Client::publishCard(const ContactCard& content, const Identity& ro
 
     PublishResult result;
     result.approvalPending = answer.at("approval").get<std::string>() == kApprovalPending;
+    result.held = answer.at("held").get<bool>();
     result.registrationMessage = answer.at("registrationMessage").get<std::string>();
     result.cardDer = card;
     result.dest = serving.dest;

@@ -35,6 +35,7 @@ struct AddressKeys {
 
 struct I2pDestStatus {
     std::string approval;
+    bool held = false;
     std::string registrationMessage;
     std::int64_t transientExpires = 0;
 
@@ -90,6 +91,8 @@ struct PublishResult {
     Bytes servingSealingKeyDer;
     Bytes cardDer;
     bool approvalPending = false;
+    // The operator took the account out of service; the message is the operator's.
+    bool held = false;
     std::string registrationMessage;
 };
 

@@ -989,7 +989,7 @@ try {
         }
         Mock::dropTaken(account);
         respondJson(response, {{"quotaBytes", kQuotaBytes},
-            {"approval", account.approved ? "approved" : kApprovalPending}, {"registrationMessage", ""}});
+            {"approval", account.approved ? "approved" : kApprovalPending}, {"held", false}, {"registrationMessage", ""}});
     }));
     server.post("/v1/account/registration", stub([&](const http::Request& request, http::Response& response) {
         const std::lock_guard<std::mutex> lock(m.mu);
@@ -1008,7 +1008,7 @@ try {
             return;
         }
         respondJson(response, {{"approval", found->second.approved ? "approved" : kApprovalPending},
-            {"registrationMessage", ""}, {"transientExpires", found->second.delegatedUntil}});
+            {"held", false}, {"registrationMessage", ""}, {"transientExpires", found->second.delegatedUntil}});
     }));
     server.post("/v1/account/i2p-dest", stub([&](const http::Request& request, http::Response& response) {
         const std::string caller = requireCaller(request);

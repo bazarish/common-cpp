@@ -120,7 +120,7 @@ try {
             CHECK(linkKeyFromText(nlohmann::json::parse(request.body).at("cardKey").get<std::string>())
                 == aliceCardKey);
             respondJson(response, {{"quotaBytes", 10 * 1024 * 1024}, {"approval", "approved"},
-                {"registrationMessage", ""}});
+                {"held", false}, {"registrationMessage", ""}});
         }));
 
     server.get("/v1/messaging/destination",
@@ -274,7 +274,7 @@ try {
             (void)requireCaller(request);
             statusQuery = request.query("hold") + "/" + request.query("since");
             respondJson(response,
-                {{"approval", "approved"}, {"registrationMessage", ""}, {"transientExpires", 0}});
+                {{"approval", "approved"}, {"held", false}, {"registrationMessage", ""}, {"transientExpires", 0}});
         }));
 
     server.post("/v1/messaging/fetch",

@@ -448,7 +448,7 @@ try {
                   m.dropTaken(caller);
               }
               respondJson(response, {{"quotaBytes", 100u * 1024 * 1024}, {"approval", "approved"},
-                  {"registrationMessage", ""}});
+                  {"held", false}, {"registrationMessage", ""}});
           };
     server.post("/v1/account/card", stub(handlePublishCard));
 
@@ -470,7 +470,7 @@ try {
                     {{"error", {{"code", "ACCOUNT_UNKNOWN"}, {"message", "no account"}}}});
                 return;
             }
-            respondJson(response, {{"approval", "approved"}, {"registrationMessage", ""}});
+            respondJson(response, {{"approval", "approved"}, {"held", false}, {"registrationMessage", ""}});
         }));
 
     server.post("/v1/account/i2p-dest",

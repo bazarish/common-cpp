@@ -529,6 +529,7 @@ public:
 
     struct ApprovalState {
         bool pending = false;
+        bool held = false;
         bool refused = false;
         std::string message;
     };
