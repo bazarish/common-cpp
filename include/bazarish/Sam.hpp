@@ -38,6 +38,8 @@ enum class Result {
     eInvalidKey,
     eCantReachPeer,
     eNoRouter,
+    // The router closed a connection it had taken, or stopped answering on it.
+    eConnectionLost,
     eI2pError,
     eUnknown,
 };

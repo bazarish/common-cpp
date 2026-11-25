@@ -30,6 +30,8 @@ using namespace bazarish;
 namespace {
 
 constexpr std::chrono::milliseconds kStrangerWait{300};
+// One accept of a taking loop: short, so the loop notices it is done.
+constexpr std::chrono::seconds kTakeWait{1};
 
 const std::string kDestination
     = "GmVBArK-6asEg1BTOKbZ9O7c9VFbbm6g4TVPBrmuNyIcD0t-2kEJy39~dawKvPQsNJyTLK5eJi1S8jadM~z"
@@ -133,6 +135,9 @@ public:
     // Every next session is refused for a cause that waiting does not cure.
     void refuseSessions() { refusing_ = true; }
 
+    // The next sessions get no answer: the connection closes, as when the router goes down.
+    void dropCreates(const int times) { dropped_ = times; }
+
     void setStreamStatus(const std::string& line)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -168,7 +173,20 @@ public:
         live_.clear();
     }
 
+    // A forwarded stream that closes before it names its peer.
+    void deliverBroken()
+    {
+        ::close(forwardedSocket());
+    }
+
     void deliverIncoming(const std::string& peer, const std::string& payload)
+    {
+        const int fd = forwardedSocket();
+        writeAll(fd, peer + "\n" + payload);
+        ::close(fd);
+    }
+
+    int forwardedSocket()
     {
         const std::uint16_t port = forwardPort_;
         CHECK(port != 0);
@@ -179,8 +197,7 @@ public:
         addr.sin_port = htons(port);
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         CHECK(::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0);
-        writeAll(fd, peer + "\n" + payload);
-        ::close(fd);
+        return fd;
     }
 
     std::string takeDatagram()
@@ -308,6 +325,10 @@ private:
                 if (!port.empty()) {
                     clientUdpPort_ = static_cast<std::uint16_t>(std::stoi(port));
                 }
+                if (dropped_.load() > 0) {
+                    --dropped_;
+                    break;
+                }
                 if (held_.load() > 0) {
                     --held_;
                     writeAll(fd, "SESSION STATUS RESULT=DUPLICATED_DEST\n");
@@ -363,6 +384,7 @@ private:
     std::atomic<std::uint16_t> clientUdpPort_{0};
     std::atomic<bool> stopping_{false};
     std::atomic<int> held_{0};
+    std::atomic<int> dropped_{0};
     std::atomic<bool> refusing_{false};
     std::thread acceptor_;
     mutable std::mutex mutex_;
@@ -681,6 +703,88 @@ void testEndpointWaitsOutARouterRestart()
     CHECK(!endpoint->lost());
 }
 
+void testEndpointWaitsOutARouterThatDropsTheCreate()
+{
+    FakeRouter router;
+    router.dropCreates(1);
+    i2p::Router over(samAt(router));
+    over.start();
+    i2p::EndpointConfig wanted;
+    wanted.keys = i2p::Keys::generate();
+    const std::shared_ptr<i2p::Endpoint> endpoint = over.createEndpoint(wanted);
+    CHECK(router.waitForCommand("SESSION CREATE", 2) != "");
+    CHECK(waitUntil([&endpoint]() { return endpoint->ready(); }));
+    CHECK(!endpoint->lost());
+}
+
+// Taken the way a server takes its streams: whatever accept throws ends the taking.
+struct Taker {
+    explicit Taker(i2p::Endpoint& endpoint)
+        : thread([this, &endpoint]() {
+            while (running) {
+                try {
+                    std::string peer;
+                    if (endpoint.accept(peer, kTakeWait) != nullptr) {
+                        ++taken;
+                    }
+                } catch (const std::exception&) {
+                    threw = true;
+                    return;
+                }
+            }
+        })
+    {
+    }
+    ~Taker()
+    {
+        running = false;
+        thread.join();
+    }
+    std::atomic<bool> running{true};
+    std::atomic<bool> threw{false};
+    std::atomic<int> taken{0};
+    std::thread thread;
+};
+
+void testEndpointAcceptOutlivesADroppedSession()
+{
+    FakeRouter router;
+    i2p::Router over(samAt(router));
+    over.start();
+    i2p::EndpointConfig wanted;
+    wanted.keys = i2p::Keys::generate();
+    const std::shared_ptr<i2p::Endpoint> endpoint = over.createEndpoint(wanted);
+    CHECK(waitUntil([&endpoint]() { return endpoint->ready(); }));
+    Taker taker(*endpoint);
+    CHECK(router.waitForCommand("STREAM FORWARD") != "");
+
+    router.dropConnections();
+    CHECK(router.waitForCommand("STREAM FORWARD", 2) != "");
+    router.deliverIncoming(kDestination, "after the drop");
+
+    CHECK(waitUntil([&taker]() { return taker.taken.load() == 1; }));
+    CHECK(!taker.threw.load());
+}
+
+void testEndpointAcceptSkipsABrokenForward()
+{
+    FakeRouter router;
+    i2p::Router over(samAt(router));
+    over.start();
+    i2p::EndpointConfig wanted;
+    wanted.keys = i2p::Keys::generate();
+    const std::shared_ptr<i2p::Endpoint> endpoint = over.createEndpoint(wanted);
+    CHECK(waitUntil([&endpoint]() { return endpoint->ready(); }));
+    Taker taker(*endpoint);
+    CHECK(router.waitForCommand("STREAM FORWARD") != "");
+
+    router.deliverBroken();
+    router.deliverIncoming(kDestination, "after the broken one");
+
+    CHECK(waitUntil([&taker]() { return taker.taken.load() == 1; }));
+    CHECK(!taker.threw.load());
+}
+
 void testNoRouterCarriesItsCode()
 {
     std::uint16_t control = 0;
@@ -871,6 +975,9 @@ try {
     testSessionIsLostWhenTheRouterDropsIt();
     testEndpointBuildsAnotherSessionAfterADrop();
     testEndpointWaitsOutARouterRestart();
+    testEndpointWaitsOutARouterThatDropsTheCreate();
+    testEndpointAcceptOutlivesADroppedSession();
+    testEndpointAcceptSkipsABrokenForward();
     testNoRouterCarriesItsCode();
     testEndpointTellsADestinationThatNeverCameUp();
     testStopWakesAHeldRead();

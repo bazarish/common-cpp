@@ -383,7 +383,7 @@ std::string readLineSocket(const Socket socket)
         char c = 0;
         const std::ptrdiff_t got = socketRead(socket, &c, 1);
         if (got <= 0) {
-            throw Error(Result::eI2pError, "SAM: the connection went away while reading");
+            throw Error(Result::eConnectionLost, "SAM: the connection went away while reading");
         }
         if (c == '\n') {
             break;

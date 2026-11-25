@@ -194,9 +194,25 @@ public:
             }
             return nullptr;
         }
-        session->listen();
-        std::unique_ptr<sam::Stream> stream = session->accept(
-            peerBase64, std::chrono::duration_cast<std::chrono::milliseconds>(timeout));
+        // Only a destination that never came up refuses: a forwarded stream that broke is that
+        // stream's, and a session the router dropped is built again with the same keys.
+        std::unique_ptr<sam::Stream> stream;
+        try {
+            session->listen();
+            stream = session->accept(
+                peerBase64, std::chrono::duration_cast<std::chrono::milliseconds>(timeout));
+        } catch (const sam::Error& error) {
+            if (session->alive()) {
+                bazarish::log::info("i2p: destination {} lost an incoming stream: {}",
+                    tag_.named(), error.what());
+                return nullptr;
+            }
+            std::unique_lock<std::mutex> lock(mutex_);
+            ready_.wait_for(lock, timeout, [this, &session] {
+                return streams_ != session || stopped_.load() || !failure_.empty();
+            });
+            return nullptr;
+        }
         if (stream == nullptr) {
             return nullptr;
         }
@@ -262,7 +278,8 @@ private:
                                 tag_.named());
                             toldHeld = true;
                         }
-                    } else if (error.result() == sam::Result::eNoRouter) {
+                    } else if (error.result() == sam::Result::eNoRouter
+                        || error.result() == sam::Result::eConnectionLost) {
                         if (!toldSilent) {
                             bazarish::log::info("i2p: the router is not answering; "
                                                 "destination {} waits for it",
