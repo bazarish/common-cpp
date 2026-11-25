@@ -82,6 +82,18 @@ void testRejections()
     }
 }
 
+void testVersion()
+{
+    const std::string challenge = LoginChallenge("portal-secret", panel()).issue(5000);
+    for (const nlohmann::json& version : {nlohmann::json(1.5), nlohmann::json(1.0),
+             nlohmann::json("1"), nlohmann::json(2), nlohmann::json(4294967297LL)}) {
+        nlohmann::json envelope = nlohmann::json::parse(decodeLoginChallenge(challenge));
+        envelope["v"] = version;
+        CHECK_THROWS(readLoginConsumer(encodeLoginChallenge(envelope.dump())));
+    }
+    CHECK(readLoginConsumer(challenge).name == panel().name);
+}
+
 void testRelabelling()
 {
     const Identity identity = Identity::generate();
@@ -239,6 +251,7 @@ int main()
 try {
     testHappyPathAndReplay();
     testRejections();
+    testVersion();
     testRelabelling();
     testIncompleteConsumerRefused();
     testEveryPlaceIsSigned();

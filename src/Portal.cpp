@@ -139,7 +139,8 @@ LoginConsumer readLoginConsumer(const std::string& challenge)
     LoginConsumer consumer;
     try {
         const nlohmann::json envelope = parseJson(decodeLoginChallenge(challenge));
-        if (!envelope.contains("v") || envelope.at("v").get<int>() != kLoginChallengeVersion) {
+        if (!envelope.contains("v") || !envelope.at("v").is_number_integer()
+            || envelope.at("v").get<std::int64_t>() != kLoginChallengeVersion) {
             throw std::runtime_error("it is of a version this client does not know");
         }
         if (!envelope.contains("consumer")) {
