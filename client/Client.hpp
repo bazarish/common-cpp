@@ -167,7 +167,7 @@ public:
     void setAccountLabel(std::string accountLabel);
     void releaseI2pLink();
     void close();
-    bool facadePublishedAnew();
+    FacadeLookups facadeLookups();
     void liftStandOff();
 
     PublishResult publishCard(const ContactCard& content, const Identity& root,

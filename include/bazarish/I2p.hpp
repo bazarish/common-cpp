@@ -315,6 +315,27 @@ struct LeaseSetRefresh {
 
 bool publishedLater(const LeaseSetSeen& candidate, const std::optional<LeaseSetSeen>& than);
 
+// A lookup asked for by hand; a failed one carries no lease set after it.
+struct AskedLookup {
+    std::string localHost;
+    std::string remoteHost;
+    LeaseSetRefresh refresh;
+};
+
+void lookupAsked(const AskedLookup& asked);
+
+// Calls its listener with every lookupAsked(), on the asking thread, for as long as it lives.
+class AskedLookupWatch {
+public:
+    explicit AskedLookupWatch(std::function<void(const AskedLookup&)> listener);
+    ~AskedLookupWatch();
+    AskedLookupWatch(const AskedLookupWatch&) = delete;
+    AskedLookupWatch& operator=(const AskedLookupWatch&) = delete;
+
+private:
+    const std::uint64_t id_;
+};
+
 struct DestinationDetail {
     LocalDestination destination;
     std::vector<TunnelDetail> tunnels;

@@ -88,9 +88,10 @@ std::atomic<std::uint64_t> g_linkLosses{0};
 std::atomic<bool> g_networkDown{false};
 std::atomic<bool> g_gatewayUnreachable{false};
 
+template <typename... Args>
 class Listeners {
 public:
-    std::uint64_t add(std::function<void()> listener)
+    std::uint64_t add(std::function<void(const Args&...)> listener)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         const std::uint64_t id = ++next_;
@@ -108,31 +109,32 @@ public:
         const std::lock_guard<std::mutex> waited(calling_);
     }
 
-    void call()
+    void call(const Args&... args)
     {
         const std::lock_guard<std::mutex> calling(calling_);
-        std::vector<std::function<void()>> listeners;
+        std::vector<std::function<void(const Args&...)>> listeners;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             for (const auto& [id, listener] : listeners_) {
                 listeners.push_back(listener);
             }
         }
-        for (const std::function<void()>& listener : listeners) {
-            listener();
+        for (const std::function<void(const Args&...)>& listener : listeners) {
+            listener(args...);
         }
     }
 
 private:
     std::mutex mutex_;
     std::mutex calling_;
-    std::map<std::uint64_t, std::function<void()>> listeners_;
+    std::map<std::uint64_t, std::function<void(const Args&...)>> listeners_;
     std::uint64_t next_ = 0;
 };
 
-Listeners g_lossListeners;
-Listeners g_transportListeners;
-Listeners g_activityListeners;
+Listeners<> g_lossListeners;
+Listeners<> g_transportListeners;
+Listeners<> g_activityListeners;
+Listeners<AskedLookup> g_askedLookupListeners;
 std::mutex g_activityMutex;
 shape::ActivityState g_activity;
 
@@ -764,6 +766,21 @@ std::optional<DestinationDetail> Router::destinationDetail(const std::string& ho
 bool publishedLater(const LeaseSetSeen& candidate, const std::optional<LeaseSetSeen>& than)
 {
     return !than.has_value() || candidate.publishedAt > than->publishedAt;
+}
+
+void lookupAsked(const AskedLookup& asked)
+{
+    g_askedLookupListeners.call(asked);
+}
+
+AskedLookupWatch::AskedLookupWatch(std::function<void(const AskedLookup&)> listener)
+    : id_(g_askedLookupListeners.add(std::move(listener)))
+{
+}
+
+AskedLookupWatch::~AskedLookupWatch()
+{
+    g_askedLookupListeners.remove(id_);
 }
 
 LeaseSetRefresh Router::refreshLeaseSet(const std::string& localHost, const std::string& remoteHost)

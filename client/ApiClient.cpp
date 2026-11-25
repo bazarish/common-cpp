@@ -389,29 +389,38 @@ LinkFailure ApiClient::noteLinkFailure(LinkAttempt attempt)
     return failure;
 }
 
-bool ApiClient::facadePublishedAnew()
+FacadeLookup ApiClient::lookFacadeUp()
 {
     const std::lock_guard<std::mutex> lock(netMutex_);
     if (!i2pOut_ || i2pOut_->lost() || i2pOutHost_.empty()) {
-        return false;
+        return FacadeLookup::eSame;
     }
     const auto running = sharedI2pRouterIfRunning();
     if (!running.has_value() || !running->get().capabilities().leaseSetRefresh) {
-        return false;
+        return FacadeLookup::eSame;
     }
     bazarish::i2p::LeaseSetRefresh found;
     try {
         found = running->get().refreshLeaseSet(i2pOut_->routingHost(), i2pOutHost_);
     } catch (const std::exception& error) {
         bazarish::log::info("the facade's lease set was not looked up: {}", error.what());
-        return false;
+        return FacadeLookup::eMissing;
     }
-    if (!found.after.has_value() || !bazarish::i2p::publishedLater(*found.after, found.before)) {
-        return false;
+    const FacadeLookup looked = facadeLookupOf(found);
+    if (looked == FacadeLookup::eNewer) {
+        messaging_.blockedUntil = 0;
+        serverService_.blockedUntil = 0;
     }
-    messaging_.blockedUntil = 0;
-    serverService_.blockedUntil = 0;
-    return true;
+    return looked;
+}
+
+FacadeLink ApiClient::facadeLink() const
+{
+    const std::lock_guard<std::mutex> lock(netMutex_);
+    if (!i2pOut_ || i2pOutHost_.empty()) {
+        return FacadeLink{};
+    }
+    return FacadeLink{i2pOut_->routingHost(), i2pOutHost_};
 }
 
 void ApiClient::liftStandOff()

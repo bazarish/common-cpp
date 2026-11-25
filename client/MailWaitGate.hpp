@@ -1,8 +1,6 @@
 // Bazarish project (c) 2026
 #pragma once
 
-#include "OutboundCourier.hpp"
-
 #include <bazarish/I2p.hpp>
 
 #include <chrono>
@@ -11,6 +9,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -23,8 +22,44 @@ enum class MailWaitCause {
     eServerAnswered,
     eRegistered,
     eNewerLeaseSet,
-    eStaleLeaseSet,
+    eSilencePauseOver,
     eServerPauseOver,
+};
+
+enum class FacadeLookup { eNewer, eSame, eMissing };
+
+inline FacadeLookup facadeLookupOf(const i2p::LeaseSetRefresh& refresh)
+{
+    if (!refresh.after.has_value()) {
+        return FacadeLookup::eMissing;
+    }
+    return i2p::publishedLater(*refresh.after, refresh.before) ? FacadeLookup::eNewer
+                                                               : FacadeLookup::eSame;
+}
+
+// The local destination a mail wait reaches its facade from, and the facade's address.
+struct FacadeLink {
+    std::string localHost;
+    std::string remoteHost;
+};
+
+struct FacadeLookups {
+    std::function<FacadeLookup()> lookUp;
+    FacadeLink link;
+};
+
+// After a silent ask: a pause, a lookup of the facade's lease set, a pause, the next ask.
+inline constexpr std::chrono::seconds kSilentAskPause{5};
+// No lease set of the facade to be found: only the lookup repeats, at this pause.
+inline constexpr std::chrono::seconds kMissingLeaseSetPause{10};
+inline constexpr std::chrono::seconds kLongSilence{180};
+inline constexpr std::chrono::seconds kLongSilencePause{60};
+
+struct SilencePauses {
+    std::chrono::milliseconds ask{kSilentAskPause};
+    std::chrono::milliseconds missing{kMissingLeaseSetPause};
+    std::chrono::milliseconds longSilence{kLongSilence};
+    std::chrono::milliseconds longPause{kLongSilencePause};
 };
 
 // Nothing tells a client that the server behind a facade is back: it asks at these pauses.
@@ -47,20 +82,21 @@ inline std::string_view mailWaitCauseName(const MailWaitCause cause)
         case MailWaitCause::eServerAnswered: return "our server answered another request";
         case MailWaitCause::eRegistered: return "this device was registered again";
         case MailWaitCause::eNewerLeaseSet: return "the facade published a newer lease set";
-        case MailWaitCause::eStaleLeaseSet: return "the lease set of the failed ask has expired";
+        case MailWaitCause::eSilencePauseOver: return "the pause after a silent ask is over";
         case MailWaitCause::eServerPauseOver:
             return "the pause after the facade found its server down is over";
     }
     return "unknown";
 }
 
-// What a mail wait that failed waits for before it asks again; a period only after a 502.
+// What a mail wait that failed waits for before it asks again.
 class MailWaitGate {
 public:
-    explicit MailWaitGate(const std::chrono::milliseconds staleBound = kStaleLeaseSetBound,
+    explicit MailWaitGate(const SilencePauses silencePauses = SilencePauses(),
         const ServerDownPauses serverDownPauses = ServerDownPauses())
-        : staleBound_(staleBound)
+        : silencePauses_(silencePauses)
         , serverDownPauses_(serverDownPauses)
+        , asked_([this](const i2p::AskedLookup& asked) { told(asked); })
         , carry_([this]() { wake(); })
     {
     }
@@ -103,6 +139,7 @@ public:
         lastAnswered_ = false;
         reasking_ = false;
         serverDownNext_ = ServerDownPause::eFirst;
+        silentSince_.reset();
     }
 
     // An ask begins: whatever happened before it is no cause to ask once more.
@@ -133,6 +170,7 @@ public:
             armed_ = armed_ || !reasking_;
             reasking_ = false;
             serverDownNext_ = ServerDownPause::eFirst;
+            silentSince_.reset();
             tell = onAnswered_;
         }
         if (tell) {
@@ -140,8 +178,9 @@ public:
         }
     }
 
-    // After a failed ask: returns once the next ask has a cause. facadeAnew asks the netDb.
-    MailWaitCause awaitCause(const std::function<bool()>& facadeAnew)
+    // After a failed ask: returns once the next ask has a cause. A lookup asked by hand on the
+    // same way to the facade meanwhile stands for the next lookup of its own.
+    MailWaitCause awaitCause(const FacadeLookups& facade)
     {
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -162,23 +201,19 @@ public:
         if (i2p::networkDown()) {
             return awaitNetwork();
         }
-        const bool anew = facadeAnew && facadeAnew();
-        std::unique_lock<std::mutex> lock(mutex_);
-        if (stopped_) {
-            return MailWaitCause::eStopped;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (!silentSince_.has_value()) {
+                silentSince_ = std::chrono::steady_clock::now();
+            }
+            cycleOn_ = facade.link;
+            told_.reset();
         }
-        if (anew) {
-            return MailWaitCause::eNewerLeaseSet;
-        }
-        std::optional<MailWaitCause> cause;
-        if (!changed_.wait_for(lock, staleBound_, [this, &cause]() {
-                cause = stopped_ ? std::optional<MailWaitCause>(MailWaitCause::eStopped)
-                                 : causeLocked();
-                return cause.has_value();
-            })) {
-            return MailWaitCause::eStaleLeaseSet;
-        }
-        return *cause;
+        const MailWaitCause cause = cycle(facade);
+        const std::lock_guard<std::mutex> lock(mutex_);
+        cycleOn_.reset();
+        told_.reset();
+        return cause;
     }
 
     // After the facade answered that its server is down: no lease set is in question then.
@@ -186,6 +221,7 @@ public:
     {
         std::unique_lock<std::mutex> lock(mutex_);
         reasking_ = false;
+        silentSince_.reset();
         const std::chrono::milliseconds pause = serverDownPauseLocked();
         std::optional<MailWaitCause> cause;
         if (!changed_.wait_for(lock, pause, [this, &cause]() {
@@ -212,6 +248,63 @@ private:
             return cause.has_value();
         });
         return *cause;
+    }
+
+    MailWaitCause cycle(const FacadeLookups& facade)
+    {
+        Woken woken = pause(silencePauses_.ask);
+        for (;;) {
+            if (woken.cause.has_value()) {
+                return *woken.cause;
+            }
+            const FacadeLookup found = woken.told.has_value() ? *woken.told
+                : facade.lookUp                              ? facade.lookUp()
+                                                             : FacadeLookup::eSame;
+            if (found == FacadeLookup::eNewer) {
+                return MailWaitCause::eNewerLeaseSet;
+            }
+            const bool missing = found == FacadeLookup::eMissing;
+            woken = pause(missing ? silencePauses_.missing : silencePauses_.ask);
+            if (!woken.cause.has_value() && !woken.told.has_value() && !missing) {
+                return MailWaitCause::eSilencePauseOver;
+            }
+        }
+    }
+
+    struct Woken {
+        std::optional<MailWaitCause> cause;
+        std::optional<FacadeLookup> told;
+    };
+
+    // What ended the pause early: a cause, or a lookup asked by hand. Neither once it is over.
+    Woken pause(const std::chrono::milliseconds wanted)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const bool longSilent = silentSince_.has_value()
+            && std::chrono::steady_clock::now() - *silentSince_ >= silencePauses_.longSilence;
+        Woken woken;
+        changed_.wait_for(lock, longSilent ? silencePauses_.longPause : wanted, [this, &woken]() {
+            woken.cause = stopped_ ? std::optional<MailWaitCause>(MailWaitCause::eStopped)
+                                   : causeLocked();
+            return woken.cause.has_value() || told_.has_value();
+        });
+        woken.told = told_;
+        told_.reset();
+        return woken;
+    }
+
+    void told(const i2p::AskedLookup& asked)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (!cycleOn_.has_value() || cycleOn_->localHost.empty()
+                || asked.localHost != cycleOn_->localHost
+                || asked.remoteHost != cycleOn_->remoteHost) {
+                return;
+            }
+            told_ = facadeLookupOf(asked.refresh);
+        }
+        changed_.notify_all();
     }
 
     std::chrono::milliseconds serverDownPauseLocked()
@@ -251,7 +344,7 @@ private:
         changed_.notify_all();
     }
 
-    const std::chrono::milliseconds staleBound_;
+    const SilencePauses silencePauses_;
     const ServerDownPauses serverDownPauses_;
     mutable std::mutex mutex_;
     std::condition_variable changed_;
@@ -264,8 +357,12 @@ private:
     bool reasking_ = false;
     ServerDownPause serverDownNext_ = ServerDownPause::eFirst;
     std::uint64_t carryAtAsk_ = 0;
+    std::optional<std::chrono::steady_clock::time_point> silentSince_;
+    std::optional<FacadeLink> cycleOn_;
+    std::optional<FacadeLookup> told_;
     std::function<void()> onAnswered_;
-    // Last, so it goes first and no listener outlives the members it touches.
+    // Last, so they go first and no listener outlives the members it touches.
+    i2p::AskedLookupWatch asked_;
     i2p::CarryWatch carry_;
 };
 

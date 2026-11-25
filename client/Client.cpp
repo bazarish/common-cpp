@@ -223,9 +223,9 @@ LinkFailure Client::linkFailure() const
     return api_.linkFailure();
 }
 
-bool Client::facadePublishedAnew()
+FacadeLookups Client::facadeLookups()
 {
-    return api_.facadePublishedAnew();
+    return FacadeLookups{[this]() { return api_.lookFacadeUp(); }, api_.facadeLink()};
 }
 
 void Client::liftStandOff()

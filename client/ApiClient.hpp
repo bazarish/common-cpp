@@ -2,6 +2,7 @@
 #pragma once
 
 #include "LinkFailure.hpp"
+#include "MailWaitGate.hpp"
 #include "WatchedStream.hpp"
 #include "WireLog.hpp"
 
@@ -105,8 +106,9 @@ public:
     void releaseI2pLink();
     // A closed client never dials again, so a held request it carries ends for good.
     void close();
-    // Asks the netDb for the facade's lease set past the link's cache; true when it is newer.
-    bool facadePublishedAnew();
+    // Asks the netDb for the facade's lease set past the link's cache.
+    FacadeLookup lookFacadeUp();
+    FacadeLink facadeLink() const;
     void liftStandOff();
 
 private:
