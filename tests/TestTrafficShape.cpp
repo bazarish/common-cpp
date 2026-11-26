@@ -48,7 +48,7 @@ double fractionAbove(const std::vector<double>& values, const double point)
     return static_cast<double>(above) / static_cast<double>(values.size());
 }
 
-bool near(const double measured, const double expected, const double slack)
+bool closeTo(const double measured, const double expected, const double slack)
 {
     return std::fabs(measured - expected) <= slack * expected;
 }
@@ -63,11 +63,11 @@ void checkLogNormal()
     }
     CHECK(*std::min_element(drawn.begin(), drawn.end()) >= gap.min);
     CHECK(*std::max_element(drawn.begin(), drawn.end()) <= gap.max);
-    CHECK(near(medianOf(drawn), gap.median, kMedianSlack));
+    CHECK(closeTo(medianOf(drawn), gap.median, kMedianSlack));
     // One sigma above the median holds 15.9 % of an untruncated log-normal.
     const double oneSigma = gap.median * std::exp(gap.sigma);
     const double untruncatedAbove = 0.1587;
-    CHECK(near(fractionAbove(drawn, oneSigma), untruncatedAbove, kTailSlack));
+    CHECK(closeTo(fractionAbove(drawn, oneSigma), untruncatedAbove, kTailSlack));
 
     const LogNormal request = decoyRequestBytes();
     std::vector<double> sizes;
@@ -76,7 +76,7 @@ void checkLogNormal()
     }
     CHECK(*std::min_element(sizes.begin(), sizes.end()) >= kDecoyRequestMinBytes);
     CHECK(*std::max_element(sizes.begin(), sizes.end()) <= kDecoyRequestMaxBytes);
-    CHECK(near(medianOf(sizes), kDecoyRequestMedianBytes, kMedianSlack));
+    CHECK(closeTo(medianOf(sizes), kDecoyRequestMedianBytes, kMedianSlack));
 
     for (int i = 0; i < kDraws; ++i) {
         CHECK(drawAtLeast(request, kDecoyRequestMedianBytes, random) >= kDecoyRequestMedianBytes);
@@ -100,7 +100,7 @@ void checkPareto()
         const double point = pause.min * times;
         const double expected
             = (std::pow(pause.min / point, pause.alpha) - (1 - untruncated)) / untruncated;
-        CHECK(near(fractionAbove(drawn, point), expected, kTailSlack));
+        CHECK(closeTo(fractionAbove(drawn, point), expected, kTailSlack));
     }
 
     std::vector<double> counts;
@@ -111,7 +111,7 @@ void checkPareto()
     CHECK(*std::max_element(counts.begin(), counts.end()) <= kEmbeddedMax + 1);
     const double secondCount = kEmbeddedMin + 1;
     const double moreThanOne = std::pow(kEmbeddedMin / secondCount, kEmbeddedAlpha);
-    CHECK(near(fractionAbove(counts, kEmbeddedMin), moreThanOne, kTailSlack));
+    CHECK(closeTo(fractionAbove(counts, kEmbeddedMin), moreThanOne, kTailSlack));
 }
 
 void checkMixture()
@@ -131,7 +131,7 @@ void checkMixture()
         drawn.push_back(draw(mixture, random));
     }
     const double between = std::sqrt(smallMedian * largeMedian);
-    CHECK(near(fractionAbove(drawn, between), largeWeight / (smallWeight + largeWeight),
+    CHECK(closeTo(fractionAbove(drawn, between), largeWeight / (smallWeight + largeWeight),
         kTailSlack));
     CHECK_THROWS(validate(LogNormalMixture{{}, 1, ceiling}));
     CHECK_THROWS(validate(LogNormalMixture{{{1, smallMedian, sigma}}, ceiling, 1}));

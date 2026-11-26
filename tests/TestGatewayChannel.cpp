@@ -170,14 +170,14 @@ void checkRecordPadding(const SecretBytes& sessionKey, const Bytes& salt)
     ChannelSocket channel(captured,
         std::make_shared<Records>(sessionKey, salt, Side::eClient),
         ChannelHooks{[]() { return kRecordActive; }, [&told]() { ++told; }});
-    Records far(sessionKey, salt, Side::eGateway);
+    Records remote(sessionKey, salt, Side::eGateway);
     std::vector<std::vector<std::size_t>> sentLengths(classes.size());
     for (int i = 0; i < kRecords; ++i) {
         for (std::size_t kind = 0; kind < classes.size(); ++kind) {
             channel.send(std::vector<unsigned char>(classes[kind].begin(), classes[kind].end()));
             const std::vector<unsigned char>& wire = captured->sent.back();
             sentLengths[kind].push_back(wire.size());
-            const std::optional<Bytes> opened = far.open(Bytes(wire.begin(), wire.end()));
+            const std::optional<Bytes> opened = remote.open(Bytes(wire.begin(), wire.end()));
             CHECK(opened.has_value());
             CHECK(unpadRecord(*opened)->frame == classes[kind]);
             CHECK(unpadRecord(*opened)->flags == kRecordActive);

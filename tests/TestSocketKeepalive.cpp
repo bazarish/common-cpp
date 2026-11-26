@@ -162,7 +162,7 @@ void checkPingsOnlyAfterSilence()
     pinging.stop();
 }
 
-bool near(const std::chrono::steady_clock::duration gap, const std::chrono::milliseconds drawn)
+bool closeTo(const std::chrono::steady_clock::duration gap, const std::chrono::milliseconds drawn)
 {
     const auto off = gap > drawn ? gap - drawn : drawn - gap;
     std::printf("ping gap %lld ms, drawn %lld ms\n",
@@ -209,9 +209,9 @@ void checkEachSilenceDrawn()
         const std::lock_guard<std::mutex> lock(mutex);
         heard = pings;
     }
-    CHECK(near(heard[0] - opened, kDrawnSilences[0]));
+    CHECK(closeTo(heard[0] - opened, kDrawnSilences[0]));
     for (std::size_t i = 1; i < kDrawnCount; ++i) {
-        CHECK(near(heard[i] - heard[i - 1], kDrawnSilences[i]));
+        CHECK(closeTo(heard[i] - heard[i - 1], kDrawnSilences[i]));
     }
 
     std::this_thread::sleep_for(kBeforeActing);
@@ -224,7 +224,7 @@ void checkEachSilenceDrawn()
         afterActing = pings.back();
     }
     // The first wait and one after each pong, then one for the message and one for its echo.
-    CHECK(near(afterActing - acted, kDrawnSilences[(kDrawnCount + 2) % kDrawnCount]));
+    CHECK(closeTo(afterActing - acted, kDrawnSilences[(kDrawnCount + 2) % kDrawnCount]));
     dialled.socket->close();
     server.stop();
 }

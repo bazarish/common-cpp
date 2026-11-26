@@ -579,7 +579,7 @@ void checkSocket()
         std::this_thread::sleep_for(kRealIdle);
         CHECK(lane.mediaDropped() == 0);
     }
-    ChannelSocket far(std::make_shared<Captured>(),
+    ChannelSocket remote(std::make_shared<Captured>(),
         std::make_shared<Records>(sessionKey, salt, Side::eGateway));
     std::vector<Bytes> arrived;
     std::size_t fillers = 0;
@@ -587,7 +587,7 @@ void checkSocket()
     std::size_t bytes = 0;
     for (const std::vector<unsigned char>& record : captured->sent()) {
         bytes += record.size();
-        const std::optional<RecordBody> body = far.openRecord(Bytes(record.begin(), record.end()));
+        const std::optional<RecordBody> body = remote.openRecord(Bytes(record.begin(), record.end()));
         CHECK(body.has_value());
         CHECK((body->flags & kRecordActive) != 0);
         if (isFiller(*body)) {
