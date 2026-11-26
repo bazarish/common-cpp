@@ -55,7 +55,6 @@ inline constexpr const char* kEventsHoldQuery = "hold=1";
 inline constexpr const char* kEventsDeferredKey = "deferred";
 inline constexpr const char* kEventsDevicesKey = "devices";
 inline constexpr char kEventsDeferredSeparator = ',';
-inline constexpr int kNoReadDeadline = 0;
 
 struct ApiResponse {
     int status = 0;

@@ -11,6 +11,8 @@ constexpr std::size_t kMaxMessagePayloadBytes = 512 * 1024;
 constexpr std::size_t kHybridSealOverheadBytes = 1200;
 constexpr std::size_t kMaxSealedBodyBytes = kMaxMessagePayloadBytes - kHybridSealOverheadBytes;
 constexpr std::size_t kMaxMessageIdBytes = 64;
+// docs-main api/ClientApi.md: a held request is answered within this, with nothing new or not.
+constexpr std::int64_t kHeldWaitSeconds = 300;
 constexpr std::size_t kMaxMediaNameBytes = 255;
 constexpr std::size_t kMaxMediaMimeBytes = 255;
 // docs-main Messages.md, auth: `knows` names the newest ones.

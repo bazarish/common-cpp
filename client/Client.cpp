@@ -34,6 +34,10 @@ namespace {
 
 namespace {
 
+// The server's bound on a held request, then as long as any answer may take on the way.
+constexpr int kHeldReadSeconds
+    = static_cast<int>(kHeldWaitSeconds) + ApiClient::kDefaultReadTimeoutSeconds;
+
 // RFC 8259: a control character is written as \u00XX.
 constexpr unsigned char kFirstPrintable = 0x20;
 constexpr std::string_view kControlEscape = "\\u00";
@@ -299,14 +303,14 @@ I2pDestStatus Client::i2pStatus()
 I2pDestStatus Client::awaitApprovalChange(const std::string& approval)
 {
     return i2pStatusOf(
-        api_.getWaiting(kI2pStatusPath, heldSince(approval), kNoReadDeadline).json());
+        api_.getWaiting(kI2pStatusPath, heldSince(approval), kHeldReadSeconds).json());
 }
 
 AccountOverview Client::overview(const std::string& since)
 {
     const ApiResponse response = since.empty()
         ? api_.get(kOverviewPath)
-        : api_.getWaiting(kOverviewPath, heldSince(since), kNoReadDeadline);
+        : api_.getWaiting(kOverviewPath, heldSince(since), kHeldReadSeconds);
     return overviewFromJson(response.json());
 }
 
@@ -526,7 +530,7 @@ std::vector<PendingEntry> Client::waitForPending(const MailWait wait,
         }
     }
     const ApiResponse response = api_.getWaiting(kEventsPath, query,
-        held ? kNoReadDeadline : ApiClient::kDefaultReadTimeoutSeconds);
+        held ? kHeldReadSeconds : ApiClient::kDefaultReadTimeoutSeconds);
     const nlohmann::json body = response.json();
     const std::vector<PendingEntry> entries = pendingEntries(body.at("pending"));
     lastMailboxUsage_ = usageOf(body);
