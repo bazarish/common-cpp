@@ -4004,12 +4004,13 @@ void Session::announceTransfer(const std::string& type, const std::string& peerF
 
 void Session::sendInteractive(const std::string& peerFingerprint, const std::string& text,
     const InlineKeyboard& keyboard, const std::string& e2eId,
-    const DeliveryWatch& watch)
+    const DeliveryWatch& watch, const std::string& after)
 {
     nlohmann::json inner = envelope("text", e2eId.empty() ? newMessageId() : e2eId, {
         {"text", text},
         {"keyboard", keyboardToJson(keyboard)},
     });
+    addReferences(inner, {}, false, after);
     sendContent(peerFingerprint, std::move(inner), watch, false, userAct());
 }
 

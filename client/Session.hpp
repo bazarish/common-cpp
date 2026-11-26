@@ -682,7 +682,7 @@ public:
 
     void sendInteractive(const std::string& peerFingerprint, const std::string& text,
         const InlineKeyboard& keyboard, const std::string& e2eId = {},
-        const DeliveryWatch& watch = {});
+        const DeliveryWatch& watch = {}, const std::string& after = {});
 
     void sendCommand(const std::string& peerFingerprint, const std::string& command,
         const std::string& args = {}, const std::string& e2eId = {},
