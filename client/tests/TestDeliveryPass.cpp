@@ -46,6 +46,7 @@
 #include <atomic>
 #include <array>
 #include <iterator>
+#include <limits>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -1701,8 +1702,25 @@ try {
                 kMaxMemberNamesPerLetter, std::string(kMaxGroupNameBytes, 'n'));
             widest.members.you.clear();
             CHECK(alice->relayFitter()({widest}) == 1);
-            CHECK(alice->relayFitter()({post, hostPost, counts, roster}) == 4);
-            alice->relayPosts(bob->fingerprint(), {post, hostPost, counts, roster});
+            RelayedPost widestFile = post;
+            widestFile.type = kTypeFile;
+            widestFile.id = std::string(kMaxMessageIdBytes, 'i');
+            widestFile.replyTo = std::string(kMaxMessageIdBytes, 'r');
+            widestFile.after = std::string(kMaxMessageIdBytes, 'a');
+            widestFile.author = std::string(kMaxGroupNameBytes, 'n');
+            widestFile.media = Bytes(kMaxMediaBytes, 0);
+            widestFile.mediaName = std::string(kMaxMediaNameBytes, 'f');
+            widestFile.mime = std::string(kMaxMediaMimeBytes, 'm');
+            widestFile.sentAt = std::numeric_limits<std::int64_t>::max();
+            CHECK(alice->relayFitter()({widestFile}) == 1);
+            RelayedPost file = post;
+            file.type = kTypeFile;
+            file.id = "group-file-1";
+            file.media = Bytes{'n', 'o', 't', 'e', 's'};
+            file.mediaName = "notes.txt";
+            file.mime = "text/plain";
+            CHECK(alice->relayFitter()({post, hostPost, counts, roster, file}) == 5);
+            alice->relayPosts(bob->fingerprint(), {post, hostPost, counts, roster, file});
             alice->sendGroupState(bob->fingerprint());
             alice->sendMessage(bob->fingerprint(), "plain");
 
@@ -1714,9 +1732,13 @@ try {
                     seen[key] = item;
                     order.push_back(key);
                 }
-                return seen.size() >= 6;
+                return seen.size() >= 7;
             }));
-            CHECK(seen.size() == 6);
+            CHECK(seen.size() == 7);
+            CHECK(seen["file"].e2eId == "group-file-1");
+            CHECK(seen["file"].attachmentName == "notes.txt");
+            CHECK(seen["file"].author == "Ann");
+            CHECK(bob->fileBytes("group-file-1") == file.media);
             const std::optional<MemberListLetter>& list = seen["group.members"].memberList;
             CHECK(list.has_value());
             CHECK(list->op == MemberListOp::eFull);
