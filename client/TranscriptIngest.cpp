@@ -491,7 +491,8 @@ void TranscriptIngest::askMemberList(const std::string& peer)
 
 bool TranscriptIngest::applyMemberList(const std::string& peer, const MemberListLetter& letter)
 {
-    if (letter.op == MemberListOp::eAdded || letter.op == MemberListOp::eRemoved) {
+    if (letter.op == MemberListOp::eAdded || letter.op == MemberListOp::eRemoved
+        || letter.op == MemberListOp::eChanged) {
         return applyMemberChange(peer, letter);
     }
     if (letter.op == MemberListOp::eNone) {
@@ -518,6 +519,8 @@ bool TranscriptIngest::applyMemberList(const std::string& peer, const MemberList
     }
     ListParts& parts = held->second;
     parts.names.insert(parts.names.end(), letter.names.begin(), letter.names.end());
+    parts.contactable.insert(
+        parts.contactable.end(), letter.contactable.begin(), letter.contactable.end());
     if (!letter.you.empty()) {
         parts.you = letter.you;
     }
@@ -534,7 +537,8 @@ bool TranscriptIngest::applyMemberList(const std::string& peer, const MemberList
         askMemberList(peer);
         return true;
     }
-    if (!store_.replaceGroupMembers(peer, whole.names) || !store_.setOwnGroupName(peer, whole.you)) {
+    if (!store_.replaceGroupMembers(peer, whole.names, whole.contactable)
+        || !store_.setOwnGroupName(peer, whole.you)) {
         return false;
     }
     listener_.memberListChanged(peer);
@@ -547,12 +551,16 @@ bool TranscriptIngest::applyMemberChange(const std::string& peer, const MemberLi
         return true;
     }
     const bool added = letter.op == MemberListOp::eAdded;
-    if (!(added ? store_.addGroupMembers(peer, letter.names)
-                : store_.removeGroupMembers(peer, letter.names))) {
+    const bool removed = letter.op == MemberListOp::eRemoved;
+    if (added && !store_.addGroupMembers(peer, letter.names)) {
+        return false;
+    }
+    if (removed ? !store_.removeGroupMembers(peer, letter.names)
+                : !store_.markContactable(peer, letter.names, letter.contactable)) {
         return false;
     }
     const std::string own = store_.ownGroupName(peer);
-    const bool ownLeft = !added
+    const bool ownLeft = removed
         && std::find(letter.names.begin(), letter.names.end(), own) != letter.names.end();
     if (added && !letter.you.empty() && !store_.setOwnGroupName(peer, letter.you)) {
         return false;

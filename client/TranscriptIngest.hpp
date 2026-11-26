@@ -87,6 +87,7 @@ private:
         std::int64_t total = 0;
         std::int64_t next = 1;
         std::vector<std::string> names;
+        std::vector<std::string> contactable;
         std::string you;
     };
     std::map<std::string, ListParts> listParts_;

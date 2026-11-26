@@ -13,6 +13,7 @@
 #include "PresenceSeed.hpp"
 #include "FailureCause.hpp"
 #include "Session.hpp"
+#include "TranscriptIngest.hpp"
 #include "WireLog.hpp"
 
 #include "FakeGateway.hpp"
@@ -67,6 +68,16 @@ using namespace bazarish;
 using namespace bazarish::client;
 
 namespace {
+
+class RosterNotes final : public IngestNotes {
+public:
+    std::string chatCleared(bool, const std::string&) const override { return {}; }
+    std::string chatTimer(std::int64_t, bool, const std::string&) const override { return {}; }
+    std::string contactAccepted(const std::string&) const override { return {}; }
+    std::string unsupported(const std::string&, const Bytes&) const override { return {}; }
+    std::string unreadable() const override { return {}; }
+    std::string callRecord(bool, const std::string&) const override { return {}; }
+};
 
 namespace fs = std::filesystem;
 
@@ -1662,6 +1673,7 @@ try {
         }
 
         {
+            constexpr std::int64_t kCrowd = 2500;
             constexpr std::int64_t kMembers = 7;
             constexpr std::int64_t kBlockAt = 1234;
             constexpr std::int64_t kPostSentAt = 1111;
@@ -1806,6 +1818,69 @@ try {
                 return sawLater;
             }));
             CHECK(sawLater);
+
+            alice->setGroupBlockSource([](const std::string&) {
+                return GroupBlock{GroupKind::eGroup, kCrowd, true, false, kBlockAt};
+            });
+            std::vector<std::string> crowd;
+            for (std::int64_t number = 0; number < kCrowd; ++number) {
+                const std::string digits = std::to_string(number);
+                crowd.push_back(std::string(kMaxGroupNameBytes - digits.size(), 'n') + digits);
+            }
+            std::vector<RelayedPost> letters;
+            const auto parts = static_cast<std::int64_t>(
+                (crowd.size() + kMaxMemberNamesPerLetter - 1) / kMaxMemberNamesPerLetter);
+            for (std::int64_t part = 0; part < parts; ++part) {
+                RelayedPost letter;
+                letter.kind = RelayKind::eMembers;
+                letter.id = "roster-" + std::to_string(part);
+                letter.members.op = MemberListOp::eFull;
+                letter.members.part = part + 1;
+                letter.members.parts = parts;
+                letter.members.total = kCrowd;
+                const auto from = crowd.begin() + part * static_cast<std::int64_t>(kMaxMemberNamesPerLetter);
+                const auto to = std::min(from + static_cast<std::int64_t>(kMaxMemberNamesPerLetter), crowd.end());
+                letter.members.names.assign(from, to);
+                letter.members.contactable = letter.members.names;
+                if (part == 0) {
+                    letter.members.you = crowd.front();
+                }
+                letters.push_back(std::move(letter));
+            }
+            std::size_t envelopes = 0;
+            for (std::vector<RelayedPost> left = letters; !left.empty(); ++envelopes) {
+                const std::size_t fits = alice->relayFitter()(left);
+                CHECK(fits > 0);
+                alice->relayPosts(bob->fingerprint(),
+                    std::vector<RelayedPost>(left.begin(), left.begin() + static_cast<std::ptrdiff_t>(fits)));
+                left.erase(left.begin(), left.begin() + static_cast<std::ptrdiff_t>(fits));
+            }
+            std::printf("TestDeliveryPass: %zu names in %zu letters took %zu envelopes\n", crowd.size(),
+                letters.size(), envelopes);
+            std::vector<IncomingMessage> rosters;
+            CHECK(testutil::waitFor([&]() {
+                for (const IncomingMessage& item : bob->sync()) {
+                    if (item.memberList.has_value()) {
+                        rosters.push_back(item);
+                    }
+                }
+                return rosters.size() >= letters.size();
+            }));
+            CHECK(rosters.size() == letters.size());
+            TranscriptStore listStore;
+            CHECK(listStore.open(scratch / "listStore.db", "pw"));
+            const RosterNotes notes;
+            IngestListener heard;
+            TranscriptIngest ingest(listStore, [&]() { return bob->fingerprint(); }, notes, heard);
+            for (const IncomingMessage& item : rosters) {
+                CHECK(ingest.takeIn(item));
+            }
+            std::vector<std::string> sorted = crowd;
+            std::sort(sorted.begin(), sorted.end());
+            CHECK(listStore.memberListState(alice->fingerprint()) == MemberListState::eHeld);
+            CHECK(listStore.groupMembers(alice->fingerprint()) == sorted);
+            CHECK(listStore.groupContactable(alice->fingerprint()) == sorted);
+            CHECK(listStore.ownGroupName(alice->fingerprint()) == crowd.front());
 
             alice->setGroupBlockSource({});
             alice->sendMessage(bob->fingerprint(), "no longer a group");

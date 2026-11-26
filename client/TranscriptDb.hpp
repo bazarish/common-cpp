@@ -167,6 +167,7 @@ public:
         const std::string& peer, const std::string& target) const;
     // In the byte order of the names; the window sorts them for its language.
     std::vector<std::string> groupMembers(const std::string& peer) const;
+    std::vector<std::string> groupContactable(const std::string& peer) const;
     MemberListState memberListState(const std::string& peer) const;
     // Empty until the host names this account in the chat.
     std::string ownGroupName(const std::string& peer) const;
@@ -231,8 +232,10 @@ public:
     [[nodiscard]] bool setGroupState(const std::string& peer, const GroupState& state);
     [[nodiscard]] bool dropGroupState(const std::string& peer);
     // The list becomes held.
-    [[nodiscard]] bool replaceGroupMembers(
-        const std::string& peer, const std::vector<std::string>& names);
+    [[nodiscard]] bool replaceGroupMembers(const std::string& peer,
+        const std::vector<std::string>& names, const std::vector<std::string>& contactable);
+    [[nodiscard]] bool markContactable(const std::string& peer, const std::vector<std::string>& names,
+        const std::vector<std::string>& contactable);
     [[nodiscard]] bool addGroupMembers(const std::string& peer, const std::vector<std::string>& names);
     [[nodiscard]] bool removeGroupMembers(
         const std::string& peer, const std::vector<std::string>& names);

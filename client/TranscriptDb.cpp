@@ -396,7 +396,8 @@ bool TranscriptStore::open(const fs::path& file, const std::string& passphrase)
              "peer TEXT PRIMARY KEY, kind TEXT, members INTEGER, write INTEGER,"
              " admin INTEGER, at INTEGER)",
              "CREATE TABLE IF NOT EXISTS group_members ("
-             "peer TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (peer, name))",
+             "peer TEXT NOT NULL, name TEXT NOT NULL, contactable INTEGER NOT NULL DEFAULT 0,"
+             " PRIMARY KEY (peer, name))",
              "CREATE TABLE IF NOT EXISTS group_rosters ("
              "peer TEXT PRIMARY KEY, state INTEGER NOT NULL, own TEXT NOT NULL)",
              "CREATE TABLE IF NOT EXISTS group_mentions ("
@@ -417,6 +418,15 @@ bool TranscriptStore::open(const fs::path& file, const std::string& passphrase)
         if (!query.exec(statement)) {
             return failed();
         }
+    }
+    // Remove after 2026-12-10, once the test profiles have taken the contactable column.
+    Query columns(db_);
+    if (!columns.exec("SELECT 1 FROM pragma_table_info('group_members') WHERE name = 'contactable'")) {
+        return failed();
+    }
+    if (!columns.next()
+        && !query.exec("ALTER TABLE group_members ADD COLUMN contactable INTEGER NOT NULL DEFAULT 0")) {
+        return failed();
     }
     return true;
 }
@@ -1005,6 +1015,21 @@ std::vector<std::string> TranscriptReader::groupMembers(const std::string& peer)
     return names;
 }
 
+std::vector<std::string> TranscriptReader::groupContactable(const std::string& peer) const
+{
+    std::vector<std::string> names;
+    Query query(db_);
+    query.prepare("SELECT name FROM group_members WHERE peer = ? AND contactable = 1 ORDER BY name");
+    query.bind(peer);
+    if (!query.exec()) {
+        return names;
+    }
+    while (query.next()) {
+        names.push_back(query.text(0));
+    }
+    return names;
+}
+
 MemberListState TranscriptReader::memberListState(const std::string& peer) const
 {
     Query query(db_);
@@ -1052,8 +1077,8 @@ std::int64_t TranscriptReader::firstUnreadMentionId(const std::string& peer) con
     return query.number(0);
 }
 
-bool TranscriptStore::replaceGroupMembers(
-    const std::string& peer, const std::vector<std::string>& names)
+bool TranscriptStore::replaceGroupMembers(const std::string& peer,
+    const std::vector<std::string>& names, const std::vector<std::string>& contactable)
 {
     Transaction change(db_);
     if (!change.begun()) {
@@ -1065,10 +1090,28 @@ bool TranscriptStore::replaceGroupMembers(
     if (!clear.exec()) {
         return failed();
     }
-    if (!addGroupMembers(peer, names) || !setMemberListState(peer, MemberListState::eHeld)) {
+    if (!addGroupMembers(peer, names) || !markContactable(peer, names, contactable)
+        || !setMemberListState(peer, MemberListState::eHeld)) {
         return false;
     }
     return change.commit() || failed();
+}
+
+bool TranscriptStore::markContactable(const std::string& peer, const std::vector<std::string>& names,
+    const std::vector<std::string>& contactable)
+{
+    for (const std::string& name : names) {
+        const bool open = std::find(contactable.begin(), contactable.end(), name) != contactable.end();
+        Query mark(db_);
+        mark.prepare("UPDATE group_members SET contactable = ? WHERE peer = ? AND name = ?");
+        mark.bind(open ? 1 : 0);
+        mark.bind(peer);
+        mark.bind(name);
+        if (!mark.exec()) {
+            return failed();
+        }
+    }
+    return true;
 }
 
 bool TranscriptStore::addGroupMembers(const std::string& peer, const std::vector<std::string>& names)

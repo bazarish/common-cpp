@@ -120,12 +120,14 @@ enum class MemberListOp {
     eFull,
     eAdded,
     eRemoved,
+    eChanged,
     eNone,
 };
 
 struct MemberListLetter {
     MemberListOp op = MemberListOp::eNone;
     std::vector<std::string> names;
+    std::vector<std::string> contactable;
     std::int64_t total = 0;
     std::int64_t part = 0;
     std::int64_t parts = 0;

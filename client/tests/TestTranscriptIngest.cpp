@@ -197,6 +197,11 @@ void checkLetterBounds()
     CHECK(refused(body));
     body["names"] = std::vector<std::string>(kMaxMemberNamesPerLetter + 1, "n");
     CHECK(refused(body));
+    body = memberListToJson(full);
+    body["contactableNames"] = nlohmann::json::array({"Bob"});
+    CHECK(refused(body));
+    body.erase("contactableNames");
+    CHECK(refused(body));
     CHECK(refused({{"op", "renamed"}}));
     CHECK(memberListFromJson({{"op", "none"}}).op == MemberListOp::eNone);
 }
@@ -216,14 +221,25 @@ void checkGroupIngest(const fs::path& file)
 
     CHECK(ingest.takeIn(listLetter("full-1", fullPart(1, 2, 3, {"Anna", "Me Self"}, "Me Self"))));
     CHECK(store.memberListState(kHost) == MemberListState::eUnknown);
-    CHECK(ingest.takeIn(listLetter("full-2", fullPart(2, 2, 3, {"Bob"}))));
+    MemberListLetter lastPart = fullPart(2, 2, 3, {"Bob"});
+    lastPart.contactable = {"Bob"};
+    CHECK(ingest.takeIn(listLetter("full-2", lastPart)));
     CHECK(store.memberListState(kHost) == MemberListState::eHeld);
     CHECK(store.groupMembers(kHost) == (std::vector<std::string>{"Anna", "Bob", "Me Self"}));
     CHECK(store.ownGroupName(kHost) == "Me Self");
     CHECK(listener.asked.size() == 1);
 
-    CHECK(ingest.takeIn(listLetter("add-1", change(MemberListOp::eAdded, {"Cleo"}, 4))));
+    CHECK(store.groupContactable(kHost) == (std::vector<std::string>{"Bob"}));
+
+    MemberListLetter cleo = change(MemberListOp::eAdded, {"Cleo"}, 4);
+    cleo.contactable = {"Cleo"};
+    CHECK(ingest.takeIn(listLetter("add-1", cleo)));
     CHECK(store.groupMembers(kHost).size() == 4);
+    CHECK(ingest.takeIn(listLetter("closed-1", change(MemberListOp::eChanged, {"Bob"}, 4))));
+    CHECK(store.groupContactable(kHost) == (std::vector<std::string>{"Cleo"}));
+    CHECK(ingest.takeIn(listLetter("left-1", change(MemberListOp::eRemoved, {"Cleo"}, 3))));
+    CHECK(store.groupContactable(kHost).empty());
+    CHECK(ingest.takeIn(listLetter("back-1", change(MemberListOp::eAdded, {"Cleo"}, 4))));
     CHECK(ingest.takeIn(listLetter("ren-1", change(MemberListOp::eRemoved, {"Me Self"}, 3))));
     CHECK(store.ownGroupName(kHost).empty());
     CHECK(ingest.takeIn(listLetter("ren-2", change(MemberListOp::eAdded, {"Me"}, 4, "Me"))));

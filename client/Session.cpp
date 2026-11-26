@@ -605,7 +605,7 @@ nlohmann::json groupBlockToJson(const GroupBlock& block)
 
 namespace {
 
-constexpr const char* kMemberListOpNames[] = {"full", "added", "removed", "none"};
+constexpr const char* kMemberListOpNames[] = {"full", "added", "removed", "changed", "none"};
 
 std::string checkedGroupName(const nlohmann::json& value)
 {
@@ -625,6 +625,9 @@ nlohmann::json memberListToJson(const MemberListLetter& letter)
         return body;
     }
     body["names"] = letter.names;
+    if (letter.op != MemberListOp::eRemoved) {
+        body["contactableNames"] = letter.contactable;
+    }
     body["total"] = letter.total;
     if (letter.op == MemberListOp::eFull) {
         body["part"] = letter.part;
@@ -654,6 +657,19 @@ MemberListLetter memberListFromJson(const nlohmann::json& body)
     }
     for (const nlohmann::json& name : names) {
         letter.names.push_back(checkedGroupName(name));
+    }
+    if (letter.op != MemberListOp::eRemoved) {
+        const nlohmann::json& open = body.at("contactableNames");
+        if (!open.is_array()) {
+            throw std::runtime_error("a member list letter names who is contactable in no list");
+        }
+        for (const nlohmann::json& name : open) {
+            letter.contactable.push_back(checkedGroupName(name));
+            if (std::find(letter.names.begin(), letter.names.end(), letter.contactable.back())
+                == letter.names.end()) {
+                throw std::runtime_error("a member list letter calls contactable a name it does not carry");
+            }
+        }
     }
     letter.total = body.at("total").get<std::int64_t>();
     if (letter.total < 0) {
