@@ -50,6 +50,9 @@ constexpr char kWatchDomain[] = "bazarish presence watch v1";
 constexpr char kWatchSignatureField[] = "sig";
 
 constexpr std::int64_t kWatchSkewSeconds = 120;
+// Presence.md, Watching.
+constexpr int kFastWatches = 3;
+constexpr int kWatchBackoff = 2;
 constexpr milliseconds kReceiveSlice{250};
 constexpr char kPresenceAddressLabel[] = "Presence address";
 constexpr char kPresenceWatcherLabel[] = "Presence watcher";
@@ -249,6 +252,7 @@ struct Outgoing {
     std::vector<std::pair<Bytes, std::uint64_t>> heardBySalt;
     bool answered = false;
     bool sentBefore = false;
+    int unanswered = 0;
     Clock::time_point lastSent{};
     Clock::time_point lastHeard{};
     // Online seen before a renew went unanswered stands until the contact answers or until then.
@@ -579,6 +583,20 @@ struct Presence::Impl {
         outgoing.sent = 0;
         outgoing.heardBySalt.clear();
         outgoing.answered = false;
+        outgoing.unanswered = 0;
+    }
+
+    std::chrono::milliseconds retryAfter(const Outgoing& outgoing) const
+    {
+        if (outgoing.unanswered < kFastWatches) {
+            return timings.watchRetry;
+        }
+        std::chrono::milliseconds wait = timings.watchRetry;
+        for (int slower = kFastWatches; slower <= outgoing.unanswered && wait < timings.slowestWatchRetry;
+             ++slower) {
+            wait *= kWatchBackoff;
+        }
+        return std::min(wait, timings.slowestWatchRetry);
     }
 
     void carry(Outgoing& outgoing, const Clock::time_point now) const
@@ -716,6 +734,7 @@ struct Presence::Impl {
                     carry(outgoing, now);
                     rewatch(outgoing);
                 }
+                outgoing.unanswered = 0;
                 outgoing.lastSent = Clock::time_point{};
             }
         }
@@ -998,13 +1017,14 @@ struct Presence::Impl {
             outgoing.state = PresenceState{};
             outgoing.carriedUntil = Clock::time_point{};
         }
-        if (now - outgoing.lastSent >= timings.watchRetry) {
+        if (now - outgoing.lastSent >= retryAfter(outgoing)) {
             sendWatch(lane, outgoing, now);
+            ++outgoing.unanswered;
         }
         if (outgoing.carriedUntil != Clock::time_point{}) {
             dueBy(outgoing.carriedUntil);
         }
-        dueBy(outgoing.lastSent + timings.watchRetry);
+        dueBy(outgoing.lastSent + retryAfter(outgoing));
     }
 
     void openWatchers(const std::vector<PresenceDay>& days, const Clock::time_point now)

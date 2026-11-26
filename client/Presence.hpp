@@ -89,6 +89,7 @@ using PresenceSink = std::function<void(const std::string& peer, const PresenceS
 
 struct PresenceTimings {
     std::chrono::milliseconds watchRetry{5000};
+    std::chrono::milliseconds slowestWatchRetry{120000};
     std::chrono::milliseconds renewEvery{15000};
     std::chrono::milliseconds subscriptionLife{30000};
     std::chrono::milliseconds onlineTail{60000};

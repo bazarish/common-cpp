@@ -65,6 +65,12 @@ constexpr milliseconds kSamMargin{500};
 constexpr milliseconds kAtOnce{300};
 constexpr milliseconds kReturnWithin{2000};
 constexpr milliseconds kBeforeOwnAddress{1500};
+constexpr milliseconds kSlowestRetry{400};
+constexpr milliseconds kBackoffWindow{3000};
+constexpr std::uint64_t kFewestBackedOff = 8;
+constexpr std::uint64_t kMostBackedOff = 12;
+constexpr milliseconds kFastRound{350};
+constexpr std::uint64_t kFastWatchesAgain = 3;
 // 2026-11-11, noon UTC.
 constexpr PresenceDay kDay = 20768;
 constexpr std::int64_t kNoon = kDay * kSecondsPerDay + kSecondsPerDay / 2;
@@ -692,6 +698,25 @@ try {
         CHECK(!erinSees.waitFor(frank.fp(), kOnline, kUnanswered));
         erin1.contactActive(frank.fp());
         CHECK(erinSees.waitFor(frank.fp(), kOnline, kWakeWithin));
+    }
+
+    {
+        const Person absent;
+        PresenceTimings backing = fastTimings();
+        backing.slowestWatchRetry = kSlowestRetry;
+        Observer gwenSees;
+        Presence gwen1(gwen.account(), netFor(net), gwenSees.sink(), backing);
+        gwen1.setContacts({absent.contact()});
+        gwen1.setFocused(true);
+        gwen1.watch({absent.fp()});
+        std::this_thread::sleep_for(kBackoffWindow);
+        const std::uint64_t backedOff = net.sentTo(absent.dest);
+        std::printf("TestPresence: %llu watches to an absent contact in %lld ms\n",
+            static_cast<unsigned long long>(backedOff), static_cast<long long>(kBackoffWindow.count()));
+        CHECK(backedOff >= kFewestBackedOff && backedOff <= kMostBackedOff);
+        gwen1.contactActive(absent.fp());
+        std::this_thread::sleep_for(kFastRound);
+        CHECK(net.sentTo(absent.dest) - backedOff >= kFastWatchesAgain);
     }
 
     {
