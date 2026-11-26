@@ -375,6 +375,7 @@ struct Presence::Impl {
         std::uint64_t contactsVersion = 0;
         std::vector<std::string> watched;
         std::map<std::string, Clock::time_point> typingUntil;
+        std::set<std::string> active;
     } inputs;
 
     bool focused = false;
@@ -384,6 +385,7 @@ struct Presence::Impl {
     std::uint64_t contactsVersion = 0;
     std::vector<std::string> watched;
     std::map<std::string, Clock::time_point> typingUntil;
+    std::set<std::string> activePeers;
 
     std::map<PresenceDay, HolderLane> holders;
     std::map<PresenceDay, WatcherLane> watchers;
@@ -695,12 +697,29 @@ struct Presence::Impl {
         sub.expires = now + timings.subscriptionLife;
         Incoming& stored = lane.incoming[subscriptionOf(subscriptionId)] = std::move(sub);
         tell(lane, stored, now, false);
-        if (const auto ours = watchers.find(day); ours != watchers.end()) {
-            if (const auto outgoing = ours->second.peers.find(from);
-                outgoing != ours->second.peers.end() && !outgoing->second.answered) {
-                outgoing->second.lastSent = Clock::time_point{};
+        activePeers.insert(from);
+    }
+
+    void rewatchActive(const Clock::time_point now)
+    {
+        for (auto& [day, lane] : watchers) {
+            for (const std::string& peer : activePeers) {
+                const auto found = lane.peers.find(peer);
+                if (found == lane.peers.end()) {
+                    continue;
+                }
+                Outgoing& outgoing = found->second;
+                if (outgoing.answered && outgoing.lastHeard >= outgoing.lastSent) {
+                    continue;
+                }
+                if (outgoing.answered) {
+                    carry(outgoing, now);
+                    rewatch(outgoing);
+                }
+                outgoing.lastSent = Clock::time_point{};
             }
         }
+        activePeers.clear();
     }
 
     void onRenew(HolderLane& lane, const Bytes& frame, const Clock::time_point now)
@@ -1098,6 +1117,8 @@ struct Presence::Impl {
                 shown = inputs.shown;
                 watched = inputs.watched;
                 typingUntil = inputs.typingUntil;
+                activePeers.merge(inputs.active);
+                inputs.active.clear();
                 if (inputs.contactsVersion != contactsVersion) {
                     contacts = inputs.contacts;
                     contactsVersion = inputs.contactsVersion;
@@ -1155,6 +1176,7 @@ struct Presence::Impl {
             }
             openWatchers(days, now);
             tickHolders(now);
+            rewatchActive(now);
             tickPeers(now);
             if (!active()) {
                 closeWatchers();
@@ -1246,6 +1268,15 @@ void Presence::stoppedTyping(const std::string& peer)
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->inputs.typingUntil.erase(peer);
+    }
+    impl_->poke();
+}
+
+void Presence::contactActive(const std::string& peer)
+{
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->inputs.active.insert(peer);
     }
     impl_->poke();
 }

@@ -5001,6 +5001,7 @@ std::vector<IncomingMessage> Session::takeIn(
     std::set<std::string> establishedPeers;
     std::set<std::string> reaskedPeers;
     std::set<std::string> heardFrom;
+    std::set<std::string> wroteToUs;
     std::set<std::string> movedPeers;
     std::set<std::string> askedToKnow;
     bool ownListTaken = false;
@@ -5135,6 +5136,9 @@ std::vector<IncomingMessage> Session::takeIn(
                     }
                     if (!fromOurselves && known) {
                         heardFrom.insert(message.fromFingerprint);
+                    }
+                    if (!fromOurselves && known && !message.sentByUs) {
+                        wroteToUs.insert(message.fromFingerprint);
                     }
                     if (!fromOurselves && !message.sentByUs && known && !asking
                         && !sender->second.issuedToThem
@@ -5683,6 +5687,12 @@ std::vector<IncomingMessage> Session::takeIn(
                 cardTries_.erase(peer);
             }
             refreshContactEpochs(peer, CardAsk::eEvent);
+        }
+    }
+
+    if (presence_) {
+        for (const std::string& peer : wroteToUs) {
+            presence_->contactActive(peer);
         }
     }
 

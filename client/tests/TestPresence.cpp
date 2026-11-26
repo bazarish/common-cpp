@@ -675,6 +675,26 @@ try {
     }
 
     {
+        PresenceTimings slow = fastTimings();
+        slow.watchRetry = kSlowRetry;
+        slow.subscriptionLife = kLongSilence;
+        Observer erinSees;
+        Presence erin1(erin.account(), netFor(net), erinSees.sink(), slow);
+        erin1.setContacts({frank.contact()});
+        erin1.setFocused(true);
+        erin1.watch({frank.fp()});
+        std::this_thread::sleep_for(kUnanswered);
+        Observer frankSees;
+        Presence frank1(frank.account(), netFor(net), frankSees.sink(), slow);
+        frank1.setContacts({erin.contact()});
+        frank1.setFocused(true);
+        CHECK(testutil::waitFor([&]() { return net.published(frank.dest); }));
+        CHECK(!erinSees.waitFor(frank.fp(), kOnline, kUnanswered));
+        erin1.contactActive(frank.fp());
+        CHECK(erinSees.waitFor(frank.fp(), kOnline, kWakeWithin));
+    }
+
+    {
         PresenceTimings stale = fastTimings();
         stale.watchRetry = kStaleRetry;
         stale.subscriptionLife = kLongSilence;

@@ -117,6 +117,8 @@ public:
     void watch(std::vector<std::string> peers);
     void typed(const std::string& peer);
     void stoppedTyping(const std::string& peer);
+    // The contact just wrote to us: a watch of it that goes unanswered is sent again at once.
+    void contactActive(const std::string& peer);
 
 private:
     struct Impl;
