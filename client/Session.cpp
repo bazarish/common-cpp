@@ -431,6 +431,17 @@ nlohmann::json imageBody(const std::string& name, const std::string& mime, const
     };
 }
 
+nlohmann::json fileBody(const std::string& name, const std::string& mime, const Bytes& bytes)
+{
+    return {
+        {"name", name},
+        {"size", bytes.size()},
+        {"sha256", toHex(sha256(bytes))},
+        {"mime", mime},
+        {"data", nlohmann::json::binary(bytes)},
+    };
+}
+
 nlohmann::json audioBody(const std::int64_t durationMs, const Bytes& opus)
 {
     return {
@@ -688,10 +699,13 @@ nlohmann::json relayedEnvelopeFrom(const std::string& from, const RelayedPost& p
     } else if (post.type == kTypeAudio) {
         inner = envelopeFrom(
             from, kTypeAudio, post.id, {{"audio", audioBody(post.durationMs, post.media)}});
+    } else if (post.type == kTypeFile) {
+        inner = envelopeFrom(
+            from, kTypeFile, post.id, {{"file", fileBody(post.mediaName, post.mime, post.media)}});
     } else if (post.type == "text") {
         inner = envelopeFrom(from, "text", post.id, {{"text", post.text}});
     } else {
-        throw std::runtime_error("a group relays text, pictures and voice, not " + post.type);
+        throw std::runtime_error("a group relays text, pictures, voice and files, not " + post.type);
     }
     inner["sentAt"] = post.sentAt;
     if (post.fromHost) {
@@ -2274,6 +2288,12 @@ bool Session::isSavedChat(const std::string& peerFingerprint) const
     return !peerFingerprint.empty() && peerFingerprint == fingerprint();
 }
 
+bool Session::isGroupHost(const std::string& peerFingerprint) const
+{
+    const auto found = contacts_.find(peerFingerprint);
+    return found != contacts_.end() && found->second.kind == AccountKind::eChat;
+}
+
 void Session::saveToSelf(nlohmann::json message, const DeliveryWatch& watch)
 {
     std::vector<std::string> ids{message.value("id", std::string())};
@@ -3851,6 +3871,10 @@ void Session::sendFile(const std::string& peerFingerprint, const std::string& lo
             return;
         }
     }
+    if (isGroupHost(peerFingerprint)) {
+        throw std::invalid_argument("a group takes a file of at most "
+            + std::to_string(kMaxMediaBytes) + " bytes: its bytes travel inside the message");
+    }
     if (isSavedChat(peerFingerprint)) {
         throw std::runtime_error("a file cannot be kept in Saved messages: its bytes travel"
             " between the two devices in a conversation, so there would be nothing to open"
@@ -3957,16 +3981,8 @@ void Session::sendFileBytes(const std::string& peerFingerprint, const std::strin
     }
     const std::string id = e2eId.empty() ? newMessageId() : e2eId;
     putFile(id, bytes);
-    nlohmann::json inner = envelope(kTypeFile, id, {
-        {"file",
-            {
-                {"name", name},
-                {"size", bytes.size()},
-                {"sha256", toHex(sha256(bytes))},
-                {"mime", guessMime(pathFromUtf8(name))},
-                {"data", nlohmann::json::binary(bytes)},
-            }},
-    });
+    nlohmann::json inner
+        = envelope(kTypeFile, id, {{"file", fileBody(name, guessMime(pathFromUtf8(name)), bytes)}});
     addReferences(inner, replyTo, forwarded, after);
     sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }

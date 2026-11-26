@@ -462,6 +462,7 @@ public:
     void removeContactEverywhere(const std::string& peerFingerprint);
 
     bool isSavedChat(const std::string& peerFingerprint) const;
+    bool isGroupHost(const std::string& peerFingerprint) const;
     void clearSaved();
 
     bool isBlocked(const std::string& peerFingerprint) const;
