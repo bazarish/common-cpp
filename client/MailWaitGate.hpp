@@ -9,6 +9,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -63,6 +64,16 @@ struct SilencePauses {
 };
 
 // Nothing tells a client that the server behind a facade is back: it asks at these pauses.
+// docs-main api/ClientApi.md, Held requests.
+inline constexpr std::chrono::milliseconds kLongestReaskPause{800};
+
+inline std::chrono::milliseconds reaskPause()
+{
+    thread_local std::mt19937 random(std::random_device{}());
+    return std::chrono::milliseconds(
+        std::uniform_int_distribution<std::int64_t>(0, kLongestReaskPause.count())(random));
+}
+
 inline constexpr std::chrono::seconds kServerDownFirstPause{1};
 inline constexpr std::chrono::seconds kServerDownSecondPause{5};
 inline constexpr std::chrono::seconds kServerDownSteadyPause{10};
@@ -140,6 +151,12 @@ public:
         reasking_ = false;
         serverDownNext_ = ServerDownPause::eFirst;
         silentSince_.reset();
+    }
+
+    bool pausedAfterAnswer()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return !changed_.wait_for(lock, reaskPause(), [this]() { return stopped_; });
     }
 
     // An ask begins: whatever happened before it is no cause to ask once more.

@@ -11,6 +11,7 @@
 #include <bazarish/I2pAddress.hpp>
 #include <bazarish/JsonRead.hpp>
 #include <bazarish/KeyedSeal.hpp>
+#include <bazarish/HeldWait.hpp>
 #include <bazarish/Limits.hpp>
 #include <bazarish/Log.hpp>
 #include <bazarish/Resolve.hpp>
@@ -22,6 +23,7 @@
 #include <algorithm>
 #include <ctime>
 #include <stdexcept>
+#include <random>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -34,9 +36,21 @@ namespace {
 
 namespace {
 
-// The server's bound on a held request, then as long as any answer may take on the way.
-constexpr int kHeldReadSeconds
-    = static_cast<int>(kHeldWaitSeconds) + ApiClient::kDefaultReadTimeoutSeconds;
+constexpr std::int64_t kHeldAnswerSlackSeconds = 60;
+
+struct HeldWait {
+    std::string query;
+    int readSeconds = 0;
+};
+
+HeldWait drawHeldWait()
+{
+    thread_local std::mt19937 random(std::random_device{}());
+    const std::int64_t seconds = std::uniform_int_distribution<std::int64_t>(
+        kHeldWaitMinSeconds, kHeldWaitMaxSeconds)(random);
+    return {std::string(kEventsHoldQuery) + "&" + kHeldWaitKey + "=" + std::to_string(seconds),
+        static_cast<int>(seconds + kHeldAnswerSlackSeconds)};
+}
 
 // RFC 8259: a control character is written as \u00XX.
 constexpr unsigned char kFirstPrintable = 0x20;
@@ -141,9 +155,11 @@ constexpr char kI2pStatusPath[] = "/v1/account/i2p-status";
 constexpr char kOverviewPath[] = "/v1/messaging/overview";
 constexpr char kSinceQuery[] = "&since=";
 
-std::string heldSince(const std::string& since)
+HeldWait heldSince(const std::string& since)
 {
-    return std::string(kEventsHoldQuery) + kSinceQuery + since;
+    HeldWait held = drawHeldWait();
+    held.query += kSinceQuery + since;
+    return held;
 }
 
 I2pDestStatus i2pStatusOf(const nlohmann::json& body)
@@ -302,15 +318,17 @@ I2pDestStatus Client::i2pStatus()
 
 I2pDestStatus Client::awaitApprovalChange(const std::string& approval)
 {
-    return i2pStatusOf(
-        api_.getWaiting(kI2pStatusPath, heldSince(approval), kHeldReadSeconds).json());
+    const HeldWait held = heldSince(approval);
+    return i2pStatusOf(api_.getWaiting(kI2pStatusPath, held.query, held.readSeconds).json());
 }
 
 AccountOverview Client::overview(const std::string& since)
 {
-    const ApiResponse response = since.empty()
-        ? api_.get(kOverviewPath)
-        : api_.getWaiting(kOverviewPath, heldSince(since), kHeldReadSeconds);
+    if (since.empty()) {
+        return overviewFromJson(api_.get(kOverviewPath).json());
+    }
+    const HeldWait held = heldSince(since);
+    const ApiResponse response = api_.getWaiting(kOverviewPath, held.query, held.readSeconds);
     return overviewFromJson(response.json());
 }
 
@@ -513,7 +531,9 @@ std::vector<PendingEntry> Client::waitForPending(const MailWait wait,
     const std::vector<std::string>& deferred, const std::optional<std::uint64_t> devicesVersion)
 {
     const bool held = wait == MailWait::eHeld;
-    std::string query = held ? kEventsHoldQuery : "";
+    const HeldWait hold = held ? drawHeldWait()
+                               : HeldWait{{}, ApiClient::kDefaultReadTimeoutSeconds};
+    std::string query = hold.query;
     if (devicesVersion.has_value()) {
         if (!query.empty()) {
             query += "&";
@@ -529,8 +549,7 @@ std::vector<PendingEntry> Client::waitForPending(const MailWait wait,
             query += deferred[i];
         }
     }
-    const ApiResponse response = api_.getWaiting(kEventsPath, query,
-        held ? kHeldReadSeconds : ApiClient::kDefaultReadTimeoutSeconds);
+    const ApiResponse response = api_.getWaiting(kEventsPath, query, hold.readSeconds);
     const nlohmann::json body = response.json();
     const std::vector<PendingEntry> entries = pendingEntries(body.at("pending"));
     lastMailboxUsage_ = usageOf(body);

@@ -1,6 +1,8 @@
 // Bazarish project (c) 2026
 #include "OverviewWatch.hpp"
 
+#include "MailWaitGate.hpp"
+
 #include <bazarish/Log.hpp>
 
 #include <utility>
@@ -96,6 +98,12 @@ void OverviewWatch::run()
             }
             if (answer.version != since) {
                 hooks_.fresh(answer);
+            }
+            if (!since.empty()) {
+                std::unique_lock<std::mutex> lock(mutex_);
+                if (wake_.wait_for(lock, reaskPause(), [this]() { return stopping_; })) {
+                    return;
+                }
             }
         } catch (const std::exception& error) {
             {

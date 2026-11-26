@@ -74,7 +74,7 @@ public:
 
 class ApiClient {
 public:
-    static constexpr int kDefaultReadTimeoutSeconds = 240;
+    static constexpr int kDefaultReadTimeoutSeconds = 180;
     static constexpr int kConnectTimeoutSeconds = 30;
     static constexpr int kWriteTimeoutSeconds = kDefaultReadTimeoutSeconds;
 
