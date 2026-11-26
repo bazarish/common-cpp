@@ -20,6 +20,71 @@ namespace bazarish::client {
 namespace {
 
 constexpr std::chrono::seconds kWatchdogTick{1};
+constexpr std::size_t kTracedWriteBytes = 16 * 1024;
+constexpr std::size_t kLineEndBytes = 1;
+
+using Clock = std::chrono::steady_clock;
+
+std::int64_t millisSince(const Clock::time_point from, const Clock::time_point to)
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+}
+
+class TracedStream final : public DeliveryStream {
+public:
+    explicit TracedStream(DeliveryStream& stream)
+        : stream_(stream)
+    {
+    }
+
+    std::size_t readSome(const ByteBuffer buffer) override
+    {
+        if (!waiting_) {
+            waiting_ = true;
+            waitingAt_ = Clock::now();
+        }
+        const std::size_t got = stream_.readSome(buffer);
+        read_ += got;
+        return got;
+    }
+
+    void writeAll(const ByteView data) override
+    {
+        for (std::size_t at = 0; at < data.size(); at += kTracedWriteBytes) {
+            const std::size_t size = std::min(kTracedWriteBytes, data.size() - at);
+            stream_.writeAll(data.subspan(at, size));
+            taken_ += size;
+            takenAt_ = Clock::now();
+        }
+    }
+
+    void close() override { stream_.close(); }
+
+    bool answered() const override { return stream_.answered(); }
+
+    std::string where(const std::size_t whole) const
+    {
+        const Clock::time_point now = Clock::now();
+        std::string told = "the stream took " + std::to_string(taken_) + " of "
+            + std::to_string(whole) + " bytes";
+        if (taken_ > 0) {
+            told += ", the last " + std::to_string(millisSince(takenAt_, now)) + " ms ago";
+        }
+        if (!waiting_) {
+            return told + "; no reply was awaited yet";
+        }
+        return told + "; the reply was awaited for " + std::to_string(millisSince(waitingAt_, now))
+            + " ms and " + std::to_string(read_) + " bytes of it came";
+    }
+
+private:
+    DeliveryStream& stream_;
+    std::size_t taken_ = 0;
+    Clock::time_point takenAt_{};
+    bool waiting_ = false;
+    Clock::time_point waitingAt_{};
+    std::size_t read_ = 0;
+};
 constexpr char kExpiredMessage[] = "it was no longer current when its recipient could be reached";
 
 bool signedForUs(const FederationDeliverResult& reply, const std::string& deliveryId)
@@ -741,14 +806,15 @@ OutboundCourier::Answer OutboundCourier::attemptFederation(const Letter& letter,
     watch(stream, std::chrono::steady_clock::now() + timings_.reply + carrying);
     const std::chrono::steady_clock::time_point wroteAt = std::chrono::steady_clock::now();
     FederationDeliverResult reply;
+    TracedStream traced(*stream);
     try {
-        reply = federationSendDeliver(*stream, sealed, letter.payload);
+        reply = federationSendDeliver(traced, sealed, letter.payload);
     } catch (const std::exception& error) {
         unwatch(stream);
-        const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - wroteAt);
-        bazarish::log::warn("delivery to {} did not complete after {} ms: {}", routeName(toDest),
-            waited.count(), error.what());
+        bazarish::log::warn("delivery to {} did not complete after {} ms: {}; {}", routeName(toDest),
+            millisSince(wroteAt, Clock::now()), error.what(),
+            traced.where(buildFederationDeliverHeader(sealed, letter.payload.size()).size()
+                + kLineEndBytes + letter.payload.size()));
         return stream->answered() ? Answer::eBroken : Answer::eUnanswered;
     }
     unwatch(stream);

@@ -9,6 +9,7 @@
 #include <bazarish/FederationFrame.hpp>
 #include <bazarish/I2p.hpp>
 #include <bazarish/Limits.hpp>
+#include <bazarish/Log.hpp>
 
 #include "TestUtil.hpp"
 
@@ -152,6 +153,30 @@ public:
     bool answered() const override { return true; }
 
     void close() override {}
+};
+
+constexpr std::size_t kStallAtBytes = 40 * 1024;
+constexpr std::size_t kBigPayloadBytes = 64 * 1024;
+constexpr std::size_t kTracedChunkBytes = 16 * 1024;
+
+class StalledStream final : public DeliveryStream {
+public:
+    void writeAll(const ByteView data) override
+    {
+        if (taken_ + data.size() > kStallAtBytes) {
+            throw std::runtime_error("write on a closed stream");
+        }
+        taken_ += data.size();
+    }
+
+    std::size_t readSome(ByteBuffer) override { return 0; }
+
+    bool answered() const override { return true; }
+
+    void close() override {}
+
+private:
+    std::size_t taken_ = 0;
 };
 
 struct TestKeys {
@@ -449,6 +474,47 @@ try {
         CHECK(dials.load() == 2);
         std::printf("TestOutboundCourier: a stream the recipient answered and lost is sent again"
                     " at once\n");
+    }
+
+    {
+        std::vector<std::string> told;
+        std::mutex toldMutex;
+        log::setTap([&](log::Level, std::string_view, const std::string_view message) {
+            if (message.find("did not complete") != std::string_view::npos) {
+                const std::lock_guard<std::mutex> lock(toldMutex);
+                told.emplace_back(message);
+            }
+        });
+        Record record;
+        std::atomic<int> dials{0};
+        OutboundCourier courier(
+            dialling([&](const std::string&) -> std::shared_ptr<DeliveryStream> {
+            ++dials;
+            if (dials == 1) {
+                return std::make_shared<StalledStream>();
+            }
+            if (dials == 2) {
+                return std::make_shared<BrokenStream>();
+            }
+            return std::make_shared<ServerStream>(keys.signing, keys.serving);
+        }),
+            {}, quick(kFarBound));
+        Letter big = letterTo(keys, dest, 1);
+        big.plain = Bytes(kBigPayloadBytes, 'p');
+        courier.submit(big, record.watchFor(1));
+        CHECK(settles(record, 1));
+        log::setTap({});
+        CHECK(told.size() == 2);
+        const std::string tookMark = "the stream took ";
+        const std::size_t tookAt = told.empty() ? std::string::npos : told[0].find(tookMark);
+        CHECK(tookAt != std::string::npos);
+        const std::size_t took = std::stoul(told[0].substr(tookAt + tookMark.size()));
+        CHECK(took > kStallAtBytes - kTracedChunkBytes && took <= kStallAtBytes);
+        CHECK(told[0].find("no reply was awaited yet") != std::string::npos);
+        CHECK(told[1].find("the reply was awaited for") != std::string::npos);
+        CHECK(told[1].find("0 bytes of it came") != std::string::npos);
+        std::printf("TestOutboundCourier: a broken delivery tells how far it got: %s\n",
+            told.empty() ? "" : told[0].c_str());
     }
 
     {
