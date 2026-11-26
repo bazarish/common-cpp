@@ -1203,6 +1203,22 @@ try {
         }
 
         {
+            alice->sendMessage(bob->fingerprint(), "anchored", {}, {}, {}, false, "x1");
+            alice->sendMessage(bob->fingerprint(), "unanchored");
+            std::map<std::string, std::string> afters;
+            CHECK(testutil::waitFor([&]() {
+                for (const IncomingMessage& item : bob->sync()) {
+                    if (item.text == "anchored" || item.text == "unanchored") {
+                        afters[item.text] = item.after;
+                    }
+                }
+                return afters.size() >= 2;
+            }));
+            CHECK(afters["anchored"] == "x1");
+            CHECK(afters["unanchored"].empty());
+        }
+
+        {
             const fs::path forwardedFile = scratch / "bz-pass-forwarded.txt";
             std::ofstream(forwardedFile) << "fwd";
             alice->sendPicture(

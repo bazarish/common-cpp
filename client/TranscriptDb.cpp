@@ -1224,12 +1224,50 @@ LastMessage TranscriptReader::lastMessage(const std::string& peer) const
     return {{}, query.text(1), query.text(2), query.text(3)};
 }
 
-std::int64_t TranscriptReader::newestOwnOrderKey(const std::string& peer) const
+std::int64_t TranscriptReader::newestOrderKey(const std::string& peer) const
 {
     Query query(db_);
-    query.prepare("SELECT MAX(orderKey) FROM messages WHERE peer = ? AND outgoing = 1");
+    query.prepare("SELECT MAX(orderKey) FROM messages WHERE peer = ?");
     query.bind(peer);
     return readNumber(query);
+}
+
+std::int64_t TranscriptReader::newestOrderKey(const std::string& peer, const bool outgoing) const
+{
+    Query query(db_);
+    query.prepare("SELECT MAX(orderKey) FROM messages WHERE peer = ? AND outgoing = ?");
+    query.bind(peer);
+    query.bind(outgoing ? 1 : 0);
+    return readNumber(query);
+}
+
+std::int64_t TranscriptReader::orderKeyOf(const std::string& peer, const std::string& e2eId) const
+{
+    if (e2eId.empty()) {
+        return 0;
+    }
+    Query query(db_);
+    query.prepare("SELECT MAX(orderKey) FROM messages WHERE peer = ? AND e2eId = ?");
+    query.bind(peer);
+    query.bind(e2eId);
+    return readNumber(query);
+}
+
+std::string TranscriptReader::idPlacedBefore(
+    const std::string& peer, const std::int64_t orderKey, const std::int64_t id) const
+{
+    Query query(db_);
+    query.prepare("SELECT e2eId FROM messages WHERE peer = ? AND e2eId != ''"
+                  " AND (orderKey < ? OR (orderKey = ? AND id < ?))"
+                  " ORDER BY orderKey DESC, id DESC LIMIT 1");
+    query.bind(peer);
+    query.bind(orderKey);
+    query.bind(orderKey);
+    query.bind(id);
+    if (!query.exec() || !query.next()) {
+        return {};
+    }
+    return query.text(0);
 }
 
 std::int64_t TranscriptReader::lastTime(const std::string& peer) const

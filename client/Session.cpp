@@ -535,15 +535,19 @@ std::vector<nlohmann::json> decodedBody(const Bytes& bytes)
     return messages;
 }
 
-void addReplyAndForward(
-    nlohmann::json& inner, const std::string& replyTo, const bool forwarded)
+void addReferences(nlohmann::json& inner, const std::string& replyTo, const bool forwarded,
+    const std::string& after)
 {
-    if (replyTo.size() > kMaxMessageIdBytes) {
+    if (replyTo.size() > kMaxMessageIdBytes || after.size() > kMaxMessageIdBytes) {
         throw std::invalid_argument(
-            "a reply names a message id of at most " + std::to_string(kMaxMessageIdBytes) + " bytes");
+            "a message names other messages by ids of at most " + std::to_string(kMaxMessageIdBytes)
+            + " bytes");
     }
     if (!replyTo.empty()) {
         inner["replyTo"] = replyTo;
+    }
+    if (!after.empty()) {
+        inner["after"] = after;
     }
     if (forwarded) {
         inner["forwarded"] = true;
@@ -696,7 +700,7 @@ nlohmann::json relayedEnvelopeFrom(const std::string& from, const RelayedPost& p
         inner["author"] = post.author;
         inner["contactable"] = post.contactable;
     }
-    addReplyAndForward(inner, post.replyTo, false);
+    addReferences(inner, post.replyTo, false, post.after);
     return inner;
 }
 
@@ -3820,18 +3824,18 @@ void Session::acceptContactRequest(const std::string& peerFingerprint)
 
 void Session::sendMessage(const std::string& peerFingerprint, const std::string& text,
     const std::string& e2eId, const DeliveryWatch& watch, const std::string& replyTo,
-    const bool forwarded)
+    const bool forwarded, const std::string& after)
 {
     nlohmann::json inner = envelope("text", e2eId.empty() ? newMessageId() : e2eId, {
         {"text", text},
     });
-    addReplyAndForward(inner, replyTo, forwarded);
+    addReferences(inner, replyTo, forwarded, after);
     sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }
 
 void Session::sendFile(const std::string& peerFingerprint, const std::string& location,
     const std::string& e2eId, const DeliveryWatch& watch, const std::string& replyTo,
-    const bool forwarded)
+    const bool forwarded, const std::string& after)
 {
     const std::string name = files_->name(location);
     if (name.size() <= kMaxMediaNameBytes) {
@@ -3843,7 +3847,7 @@ void Session::sendFile(const std::string& peerFingerprint, const std::string& lo
             whole.insert(whole.end(), buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(got));
         }
         if (whole.size() <= kMaxMediaBytes) {
-            sendFileBytes(peerFingerprint, name, whole, e2eId, watch, replyTo, forwarded);
+            sendFileBytes(peerFingerprint, name, whole, e2eId, watch, replyTo, forwarded, after);
             return;
         }
     }
@@ -3853,12 +3857,12 @@ void Session::sendFile(const std::string& peerFingerprint, const std::string& lo
             " on another device");
     }
     announceTransfer(
-        kTypeFile, peerFingerprint, location, e2eId, watch, replyTo, forwarded);
+        kTypeFile, peerFingerprint, location, e2eId, watch, replyTo, forwarded, after);
 }
 
 void Session::sendPicture(const std::string& peerFingerprint, const Bytes& bytes,
     const std::string& name, const std::string& mime, const std::string& e2eId,
-    const DeliveryWatch& watch, const std::string& replyTo, const bool forwarded)
+    const DeliveryWatch& watch, const std::string& replyTo, const bool forwarded, const std::string& after)
 {
     if (bytes.empty()) {
         throw std::runtime_error("the picture is empty");
@@ -3876,13 +3880,13 @@ void Session::sendPicture(const std::string& peerFingerprint, const Bytes& bytes
     putPicture(id, bytes);
 
     nlohmann::json inner = envelope(kTypeImage, id, {{"image", imageBody(name, mime, bytes)}});
-    addReplyAndForward(inner, replyTo, forwarded);
+    addReferences(inner, replyTo, forwarded, after);
     sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }
 
 void Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
     const std::int64_t durationMs, const std::string& e2eId,
-    const DeliveryWatch& watch, const std::string& replyTo, const bool forwarded)
+    const DeliveryWatch& watch, const std::string& replyTo, const bool forwarded, const std::string& after)
 {
     if (opus.empty()) {
         throw std::runtime_error("there is nothing recorded to send");
@@ -3895,7 +3899,7 @@ void Session::sendVoice(const std::string& peerFingerprint, const Bytes& opus,
     putVoice(id, opus);
 
     nlohmann::json inner = envelope(kTypeAudio, id, {{"audio", audioBody(durationMs, opus)}});
-    addReplyAndForward(inner, replyTo, forwarded);
+    addReferences(inner, replyTo, forwarded, after);
     sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }
 
@@ -3944,7 +3948,7 @@ void Session::askGroupMembers(const std::string& hostFingerprint)
 
 void Session::sendFileBytes(const std::string& peerFingerprint, const std::string& name,
     const Bytes& bytes, const std::string& e2eId, const DeliveryWatch& watch,
-    const std::string& replyTo, const bool forwarded)
+    const std::string& replyTo, const bool forwarded, const std::string& after)
 {
     if (bytes.size() > kMaxMediaBytes || name.size() > kMaxMediaNameBytes) {
         throw std::invalid_argument("a file inside a message is at most "
@@ -3963,13 +3967,13 @@ void Session::sendFileBytes(const std::string& peerFingerprint, const std::strin
                 {"data", nlohmann::json::binary(bytes)},
             }},
     });
-    addReplyAndForward(inner, replyTo, forwarded);
+    addReferences(inner, replyTo, forwarded, after);
     sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }
 
 void Session::announceTransfer(const std::string& type, const std::string& peerFingerprint,
     const std::string& location, const std::string& e2eId,
-    const DeliveryWatch& watch, const std::string& replyTo, const bool forwarded)
+    const DeliveryWatch& watch, const std::string& replyTo, const bool forwarded, const std::string& after)
 {
     const std::string id = e2eId.empty() ? newMessageId() : e2eId;
     const std::unique_ptr<FileInput> input = files_->open(location);
@@ -3994,7 +3998,7 @@ void Session::announceTransfer(const std::string& type, const std::string& peerF
                 {"mime", guessMime(pathFromUtf8(name))},
             }},
     });
-    addReplyAndForward(inner, replyTo, forwarded);
+    addReferences(inner, replyTo, forwarded, after);
     sendContent(peerFingerprint, std::move(inner), watch, /*establishOnFirstReply=*/true, userAct());
 }
 
@@ -5573,6 +5577,7 @@ std::vector<IncomingMessage> Session::takeIn(
                     if (body.contains("replyTo")) {
                         message.replyTo = body.value("replyTo", std::string());
                     }
+                    message.after = body.value("after", std::string());
                     noteWire(false,
                         (message.contentType.empty() ? std::string("content")
                                                      : message.contentType)

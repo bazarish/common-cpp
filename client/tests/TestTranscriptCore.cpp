@@ -218,6 +218,41 @@ void checkExpiryStamps(const fs::path& root)
 
 }  // namespace
 
+void checkOrderAnchors(const fs::path& root)
+{
+    const fs::path file = root / "anchors.db";
+    AccountDb account(file, "secret");
+    TranscriptStore store;
+    CHECK(store.open(file, "secret"));
+    const auto put = [&store](
+                         const std::string& e2eId, const std::int64_t key, const bool outgoing) {
+        StoredMessage message = line(kPeer, "text", e2eId);
+        message.ts = key;
+        message.orderKey = key;
+        message.outgoing = outgoing;
+        return store.messageById(store.append(message));
+    };
+    constexpr std::int64_t kFirst = 100;
+    constexpr std::int64_t kSecond = 200;
+    constexpr std::int64_t kThird = 300;
+    CHECK(store.newestOrderKey(kPeer) == 0);
+    CHECK(store.idPlacedBefore(kPeer, kFirst, 1).empty());
+    const StoredMessage mine = put("mine", kFirst, true);
+    const StoredMessage note = put("", kSecond, false);
+    const StoredMessage theirs = put("theirs", kSecond, false);
+    const StoredMessage last = put("last", kThird, true);
+    CHECK(store.newestOrderKey(kPeer) == kThird);
+    CHECK(store.newestOrderKey(kPeer, true) == kThird);
+    CHECK(store.newestOrderKey(kPeer, false) == kSecond);
+    CHECK(store.orderKeyOf(kPeer, "theirs") == kSecond);
+    CHECK(store.orderKeyOf(kPeer, "unknown") == 0);
+    CHECK(store.orderKeyOf(kOther, "theirs") == 0);
+    CHECK(store.idPlacedBefore(kPeer, last.orderKey, last.id) == "theirs");
+    CHECK(store.idPlacedBefore(kPeer, theirs.orderKey, theirs.id) == "mine");
+    CHECK(store.idPlacedBefore(kPeer, note.orderKey, note.id) == "mine");
+    CHECK(store.idPlacedBefore(kPeer, mine.orderKey, mine.id).empty());
+}
+
 int main()
 try {
     const testutil::ScratchDir scratch("transcript");
@@ -300,6 +335,7 @@ try {
     checkWritesGoOnDuringCompaction(root);
     checkChatList(root);
     checkExpiryStamps(root);
+    checkOrderAnchors(root);
     std::fprintf(stderr, "TestTranscriptCore passed\n");
     return 0;
 } catch (...) {

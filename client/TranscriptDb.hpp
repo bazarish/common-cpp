@@ -151,8 +151,13 @@ public:
     std::optional<std::int64_t> nextExpiryAt() const;
     LastMessage lastMessage(const std::string& peer) const;
     std::int64_t lastTime(const std::string& peer) const;
-    // 0 when this side wrote nothing in the chat.
-    std::int64_t newestOwnOrderKey(const std::string& peer) const;
+    // 0 when the chat has no row, or none on that side.
+    std::int64_t newestOrderKey(const std::string& peer) const;
+    std::int64_t newestOrderKey(const std::string& peer, bool outgoing) const;
+    // 0 when no row of the chat carries that id.
+    std::int64_t orderKeyOf(const std::string& peer, const std::string& e2eId) const;
+    // The id of the newest row that carries one and sorts before (orderKey, id); empty when none.
+    std::string idPlacedBefore(const std::string& peer, std::int64_t orderKey, std::int64_t id) const;
     std::vector<std::string> conversationPeers() const;
     std::int64_t lastReadId(const std::string& peer) const;
     bool isPinned(const std::string& peer) const;

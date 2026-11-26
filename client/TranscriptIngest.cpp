@@ -70,11 +70,13 @@ TranscriptIngest::TranscriptIngest(TranscriptStore& store, OwnFingerprintFn ownF
 
 std::int64_t TranscriptIngest::orderFloor(const IncomingMessage& message) const
 {
-    if (message.sentByUs) {
-        return 0;
+    const std::string& peer = message.fromFingerprint;
+    const std::int64_t anchor = store_.orderKeyOf(peer, message.after);
+    if (anchor > 0) {
+        return anchor + 1;
     }
-    const std::int64_t own = store_.newestOwnOrderKey(message.fromFingerprint);
-    return own > 0 ? own + 1 : 0;
+    const std::int64_t otherSide = store_.newestOrderKey(peer, !message.sentByUs);
+    return otherSide > 0 ? otherSide + 1 : 0;
 }
 
 std::int64_t TranscriptIngest::localIdOf(const IncomingMessage& message) const

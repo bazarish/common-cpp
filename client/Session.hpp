@@ -153,6 +153,7 @@ struct RelayedPost {
     std::int64_t sentAt = 0;
     std::string text;
     std::string replyTo;
+    std::string after;
     Bytes media;
     std::string mediaName;
     std::string mime;
@@ -201,6 +202,8 @@ struct IncomingMessage {
     std::string refId;
 
     std::string replyTo;
+    // Messages.md: the message the sender's chat held last when this one was written.
+    std::string after;
 
     std::string callId;
     bool callIncoming = false;
@@ -499,7 +502,7 @@ public:
     void sendVoice(const std::string& peerFingerprint, const Bytes& opus, std::int64_t durationMs,
         const std::string& e2eId = {},
         const DeliveryWatch& watch = {},
-        const std::string& replyTo = {}, bool forwarded = false);
+        const std::string& replyTo = {}, bool forwarded = false, const std::string& after = {});
 
     void putPicture(const std::string& e2eId, const Bytes& bytes);
     std::optional<Bytes> picture(const std::string& e2eId) const;
@@ -511,7 +514,7 @@ public:
     // A file of at most kMaxMediaBytes carried inside its message, with no transfer.
     void sendFileBytes(const std::string& peerFingerprint, const std::string& name,
         const Bytes& bytes, const std::string& e2eId = {}, const DeliveryWatch& watch = {},
-        const std::string& replyTo = {}, bool forwarded = false);
+        const std::string& replyTo = {}, bool forwarded = false, const std::string& after = {});
 
     void closeAccountOnServer();
 
@@ -665,17 +668,17 @@ public:
     void sendMessage(const std::string& peerFingerprint, const std::string& text,
         const std::string& e2eId = {},
         const DeliveryWatch& watch = {}, const std::string& replyTo = {},
-        bool forwarded = false);
+        bool forwarded = false, const std::string& after = {});
 
     void sendFile(const std::string& peerFingerprint, const std::string& location,
         const std::string& e2eId = {},
         const DeliveryWatch& watch = {}, const std::string& replyTo = {},
-        bool forwarded = false);
+        bool forwarded = false, const std::string& after = {});
 
     void sendPicture(const std::string& peerFingerprint, const Bytes& bytes,
         const std::string& name, const std::string& mime, const std::string& e2eId = {},
         const DeliveryWatch& watch = {},
-        const std::string& replyTo = {}, bool forwarded = false);
+        const std::string& replyTo = {}, bool forwarded = false, const std::string& after = {});
 
     void sendInteractive(const std::string& peerFingerprint, const std::string& text,
         const InlineKeyboard& keyboard, const std::string& e2eId = {},
@@ -1161,7 +1164,7 @@ private:
     void putFile(const std::string& e2eId, const Bytes& bytes);
     void announceTransfer(const std::string& type, const std::string& peerFingerprint,
         const std::string& location, const std::string& e2eId, const DeliveryWatch& watch,
-        const std::string& replyTo, bool forwarded);
+        const std::string& replyTo, bool forwarded, const std::string& after);
 
     void serveRequestedFile(const std::string& peerFingerprint, const std::string& fileId,
         const std::string& forAsk);
