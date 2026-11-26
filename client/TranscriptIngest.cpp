@@ -401,8 +401,9 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
             return false;
         }
     }
-    if (m.type == kTypeImage && !m.e2eId.empty()) {
-        if (!store_.setHasPicture(m.id, !store_.media(kPictureKeyPrefix + m.e2eId).empty())) {
+    if ((m.type == kTypeImage || m.type == kTypeFile) && !m.e2eId.empty()) {
+        const std::string key = (m.type == kTypeImage ? kPictureKeyPrefix : kFileKeyPrefix) + m.e2eId;
+        if (!store_.setHasPicture(m.id, !store_.media(key).empty())) {
             return false;
         }
     }

@@ -4420,7 +4420,24 @@ void Session::requestFile(const std::string& peerFingerprint, const std::string&
         peerFingerprint);
     LetterTerms terms;
     terms.notAfterMs = answerByMs;
-    sendContent(peerFingerprint, std::move(inner), {}, false, userAct(terms));
+    DeliveryWatch delivered;
+    delivered.onOutcome = [registry = std::weak_ptr<TransferRegistry>(transfers_), e2eId, ask,
+                              peerFingerprint](const DeliveryOutcome& outcome) {
+        const std::shared_ptr<TransferRegistry> held = registry.lock();
+        if (!outcome.stored || held == nullptr) {
+            return;
+        }
+        {
+            const std::lock_guard<std::mutex> lock(held->mutex);
+            const auto found = held->pending.find(e2eId);
+            if (found == held->pending.end() || found->second.ask != ask || found->second.fetching) {
+                return;
+            }
+        }
+        emitTransferTo(*held, TransferEvent{e2eId, peerFingerprint, TransferState::eRequested, 0,
+            0, {}, TransferStage::eAwaitingAnswer});
+    };
+    sendContent(peerFingerprint, std::move(inner), delivered, false, userAct(terms));
 }
 
 void Session::expireFileRequests(const std::int64_t nowMs)

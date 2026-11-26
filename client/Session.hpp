@@ -250,6 +250,7 @@ enum class TransferState {
 enum class TransferStage {
     eNone,
     eAsking,
+    eAwaitingAnswer,
     eEncrypting,
     eMakingAddress,
     ePublishing,
