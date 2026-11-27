@@ -438,6 +438,7 @@ public:
     void setEpochClock(UtcClock clock);
     // Seconds from now to the end of the last epoch this account holds a key for.
     std::int64_t ownEpochReserveSeconds() const;
+    std::optional<ContactCard> publishedCard() const;
     bool ownEpochReserveLow() const;
     const std::string& displayName() const;
     void setDisplayName(const std::string& name);

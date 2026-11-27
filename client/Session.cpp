@@ -6727,6 +6727,14 @@ bool Session::cardMayGoOut() const
         && mailboxReadOnNetwork_ == bazarish::i2p::networkChanges();
 }
 
+std::optional<ContactCard> Session::publishedCard() const
+{
+    if (cardB64_.empty()) {
+        return std::nullopt;
+    }
+    return ContactCard::verify(fromBase64(cardB64_));
+}
+
 EpochNumber Session::publishedEpochsThrough() const
 {
     return cardB64_.empty() ? 0 : ContactCard::verify(fromBase64(cardB64_)).epochs.back().n;
