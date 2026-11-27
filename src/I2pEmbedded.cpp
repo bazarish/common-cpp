@@ -1205,6 +1205,7 @@ public:
     std::string builtInReseedUrls;
     std::shared_ptr<IoService> io;
     const std::shared_ptr<PoolSignals> poolSignals = std::make_shared<PoolSignals>();
+    std::optional<TransportWatch> networkWatch;
 
     struct DestEntry {
         std::weak_ptr<i2pd::client::ClientDestination> dest;
@@ -1225,6 +1226,7 @@ public:
 
     ~EmbeddedRouter()
     {
+        networkWatch.reset();
         io.reset();
         if (started)
         {
@@ -1257,6 +1259,16 @@ std::string reseedUrlList(const std::vector<std::string>& reseedUrls)
         }
     }
     return list;
+}
+
+void followNetwork()
+{
+    const bool online = !networkDown();
+    if (i2pd::transport::transports.IsOnline() != online)
+    {
+        i2pd::transport::transports.SetOnline(online);
+        bazarish::log::info("i2p: the engine is {}", online ? "online again" : "offline: no network");
+    }
 }
 
 }  // namespace
@@ -1318,6 +1330,8 @@ void EmbeddedRouter::start()
             const std::shared_ptr<i2pd::tunnel::TunnelPool>& pool) {
             tellPool(*pools, *router, pool);
         });
+    networkWatch.emplace([]() { followNetwork(); });
+    followNetwork();
     started = true;
     bazarish::log::info("i2p: engine running");
     io = std::make_shared<IoService>(ioContextCount());
@@ -1369,6 +1383,7 @@ void EmbeddedRouter::stop()
 {
     const std::lock_guard<std::mutex> lock(lifecycleMutex);
     if (!started) { return; }
+    networkWatch.reset();
     io.reset();
     i2pd::tunnel::tunnels.SetPoolOutboundTunnelCreatedHandler(nullptr);
     i2pd::api::StopI2P();

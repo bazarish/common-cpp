@@ -3583,12 +3583,31 @@ try {
                 return m.mailbox[hal->fingerprint()].size() >= heldForHal + 2;
             }));
 
+            const auto publishedThrough = [&]() {
+                const std::lock_guard<std::mutex> lock(m.mu);
+                return ContactCard::verify(fromBase64(m.certFor.at(gina->fingerprint())))
+                    .epochs.back()
+                    .n;
+            };
             utc.store(epochStart(start + 2) + kSecondsPerDay);
             gina->flushPendingEchoes();
             pastPause();
+            i2p::networkLost();
             gina->flushPendingEchoes();
             CHECK(keysOf("bz-epochs-gina", start + 3) == 1);
+            CHECK(publishedThrough() == start + 2);
             CHECK(testutil::waitFor([&]() {
+                gina->flushPendingEchoes();
+                const std::optional<std::chrono::milliseconds> wait = gina->untilNextDue();
+                return wait.has_value() && *wait > std::chrono::milliseconds::zero();
+            }));
+            CHECK(publishedThrough() == start + 2);
+            i2p::networkChanged();
+            CHECK(gina->untilNextDue() == std::chrono::milliseconds::zero());
+            gina->flushPendingEchoes();
+            CHECK(publishedThrough() == start + 3);
+            CHECK(testutil::waitFor([&]() {
+                gina->sync();
                 gina2->sync();
                 return keysOf("bz-epochs-gina2", start + 3) == 1;
             }));

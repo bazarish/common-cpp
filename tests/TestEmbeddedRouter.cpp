@@ -46,9 +46,21 @@ try {
         drained.get_future().wait();
         CHECK(router.transportPeers().empty());
 
+        bazarish::i2p::networkLost();
+        CHECK(!::i2p::transport::transports.IsOnline());
+        bazarish::i2p::networkChanged();
+        CHECK(::i2p::transport::transports.IsOnline());
+
         router.stop();
         CHECK(!router.running());
         CHECK_THROWS(router.createEndpoint(bazarish::i2p::EndpointConfig{}));
+    }
+    bazarish::i2p::networkLost();
+    {
+        bazarish::i2p::Router router(bazarish::i2p::offlineRouter(dir));
+        CHECK(!::i2p::transport::transports.IsOnline());
+        bazarish::i2p::networkChanged();
+        CHECK(::i2p::transport::transports.IsOnline());
     }
     return 0;
 } catch (...) {

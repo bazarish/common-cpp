@@ -206,6 +206,7 @@ constexpr char kAddressSealingRow[] = "address-sealing.pem";
 constexpr char kEpochRingRow[] = "epochs";
 constexpr std::int64_t kEpochsScheduleSpreadSeconds = kSecondsPerHour;
 constexpr std::int64_t kEpochCreationSpreadSeconds = kSecondsPerHour;
+constexpr std::int64_t kCardRepublishRetrySeconds = kSecondsPerMinute;
 constexpr char kAddressSigningRow[] = "address-signing.pem";
 constexpr char kRootRow[] = "root.pem";
 constexpr char kDeviceSigningRow[] = "device-signing.pem";
@@ -6044,8 +6045,21 @@ std::optional<std::chrono::milliseconds> Session::untilNextDue() const
             dueNow();
         }
         dueAt(presenceDayStart(today + 1), epochUtc);
+        std::optional<EpochNumber> publishedThrough;
         for (const auto& [peerFingerprint, at] : epochsDue_) {
-            dueAt(at, epochUtc);
+            if (at > epochUtc) {
+                dueAt(at, epochUtc);
+                continue;
+            }
+            if (!publishedThrough.has_value()) {
+                publishedThrough = publishedEpochsThrough();
+            }
+            if (!epochsWaitForCard(peerFingerprint, *publishedThrough)) {
+                dueNow();
+            }
+        }
+        if (cardMayBeStale_ && cardRetryAt_.has_value() && !bazarish::i2p::networkDown()) {
+            dueAt(*cardRetryAt_, epochUtc);
         }
         if (createsEpochs()) {
             for (const auto& [n, at] : epochsMakeAt_) {
@@ -6666,6 +6680,7 @@ void Session::ensureOwnEpochs()
 
 bool Session::republishCardIfStale()
 {
+    cardRetryAt_.reset();
     if (!isPrimary()) {
         return true;
     }
@@ -6686,8 +6701,21 @@ bool Session::republishCardIfStale()
         return true;
     } catch (const std::exception& error) {
         bazarish::log::warn("the card was not republished: {}", error.what());
+        cardRetryAt_ = epochClock_() + kCardRepublishRetrySeconds;
         return false;
     }
+}
+
+EpochNumber Session::publishedEpochsThrough() const
+{
+    return cardB64_.empty() ? 0 : ContactCard::verify(fromBase64(cardB64_)).epochs.back().n;
+}
+
+bool Session::epochsWaitForCard(
+    const std::string& peerFingerprint, const EpochNumber publishedThrough) const
+{
+    const auto contact = contacts_.find(peerFingerprint);
+    return contact != contacts_.end() && publishedThrough <= contact->second.epochsSentThrough;
 }
 
 bool Session::sendsEpochsTo(const std::string& peerFingerprint) const
@@ -6746,8 +6774,12 @@ void Session::keepEpochs()
         }
         cardMayBeStale_ = true;
     }
-    if (cardMayBeStale_) {
-        cardMayBeStale_ = !republishCardIfStale();
+    if (cardMayBeStale_ && (!cardRetryAt_.has_value() || utc >= *cardRetryAt_)) {
+        if (bazarish::i2p::networkDown()) {
+            cardRetryAt_ = utc;
+        } else {
+            cardMayBeStale_ = !republishCardIfStale();
+        }
     }
     std::optional<EpochNumber> publishedThrough;
     std::vector<std::string> ready;
@@ -6756,12 +6788,9 @@ void Session::keepEpochs()
             continue;
         }
         if (!publishedThrough.has_value()) {
-            publishedThrough = cardB64_.empty()
-                ? 0
-                : ContactCard::verify(fromBase64(cardB64_)).epochs.back().n;
+            publishedThrough = publishedEpochsThrough();
         }
-        const auto contact = contacts_.find(peerFingerprint);
-        if (contact == contacts_.end() || *publishedThrough > contact->second.epochsSentThrough) {
+        if (!epochsWaitForCard(peerFingerprint, *publishedThrough)) {
             ready.push_back(peerFingerprint);
         }
     }

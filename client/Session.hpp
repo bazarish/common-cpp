@@ -1049,6 +1049,8 @@ private:
     bool createsEpochs() const;
     void ensureOwnEpochs();
     bool republishCardIfStale();
+    EpochNumber publishedEpochsThrough() const;
+    bool epochsWaitForCard(const std::string& peerFingerprint, EpochNumber publishedThrough) const;
     void enrollHere();
     // False when the server serves no such account yet.
     bool joinServer();
@@ -1314,6 +1316,7 @@ private:
     std::map<EpochNumber, std::int64_t> epochsMakeAt_;
     std::optional<PresenceDay> epochsCheckedDay_;
     bool cardMayBeStale_ = false;
+    std::optional<std::int64_t> cardRetryAt_;
     struct CardTries {
         std::optional<PresenceDay> came;
         std::optional<PresenceDay> tried;
