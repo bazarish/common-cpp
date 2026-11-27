@@ -2409,9 +2409,10 @@ try {
             };
             constexpr std::chrono::seconds kQuickDial{1};
             constexpr std::chrono::seconds kQuickReply{1};
-            constexpr std::chrono::seconds kQuickBound{3};
+            constexpr std::chrono::seconds kQuickRecheck{3};
             constexpr std::chrono::milliseconds kStillWaiting{3000};
             constexpr std::int64_t kOldPublished = 1000;
+            constexpr std::int64_t kNewPublished = 2000;
             constexpr std::int64_t kLeaseSeconds = 600;
 
             std::atomic<bool> erinDown{true};
@@ -2484,12 +2485,15 @@ try {
                 i2p::LeaseSetRefresh refresh;
                 refresh.before = i2p::LeaseSetSeen{kOldPublished, kOldPublished + kLeaseSeconds};
                 refresh.after = refresh.before;
+                if (aliceRestarted.load()) {
+                    refresh.after = i2p::LeaseSetSeen{kNewPublished, kNewPublished + kLeaseSeconds};
+                }
                 return refresh;
             };
             CourierTimings quick;
             quick.dial = kQuickDial;
             quick.reply = kQuickReply;
-            quick.staleBound = kQuickBound;
+            quick.recheck = kQuickRecheck;
             erin->setOutboundLinks(towardsAlice, quick);
             const auto aliceRequestsBefore = contactRequestsFor(alice->fingerprint());
             erin->acceptContactRequest(alice->fingerprint());
@@ -2498,7 +2502,7 @@ try {
             CHECK(!testutil::waitFor([&]() {
                 erin->sync();
                 return !erin->contactIsPending(alice->fingerprint());
-            }, std::chrono::milliseconds(kQuickBound) / 2));
+            }, std::chrono::milliseconds(kQuickRecheck) / 2));
             CHECK(erin->contactAcceptInFlight(alice->fingerprint()));
             aliceRestarted = true;
             CHECK(testutil::waitFor([&]() {
@@ -2515,7 +2519,7 @@ try {
             CHECK(erin->canWriteTo(alice->fingerprint()));
             CHECK(contactRequestsFor(alice->fingerprint()) == aliceRequestsBefore);
             std::printf("TestDeliveryPass: an acceptance that met a dead lease set landed by itself"
-                        " once that lease set had expired; both sides are contacts\n");
+                        " once a recheck found the newer one; both sides are contacts\n");
             alice->setOutboundLinks(courierFor());
             erin->setOutboundLinks(courierFor());
         }

@@ -71,7 +71,7 @@ constexpr std::int64_t kRestoreHourOfDay = 12;
 constexpr std::int64_t kSecondUserAskHour = 1;
 constexpr int kQuietPasses = 3;
 constexpr std::chrono::milliseconds kPassGap{20};
-constexpr std::chrono::seconds kTestStaleBound{1};
+constexpr std::chrono::seconds kTestRecheck{1};
 constexpr int kForbidden = 403;
 constexpr int kNotFound = 404;
 constexpr int kConflict = 409;
@@ -355,7 +355,7 @@ void restoreAfter(const Options& run, Mock& m, const ServerEndpoint& endpoint, c
     m.moderated = false;
     const UtcClock clock = [&m]() { return m.utc.load(); };
     CourierTimings timings;
-    timings.staleBound = kTestStaleBound;
+    timings.recheck = kTestRecheck;
     const auto wire = [&](Session& session) {
         session.setEpochClock(clock);
         session.setPresenceClock(clock);

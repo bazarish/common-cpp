@@ -37,8 +37,8 @@ namespace {
 constexpr std::chrono::seconds kQuickDial{1};
 constexpr std::chrono::seconds kQuickReply{1};
 // Long enough that nothing in a test reaches it unless the test waits for it.
-constexpr std::chrono::seconds kFarBound{3600};
-constexpr std::chrono::seconds kNearBound{2};
+constexpr std::chrono::seconds kFarRecheck{3600};
+constexpr std::chrono::seconds kNearRecheck{2};
 // What a gate that must stay closed is given to prove it does.
 constexpr std::chrono::milliseconds kStaysClosed{4000};
 constexpr std::int64_t kPublishedStep = 100;
@@ -213,12 +213,12 @@ Letter letterTo(const TestKeys& keys, const std::string& route, const std::uint6
     return letter;
 }
 
-CourierTimings quick(const std::chrono::seconds bound)
+CourierTimings quick(const std::chrono::seconds recheck)
 {
     CourierTimings timings;
     timings.dial = kQuickDial;
     timings.reply = kQuickReply;
-    timings.staleBound = bound;
+    timings.recheck = recheck;
     return timings;
 }
 
@@ -407,7 +407,7 @@ try {
             ++dials;
             return std::make_shared<ServerStream>(keys.signing, keys.serving);
         }),
-            record.settledFn(), quick(kFarBound));
+            record.settledFn(), quick(kFarRecheck));
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
         CHECK(settles(record, 1));
         CHECK(record.outcome(1)->stored);
@@ -448,7 +448,7 @@ try {
                                    {"errorMessage", "delivery rejected"}})
                     .dump());
         }),
-            {}, quick(kFarBound));
+            {}, quick(kFarRecheck));
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
         CHECK(settles(record, 1));
         CHECK(!record.outcome(1)->stored);
@@ -466,7 +466,7 @@ try {
             }
             return std::make_shared<ServerStream>(keys.signing, keys.serving);
         }),
-            {}, quick(kFarBound));
+            {}, quick(kFarRecheck));
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
         CHECK(settles(record, 1));
         CHECK(record.outcome(1)->stored);
@@ -498,7 +498,7 @@ try {
             }
             return std::make_shared<ServerStream>(keys.signing, keys.serving);
         }),
-            {}, quick(kFarBound));
+            {}, quick(kFarRecheck));
         Letter big = letterTo(keys, dest, 1);
         big.plain = Bytes(kBigPayloadBytes, 'p');
         courier.submit(big, record.watchFor(1));
@@ -525,7 +525,7 @@ try {
             ++dials;
             return std::make_shared<ScriptedStream>(nlohmann::json({{"delivered", true}}).dump());
         }),
-            {}, quick(kFarBound));
+            {}, quick(kFarRecheck));
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
         CHECK(waits(record, 1));
         CHECK(staysUnsettled(record, 1));
@@ -551,7 +551,7 @@ try {
             const std::lock_guard<std::mutex> lock(toldMutex);
             return told;
         };
-        OutboundCourier courier(links, {}, quick(kFarBound));
+        OutboundCourier courier(links, {}, quick(kFarRecheck));
         Letter keyless = letterTo(keys, dest, 1);
         keyless.sealTo = {keyless.sealTo.front()};
         courier.submit(keyless, record.watchFor(1));
@@ -579,7 +579,7 @@ try {
             }
             return std::make_shared<ServerStream>(keys.signing, keys.serving);
         }),
-            {}, quick(kFarBound));
+            {}, quick(kFarRecheck));
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
         CHECK(settles(record, 1));
         CHECK(record.outcome(1)->stored);
@@ -598,7 +598,7 @@ try {
         links.prepare = [&tunnels](const std::string&, const std::string&) {
             return tunnels.load();
         };
-        OutboundCourier courier(links, {}, quick(kFarBound));
+        OutboundCourier courier(links, {}, quick(kFarRecheck));
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
         CHECK(testutil::waitFor([&record]() { return record.saw(1, kPhaseOffline); }));
         CHECK(!record.saw(1, kPhaseWaiting));
@@ -617,7 +617,7 @@ try {
         net.live = 2;
         net.floodfill = 2;
         net.cached = 1;
-        OutboundCourier courier(net.links(true), {}, quick(kFarBound));
+        OutboundCourier courier(net.links(true), {}, quick(kFarRecheck));
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
         CHECK(settles(record, 1));
         CHECK(record.outcome(1)->stored);
@@ -634,13 +634,33 @@ try {
         net.live = 2;
         net.floodfill = 2;
         net.cached = 1;
-        OutboundCourier courier(net.links(false), {}, quick(kFarBound));
+        OutboundCourier courier(net.links(false), {}, quick(kFarRecheck));
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
         CHECK(waits(record, 1));
         CHECK(staysUnsettled(record, 1));
         CHECK(net.dialled() == std::vector<int>({1}));
         std::printf("TestOutboundCourier: with no lookup the stale lease set is not dialled"
-                    " again before the bound\n");
+                    " again before the recheck\n");
+    }
+
+    {
+        Record record;
+        FakeNet net(keys);
+        net.live = 2;
+        net.floodfill = 2;
+        net.cached = 1;
+        OutboundCourier courier(net.links(false), {}, quick(kNearRecheck));
+        courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
+        CHECK(waits(record, 1));
+        {
+            const std::lock_guard<std::mutex> lock(net.mutex);
+            net.cached.reset();
+        }
+        CHECK(settles(record, 1));
+        CHECK(record.outcome(1)->stored);
+        CHECK(net.dialled() == std::vector<int>({1, 2}));
+        std::printf("TestOutboundCourier: with no lookup the route is dialled again at the"
+                    " recheck\n");
     }
 
     {
@@ -649,7 +669,7 @@ try {
         net.live = 2;
         net.floodfill = 1;
         net.cached = 1;
-        OutboundCourier courier(net.links(true), {}, quick(kFarBound));
+        OutboundCourier courier(net.links(true), {}, quick(kFarRecheck));
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
         CHECK(testutil::waitFor([&net]() { return net.lookupsMade() == 1; }));
         CHECK(staysUnsettled(record, 1));
@@ -671,18 +691,21 @@ try {
         net.live = 2;
         net.floodfill = 1;
         net.cached = 1;
-        OutboundCourier courier(net.links(true), {}, quick(kNearBound));
+        OutboundCourier courier(net.links(true), {}, quick(kNearRecheck));
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
-        CHECK(testutil::waitFor([&net]() { return net.lookupsMade() == 1; }));
+        CHECK(testutil::waitFor([&net]() { return net.lookupsMade() == 2; }));
+        CHECK(!record.outcome(1).has_value());
+        CHECK(net.dialled() == std::vector<int>({1}));
         {
             const std::lock_guard<std::mutex> lock(net.mutex);
             net.floodfill = 2;
-            net.cached.reset();
         }
         CHECK(settles(record, 1));
         CHECK(record.outcome(1)->stored);
-        CHECK(net.lookupsMade() == 1);
+        CHECK(net.lookupsMade() == 3);
         CHECK(net.dialled() == std::vector<int>({1, 2}));
+        std::printf("TestOutboundCourier: a closed route is looked up again at every recheck"
+                    " and dialled once a newer lease set is published\n");
     }
 
     {
@@ -697,7 +720,7 @@ try {
             }
             return std::make_shared<ServerStream>(keys.signing, keys.serving);
         }),
-            {}, quick(kFarBound));
+            {}, quick(kFarRecheck));
         MailWaitGate mailGate;
         mailGate.onAnswered([&courier]() { courier.heard(kOwnMailboxRoute); });
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
@@ -734,7 +757,7 @@ try {
             ++lookups;
             return std::nullopt;
         };
-        OutboundCourier courier(links, {}, quick(kFarBound));
+        OutboundCourier courier(links, {}, quick(kFarRecheck));
         MailWaitGate mailGate;
         mailGate.onAnswered([&courier]() { courier.heard(kOwnMailboxRoute); });
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
@@ -767,7 +790,7 @@ try {
             stored.stored = true;
             return stored;
         };
-        OutboundCourier courier(links, {}, quick(kFarBound));
+        OutboundCourier courier(links, {}, quick(kFarRecheck));
         courier.submit(letterTo(keys, kOwnMailboxRoute, 1), record.watchFor(1));
         CHECK(waits(record, 1));
         CHECK(!record.saw(1, kPhasePreparing));
@@ -783,10 +806,10 @@ try {
         Record record;
         OutboundCourier courier(
             dialling([](const std::string&) -> std::shared_ptr<DeliveryStream> { return nullptr; }),
-            record.settledFn(), quick(kFarBound));
+            record.settledFn(), quick(kFarRecheck));
         Letter call = letterTo(keys, dest, 1);
         call.kind = "call.invite";
-        call.notAfterMs = utcMillisIn(kNearBound);
+        call.notAfterMs = utcMillisIn(kNearRecheck);
         courier.submit(call, record.watchFor(1));
         courier.submit(letterTo(keys, other, 2), record.watchFor(2));
         Letter stale = letterTo(keys, other, 3);
@@ -819,7 +842,7 @@ try {
                 }
                 return std::make_shared<ServerStream>(keys.signing, keys.serving);
             }),
-            {}, quick(kFarBound));
+            {}, quick(kFarRecheck));
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
         CHECK(waits(record, 1));
         courier.readdress("mailbox-" + dest, other, keys.serving.publicDer());
@@ -845,7 +868,7 @@ try {
             const std::lock_guard<std::mutex> lock(mutex);
             told.push_back("release " + toDest);
         };
-        OutboundCourier courier(links, {}, quick(kFarBound));
+        OutboundCourier courier(links, {}, quick(kFarRecheck));
         Letter request = letterTo(keys, dest, 1);
         request.deliveryClass = kContactDeliveryClass;
         request.pass.clear();
@@ -880,7 +903,7 @@ try {
                 }
                 return std::make_shared<ServerStream>(keys.signing, keys.serving);
             }),
-            {}, quick(kFarBound));
+            {}, quick(kFarRecheck));
         courier.submit(letterTo(keys, dest, 1), record.watchFor(1));
         courier.submit(letterTo(keys, dest, 2), record.watchFor(2));
         courier.submit(letterTo(keys, other, 3), record.watchFor(3));

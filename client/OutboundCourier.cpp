@@ -390,17 +390,19 @@ void OutboundCourier::carryReturned()
     }
 }
 
-void OutboundCourier::openDueLocked(const std::chrono::steady_clock::time_point now)
+void OutboundCourier::recheckDueLocked(const std::chrono::steady_clock::time_point now)
 {
     for (auto& [route, gate] : gates_) {
-        if (gate.closed && gate.opensAt <= now) {
-            gate.closed = false;
-            gate.lookupDue = false;
-            gate.awaitsServer = false;
-            bazarish::log::info(
-                "{}: the lease set of the failed attempt has expired, trying again",
-                routeName(route));
+        if (!gate.closed || gate.awaitsServer || route == kOwnMailboxRoute || gate.recheckAt > now) {
+            continue;
         }
+        gate.recheckAt = now + timings_.recheck;
+        if (links_.lookup && !gate.lookupBlind) {
+            gate.lookupDue = true;
+            continue;
+        }
+        gate.closed = false;
+        bazarish::log::info("{}: no lease set lookup here, trying again", routeName(route));
     }
 }
 
@@ -430,8 +432,8 @@ std::optional<std::chrono::steady_clock::time_point> OutboundCourier::nextDueLoc
         }
     };
     for (const auto& [route, gate] : gates_) {
-        if (gate.closed) {
-            sooner(gate.opensAt);
+        if (gate.closed && !gate.awaitsServer && route != kOwnMailboxRoute) {
+            sooner(gate.recheckAt);
         }
     }
     const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
@@ -537,7 +539,7 @@ void OutboundCourier::workerLoop()
                 if (!notices.empty()) {
                     break;
                 }
-                openDueLocked(std::chrono::steady_clock::now());
+                recheckDueLocked(std::chrono::steady_clock::now());
                 expired.swap(withdrawn_);
                 expireLocked(utcMillisNow(), expired);
                 if (!expired.empty()) {
@@ -596,9 +598,10 @@ std::vector<std::pair<DeliveryWatch, std::string>> OutboundCourier::closeGateLoc
 {
     Gate& gate = gates_[route];
     gate.closed = true;
-    gate.opensAt = std::chrono::steady_clock::now() + timings_.staleBound;
+    gate.recheckAt = std::chrono::steady_clock::now() + timings_.recheck;
     gate.lookupDue = !ownLink && route != kOwnMailboxRoute && static_cast<bool>(links_.lookup);
     gate.awaitsServer = ownLink;
+    gate.lookupBlind = false;
     gate.failedSeenKnown = false;
     gate.failedSeen.reset();
     std::vector<std::pair<DeliveryWatch, std::string>> told;
@@ -664,11 +667,11 @@ void OutboundCourier::runAttempt(const Job& job)
                     routeName(job.route));
             } else if (held->second.letter.route == job.route) {
                 waiting = closeGateLocked(job.route, false);
-                bazarish::log::warn("{} did not answer: what waits for it goes {} or in {} s",
+                bazarish::log::warn("{} did not answer: what waits for it goes {}",
                     routeName(job.route),
                     job.route == kOwnMailboxRoute ? "when our server answers"
-                                                  : "on a newer lease set",
-                    timings_.staleBound.count());
+                                                  : "on a newer lease set, looked up every "
+                            + std::to_string(timings_.recheck.count()) + " s");
             }
         }
     }
@@ -695,6 +698,7 @@ void OutboundCourier::runLookup(const Job& job)
         const std::lock_guard<std::mutex> lock(mutex_);
         Gate& gate = gates_[job.route];
         gate.busy = false;
+        gate.lookupBlind = !found.has_value();
         if (gate.closed && found.has_value()) {
             if (!gate.failedSeenKnown) {
                 gate.failedSeen = found->before;

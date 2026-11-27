@@ -40,12 +40,7 @@ inline constexpr int kDeliveryDialSeconds = 15;
 inline constexpr int kReplyGraceSeconds = 30;
 // The slowest a delivery stream is still expected to move; a big payload gets this much longer.
 inline constexpr std::size_t kSlowestDeliveryBytesPerSecond = 8 * 1024;
-// i2pd ends a lease 10 minutes after its tunnel was built.
-inline constexpr std::chrono::seconds kLeaseLifetime{600};
-// The clock difference NTCP2 and SSU2 accept between two routers.
-inline constexpr std::chrono::seconds kRouterClockSkew{60};
-// By then a lease set that was current at a failed attempt has expired everywhere.
-inline constexpr std::chrono::seconds kStaleLeaseSetBound = kLeaseLifetime + kRouterClockSkew;
+inline constexpr std::chrono::seconds kClosedRouteRecheck{30};
 
 inline constexpr char kPhasePreparing[] = "preparing";
 inline constexpr char kPhaseDialing[] = "dialing";
@@ -66,7 +61,7 @@ inline constexpr std::int64_t kExchangeGapSeconds = kMailRetentionDays * kSecond
 struct CourierTimings {
     std::chrono::seconds dial{kDeliveryDialSeconds};
     std::chrono::seconds reply{kReplyGraceSeconds};
-    std::chrono::seconds staleBound{kStaleLeaseSetBound};
+    std::chrono::seconds recheck{kClosedRouteRecheck};
     // The epoch a letter is sealed to is the one current by this clock at each attempt.
     UtcClock utcNow = systemUtcSeconds;
 };
@@ -172,11 +167,12 @@ private:
         bool busy = false;
         bool closed = false;
         bool lookupDue = false;
+        bool lookupBlind = false;
         // Opens once our server has answered: our own link failed, or it came back.
         bool awaitsServer = false;
         bool failedSeenKnown = false;
         std::optional<i2p::LeaseSetSeen> failedSeen;
-        std::chrono::steady_clock::time_point opensAt;
+        std::chrono::steady_clock::time_point recheckAt;
     };
 
     enum class JobKind { eAttempt, eLookup };
@@ -206,7 +202,7 @@ private:
 
     void workerLoop();
     std::optional<Job> pickLocked();
-    void openDueLocked(std::chrono::steady_clock::time_point now);
+    void recheckDueLocked(std::chrono::steady_clock::time_point now);
     void expireLocked(std::int64_t nowMs, std::vector<Settled>& out);
     std::optional<std::chrono::steady_clock::time_point> nextDueLocked() const;
     Settled settleLocked(std::map<std::uint64_t, Held>::iterator held, const Outcome& outcome);
