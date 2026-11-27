@@ -3649,6 +3649,33 @@ try {
                 return false;
             }));
 
+            hal->sendMessage(gina->fingerprint(), "ours to drop");
+            std::string dropId;
+            CHECK(testutil::waitFor([&]() {
+                (void)gina->sync();
+                for (const IncomingMessage& item : gina2->sync()) {
+                    if (item.text == "ours to drop") {
+                        dropId = item.e2eId;
+                        return true;
+                    }
+                }
+                return false;
+            }));
+            gina->deleteOnOwnDevices(hal->fingerprint(), dropId, true);
+            CHECK(testutil::waitFor([&]() {
+                (void)gina->sync();
+                for (const IncomingMessage& item : gina2->sync()) {
+                    if (item.contentType == kTypeDelete && item.refId == dropId) {
+                        return item.sentByUs && item.refIncoming
+                            && item.fromFingerprint == hal->fingerprint();
+                    }
+                }
+                return false;
+            }));
+            for (const IncomingMessage& item : hal->sync()) {
+                CHECK(item.refId != dropId);
+            }
+
             const DeviceCredential halIdentity = deviceOf(scratch / "bz-epochs-hal");
             const auto sealedFromHal = [&](const std::string& text, const EpochPublic& epoch) {
                 nlohmann::json inner = {{"v", 1}, {"type", "text"},

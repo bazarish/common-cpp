@@ -269,7 +269,8 @@ bool TranscriptIngest::takeIn(const IncomingMessage& message)
         return true;
     }
     if (type == kTypeDelete) {
-        const std::int64_t localId = localIdOf(message);
+        const std::int64_t localId
+            = store_.idForKey(peer, message.refId, message.sentByUs && !message.refIncoming);
         if (localId != 0) {
             if (!store_.removeById(localId)) {
                 return false;

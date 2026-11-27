@@ -202,6 +202,7 @@ struct IncomingMessage {
     std::string pendingId;
     std::int64_t sentAt = 0;
     std::string refId;
+    bool refIncoming = false;
 
     std::string replyTo;
     // Messages.md: the message the sender's chat held last when this one was written.
@@ -705,6 +706,10 @@ public:
 
     void sendDelete(const std::string& peerFingerprint, const std::string& refMessageId,
         const DeliveryWatch& watch = {});
+
+    void deleteOnOwnDevices(
+
+        const std::string& peerFingerprint, const std::string& refMessageId, bool incoming);
 
     using GroupBlockSource = std::function<GroupBlock(const std::string& peerFingerprint)>;
     void setGroupBlockSource(GroupBlockSource source);

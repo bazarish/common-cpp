@@ -374,6 +374,21 @@ try {
         CHECK(echoed.outgoing);
         CHECK(echoed.device == kOtherOwnDevice);
 
+        CHECK(ingest.takeIn(incoming(kTypeText, "dropped-here", composedAt + 3)));
+        IncomingMessage dropOwn = incoming(kTypeDelete, "drop-own", composedAt + 3);
+        dropOwn.sentByUs = true;
+        dropOwn.refId = "echo";
+        IncomingMessage dropTheirs = incoming(kTypeDelete, "drop-theirs", composedAt + 3);
+        dropTheirs.sentByUs = true;
+        dropTheirs.refId = "dropped-here";
+        dropTheirs.refIncoming = true;
+        CHECK(ingest.takeIn(dropTheirs));
+        CHECK(store.idForKey(kPeer, "dropped-here", false) == 0);
+        CHECK(store.idForKey(kPeer, "echo", true) != 0);
+        CHECK(ingest.takeIn(dropOwn));
+        CHECK(store.idForKey(kPeer, "echo", true) == 0);
+        CHECK(store.idForKey(kPeer, "theirs", false) != 0);
+
         IncomingMessage record = incoming(kTypeCallRecord, "call-record", composedAt + 4);
         record.sentByUs = true;
         record.callIncoming = true;

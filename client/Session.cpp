@@ -4107,6 +4107,18 @@ void Session::sendDelete(const std::string& peerFingerprint, const std::string& 
     sendContent(peerFingerprint, std::move(inner), watch, false, userAct());
 }
 
+void Session::deleteOnOwnDevices(
+    const std::string& peerFingerprint, const std::string& refMessageId, const bool incoming)
+{
+    nlohmann::json inner = envelope("delete", newMessageId(), {
+        {"ref", refMessageId},
+    });
+    if (incoming) {
+        inner["incoming"] = true;
+    }
+    echoSentToSelf(peerFingerprint, inner);
+}
+
 nlohmann::json Session::cardLetter() const
 {
     return envelope(kTypeAccountCard, newMessageId(),
@@ -5328,6 +5340,7 @@ std::vector<IncomingMessage> Session::takeIn(
                     } else if (type == "delete") {
                         message.contentType = type;
                         message.refId = body.value("ref", std::string());
+                        message.refIncoming = body.value("incoming", false);
                     } else if (type == "receipt") {
                         message.contentType = type;
                         message.refId = body.value("ref", std::string());
