@@ -12,6 +12,7 @@ namespace bazarish::client {
 enum class LinkFailure {
     eNone,
     eNoNetwork,
+    eProxyUnreachable,
     eI2pUnreachable,
     eGatewayUnreachable,
     eGatewayRefused,
@@ -35,6 +36,7 @@ struct LinkAttempt {
     LinkStage reached = LinkStage::eRouter;
     bool viaGateway = false;
     bool gatewayReady = false;
+    bool proxyUnreachable = false;
     bool gatewayRefused = false;
     bool malformed = false;
     bool dialEndedEarly = false;
@@ -64,6 +66,9 @@ inline LinkFailure classifyLinkFailure(const bool networkDown, const LinkAttempt
 {
     if (networkDown) {
         return LinkFailure::eNoNetwork;
+    }
+    if (attempt.proxyUnreachable) {
+        return LinkFailure::eProxyUnreachable;
     }
     if (attempt.gatewayRefused) {
         return LinkFailure::eGatewayRefused;
@@ -99,6 +104,7 @@ inline std::string_view linkFailureName(const LinkFailure failure)
     switch (failure) {
         case LinkFailure::eNone: return "none";
         case LinkFailure::eNoNetwork: return "no network";
+        case LinkFailure::eProxyUnreachable: return "the SOCKS proxy does not answer";
         case LinkFailure::eI2pUnreachable: return "the I2P network is out of reach";
         case LinkFailure::eGatewayUnreachable: return "the gateway is out of reach";
         case LinkFailure::eGatewayRefused: return "the gateway refused";

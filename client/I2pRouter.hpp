@@ -7,17 +7,27 @@
 
 #include <bazarish/Bytes.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace bazarish::client {
 
+class ProxyUnreachable : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+inline constexpr std::chrono::seconds kProxyRecheck{30};
+
 bazarish::i2p::Router& sharedI2pRouter(const std::filesystem::path& dataDir);
+bool i2pProxyUnreachable();
 
 inline constexpr int kOwnTunnelsSeconds = 180;
 inline constexpr int kDialSeconds = 90;

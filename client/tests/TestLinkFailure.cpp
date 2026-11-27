@@ -3,6 +3,7 @@
 #include "FailureCause.hpp"
 #include "LinkFailure.hpp"
 
+#include "I2pRouter.hpp"
 #include "TestUtil.hpp"
 
 #include <bazarish/I2p.hpp>
@@ -49,6 +50,11 @@ try {
         == linkCause(LinkFailure::eServerRefused));
     CHECK(!carriedCause(LinkError(LinkFailure::eNone, "the answer's own word")).has_value());
     CHECK(causeOf(bazarish::i2p::GatewayRefusal("no")) == linkCause(LinkFailure::eGatewayRefused));
+    CHECK(causeOf(ProxyUnreachable("silent")) == linkCause(LinkFailure::eProxyUnreachable));
+    LinkAttempt throughDeadProxy;
+    throughDeadProxy.proxyUnreachable = true;
+    CHECK(classifyLinkFailure(false, throughDeadProxy) == LinkFailure::eProxyUnreachable);
+    CHECK(classifyLinkFailure(true, throughDeadProxy) == LinkFailure::eNoNetwork);
     CHECK(causeOf(LocalError(LocalFailure::eFileGone, "gone")) == localCause(LocalFailure::eFileGone));
     CHECK(causeOf(std::runtime_error("anything else")) == localCause(LocalFailure::eInternal));
     CHECK(!carriedCause(std::runtime_error("anything else")).has_value());

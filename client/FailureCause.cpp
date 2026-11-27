@@ -2,6 +2,7 @@
 #include "FailureCause.hpp"
 
 #include "Client.hpp"
+#include "I2pRouter.hpp"
 
 #include <bazarish/I2p.hpp>
 
@@ -24,6 +25,9 @@ std::optional<FailureCause> carriedCause(const std::exception& error)
 {
     if (dynamic_cast<const bazarish::i2p::GatewayRefusal*>(&error) != nullptr) {
         return linkCause(LinkFailure::eGatewayRefused);
+    }
+    if (dynamic_cast<const ProxyUnreachable*>(&error) != nullptr) {
+        return linkCause(LinkFailure::eProxyUnreachable);
     }
     if (const auto* const fetch = dynamic_cast<const FetchFailed*>(&error); fetch != nullptr) {
         return linkCause(linkFailureOf(fetch->failure()));

@@ -811,6 +811,10 @@ ApiResponse ApiClient::transmitLocked(const std::string& method, const std::stri
                 attempt.gatewayRefused = true;
                 noteLinkFailure(attempt);
                 throw;
+            } catch (const ProxyUnreachable&) {
+                attempt.proxyUnreachable = true;
+                noteLinkFailure(attempt);
+                throw;
             } catch (const std::exception&) {
                 noteLinkFailure(attempt);
                 throw;

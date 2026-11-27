@@ -1,6 +1,7 @@
 // Bazarish project (c) 2026
 #include "I2pRouter.hpp"
 #include "LinkFailure.hpp"
+#include "SocksProxy.hpp"
 
 #include <bazarish/Log.hpp>
 
@@ -39,6 +40,54 @@ std::mutex& lifecycleMutex()
 {
     static std::mutex mutex;
     return mutex;
+}
+
+struct ProxyCheck {
+    std::string host;
+    int port = 0;
+    bool answered = false;
+    std::chrono::steady_clock::time_point at;
+    std::string error;
+};
+
+std::mutex& proxyCheckMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::optional<ProxyCheck>& proxyCheckSlot()
+{
+    static std::optional<ProxyCheck> check;
+    return check;
+}
+
+// i2pd reseeds inside its start and retries for minutes: through a dead proxy it would hang there.
+void requireProxyAnswers(const std::string& host, const int port)
+{
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    {
+        const std::lock_guard<std::mutex> lock(proxyCheckMutex());
+        const std::optional<ProxyCheck>& last = proxyCheckSlot();
+        if (last && !last->answered && last->host == host && last->port == port
+            && now - last->at < kProxyRecheck) {
+            throw ProxyUnreachable(last->error);
+        }
+    }
+    const SocksCheck check = checkSocksProxy(host, port);
+    const bool answered = check.answer == SocksAnswer::eAccepted;
+    std::string error = "the SOCKS proxy " + host + ":" + std::to_string(port) + " does not answer";
+    if (!check.error.empty()) {
+        error += ": " + check.error;
+    }
+    {
+        const std::lock_guard<std::mutex> lock(proxyCheckMutex());
+        proxyCheckSlot() = ProxyCheck{host, port, answered, now, error};
+    }
+    if (!answered) {
+        bazarish::log::warn("i2p: {}; the router waits for it", error);
+        throw ProxyUnreachable(error);
+    }
 }
 
 std::unique_ptr<bazarish::i2p::Router>& routerSlot()
@@ -402,7 +451,12 @@ bazarish::i2p::Router& sharedI2pRouter(const std::filesystem::path& dataDir)
         }
     }
     if (!held.has_value()) {
-        auto made = std::make_unique<bazarish::i2p::Router>(routerConfigFor(dataDir));
+        const bazarish::i2p::RouterConfig config = routerConfigFor(dataDir);
+        if (config.backend == bazarish::i2p::Backend::eEmbedded && !config.socksProxyHost.empty()
+            && config.socksProxyPort > 0) {
+            requireProxyAnswers(config.socksProxyHost, config.socksProxyPort);
+        }
+        auto made = std::make_unique<bazarish::i2p::Router>(config);
         const std::lock_guard<std::mutex> lock(routerMutex());
         routerSlot() = std::move(made);
         held = std::ref(*routerSlot());
@@ -504,8 +558,19 @@ std::shared_ptr<bazarish::i2p::Endpoint> acquireWarmWatcher(const bazarish::i2p:
     return pool != nullptr ? pool->acquire(privacy) : nullptr;
 }
 
+bool i2pProxyUnreachable()
+{
+    const std::lock_guard<std::mutex> lock(proxyCheckMutex());
+    const std::optional<ProxyCheck>& last = proxyCheckSlot();
+    return last.has_value() && !last->answered;
+}
+
 void setI2pSocksProxy(std::string host, const int port)
 {
+    {
+        const std::lock_guard<std::mutex> lock(proxyCheckMutex());
+        proxyCheckSlot().reset();
+    }
     {
         const std::lock_guard<std::mutex> lock(proxyMutex());
         g_proxyHost = std::move(host);
