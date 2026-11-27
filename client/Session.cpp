@@ -4956,6 +4956,7 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
 {
     flushPendingEchoes();
     flushOwedAcks();
+    const std::uint64_t network = bazarish::i2p::networkChanges();
     std::vector<PendingEntry> waiting;
     {
         const log::Slow timed("asking what the mailbox holds", kSlowStretch);
@@ -4964,17 +4965,21 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
     tellServerAnswered(*serverAnswered_);
     tellCourier([](OutboundCourier& courier) { courier.heard(kOwnMailboxRoute); });
     std::vector<PendingEntry> taking;
+    bool whole = true;
     for (const PendingEntry& entry : waiting) {
         if (awaitingAck_.find(entry.id) != awaitingAck_.end() || keptMail_->holds(entry.id)) {
             continue;
         }
         if (maxItems > 0 && taking.size() >= maxItems) {
+            whole = false;
             break;
         }
         taking.push_back(entry);
     }
     if (taking.empty()) {
-        return takeIn({}, autoAckSurfaced);
+        std::vector<IncomingMessage> taken = takeIn({}, autoAckSurfaced);
+        noteMailboxRead(network);
+        return taken;
     }
     std::vector<IncomingMessage> result;
     const SurfacedUnlessReturned unreturned(awaitingAck_, result);
@@ -4991,11 +4996,15 @@ std::vector<IncomingMessage> Session::sync(bool autoAckSurfaced, const std::size
             }
             bazarish::log::warn("sync: the rest of the mailbox waits for the next pass: {}",
                 error.what());
+            whole = false;
             break;
         }
         std::vector<IncomingMessage> taken = takeIn(std::move(fetched), false);
         std::move(taken.begin(), taken.end(), std::back_inserter(result));
         begin = end;
+    }
+    if (whole) {
+        noteMailboxRead(network);
     }
     if (autoAckSurfaced) {
         for (IncomingMessage& message : result) {
@@ -6058,7 +6067,7 @@ std::optional<std::chrono::milliseconds> Session::untilNextDue() const
                 dueNow();
             }
         }
-        if (cardMayBeStale_ && cardRetryAt_.has_value() && !bazarish::i2p::networkDown()) {
+        if (cardMayBeStale_ && cardRetryAt_.has_value() && cardMayGoOut()) {
             dueAt(*cardRetryAt_, epochUtc);
         }
         if (createsEpochs()) {
@@ -6706,6 +6715,18 @@ bool Session::republishCardIfStale()
     }
 }
 
+void Session::noteMailboxRead(const std::uint64_t network)
+{
+    mailboxReadOnNetwork_ = network;
+}
+
+// Keys another device made while this one was away come through the mailbox first.
+bool Session::cardMayGoOut() const
+{
+    return !bazarish::i2p::networkDown()
+        && mailboxReadOnNetwork_ == bazarish::i2p::networkChanges();
+}
+
 EpochNumber Session::publishedEpochsThrough() const
 {
     return cardB64_.empty() ? 0 : ContactCard::verify(fromBase64(cardB64_)).epochs.back().n;
@@ -6775,7 +6796,7 @@ void Session::keepEpochs()
         cardMayBeStale_ = true;
     }
     if (cardMayBeStale_ && (!cardRetryAt_.has_value() || utc >= *cardRetryAt_)) {
-        if (bazarish::i2p::networkDown()) {
+        if (!cardMayGoOut()) {
             cardRetryAt_ = utc;
         } else {
             cardMayBeStale_ = !republishCardIfStale();

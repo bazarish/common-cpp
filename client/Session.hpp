@@ -927,6 +927,7 @@ public:
         Client& client, const std::vector<PendingEntry>& batch);
     // Items in mailbox order; with none it still does the end-of-pass work.
     std::vector<IncomingMessage> takeIn(std::vector<MailboxItem> items, bool autoAckSurfaced);
+    void noteMailboxRead(std::uint64_t network);
 
     bool hasContact(const std::string& peerFingerprint) const;
     std::vector<std::string> contactFingerprints() const;
@@ -1317,6 +1318,8 @@ private:
     std::optional<PresenceDay> epochsCheckedDay_;
     bool cardMayBeStale_ = false;
     std::optional<std::int64_t> cardRetryAt_;
+    std::optional<std::uint64_t> mailboxReadOnNetwork_;
+    bool cardMayGoOut() const;
     struct CardTries {
         std::optional<PresenceDay> came;
         std::optional<PresenceDay> tried;

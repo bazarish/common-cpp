@@ -3603,6 +3603,9 @@ try {
             }));
             CHECK(publishedThrough() == start + 2);
             i2p::networkChanged();
+            gina->flushPendingEchoes();
+            CHECK(publishedThrough() == start + 2);
+            (void)gina->sync(false);
             CHECK(gina->untilNextDue() == std::chrono::milliseconds::zero());
             gina->flushPendingEchoes();
             CHECK(publishedThrough() == start + 3);
