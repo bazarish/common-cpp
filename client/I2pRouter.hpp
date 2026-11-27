@@ -106,7 +106,6 @@ void retireI2pRouter();
 bool repointGatewayTransport(const GatewayAddress& address);
 
 void setI2pSocksProxy(std::string host, int port);
-void restartI2pRouter();
 
 void setTunnelPrivacy(bazarish::i2p::Privacy privacy);
 bazarish::i2p::Privacy tunnelPrivacy();

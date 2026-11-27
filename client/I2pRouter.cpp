@@ -584,6 +584,8 @@ void setI2pSocksProxy(std::string host, const int port)
     router->setSocksProxy(i2pSocksProxyHost(), i2pSocksProxyPort());
 }
 
+namespace {
+
 void restartI2pRouter()
 {
     const std::lock_guard<std::mutex> lifecycle(lifecycleMutex());
@@ -606,8 +608,6 @@ void restartI2pRouter()
     const std::lock_guard<std::mutex> lock(routerMutex());
     ensureWarmPool(router);
 }
-
-namespace {
 
 // i2pd's RESEED_GIVEUP_TIMEOUT.
 constexpr int kReseedWaitSeconds = 180;
