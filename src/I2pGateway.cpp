@@ -243,8 +243,12 @@ public:
     std::deque<Bytes> tickets;
     std::map<std::uint32_t, std::shared_ptr<Pending>> awaited;
     std::map<std::uint32_t, std::weak_ptr<GatewayEndpoint>> endpoints;
-    // A status may arrive before the create's answer.
-    std::map<std::uint32_t, std::optional<Frame>> creating;
+    struct Early {
+        std::optional<Frame> status;
+        bool renewAsked = false;
+    };
+    // A status or a renewal ask may arrive before the create's answer.
+    std::map<std::uint32_t, Early> creating;
     std::map<std::uint32_t, std::weak_ptr<StreamState>> streams;
     // Frames reach the streams one at a time, whichever socket they came on.
     std::mutex delivering;
@@ -1907,7 +1911,7 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
     }
     {
         const std::lock_guard<std::mutex> lock(link_->mutex);
-        link_->creating[id] = std::nullopt;
+        link_->creating[id] = {};
     }
     const auto forgetCreating = [this, id]() {
         const std::lock_guard<std::mutex> lock(link_->mutex);
@@ -1938,18 +1942,23 @@ std::shared_ptr<EndpointBackend> GatewayRouter::createEndpoint(const EndpointCon
     const auto endpoint = std::make_shared<GatewayEndpoint>(link_, id, host, raw,
         config.published, config.bulk || config.realtime, raw && config.realtime, config.label,
         config.accountLabel, config.target, config.keys);
+    bool renewAsked = false;
     {
         // Under the lock, so a status that comes after it lands on top of it.
         const std::lock_guard<std::mutex> lock(link_->mutex);
         link_->endpoints[id] = endpoint;
         const auto early = link_->creating.find(id);
-        if (early->second) {
-            const nlohmann::json body = gateway::bodyJson(*early->second);
+        renewAsked = early->second.renewAsked;
+        if (early->second.status) {
+            const nlohmann::json body = gateway::bodyJson(*early->second.status);
             endpoint->statusChanged(body.value("ready", false), body.value("tunnelsIn", 0),
                 body.value("tunnelsOut", 0), body.value("leaseSets", 0),
                 body.value("localRoute", false));
         }
         link_->creating.erase(early);
+    }
+    if (renewAsked) {
+        endpoint->renewDelegation();
     }
     if (raw || config.bulk) {
         const Attach attached = attach(id);
@@ -2085,7 +2094,7 @@ void GatewayRouter::dispatch(const Frame& frame)
                 const std::lock_guard<std::mutex> lock(link_->mutex);
                 const auto early = link_->creating.find(frame.ref);
                 if (early != link_->creating.end()) {
-                    early->second = frame;
+                    early->second.status = frame;
                 }
                 return;
             }
@@ -2102,9 +2111,15 @@ void GatewayRouter::dispatch(const Frame& frame)
             return;
         }
         case FrameType::eEndpointRenew: {
-            if (endpoint != nullptr) {
-                endpoint->renewDelegation();
+            if (endpoint == nullptr) {
+                const std::lock_guard<std::mutex> lock(link_->mutex);
+                const auto early = link_->creating.find(frame.ref);
+                if (early != link_->creating.end()) {
+                    early->second.renewAsked = true;
+                }
+                return;
             }
+            endpoint->renewDelegation();
             return;
         }
         case FrameType::eRawRecv: {

@@ -236,6 +236,12 @@ public:
         return total;
     }
 
+    void renewBeforeAnswer()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        renewingBeforeAnswer_ = true;
+    }
+
     void askRenewals()
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -464,10 +470,19 @@ private:
                     building_.push_back(frame.ref);
                 }
             }
+            const bool keyed = gateway::bodyJson(frame).contains("keys");
             socket->send(endpointStatus(frame.ref, !holding));
+            bool renewing = false;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                renewing = keyed && renewingBeforeAnswer_;
+            }
+            if (renewing) {
+                socket->send(gateway::encode(FrameType::eEndpointRenew, frame.ref));
+            }
             socket->send(gateway::encodeJson(
                 FrameType::eOk, frame.ref, {{"host", kFakeGatewayHost}, {"kind", "stream"}}));
-            if (gateway::bodyJson(frame).contains("keys")) {
+            if (keyed) {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 keyedEndpoints_.push_back(frame.ref);
             }
@@ -490,6 +505,7 @@ private:
     std::vector<Bytes> received_;
     std::vector<std::uint32_t> keyedEndpoints_;
     std::vector<std::uint32_t> renewDue_;
+    bool renewingBeforeAnswer_ = false;
     i2p::LeaseSetRefresh lookupAnswer_;
     std::vector<nlohmann::json> lookups_;
     bool closeOnHello_ = false;

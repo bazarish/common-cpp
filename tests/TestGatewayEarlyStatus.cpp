@@ -1,9 +1,12 @@
 // Bazarish project (c) 2026
+#include "bazarish/Crypto.hpp"
+#include "bazarish/GatewayProtocol.hpp"
 #include "bazarish/I2p.hpp"
 
 #include "FakeGateway.hpp"
 #include "TestUtil.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -40,6 +43,19 @@ try {
     const std::shared_ptr<i2p::Endpoint> endpoint = router.createEndpoint(wanted);
     CHECK(endpoint->routingHost() == test::kFakeGatewayHost);
     CHECK(endpoint->ready());
+
+    fake.renewBeforeAnswer();
+    i2p::EndpointConfig keyed;
+    keyed.published = true;
+    keyed.keys = i2p::Keys::generate();
+    keyed.leaseSetReaders = {Key::generateX25519().rawPublic()};
+    const std::shared_ptr<i2p::Endpoint> renewed = router.createEndpoint(keyed);
+    CHECK(testutil::waitFor([&fake]() {
+        const std::vector<Bytes> frames = fake.received();
+        return std::any_of(frames.begin(), frames.end(), [](const Bytes& frame) {
+            return gateway::decode(frame).type == gateway::FrameType::eEndpointDelegate;
+        });
+    }));
 
     router.stop();
     server.stop();
