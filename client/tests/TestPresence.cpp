@@ -249,7 +249,7 @@ public:
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto now = std::chrono::steady_clock::now();
-        return std::any_of(published_.begin(), published_.end(),
+        return std::any_of(live_.begin(), live_.end(),
             [&](const std::shared_ptr<Box>& box) { return box->host == host && box->publishedAt <= now; });
     }
 

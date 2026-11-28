@@ -81,7 +81,7 @@ try {
         bool ready = false;
         CHECK(waitedFor(*endpoint, {}, ready, [&fake]() { fake.reportReady(); }) < kEndsWithin);
         CHECK(ready);
-        CHECK(told.load() > 0);
+        CHECK(testutil::waitFor([&told]() { return told.load() > 0; }));
     }
 
     {
