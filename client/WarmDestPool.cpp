@@ -2,6 +2,7 @@
 #include "WarmDestPool.hpp"
 
 #include <bazarish/Log.hpp>
+#include <bazarish/StopWake.hpp>
 
 #include <algorithm>
 #include <vector>
@@ -103,6 +104,7 @@ std::string WarmDestPool::whyNotWarm(const bazarish::i2p::Endpoint& endpoint) co
 
 void WarmDestPool::warmerLoop(const std::stop_token& stop)
 {
+    const StopWake wake(stop, mutex_, cv_);
     std::vector<Building> building;
     bool refillAsked = true;
 

@@ -8,6 +8,7 @@
 #include <bazarish/Hybrid.hpp>
 #include <bazarish/Limits.hpp>
 #include <bazarish/Log.hpp>
+#include <bazarish/StopWake.hpp>
 
 #include <algorithm>
 #include <exception>
@@ -853,6 +854,7 @@ void OutboundCourier::unwatch(const std::shared_ptr<DeliveryStream>& stream)
 
 void OutboundCourier::watchdogLoop(const std::stop_token& stop)
 {
+    const StopWake wake(stop, watchMutex_, watchCv_);
     std::unique_lock<std::mutex> lock(watchMutex_);
     const auto stopping = [&stop]() { return stop.stop_requested(); };
     while (!watchCv_.wait_for(lock, stop, kWatchdogTick, stopping)) {

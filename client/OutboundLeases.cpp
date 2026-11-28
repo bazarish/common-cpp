@@ -4,6 +4,7 @@
 #include "I2pRouter.hpp"
 
 #include <bazarish/Log.hpp>
+#include <bazarish/StopWake.hpp>
 
 #include <chrono>
 #include <stdexcept>
@@ -260,6 +261,7 @@ void OutboundLeases::keepOwn(const std::string& toDest)
 
 void OutboundLeases::sweeperLoop(const std::stop_token& stop)
 {
+    const StopWake wake(stop, mutex_, sweep_);
     std::unique_lock<std::mutex> lock(mutex_);
     const auto stopping = [&stop]() { return stop.stop_requested(); };
     while (!sweep_.wait_for(lock, stop, kSweepInterval, stopping)) {

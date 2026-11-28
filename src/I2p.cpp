@@ -6,6 +6,7 @@
 #include "bazarish/Crypto.hpp"
 #include "bazarish/HostCache.hpp"
 #include "bazarish/I2pAddress.hpp"
+#include "bazarish/StopWake.hpp"
 
 #include <openssl/crypto.h>
 
@@ -51,6 +52,7 @@ void StateSignal::changed()
 bool StateSignal::waitUntil(const std::chrono::steady_clock::time_point deadline,
     const std::stop_token& stop, const std::function<bool()>& done)
 {
+    const StopWake wake(stop, mutex_, wake_);
     std::unique_lock<std::mutex> lock(mutex_);
     return wake_.wait_until(lock, stop, deadline, done);
 }
