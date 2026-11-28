@@ -905,6 +905,7 @@ void Session::connectServer(const ServerEndpoint& endpoint)
             client_->credential().copy(), endpoint, i2pDirFor(accountPath_));
         client_->shareWireLog(std::move(log));
         client_->setAccountLabel(accountLabel());
+        client_->onDeviceRevoked([revoked = revokedWatch_]() { revoked->revoked(); });
         stopCourier();
     }
     persistMeta();
@@ -3487,7 +3488,8 @@ void Session::noteDeviceRevoked()
 
 void Session::onDeviceRevoked(std::function<void()> tell)
 {
-    client_->onDeviceRevoked(std::move(tell));
+    revokedWatch_->onRevoked(std::move(tell));
+    client_->onDeviceRevoked([revoked = revokedWatch_]() { revoked->revoked(); });
 }
 
 void Session::setFetchTransport(FetchTransport transport)
@@ -3508,6 +3510,7 @@ Session::ContactFetchContext Session::contactFetchContext() const
     ctx.transport = fetchTransportOverride_;
     ctx.keptMail = keptMail_;
     ctx.devices = devicesWatch_;
+    ctx.revoked = revokedWatch_;
     return ctx;
 }
 
@@ -3517,6 +3520,9 @@ std::unique_ptr<Client> Session::makeEventClient(const ContactFetchContext& cont
         DeviceCredential(Identity::fromPrivatePem(context.deviceSigningPem), context.deviceCert),
         context.endpoint, context.i2pDataDir);
     waiter->setAccountLabel(context.accountLabel);
+    if (context.revoked) {
+        waiter->onDeviceRevoked([revoked = context.revoked]() { revoked->revoked(); });
+    }
     return waiter;
 }
 
@@ -3570,6 +3576,24 @@ void DevicesWatch::onMoved(std::function<void()> tell)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     tell_ = std::move(tell);
+}
+
+void RevokedWatch::onRevoked(std::function<void()> tell)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    tell_ = std::move(tell);
+}
+
+void RevokedWatch::revoked() const
+{
+    std::function<void()> tell;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        tell = tell_;
+    }
+    if (tell) {
+        tell();
+    }
 }
 
 Session::ContactCardResolved Session::resolveContactCard(const ContactFetchContext& context,

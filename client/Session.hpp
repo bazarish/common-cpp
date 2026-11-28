@@ -327,6 +327,16 @@ private:
     std::function<void()> tell_;
 };
 
+class RevokedWatch {
+public:
+    void onRevoked(std::function<void()> tell);
+    void revoked() const;
+
+private:
+    mutable std::mutex mutex_;
+    std::function<void()> tell_;
+};
+
 struct ContactDevice {
     std::string id;
     bool revoked = false;
@@ -595,6 +605,7 @@ public:
         FetchTransport transport;
         std::shared_ptr<const KeptMail> keptMail;
         std::shared_ptr<DevicesWatch> devices;
+        std::shared_ptr<RevokedWatch> revoked;
     };
     struct AliasErrandContext {
         std::string rootPem;
@@ -1317,6 +1328,7 @@ private:
     DeviceBook reviewBook_;
     std::uint64_t devicesVersion_ = 0;
     std::shared_ptr<DevicesWatch> devicesWatch_ = std::make_shared<DevicesWatch>();
+    std::shared_ptr<RevokedWatch> revokedWatch_ = std::make_shared<RevokedWatch>();
     UtcClock epochClock_ = systemUtcSeconds;
     std::map<std::string, std::int64_t> epochsDue_;
     // UTC second each missing epoch of ours is made at, unless another device's key comes first.
